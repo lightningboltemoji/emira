@@ -356,12 +356,20 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     the same reason: every frame on the strip derives from it, so the growing column and every column it pushes
     along move in lockstep from geometry that already existed. `animateColumnWidth` **retargets** an in-flight width
     rather than restarting it, because cycling is a keybind and the second press lands mid-flight.
-  - A **structural edit** (`move-window`, `consume-or-expel`) animates the *third* quantity, and it is the one that
-    is not like the other two: there is no number the new frames derive from, because an edit that inserts or removes
-    a column makes before and after two different `Layout`s. So what goes under a spring is each window's
-    **displacement** from where the layout now says it belongs, decaying to zero (`Motion.windowAnimators`,
-    `RectAnimator`) — the destination stays derived, and only the *lag* is per-window. Every emitted layer frame is
-    one derived rect plus these three, summed.
+  - A **structural edit** animates the *third* quantity, and it is the one that is not like the other two: there is
+    no number the new frames derive from, because an edit that inserts or removes a column makes before and after two
+    different `Layout`s. So what goes under a spring is each window's **displacement** from where the layout now says
+    it belongs, decaying to zero (`Motion.windowAnimators`, `RectAnimator`) — the destination stays derived, and only
+    the *lag* is per-window. Every emitted layer frame is one derived rect plus these three, summed.
+    - **A departure and an arrival are structural edits too**, and saying so is the whole of their animation.
+      `move-window`, `consume-or-expel`, close, minimize, hide and adoption all ride one shared path. The only thing a
+      departure lacks is a **mover** — the window that would ride on top has left, and the survivors merely close
+      ranks — so that parameter is optional and nothing else changes. An *arrival* has the opposite asymmetry: a
+      newcomer has no frame in the old geometry, so it is seeded with **the frame its app opened it at**, which is
+      also the frame the cover captures. That equality is why the raise does not pop, and it makes the newcomer
+      *travel* rather than appear, with every column it displaces handled by the ordinary loop.
+    - **Boot animates too, deliberately**: the launch scan's adoptions coalesce into one session, and carving out an
+      exception would mean a second vocabulary for "a window we found" versus "a window you made".
 - **Geometry & the strip:** infinite-axis coordinates, column widths/heights, gaps, and **struts** (reserve the
   menu-bar/notch region so tiled windows never sit under it).
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
@@ -377,6 +385,26 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     between the two calls is invalid.
   - **New column ids are minted only inside `Layout`.** A re-issued `ColumnId` is not a cosmetic collision: it is the
     key `Motion.columnWidths` and the cover's animation identity hang on.
+  - **The viewport clamps to the strip's extent, in two places because there are two ways in.**
+    `Strip.offsetToReveal` clamps its *answer* rather than trusting its input — the stranding rides specifically the
+    "already fully visible, don't move" branch, which hands the offset straight back, so a range check on the result
+    is what makes the bound an invariant of the answer instead of a property of the caller. And `emitPlacements`
+    re-clamps the resting offset, which is the half a reveal cannot reach: a strip can shrink with nothing asking to
+    reveal anything (close a column left of the viewport, minimize one, narrow the presets). It deliberately stops at
+    the **centering** path: `center-focused-column` is an instruction to put a column in the middle, and at the
+    strip's ends honouring it *means* showing space past the last column, so clamping there would silently convert an
+    explicit request into flush-left.
+  - **A new column opens immediately right of the focused one**, not at the far end of the strip. Appending made "the
+    strip opens for a new window" untrue — an appended column displaces nothing, so the only motion was the viewport
+    chasing the strip's new end. The anchor must be the window focused *before* the newcomer arrives, and it is
+    `World.lastStripFocus` ("where was the user working") rather than live focus: an app focuses its brand-new window
+    before emira has adopted it, so the observer resolves that element to no id and a `focusChanged(nil)` lands a
+    moment *before* the creation. Anchoring on live focus passes a unit test and appends in reality every time.
+  - **Focus after a departure takes the neighbour** — a surviving stackmate in the same column, else whichever column
+    slid into the departed one's place, right-then-left. "First window in layout order" silently re-framed the strip
+    on column 1 on every close; under a snap that re-frame *was* the whole observable event, and animated it is a
+    full-strip scroll home. **A snap is not a cheaper animation, it is a shorter one, and it hides precisely what the
+    motion would draw the eye to.**
   - **Focus off the strip is an entry condition, not a dead end.** `World` deliberately records whatever the system
     says is focused — a dialog, furniture, a window an app raised itself — and activating an app surfaces whichever
     window is `AXMain` at that moment, which need not be the one we asked for. So a focus command with no column to
@@ -695,8 +723,8 @@ Settle these as we build, not now.
 
 1. **`EmiraMotion` as a separate target vs a folder** — started separate for the clean seam; still separate, still
    trivial to collapse.
-2. **The viewport does not clamp to the strip's extent.** Closing columns can leave the scroll offset past the end of
-   a strip that now fits entirely on screen, parking a window at its 1 px sliver beside bare desktop.
+2. **Rubber-banding.** The resting clamp is built; springing back past the strip's end during a gesture is not, and
+   is an M7 question.
 3. **Real signing** — Developer ID + hardened runtime + notarization, and with them a TCC grant that survives a
    rebuild. Ad-hoc is enough to run locally.
 4. **Nothing puts the desktop back on quit.** Parking is only survivable while emira is running; a user who quits is

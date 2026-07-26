@@ -223,18 +223,29 @@ public struct Layout: Sendable, Equatable, Codable {
     /// in input order. Existing columns keep their id and their surviving stack order, so animation
     /// identity and the user's arrangement are preserved across enumeration churn. Total — a repeat
     /// call with the same set is a no-op.
-    public mutating func reconcile(stripWindowIds ids: [WindowId]) {
+    /// - Parameter anchor: the window a newcomer should open **beside** — a new column immediately
+    ///   right of the focused one, pushing the rest of the strip along (2026-07-26). `nil`,
+    ///   or a window with no column of its own, falls back to appending at the far end.
+    ///
+    ///   The anchor must be the window focused *before* the newcomer arrived: the reducer gives a new
+    ///   window focus on sight, and by the time this runs it has no column to sit beside yet.
+    public mutating func reconcile(stripWindowIds ids: [WindowId],
+                                   insertingAfter anchor: WindowId? = nil) {
         let target = Set(ids)
         // 1. Drop departed windows; remove any column left empty.
         for i in columns.indices {
             columns[i].windowIds.removeAll { !target.contains($0) }
         }
         columns.removeAll { $0.windowIds.isEmpty }
-        // 2. Append newcomers (present in `ids`, absent from every column) as new single-window
-        //    columns, preserving `ids` order.
+        // 2. Insert newcomers (present in `ids`, absent from every column) as new single-window
+        //    columns, preserving `ids` order, beside the anchor or at the end.
         let present = Set(allWindowIds)
-        for id in ids where !present.contains(id) {
-            columns.append(ColumnLayout(id: mintColumnId(), windowIds: [id], widthPreset: 0))
+        let newcomers = ids.filter { !present.contains($0) }
+        guard !newcomers.isEmpty else { return }
+        var at = anchor.flatMap { columnIndex(ofWindow: $0) }.map { $0 + 1 } ?? columns.count
+        for id in newcomers {
+            columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [id], widthPreset: 0), at: at)
+            at += 1
         }
     }
 
@@ -582,6 +593,17 @@ public struct Layout: Sendable, Equatable, Codable {
     public func scrollOffsetToReveal(window id: WindowId, from offset: Double, metrics: LayoutMetrics) -> Double? {
         guard let i = columnIndex(ofWindow: id) else { return nil }
         return strip(metrics: metrics).offsetToReveal(i, viewportWidth: metrics.workingArea.width, from: offset)
+    }
+
+    /// `offset` brought inside the strip's scrollable range (`Strip.clampOffset`) — the offsets from
+    /// which the viewport isn't looking past either end.
+    ///
+    /// Deliberately **not** applied to `scrollOffsetToCenter`: centering is an explicit instruction to
+    /// put a column in the middle, and at the strip's ends honouring it *means* showing space beyond
+    /// the last column (an always-center policy does exactly that). The reducer
+    /// applies this on the non-centering path only.
+    public func clampScrollOffset(_ offset: Double, metrics: LayoutMetrics) -> Double {
+        strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.workingArea.width)
     }
 
     /// The scroll offset that centers the window's column (`Strip.offsetToCenter`). `nil` if the

@@ -71,6 +71,19 @@ public struct Strip: Sendable, Equatable {
 
     // MARK: Scroll math — offset that frames a column
 
+    /// The largest scroll offset that still shows strip content across the whole viewport: the last
+    /// column's right edge flush with the viewport's right edge. Zero when the strip fits entirely
+    /// on screen, so `[origin, maxOffset]` is a valid — possibly degenerate — range either way.
+    public func maxOffset(viewportWidth: Double) -> Double {
+        Swift.max(origin, origin + contentWidth - viewportWidth)
+    }
+
+    /// `offset` brought inside `[origin, maxOffset]` — the offsets from which the viewport is not
+    /// looking past either end of the strip.
+    public func clampOffset(_ offset: Double, viewportWidth: Double) -> Double {
+        Swift.min(Swift.max(offset, origin), maxOffset(viewportWidth: viewportWidth))
+    }
+
     /// The scroll offset that places column `i`'s left edge flush with the viewport's left edge.
     public func offsetToAlignLeft(_ i: Int) -> Double {
         leftEdge(of: i)
@@ -90,13 +103,21 @@ public struct Strip: Sendable, Equatable {
     ///
     /// If the column is *wider* than the viewport it cannot fit; we then align its left edge, so the
     /// user sees the start of the column.
+    /// **The answer is clamped to the strip's extent** (2026-07-26), including in the "already fully
+    /// visible, don't move" case — because *that* case is the one that strands. `offset` is an input
+    /// this function is otherwise happy to hand straight back, so a viewport left pointing past the
+    /// end of the strip (columns closed out from under it) stays there for as long as the focused
+    /// column happens to remain visible, showing a lone window beside empty desktop. Clamping the
+    /// result rather than trusting the input makes the range an invariant of the answer.
     public func offsetToReveal(_ i: Int, viewportWidth: Double, from offset: Double) -> Double {
         let (left, width) = span(of: i)
         let right = left + width
-        if width >= viewportWidth { return left }        // can't fit: show the left edge
-        if left < offset { return left }                 // hidden past the left: pull it in
-        if right > offset + viewportWidth { return right - viewportWidth } // hidden past the right
-        return offset                                    // already fully visible: don't move
+        let framed: Double
+        if width >= viewportWidth { framed = left }            // can't fit: show the left edge
+        else if left < offset { framed = left }                // hidden past the left: pull it in
+        else if right > offset + viewportWidth { framed = right - viewportWidth }  // past the right
+        else { framed = offset }                               // already fully visible: don't move
+        return clampOffset(framed, viewportWidth: viewportWidth)
     }
 
     // MARK: Visibility — which columns the viewport touches

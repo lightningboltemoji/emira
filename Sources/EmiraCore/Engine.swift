@@ -149,25 +149,30 @@ public enum Engine {
         // MARK: Truth-plane observations — reality folded into `World`, then re-placed
 
         case .windowCreated(let snapshot):
+            // The geometry the newcomer is about to change, read *before* it joins — the other half of
+            // the difference `arriveOnStrip` animates.
+            let before = strandedGeometry(&s)
+            // Read *before* focus moves: a new column opens beside the window that had focus, and the
+            // newcomer is about to take it (`Layout.reconcile(stripWindowIds:insertingAfter:)`).
+            let beside = insertionAnchor(s)
             s.world.insert(snapshot)
             // A non-tiling window (dialog/panel/sheet/float) is the app's to position — we record it
             // but never place or force-focus it.
             guard s.world.participatesInStrip(snapshot.id) else { return (s, []) }
             s.world.setFocus(snapshot.id)   // a new window takes focus (truth tracked always)
             // Nothing to place until a display is known; focus stays recorded, no effect emitted.
-            guard s.metrics() != nil else { return (s, []) }
-            var effects = reveal(&s, snapshot.id, center: s.config.centerFocusedColumn)
-            effects.append(.focus(snapshot.id))
+            guard let before else { return (s, []) }
+            // Bound first, deliberately: `(s, arriveOnStrip(&s, …))` reads `s` into the tuple *before*
+            // the `inout` call mutates it, so the reducer would return the pre-arrival state.
+            let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before)
             return (s, effects)
 
         case .windowDestroyed(let id):
-            s.world.remove(id)              // clears focus if it was on the departing window
-            // Retire any in-flight displacement: the window has left the strip, so `Layout` has no
-            // opinion about where it belongs and the animator is measuring a lag against nothing.
-            // Harmless if left (it settles on its own), except that `isSettled` is the transition's
-            // close gate — the same argument `removeColumnWidthAnimator` makes.
-            s.motion.removeWindowAnimator(id)
-            let effects = refocusAndPlace(&s)
+            // A departure is a structural edit and animates like one: the survivors close ranks under
+            // the cover instead of jumping (`departFromStrip`). `World.remove` clears focus if it was
+            // on the departing window; the in-flight displacement is retired there too, because the
+            // window has left the strip and its animator is measuring a lag against nothing.
+            let effects = departFromStrip(&s, id) { $0.world.remove(id) }
             return (s, effects)
 
         case .windowFrameChanged(let id, let frame):
@@ -191,24 +196,29 @@ public enum Engine {
             return (s, effects)
 
         case .windowMinimized(let id):
-            // Minimize leaves the strip like a close (2026-07-23 decision): drop it from layout,
-            // re-place the rest, and move focus off it if it was focused.
-            let wasFocused = s.world.focusedWindow == id
-            s.world.setMinimized(id, true)
-            s.motion.removeWindowAnimator(id)       // off the strip: same as a close, see above
-            if wasFocused { s.world.setFocus(nil) }
-            let effects = refocusAndPlace(&s)
+            // Minimize leaves the strip like a close (2026-07-23 decision) — and since 2026-07-26 that
+            // is literally true rather than merely analogous: the same `departFromStrip`, so the strip
+            // closes ranks in motion here too.
+            let effects = departFromStrip(&s, id) { s in
+                let wasFocused = s.world.focusedWindow == id
+                s.world.setMinimized(id, true)
+                if wasFocused { s.world.setFocus(nil) }
+            }
             return (s, effects)
 
         case .windowDeminimized(let id):
+            // Restoring is an arrival — the reverse of the departure `windowMinimized` performs, and
+            // the same edit, so the strip opens for it in motion too.
+            let before = strandedGeometry(&s)
+            let beside = insertionAnchor(s)
             s.world.setMinimized(id, false)
             guard s.world.participatesInStrip(id) else {
                 let effects = emitPlacements(&s)
                 return (s, effects)
             }
             s.world.setFocus(id)            // restoring re-focuses, like a fresh window
-            var effects = reveal(&s, id, center: s.config.centerFocusedColumn)
-            effects.append(.focus(id))
+            guard let before else { return (s, []) }
+            let effects = arriveOnStrip(&s, id, beside: beside, old: before)
             return (s, effects)
 
         // MARK: Configuration
@@ -445,6 +455,22 @@ public enum Engine {
         let frames: [WindowId: Rect]
         /// What was on screen under that geometry — half of the two-geometry scope.
         let departing: [WindowId]
+
+        /// The same snapshot with one more window in it, at a frame the old *layout* has no opinion
+        /// about — an **arriving** window, whose "before" is wherever its app just opened it.
+        ///
+        /// This one line is the whole of what an arrival needs beyond a departure, and it is what
+        /// stops the raise from popping: the cover captures the newcomer where it currently is, the
+        /// shell gives its layer that capture-time frame, and seeding the displacement from the same
+        /// rect makes the first animated frame reproduce it exactly. Without it the newcomer's first
+        /// frame would be its *final* column and the layer would jump there the instant the cover came
+        /// up (2026-07-26).
+        func including(_ id: WindowId, at frame: Rect) -> StructuralSnapshot {
+            var frames = self.frames
+            frames[id] = frame
+            return StructuralSnapshot(start: start, widths: widths, frames: frames,
+                                      departing: departing)
+        }
     }
 
     /// Read the old geometry, after `reconcile` and after the handler's guards. **Ordering matters:**
@@ -585,8 +611,12 @@ public enum Engine {
     /// edge press stays silent), no capture capability or an empty scope (§4a — the strip still lands
     /// exactly where the animated path would have converged), and an edit that displaced nothing the
     /// cover could show.
+    ///
+    /// - Parameter mover: the window drawn on top, or `nil` when the edit has no such window. A
+    ///   *departure* (`departFromStrip`) is the case with none: nothing passes through anything else,
+    ///   because the thing that moved has left, and the survivors only close ranks.
     private static func finishStructuralEdit(_ s: inout State, _ edit: LayoutEdit,
-                                             focused: WindowId, mover: WindowId,
+                                             focused: WindowId, mover: WindowId?,
                                              old: StructuralSnapshot) -> [Effect] {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
@@ -629,7 +659,7 @@ public enum Engine {
         var effects = driveTransition(&s, to: end, scope: scope)
         // *After* `driveTransition`, which is where a fresh session comes into existence — `elevate`
         // is a mutator on the session and no-ops without one.
-        s.motion.elevate(mover)
+        if let mover { s.motion.elevate(mover) }
         // Emits nothing for a session still capturing (no layers yet — the raise will emit it), and
         // nothing for a mover this edit only just pulled into scope (`extendCover` will). So this is
         // reached with something to say only when a cover was already up over a window we can name.
@@ -913,17 +943,121 @@ public enum Engine {
         return [.endTransition]
     }
 
-    /// After focus may have been cleared (destroy/minimize), pick a new focus if the strip still has
-    /// windows and none is focused, then place. Keeps the strip usable without a manual focus command.
-    /// The neighbour policy is intentionally simple for now (the first window in layout order); a
-    /// spatially-nearest choice can refine it later without changing the shape here.
-    private static func refocusAndPlace(_ s: inout State) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
-        if s.world.focusedWindow == nil, let next = s.layout.allWindowIds.first {
-            s.world.setFocus(next)
-            return reveal(&s, next, center: s.config.centerFocusedColumn) + [.focus(next)]
+    /// The column a newly arriving window opens beside: whatever holds focus if it has a column of its
+    /// own, else the last strip window that did.
+    ///
+    /// The fallback is the load-bearing half, and only the product showed why. An app focuses a new
+    /// window before emira has adopted it, so the observer resolves that element to no id at all and
+    /// `focusChanged(nil)` clears focus a moment before `windowCreated` arrives — which made every ⌘N
+    /// find no anchor and append at the far end of the strip, exactly the behaviour this replaced
+    /// (`World.lastStripFocus`, 2026-07-26).
+    private static func insertionAnchor(_ s: State) -> WindowId? {
+        for candidate in [s.world.focusedWindow, s.world.lastStripFocus] {
+            if let candidate, s.layout.columnIndex(ofWindow: candidate) != nil { return candidate }
         }
-        return emitPlacements(&s)
+        return nil
+    }
+
+    /// The strip's geometry as it stands right now, reconciled first — what an arrival is about to
+    /// change. `nil` with no display known, which is also the caller's signal that there is nothing to
+    /// place. Named for what it is used for: the half of a structural difference that stops being true.
+    private static func strandedGeometry(_ s: inout State) -> StructuralSnapshot? {
+        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        guard let metrics = s.metrics() else { return nil }
+        return structuralSnapshot(s, metrics)
+    }
+
+    /// A window joining the strip — opened, restored, or unhidden — with the strip **opening for it in
+    /// motion** rather than the columns jumping aside (2026-07-26).
+    ///
+    /// The exact mirror of `departFromStrip`, and it needed one idea the departure did not: an arriving
+    /// window has no place in the old geometry, so `StructuralSnapshot.including` gives it one — the
+    /// frame its app just opened it at. That single seed does three things at once. The newcomer's
+    /// displacement becomes "from where the app put me to where the strip wants me", so it *travels*
+    /// instead of appearing; its first animated frame equals its capture-time frame, so the raise
+    /// cannot pop; and every column it pushes aside is displaced by the ordinary loop, from the same
+    /// two `naturalFrames` calls, with nothing about arrival written into the geometry.
+    ///
+    /// It is the `mover` too — it is the thing that arrived, and on the way to its column it passes
+    /// over the windows making room for it.
+    private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
+                                      old: StructuralSnapshot) -> [Effect] {
+        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
+        // A window that didn't actually join a column (no metrics, a rule that floated it) has nothing
+        // to animate; the ordinary placement pass still runs.
+        guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + [.focus(id)] }
+
+        let opened = s.world.windows[id]?.frame
+        let seeded = opened.map { old.including(id, at: $0) } ?? old
+        let edit = LayoutEdit(moved: true, destroyedColumn: nil)
+        return finishStructuralEdit(&s, edit, focused: id, mover: id, old: seeded) + [.focus(id)]
+    }
+
+    /// Where focus lands when the window holding it leaves the strip: a surviving stackmate in the same
+    /// column, else whichever column now occupies the departed one's place (its right neighbour, or the
+    /// left one when it was last), else anything at all. `nil` only for an empty strip.
+    private static func successor(_ layout: Layout, column: ColumnId?, at index: Int?) -> WindowId? {
+        if let column, let i = layout.columnIndex(withId: column) {
+            return layout.columns[i].windowIds.first   // the column outlived the window: stay in it
+        }
+        guard let index, !layout.columns.isEmpty else { return layout.allWindowIds.first }
+        return layout.columns[Swift.min(index, layout.columns.count - 1)].windowIds.first
+    }
+
+    /// A window leaving the strip — closed, minimized, or hidden — with the survivors **closing ranks
+    /// in motion** rather than in a jump (2026-07-26).
+    ///
+    /// **A departure is a structural edit, and the only one nobody had written down as such.** It has
+    /// exactly the shape `move-window` and `consume-or-expel` have: `Layout` before and after are two
+    /// different structures, so there is no number the new frames derive from and what animates is each
+    /// survivor's **displacement** from where it now belongs, decaying to zero (`finishStructuralEdit`).
+    /// The only thing it lacks is a mover — the window that would ride on top has left — which is why
+    /// that parameter became optional rather than this growing its own path. Everything else it needs
+    /// was already built: the two-geometry scope, the widening on a retarget, the cover that grows.
+    ///
+    /// `leave` performs the actual removal, and it is a closure so the before/after pair cannot come
+    /// apart: the snapshot has to be taken while the window is still on the strip, and the reconcile
+    /// afterwards is what turns "gone from `World`" into "gone from `Layout`".
+    ///
+    /// Snaps in the cases `finishStructuralEdit` snaps in, plus two of its own: a window that was never
+    /// on the strip (a floating one closing rearranges nothing) and a strip left empty.
+    private static func departFromStrip(_ s: inout State, _ id: WindowId,
+                                        _ leave: (inout State) -> Void) -> [Effect] {
+        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        // Read all three *before* the removal: the column's id so we can tell afterwards whether it
+        // died, its index so focus can land where the window was, and the geometry we are leaving,
+        // which is the half of the difference that stops existing.
+        let index = s.layout.columnIndex(ofWindow: id)
+        let column = index.map { s.layout.columns[$0].id }
+        let old = s.metrics().map { structuralSnapshot(s, $0) }
+
+        leave(&s)
+        // The departed window's own lag is measured against a layout that no longer places it.
+        s.motion.removeWindowAnimator(id)
+        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+
+        // Focus may have gone with it. Choose the successor *before* framing the strip, because that
+        // is what the viewport is aimed at.
+        //
+        // **It goes to the neighbour, not to the front of the strip** (corrected 2026-07-26). "First in
+        // layout order" was a placeholder that survived because a snap hid it: closing the focused
+        // window silently re-framed on column 1, and re-framing is all the user saw. Animating the
+        // collapse turned that into *watching the strip scroll all the way home* on every close, which
+        // is the same defect finally shown to scale. The rule is: stay in the column if anything is
+        // left in it, otherwise take the column that slid into its place — the one to its right, or
+        // the left one when it was the last.
+        var refocus: [Effect] = []
+        if s.world.focusedWindow == nil, let next = successor(s.layout, column: column, at: index) {
+            s.world.setFocus(next)
+            refocus = [.focus(next)]
+        }
+
+        guard let old, let column, let focused = s.world.focusedWindow else {
+            return emitPlacements(&s) + refocus
+        }
+        let destroyed = s.layout.columnIndex(withId: column) == nil ? column : nil
+        let edit = LayoutEdit(moved: true, destroyedColumn: destroyed)
+        return finishStructuralEdit(&s, edit, focused: focused, mover: nil, old: old) + refocus
     }
 
     // MARK: - Windows that refuse the size we ask for
@@ -1017,6 +1151,24 @@ public enum Engine {
     private static func emitPlacements(_ s: inout State) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
+
+        // Bring the resting viewport back inside the strip (2026-07-26). The strip can shrink without
+        // anything asking to reveal anything — close a column left of the viewport, minimize one, or
+        // edit the width presets — and the offset is then a number about a strip that no longer
+        // exists, leaving a lone window beside empty desktop where columns used to be.
+        //
+        // Guarded twice. **Not mid-transition**, because a few paths do reach here with a session live
+        // (`dragEnded`, a destroy during a scroll) and snapping the offset would tear the animation —
+        // a transition needs no help anyway, since it closes onto a target that came from the clamped
+        // `scrollOffsetToReveal`. **Not when centering**, for the reason `Layout.clampScrollOffset`
+        // gives: putting a column in the middle at the strip's end *means* showing space past it.
+        if !s.motion.isTransitioning, !s.config.centerFocusedColumn {
+            let clamped = s.layout.clampScrollOffset(s.motion.viewportOffset.current, metrics: metrics)
+            if !approximatelyEqualScalar(clamped, s.motion.viewportOffset.current) {
+                s.motion.snapViewport(to: clamped)
+            }
+        }
+
         let offset = s.motion.viewportOffset.current
         let frames = s.layout.targetFrames(scrollOffset: offset, metrics: metrics)
         let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))

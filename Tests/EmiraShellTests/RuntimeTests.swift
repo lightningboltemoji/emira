@@ -37,8 +37,10 @@ import EmiraCore
     static func booted(config: Config = Config(), windows: Int = 0) -> State {
         var s = State(config: config)
         (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: MonitorId(1), frame: display)]))
+        // Settled after each arrival: an arrival animates (2026-07-26), and a fixture means "here is
+        // the desktop", not "here is a desktop mid-transition".
         for i in 0..<max(windows, 0) {
-            (s, _) = Engine.reduce(s, .windowCreated(snapshot(UInt64(i + 1))))
+            s = settledAfter(s, .windowCreated(snapshot(UInt64(i + 1))))
         }
         return s
     }
@@ -63,8 +65,12 @@ import EmiraCore
     // MARK: - The pump
 
     @Test func dispatchReducesAndHandsTheEffectsToTheExecutor() {
+        // §4a's configuration, so the arrival places in the same batch it reduces in — this test is
+        // about the *pump* (one event, one batch), and a cover would put the placement a round trip
+        // away for no gain here. The animated arrival has its own tests in `EmiraCoreTests`.
         let executor = MockExecutor()
-        let runtime = Runtime(state: Self.booted(), executor: executor)
+        let runtime = Runtime(state: Self.booted(config: Config(smoothTransitions: false)),
+                              executor: executor)
 
         runtime.dispatch(.windowCreated(Self.snapshot(1)))
 
@@ -197,11 +203,13 @@ import EmiraCore
 
     @Test func idleWorkNeverStartsTheClock() {
         let clock = ManualFrameClock()
-        let runtime = Runtime(state: Self.booted(config: Self.fullWidth),
+        let runtime = Runtime(state: Self.booted(config: Self.fullWidth, windows: 2),
                               executor: MockExecutor(mode: .simulate), clock: clock)
 
-        runtime.dispatch(.windowCreated(Self.snapshot(1)))      // snap placement — no cover, no motion
-        runtime.dispatch(.windowCreated(Self.snapshot(2)))
+        // Genuinely idle work — the world is already built and settled by the fixture. (An *arrival*
+        // is no longer idle: since 2026-07-26 it animates, which is what the clock is for.)
+        runtime.dispatch(.dragEnded)
+        runtime.dispatch(.windowFrameChanged(Self.snapshot(1).id, Rect(x: 0, y: 0, width: 10, height: 10)))
         runtime.dispatch(.dragEnded)
 
         #expect(clock.startCount == 0)

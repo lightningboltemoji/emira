@@ -182,6 +182,15 @@ public struct World: Sendable, Equatable, Codable {
     /// mark (`updateFrame`). It is deliberately *not* a retry — nothing here schedules anything, so a
     /// genuinely hung app costs one extra set per real event rather than a busy loop (2026-07-26).
     public private(set) var unverified: Set<WindowId>
+    /// The last window focus rested on that belongs to the strip.
+    ///
+    /// `focusedWindow` is the honest answer to "what is focused", including `nil` and including windows
+    /// with no column — and it goes `nil` routinely for a moment, because an app focuses a brand-new
+    /// window *before* we have adopted it, so the observer resolves that element to nothing. This is
+    /// the answer to a different question — "where was the user working" — which is what a new column
+    /// opens beside (`Layout.reconcile(stripWindowIds:insertingAfter:)`). Without it, every ⌘N raced
+    /// that transient `nil` and appended at the far end of the strip (2026-07-26).
+    public private(set) var lastStripFocus: WindowId?
 
     /// An empty world — the launch state before any window is enumerated. Populate via the mutators.
     public init() {
@@ -191,6 +200,7 @@ public struct World: Sendable, Equatable, Codable {
         self.focusedWindow = nil
         self.corrections = [:]
         self.unverified = []
+        self.lastStripFocus = nil
     }
 
     // MARK: - Mutators (each folds exactly one truth-plane Event; all are total)
@@ -219,6 +229,7 @@ public struct World: Sendable, Equatable, Codable {
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
         unverified.remove(id)
+        if lastStripFocus == id { lastStripFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
         }
@@ -255,6 +266,7 @@ public struct World: Sendable, Equatable, Codable {
     /// only *enforces* the destroy-clears-focus invariant (see `remove`).
     public mutating func setFocus(_ id: WindowId?) {
         focusedWindow = id
+        if let id, participatesInStrip(id) { lastStripFocus = id }
     }
 
     /// Fold `Event.windowMinimized` / `Event.windowDeminimized`: toggle the minimized flag (which

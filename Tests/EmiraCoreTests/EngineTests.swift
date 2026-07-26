@@ -47,16 +47,73 @@ import EmiraMotion
         WindowSnapshot(id: WindowId(raw), bundleId: bundle, title: title, role: role, frame: frame)
     }
 
+    /// Drive a state to rest: answer every capture, land every AX set, and tick until the animators
+    /// settle. What a real daemon does over ~300 ms, with no clock in it.
+    ///
+    /// Needed since 2026-07-26, when **arrival** started animating: building a world out of
+    /// `windowCreated`s now opens a transition, so a test that wants "a placed world" has to close it
+    /// the way the daemon does rather than assume placement was instant.
+    static func settle(_ start: State, _ effects: [Effect] = []) -> State {
+        var s = start
+        var queue = effects
+        for _ in 0..<4000 {
+            var feedback: [Event] = []
+            for effect in queue {
+                switch effect {
+                case .capture(let w): feedback.append(.captureReady(w))
+                case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
+                default: continue
+                }
+            }
+            queue = []
+            if feedback.isEmpty {
+                guard s.motion.isTransitioning else { return s }
+                feedback = [.tick(dt: 1.0 / 120)]
+            }
+            for event in feedback {
+                let (next, out) = Engine.reduce(s, event)
+                s = next
+                queue += out
+            }
+        }
+        return s
+    }
+
+    /// A booted state holding `count` tiled windows, at rest — the ordinary "given a world" setup.
+    static func world(_ count: UInt64, config: Config = Config()) -> State {
+        var s = booted(config: config)
+        for raw in 1...count {
+            let (next, fx) = Engine.reduce(s, .windowCreated(snapshot(raw)))
+            s = settle(next, fx)
+        }
+        return s
+    }
+
     /// Drive a sequence of events, returning the final state and the concatenated effect stream.
     static func run(_ start: State, _ events: [Event]) -> (State, [Effect]) {
         var s = start
         var effects: [Effect] = []
         for e in events {
+            let wasIdle = !s.motion.isTransitioning
             let (next, fx) = Engine.reduce(s, e)
             s = next
             effects += fx
+            // **World setup is not the thing under test.** Since 2026-07-26 an arrival animates, so a
+            // `windowCreated` that *opened* a transition is driven to rest here — otherwise every test
+            // that builds a world out of them would be asserting against a half-raised cover. An
+            // arrival that joined a transition the test already had in flight is deliberately left
+            // alone, which is the case `aRetargetSweepsInANewWindow…` and friends are about.
+            if wasIdle, isArrival(e), s.motion.isTransitioning { s = settle(s, fx) }
         }
         return (s, effects)
+    }
+
+    /// Whether an event puts a window *onto* the strip, and therefore animates.
+    static func isArrival(_ event: Event) -> Bool {
+        switch event {
+        case .windowCreated, .windowDeminimized: return true
+        default: return false
+        }
     }
 
     static func approx(_ a: Rect, _ b: Rect, tol: Double = 0.01) -> Bool {
@@ -119,7 +176,11 @@ import EmiraMotion
     // MARK: - Instant correct placement (the §4a floor)
 
     @Test func newStandardWindowIsFocusedAndPlaced() {
-        let (s, fx) = Engine.reduce(Self.booted(), .windowCreated(Self.snapshot(1)))
+        // §4a's floor, so §4a's configuration: no capture capability ⇒ no cover, and the window is
+        // placed in the same batch. (With a cover available the same arrival animates — see
+        // `GhostWindowTests`.)
+        let snap = Config(smoothTransitions: false)
+        let (s, fx) = Engine.reduce(Self.booted(config: snap), .windowCreated(Self.snapshot(1)))
         // One column, one window, focused, placed to a ⅓-width tile at the working-area origin.
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(s.layout.columns.count == 1)

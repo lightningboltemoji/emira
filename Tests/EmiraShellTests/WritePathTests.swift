@@ -54,7 +54,7 @@ import EmiraCore
             let id = adopt(registry, pid: pid, number: CGWindowID(index + 1))
             let snapshot = WindowSnapshot(id: id, bundleId: "app.\(pid)", title: "w", role: .standard,
                                           frame: Rect(x: 300, y: 300, width: 200, height: 200))
-            (s, _) = Engine.reduce(s, .windowCreated(snapshot))
+            s = settledAfter(s, .windowCreated(snapshot))
         }
         return s
     }
