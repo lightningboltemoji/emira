@@ -536,6 +536,37 @@ import Testing
         #expect(layout.strip(metrics: m).columnWidths[2] == 600)   // and the extracted one matches
     }
 
+    /// An override is part of the width *intent*, so it travels with the window the same way the preset
+    /// does — otherwise an expel would silently snap a grown column back onto the ladder.
+    @Test func anExtractedColumnInheritsTheWidthOverrideItLeft() {
+        var layout = fourColumns()
+        layout.setWidthOverride(.fixed(420), ofColumn: ColumnId(2))
+        layout.extract(window: w21, toNewColumnAt: 2)
+        #expect(layout.columns[1].widthOverride == .fixed(420))
+        #expect(layout.columns[2].widthOverride == .fixed(420))
+        #expect(layout.strip(metrics: metrics).columnWidths[1] == 420)
+        #expect(layout.strip(metrics: metrics).columnWidths[2] == 420)
+    }
+
+    /// The override supersedes the preset, and `cycleWidth` (via `setWidthPreset`) is what puts the
+    /// column back on the ladder — one rung past where the ladder was left, not a nearest-rung guess.
+    @Test func aWidthOverrideSupersedesThePresetUntilTheLadderIsResumed() {
+        var layout = fourColumns()
+        let m = LayoutMetrics(workingArea: Rect(x: 0, y: 0, width: 900, height: 600),
+                              widthPresets: PresetCycle([.proportion(1.0 / 3.0), .proportion(2.0 / 3.0)]),
+                              columnGap: 0, windowGap: 0)
+        #expect(layout.strip(metrics: m).columnWidths[0] == 300)
+
+        layout.setWidthOverride(.proportion(0.5), ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 450)
+        layout.setWidthOverride(.fixed(250), ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 250)
+
+        layout.setWidthPreset(1, ofColumn: ColumnId(1))
+        #expect(layout.columns[0].widthOverride == nil)
+        #expect(layout.strip(metrics: m).columnWidths[0] == 600)
+    }
+
     @Test func extractingClampsAnOutOfRangeIndexToTheEndsOfTheStrip() {
         var low = fourColumns(), high = fourColumns()
         low.extract(window: w21, toNewColumnAt: -5)

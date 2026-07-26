@@ -19,6 +19,8 @@ import Testing
         .moveToMonitor(.direction(.right)), .moveToMonitor(.index(2)),
         .moveToMonitor(.next), .moveToMonitor(.previous),
         .cycleWidth, .cycleHeight,
+        .grow(.points(100)), .grow(.percent(10)),
+        .shrink(.points(12.5)), .shrink(.percent(5)),
         .consumeOrExpel(.left), .consumeOrExpel(.right),
         .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
         .float(.on), .float(.off), .float(.toggle),
@@ -118,6 +120,37 @@ import Testing
                                                        expected: "[on|off|toggle]")) {
             try Command.parse(["fullscreen", "yes"])
         }
+    }
+
+    // MARK: - `grow` / `shrink` arguments
+
+    /// The unit is **points** throughout the core, but `px` is what people type — so `100px`, `100pt`
+    /// and a bare `100` are one value, and `100px` is the spelling it comes back out as.
+    @Test func aSizeDeltaAcceptsPointsSpelledThreeWaysAndPercent() throws {
+        for spelling in ["100", "100px", "100pt"] {
+            #expect(try Command.parse(["grow", spelling]) == .grow(.points(100)))
+        }
+        #expect(try Command.parse(["shrink", "10%"]) == .shrink(.percent(10)))
+        #expect(try Command.parse(["grow", "12.5%"]) == .grow(.percent(12.5)))
+        #expect(Command.grow(.points(100)).words == ["grow", "100px"])
+        #expect(Command.shrink(.percent(10)).words == ["shrink", "10%"])
+        #expect(Command.grow(.points(12.5)).words == ["grow", "12.5px"])
+    }
+
+    /// The verb carries the sign, so a delta is a magnitude. `grow -10%` is refused rather than being a
+    /// second spelling of `shrink 10%` — one operation, one spelling — and `0` is a typo like index `0`.
+    /// The same guard catches everything else `Double.init` is happy to read.
+    @Test func aSizeDeltaMustBeAPositiveFiniteMagnitude() throws {
+        for bad in ["-10%", "-100px", "0", "0%", "nan", "inf", "1e400", "px", "%", "", "10 %", "wide"] {
+            #expect(throws: CommandSyntaxError.self, "accepted '\(bad)'") {
+                try Command.parse(["grow", bad])
+            }
+            #expect(throws: CommandSyntaxError.self, "accepted '\(bad)'") {
+                try Command.parse(["shrink", bad])
+            }
+        }
+        let error = try #require(throws: CommandSyntaxError.self) { try Command.parse(["grow"]) }
+        #expect(error == .missingArgument(verb: "grow", expected: "<Npx|N%>"))
     }
 
     /// Workspaces and monitors are 1-based the way a user counts them, so `0` is a mistake — and a

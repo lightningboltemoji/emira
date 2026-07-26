@@ -73,6 +73,8 @@ enum Command {
     case moveToWorkspace(WorkspaceRef)
     case moveToMonitor(MonitorRef)
     case cycleWidth                  // preset column widths
+    case grow(SizeDelta)             // …and the continuous alternative to that ladder
+    case shrink(SizeDelta)
     case cycleHeight
     case consumeOrExpel(Direction)   // pull a window into / push out of the column
     case fullscreen(Toggle)
@@ -372,6 +374,21 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       exception would mean a second vocabulary for "a window we found" versus "a window you made".
 - **Geometry & the strip:** infinite-axis coordinates, column widths/heights, gaps, and **struts** (reserve the
   menu-bar/notch region so tiled windows never sit under it).
+- **Width resolution is a stack, and a column steps *off* the preset ladder rather than rewriting it.** `cycle-width`
+  advances a preset index; `grow`/`shrink` write an explicit `widthOverride` that shadows it, and `cycle-width` clears
+  the override and resumes from the rung the ladder was last left on. That is why the override is a second field
+  beside the preset index rather than a third case unioned into it: nothing has to guess which preset a grown column
+  is "nearest", and the nearest-match rule has no right answer.
+  - **A percentage is of the working area, not of the column's own width.** The compounding reading loses on its
+    consequences: the step size drifts with every press, and `grow 10%` followed by `shrink 10%` lands 1% short of
+    where it began (0.9 × 1.1 = 0.99) — an instrument whose two directions do not cancel. Against the working width
+    the steps are uniform, the verbs are exact inverses, and the unit is the one the ⅓/½/⅔ presets already speak.
+  - **The intent is stored in the unit it was asked in.** `grow 10%` leaves a proportion that tracks the monitor
+    exactly as a preset does; `grow 100px` leaves a fixed count that means those points on any display. Someone who
+    names points meant points.
+  - **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width and the floor is a
+    bare minimum, but each is widened to the current width when the column is already outside it — so a `grow` on a
+    column a config deliberately made wider than the screen is a no-op rather than a sudden shrink to fit.
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
   **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's corner
   (`PRINCIPLES.md` §4a). A park slot is just target geometry, so placement is core-owned: one geometry authority,

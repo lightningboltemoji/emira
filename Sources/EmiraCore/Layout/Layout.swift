@@ -67,11 +67,25 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
     /// resolved width, so cycling is stable across monitors (a ½-width column stays ½ on any display)
     /// and resolution normalizes any drift (`Presets.swift`).
     public var widthPreset: Int
+    /// An explicit width set by `grow`/`shrink`, which **supersedes** `widthPreset` until the next
+    /// `cycleWidth` clears it (`setWidthOverride` / `setWidthPreset`). `nil` — the ordinary case — means
+    /// the column is on the preset ladder.
+    ///
+    /// A `PresetSize` rather than a point count, so the unit the user typed is the unit that is stored:
+    /// `grow 10%` leaves a `.proportion` that tracks the monitor exactly as a preset does, while
+    /// `grow 100px` leaves a `.fixed` that means those points on any display. Someone who names points
+    /// meant points; someone who names a percentage meant a share of the screen.
+    ///
+    /// Two intents rather than one union case, so that `cycleWidth` needs no policy for "which preset is
+    /// a grown column nearest?" — it clears the override and resumes the ladder where the user left it.
+    public var widthOverride: PresetSize?
 
-    public init(id: ColumnId, windowIds: [WindowId], widthPreset: Int = 0) {
+    public init(id: ColumnId, windowIds: [WindowId], widthPreset: Int = 0,
+                widthOverride: PresetSize? = nil) {
         self.id = id
         self.windowIds = windowIds
         self.widthPreset = widthPreset
+        self.widthOverride = widthOverride
     }
 }
 
@@ -252,9 +266,25 @@ public struct Layout: Sendable, Equatable, Codable {
     /// Set a column's width-preset index (the reducer computes the next index via the width
     /// `PresetCycle` when handling `cycleWidth`, then stores it here). Keyed by `ColumnId` for
     /// stability; no-op if the column is gone. Resolution normalizes any index, so no range check.
+    ///
+    /// **Clears any `widthOverride`**, which is the whole of "`cycle-width` is the ladder, `grow`/`shrink`
+    /// step off it": a cycle puts the column back on a preset, and the preset it lands on is the next one
+    /// after wherever the ladder was last left — not a guess at which rung the grown width was nearest.
+    /// Predictable beats clever, and the alternative is a nearest-match rule with no right answer.
     public mutating func setWidthPreset(_ index: Int, ofColumn id: ColumnId) {
         guard let i = columnIndex(withId: id) else { return }
         columns[i].widthPreset = index
+        columns[i].widthOverride = nil
+    }
+
+    /// Pin a column to an explicit width, overriding its preset until the next `cycleWidth`
+    /// (`ColumnLayout.widthOverride`) — how `grow`/`shrink` record their answer. Keyed by `ColumnId`,
+    /// total, and deliberately *not* bounds-checked: clamping is the reducer's, because the bound
+    /// depends on the working area and on which direction the user asked to move
+    /// (`Engine.resizeFocusedColumn`).
+    public mutating func setWidthOverride(_ size: PresetSize, ofColumn id: ColumnId) {
+        guard let i = columnIndex(withId: id) else { return }
+        columns[i].widthOverride = size
     }
 
     // MARK: - Structural mutation (the strip's editing primitives)
@@ -353,9 +383,11 @@ public struct Layout: Sendable, Equatable, Codable {
     /// and the cover's animation identity key on. That guard is also what guarantees nothing is ever
     /// destroyed here, so `destroyedColumn` is always `nil`.
     ///
-    /// The new column **inherits the source's `widthPreset`**: the window is on screen at that width,
-    /// and since a structural edit snaps, resetting the preset would be a second unrequested change
-    /// arriving in the same instant jump.
+    /// The new column **inherits the source's width intent** — its `widthPreset` *and* any
+    /// `widthOverride`: the window is on screen at that width, and resetting it would be a second
+    /// unrequested change arriving in the same motion. Both halves travel together for the same reason
+    /// they are stored together — an override that failed to follow would silently snap a grown column
+    /// back to its ladder rung on expel.
     @discardableResult
     public mutating func extract(window: WindowId, toNewColumnAt index: Int) -> LayoutEdit {
         // The guard precedes the mint on purpose: `Layout`'s synthesized `Equatable` covers the
@@ -363,9 +395,11 @@ public struct Layout: Sendable, Equatable, Codable {
         guard let from = columnIndex(ofWindow: window),
               columns[from].windowIds.count > 1 else { return .none }
         let preset = columns[from].widthPreset
+        let override = columns[from].widthOverride
         let to = Swift.min(Swift.max(index, 0), columns.count)
         columns[from].windowIds.removeAll { $0 == window }   // never empties it (count > 1 above)
-        columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [window], widthPreset: preset),
+        columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [window],
+                                    widthPreset: preset, widthOverride: override),
                        at: to)
         return LayoutEdit(moved: true, destroyedColumn: nil)
     }
@@ -391,8 +425,14 @@ public struct Layout: Sendable, Equatable, Codable {
         return Strip(columnWidths: resolved, gap: metrics.columnGap)
     }
 
-    /// A column's width in points: its cycled preset, **widened** to the widest size any of its
-    /// windows answered when last asked for that preset (`SizeCorrection`).
+    /// A column's width in points: its cycled preset — or its explicit `widthOverride`, if `grow`/
+    /// `shrink` has stepped it off the ladder — **widened** to the widest size any of its windows
+    /// answered when last asked for that width (`SizeCorrection`).
+    ///
+    /// The override enters here and only here, which is what makes `grow`/`shrink` cost nothing
+    /// downstream: every query on this type already resolves widths through this function, so the
+    /// truth plane, the sweep, the scroll targets and the animated presentation plane all pick the
+    /// new width up together or not at all.
     ///
     /// Widening only. A window that came back *narrower* than we asked leaves a gap inside its column,
     /// which is cosmetic; one that came back wider would overlap the next column, which breaks the
@@ -405,8 +445,9 @@ public struct Layout: Sendable, Equatable, Codable {
     /// real: a column that wide already fills the viewport, and `Strip.offsetToReveal` handles an
     /// over-wide column by showing its left edge.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
-        let preset = metrics.widthPresets.resolved(at: column.widthPreset,
-                                                   available: metrics.workingArea.width)
+        let preset = (column.widthOverride
+            ?? metrics.widthPresets.size(at: column.widthPreset))
+            .resolved(available: metrics.workingArea.width)
         let floors = column.windowIds.compactMap {
             metrics.corrections[$0]?.widthFloor(forQuestion: preset)
         }

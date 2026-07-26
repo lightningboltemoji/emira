@@ -72,6 +72,8 @@ extension Command {
         case .moveToWorkspace(let ref):       return ["move-to-workspace", ref.word]
         case .moveToMonitor(let ref):         return ["move-to-monitor", ref.word]
         case .cycleWidth:                     return ["cycle-width"]
+        case .grow(let delta):                return ["grow", delta.word]
+        case .shrink(let delta):              return ["shrink", delta.word]
         case .cycleHeight:                    return ["cycle-height"]
         case .consumeOrExpel(let direction):  return ["consume-or-expel", direction.rawValue]
         case .fullscreen(let toggle):         return ["fullscreen", toggle.rawValue]
@@ -176,6 +178,14 @@ extension Command {
         Verb("cycle-width", summary: "Cycle the column through the width presets.",
              build: bare(.cycleWidth)),
 
+        Verb("grow", arguments: Grammar.delta,
+             summary: "Widen the focused column.",
+             build: { verb, args in .grow(try sizeDelta(args, verb: verb)) }),
+
+        Verb("shrink", arguments: Grammar.delta,
+             summary: "Narrow the focused column.",
+             build: { verb, args in .shrink(try sizeDelta(args, verb: verb)) }),
+
         Verb("cycle-height", summary: "Cycle the window through the height presets.",
              build: bare(.cycleHeight)),
 
@@ -215,6 +225,7 @@ extension Command {
         static let toggle = "[on|off|toggle]"
         static let workspace = "<next|prev|N>"
         static let monitor = "<left|right|up|down|next|prev|N>"
+        static let delta = "<Npx|N%>"
     }
 
     // MARK: - Argument readers
@@ -261,6 +272,32 @@ extension Command {
         return toggle
     }
 
+    /// `100px` / `100pt` / `100` / `10%` — the argument to `grow` and `shrink`.
+    ///
+    /// **A magnitude, strictly.** The verb carries the sign, so `grow -10%` is refused rather than
+    /// quietly becoming a second spelling of `shrink 10%` — one operation, one spelling. The guard also
+    /// catches everything else `Double` is happy to read: `nan`, `inf`, `1e400`, and `0` (a resize by
+    /// nothing is a typo, the same judgement `workspaceRef` makes about index `0`).
+    ///
+    /// `px` and `pt` are the same suffix, and a bare number means points too. The core's unit is
+    /// **points** everywhere — CoreGraphics' unit, not device pixels — but `px` is what people reach
+    /// for, so it is accepted rather than corrected.
+    private static func sizeDelta(_ args: [String], verb: String) throws -> SizeDelta {
+        let word = try only(args, verb: verb, expected: Grammar.delta)
+        var digits = Substring(word)
+        var isPercent = false
+        if digits.hasSuffix("%") {
+            digits = digits.dropLast()
+            isPercent = true
+        } else if digits.hasSuffix("px") || digits.hasSuffix("pt") {
+            digits = digits.dropLast(2)
+        }
+        guard let value = Double(digits), value.isFinite, value > 0 else {
+            throw CommandSyntaxError.badArgument(verb: verb, value: word, expected: Grammar.delta)
+        }
+        return isPercent ? .percent(value) : .points(value)
+    }
+
     private static func workspaceRef(_ args: [String], verb: String) throws -> WorkspaceRef {
         let word = try only(args, verb: verb, expected: Grammar.workspace)
         switch word {
@@ -295,6 +332,25 @@ extension Command {
 //
 // The inverse halves of `parse`'s argument readers. Internal, not public: they exist to spell
 // `Command.words`, which is the public surface.
+
+extension SizeDelta {
+    /// How this delta is written as a single word (`"100px"`, `"10%"`). Canonical: a bare `100` and
+    /// `100pt` both parse, and both come back out as `100px`.
+    var word: String {
+        switch self {
+        case .points(let points): return Self.number(points) + "px"
+        case .percent(let percent): return Self.number(percent) + "%"
+        }
+    }
+
+    /// A number spelled the way it was typed — `100`, not `100.0`. Only whole values take the integer
+    /// path (and only in a range `Int64` can hold); everything else keeps its decimal form, which
+    /// `Double.init` reads back exactly.
+    private static func number(_ value: Double) -> String {
+        guard value == value.rounded(), abs(value) < 1e15 else { return String(value) }
+        return String(Int64(value))
+    }
+}
 
 extension WorkspaceRef {
     /// How this reference is written as a single word (`"next"`, `"previous"`, `"3"`).

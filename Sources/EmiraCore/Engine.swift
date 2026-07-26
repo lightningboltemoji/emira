@@ -355,6 +355,12 @@ public enum Engine {
         case .cycleWidth:
             return handleCycleWidth(&s)
 
+        case .grow(let delta):
+            return handleResizeColumn(&s, by: delta, sign: +1)
+
+        case .shrink(let delta):
+            return handleResizeColumn(&s, by: delta, sign: -1)
+
         case .moveWindow(let direction):
             return handleMoveWindow(&s, direction)
 
@@ -799,8 +805,70 @@ public enum Engine {
 
     // MARK: - The animated resize (§4d, and the strip's own geometry in motion)
 
-    /// Cycle the focused column to its next preset width — the first command whose motion is **not** a
-    /// scroll. Three things make it different from `scrollReveal`, and they are the whole of this slice:
+    /// Cycle the focused column to its next preset width — the ladder (`Presets.swift`), as against
+    /// `grow`/`shrink`'s continuous knob. Both are `resizeFocusedColumn`; only the new width differs.
+    private static func handleCycleWidth(_ s: inout State) -> [Effect] {
+        resizeFocusedColumn(&s) { layout, column, metrics, _ in
+            // `setWidthPreset` also clears any `grow`/`shrink` override, which is the whole of "the
+            // ladder and the continuous knob are alternatives": a cycle puts the column back on a
+            // preset, one rung past wherever the ladder was last left.
+            layout.setWidthPreset(metrics.widthPresets.nextIndex(after: column.widthPreset),
+                                  ofColumn: column.id)
+        }
+    }
+
+    /// The narrowest an explicit `shrink` may leave a column. A backstop, not the real bound: the
+    /// binding constraint in practice is whatever the app inside answers when asked to be that narrow,
+    /// which arrives as a `SizeCorrection` and widens the column back (`Layout.resolvedWidth`). This
+    /// exists for the apps that say yes to anything — a 20 pt column is a column you cannot see well
+    /// enough to grow again, and unlike every other bound here there is nothing to discover it from.
+    ///
+    /// Absolute points rather than a proportion, deliberately: usability doesn't scale with the display.
+    public static let minimumColumnWidth: Double = 100
+
+    /// Widen or narrow the focused column by an explicit delta — `grow`/`shrink`, the continuous
+    /// alternative to `cycleWidth`'s ladder. Same animation, same transition, same interrupt story;
+    /// only the arithmetic that picks the new width differs.
+    ///
+    /// **The delta is taken from the column's *resolved* width, not its stored intent**, and that is the
+    /// decision this function turns on. An app that refuses to be as narrow as we asked leaves the
+    /// column resolved wider than its intent, and measuring the next press from the intent would open a
+    /// dead zone — press shrink three times against a terminal's floor and the first three *grows*
+    /// afterwards do nothing visible, because they are walking back through widths the app already
+    /// refused. Measured from what is on screen, a refused shrink instead converges: the second press
+    /// re-derives the *same* question, the recorded answer applies, and the command goes silent, while a
+    /// grow moves immediately.
+    ///
+    /// **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width
+    /// (the user's "bounded by 100%") and the floor is `minimumColumnWidth` — but each is widened to
+    /// the current width if the column is already outside it, so a `grow` on a column deliberately
+    /// configured wider than the screen (`width-presets = [1.5]`) is a no-op rather than a sudden
+    /// shrink to fit.
+    private static func handleResizeColumn(_ s: inout State, by delta: SizeDelta,
+                                           sign: Double) -> [Effect] {
+        resizeFocusedColumn(&s) { layout, column, metrics, from in
+            let available = metrics.workingArea.width
+            let ceiling = Swift.max(available, from)
+            let floor = Swift.min(minimumColumnWidth, from)
+            let width = Swift.min(Swift.max(from + sign * delta.resolved(available: available), floor),
+                                  ceiling)
+            // Store the intent in the unit the user typed (`SizeDelta`): a percentage leaves a
+            // proportion that tracks the monitor the way a preset does, points leave points.
+            let intent: PresetSize
+            switch delta {
+            case .percent where available > 0: intent = .proportion(width / available)
+            case .percent, .points:            intent = .fixed(width)
+            }
+            layout.setWidthOverride(intent, ofColumn: column.id)
+        }
+    }
+
+    /// The shared body of every column resize: read the width being left, let `retarget` write the new
+    /// width *intent* into the layout, then animate the strip's geometry from one to the other under the
+    /// signature transition. `cycleWidth` and `grow`/`shrink` differ **only** in `retarget`; everything
+    /// below it is one motion, written once.
+    ///
+    /// Three things make that motion different from `scrollReveal`'s, and they are what M4 part 3 was:
     ///
     ///  · **It animates a second quantity.** The column's *resolved width* goes under a spring
     ///    (`Motion.animateColumnWidth`), and the presentation plane resolves the strip against it
@@ -821,30 +889,36 @@ public enum Engine {
     /// because only the owning app can produce resized pixels (`PRINCIPLES.md` §6). What the user watches
     /// is a scaled still — §4d's "cross-fade a scaled screenshot over it until the app redraws", except
     /// the cross-fade is the one the cover already performs, so §4d needs no mechanism of its own.
-    private static func handleCycleWidth(_ s: inout State) -> [Effect] {
+    ///
+    /// - Parameter retarget: given the layout, the focused column *as it was*, the metrics, and its
+    ///   current resolved width, records the new intent. Called exactly once, between the two reads.
+    private static func resizeFocusedColumn(
+        _ s: inout State,
+        _ retarget: (inout Layout, ColumnLayout, LayoutMetrics, Double) -> Void
+    ) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
         let column = s.layout.columns[index]
-        let nextPreset = metrics.widthPresets.nextIndex(after: column.widthPreset)
         // Resolved, not raw preset: a column an app has already widened is *at* the corrected width,
         // and animating from the preset would start the spring somewhere the layers are not. The new
-        // preset is a question nobody has answered yet, so `toWidth` is ordinarily the preset itself —
+        // width is a question nobody has answered yet, so `toWidth` is ordinarily what was asked for —
         // and if the app refuses it, `placementCorrected` retargets this same animator mid-flight.
         let fromWidth = s.layout.resolvedWidth(of: column, metrics: metrics)
 
-        // Asked *before* the preset changes: what is on screen under the geometry we are leaving.
+        // Asked *before* the width changes: what is on screen under the geometry we are leaving.
         let start = s.motion.viewportOffset.current
         let departing = s.layout.visibleWindowIds(scrollOffset: start, metrics: metrics)
 
-        s.layout.setWidthPreset(nextPreset, ofColumn: column.id)
+        retarget(&s.layout, column, metrics, fromWidth)
         let toWidth = s.layout.resolvedWidth(ofColumn: column.id, metrics: metrics) ?? fromWidth
 
-        // A single-preset cycle (or two presets that resolve to the same points) changes nothing to
-        // look at. The index still advanced, so a later press moves on; `emitPlacements` diffs to
-        // nothing and the command is silent.
+        // Nothing to look at: a single-preset cycle, two presets that resolve to the same points, a
+        // `grow` already at the ceiling, or a `shrink` against a floor the app has already insisted on.
+        // Any stored intent still moved, so a later press in the other direction acts at once;
+        // `emitPlacements` diffs to nothing and the command is silent.
         guard !approximatelyEqualScalar(fromWidth, toWidth) else { return emitPlacements(&s) }
 
         // Where the focused column sits under the *new* widths — a resize scrolls too, because a column

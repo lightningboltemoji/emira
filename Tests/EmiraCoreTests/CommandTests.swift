@@ -54,6 +54,8 @@ import Testing
             .moveToMonitor(.direction(.right)), .moveToMonitor(.index(2)),
             .moveToMonitor(.next), .moveToMonitor(.previous),
             .cycleWidth, .cycleHeight,
+            .grow(.points(100)), .grow(.percent(10)),
+            .shrink(.points(12.5)), .shrink(.percent(5)),
             .consumeOrExpel(.left), .consumeOrExpel(.right),
             .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
             .float(.on), .float(.toggle),

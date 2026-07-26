@@ -1045,6 +1045,205 @@ import EmiraMotion
         #expect(Self.placement(of: WindowId(2), in: cfx)?.width == 500)
     }
 
+    // MARK: - The continuous resize (`grow` / `shrink`)
+
+    /// A snapping world with one preset, so a column's width is only ever what `grow`/`shrink` made it.
+    /// Snapping because these tests are about *what width the column ends up*, not how it gets there —
+    /// the motion is `cycleWidth`'s, already covered above.
+    static func oneThirdSnap() -> State {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
+                            smoothTransitions: false)
+        return Self.run(Self.booted(config: config),
+                        [.windowCreated(Self.snapshot(1))]).0
+    }
+
+    /// The column's resolved width right now.
+    static func width(_ s: State, _ index: Int = 0) -> Double {
+        s.layout.resolvedWidth(of: s.layout.columns[index], metrics: s.metrics()!)
+    }
+
+    /// `grow` is `cycleWidth`'s motion with a different arithmetic in front of it: the same second
+    /// animated quantity, the same transition opened over a viewport that never moves, the same real
+    /// window resized to its final width behind the cover.
+    @Test func growAnimatesTheColumnWidthExactlyAsACycleDoes() {
+        var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
+        let column = s.layout.columns[0].id
+
+        let (g, gfx) = Engine.reduce(s, .command(.grow(.points(100))))
+        s = g
+        #expect(s.motion.isTransitioning)                       // …despite zero viewport motion
+        #expect(s.motion.viewportOffset.target == 0)
+        #expect(Self.approxScalar(s.motion.columnWidth(column)?.current ?? 0, Self.third))
+        #expect(Self.approxScalar(s.motion.columnWidth(column)?.target ?? 0, Self.third + 100))
+        #expect(Self.capturedIds(in: gfx) == [WindowId(1)])
+
+        let (done, dfx) = Self.drive(s)
+        #expect(dfx.contains(.endTransition))
+        #expect(Self.approxScalar(Self.placement(of: WindowId(1), in: dfx)?.width ?? 0,
+                                  Self.third + 100))
+        #expect(Self.approxScalar(Self.width(done), Self.third + 100))
+        #expect(done.motion.currentColumnWidths.isEmpty)        // the override is dropped, not kept
+    }
+
+    /// **A percentage is of the working area, not of the current width** (2026-07-26). The consequence
+    /// is the reason: steps are uniform however wide the column already is, and the two verbs are exact
+    /// inverses. Under the compounding reading each step here would differ and the round trip would
+    /// land 1% short of where it began.
+    @Test func aPercentageIsOfTheWorkingAreaSoTheStepsAreUniformAndTheVerbsInvert() {
+        var s = Self.oneThirdSnap()                             // 1000-wide working area ⇒ 10% = 100 pt
+        let start = Self.width(s)
+
+        for step in 1...3 {
+            (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+            #expect(Self.approxScalar(Self.width(s), start + 100 * Double(step)),
+                    "step \(step): \(Self.width(s))")
+        }
+        for step in stride(from: 2, through: 0, by: -1) {
+            (s, _) = Engine.reduce(s, .command(.shrink(.percent(10))))
+            #expect(Self.approxScalar(Self.width(s), start + 100 * Double(step)))
+        }
+        #expect(Self.approxScalar(Self.width(s), start))         // …back exactly, not 1% short
+    }
+
+    /// The unit the user typed is the unit that is stored, which is what makes a percentage track the
+    /// monitor the way a preset does while points stay points (`ColumnLayout.widthOverride`).
+    @Test func theStoredIntentKeepsTheUnitItWasAskedIn() throws {
+        var s = Self.oneThirdSnap()
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        guard case .proportion(let share) = try #require(s.layout.columns[0].widthOverride) else {
+            Issue.record("a percentage stored something other than a proportion"); return
+        }
+        #expect(Self.approxScalar(share, Self.third / 1000 + 0.1, tol: 1e-9))
+
+        (s, _) = Engine.reduce(s, .command(.grow(.points(100))))
+        guard case .fixed(let points) = try #require(s.layout.columns[0].widthOverride) else {
+            Issue.record("points stored something other than a fixed width"); return
+        }
+        #expect(Self.approxScalar(points, Self.third + 200))
+    }
+
+    /// Bounded above by 100% of the working area, and a `grow` that has nothing left to give is silent —
+    /// no transition, no AX set, not even a redundant re-place.
+    @Test func growIsBoundedByTheWorkingWidth() {
+        var s = Self.oneThirdSnap()
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(500))))
+        #expect(Self.width(s) == 1000)
+
+        let (again, fx) = Engine.reduce(s, .command(.grow(.points(100))))
+        #expect(Self.width(again) == 1000)
+        #expect(fx.isEmpty)
+        #expect(!again.motion.isTransitioning)
+    }
+
+    /// Bounded below by `minimumColumnWidth` — the backstop for apps that accept any size at all, where
+    /// there is no `SizeCorrection` to discover a real floor from.
+    @Test func shrinkIsBoundedByAMinimumWidth() {
+        var s = Self.oneThirdSnap()
+        (s, _) = Engine.reduce(s, .command(.shrink(.points(1000))))
+        #expect(Self.width(s) == Engine.minimumColumnWidth)
+
+        let (again, fx) = Engine.reduce(s, .command(.shrink(.percent(1))))
+        #expect(Self.width(again) == Engine.minimumColumnWidth)
+        #expect(fx.isEmpty)
+        // …and the way back out is immediate: a clamp that stopped the resize stored nothing to undo.
+        let (grown, _) = Engine.reduce(again, .command(.grow(.points(50))))
+        #expect(Self.width(grown) == Engine.minimumColumnWidth + 50)
+    }
+
+    /// **The clamp can stop a resize; it may never reverse one.** A config that deliberately asks for
+    /// columns wider than the screen (`width-presets = [1.5]`) is honored by `Presets`, so a `grow` that
+    /// clamped to the working width would answer "wider, please" with a sudden 500 pt *shrink*.
+    @Test func aClampNeverMovesAColumnTheWayItWasNotAsked() {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.5)]), smoothTransitions: false)
+        var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
+        #expect(Self.width(s) == 1500)
+
+        let (grown, fx) = Engine.reduce(s, .command(.grow(.points(100))))
+        #expect(Self.width(grown) == 1500)                       // stopped…
+        #expect(fx.isEmpty)                                      // …and silent about it
+        (s, _) = Engine.reduce(s, .command(.shrink(.points(100))))
+        #expect(Self.width(s) == 1400)                           // …while the other way still moves
+    }
+
+    /// **A failed shrink stops at the app's own floor, and converges there.** The user's "known minimum
+    /// dimensions": we never learn a minimum (2026-07-26 — there is no public attribute for one), we
+    /// only remember what the app answered to the question we asked. Taking each delta from the
+    /// *resolved* width rather than the stored intent is what makes that a fixed point instead of a dead
+    /// zone — by the second press the question repeats, the recorded answer applies, and the command
+    /// goes quiet.
+    @Test func aRefusedShrinkSettlesAtTheAppsFloorAndGrowStillMovesAtOnce() {
+        var s = Self.oneThirdSnap()                              // 333⅓
+        /// The app under test: it will not go below 300 pt wide.
+        func refuseBelow300(_ s: inout State, _ fx: [Effect]) {
+            guard let asked = Self.placement(of: WindowId(1), in: fx), asked.width < 300 else { return }
+            var landed = asked
+            landed.size = Size(width: 300, height: asked.height)
+            (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
+        }
+
+        var (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))   // asks 233⅓
+        s = next
+        refuseBelow300(&s, fx)
+        #expect(Self.width(s) == 300)                            // the column is built around the answer
+
+        (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))       // from 300, asks 200
+        s = next
+        refuseBelow300(&s, fx)
+        #expect(Self.width(s) == 300)
+
+        // Third press: 300 − 100 is the question already answered, so nothing is asked and nothing moves.
+        (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))
+        s = next
+        #expect(fx.isEmpty)
+        #expect(!s.motion.isTransitioning)
+        #expect(Self.width(s) == 300)
+
+        // …and growing out of the floor works on the first press — no dead zone to walk back through.
+        (s, _) = Engine.reduce(s, .command(.grow(.points(100))))
+        #expect(Self.width(s) == 400)
+    }
+
+    /// The ladder and the continuous knob are alternatives, and `cycle-width` is how you get back on the
+    /// ladder: it clears the override and takes the next rung after wherever the ladder was left — not a
+    /// guess at which rung the grown width was nearest.
+    @Test func cycleWidthClearsAGrowAndResumesTheLadder() {
+        let config = Config(smoothTransitions: false)            // ⅓ / ½ / ⅔
+        var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
+
+        (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
+        #expect(s.layout.columns[0].widthOverride != nil)
+        #expect(Self.approxScalar(Self.width(s), Self.third + 200))
+
+        (s, _) = Engine.reduce(s, .command(.cycleWidth))
+        #expect(s.layout.columns[0].widthOverride == nil)
+        #expect(s.layout.columns[0].widthPreset == 1)            // ⅓ → ½, from where the ladder was
+        #expect(Self.width(s) == 500)
+    }
+
+    /// An expelled window keeps the width it is on screen at, override included — otherwise a grown
+    /// column would silently snap back to its ladder rung as a side effect of a structural edit.
+    @Test func anExpelledWindowCarriesItsGrownWidthIntoItsNewColumn() {
+        let config = Config(smoothTransitions: false)
+        var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
+        (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
+        (s, _) = Engine.reduce(s, .windowCreated(Self.snapshot(2)))
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // w2 joins w1's column
+        #expect(s.layout.columns.count == 1)
+
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.right)))  // …and pops back out
+        #expect(s.layout.columns.count == 2)
+        #expect(s.layout.columns.allSatisfy { $0.widthOverride == .fixed(Self.third + 200) })
+    }
+
+    /// Total against a world with nothing to resize, like every other command.
+    @Test func growAndShrinkWithNothingFocusedAreSilent() {
+        for command in [Command.grow(.points(100)), .shrink(.percent(10))] {
+            let (s, fx) = Engine.reduce(Self.booted(), .command(command))
+            #expect(fx.isEmpty)
+            #expect(s.layout.isEmpty)
+        }
+    }
+
     @Test func cyclingWidthWrapsBackToTheFirstPreset() {
         var (s, _) = Self.run(Self.booted(), [
             .windowCreated(Self.snapshot(1)),

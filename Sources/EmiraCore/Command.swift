@@ -68,6 +68,37 @@ public enum Toggle: String, Sendable, Codable, CaseIterable, Equatable {
     }
 }
 
+/// How much to change a size by — the argument to `grow` / `shrink`. Always a *magnitude*: the verb
+/// carries the sign, so there is no such thing as a negative delta and `grow -10%` is a syntax error
+/// rather than a second spelling of `shrink 10%`.
+///
+/// **A percentage is of the monitor's working extent, not of the current size** (settled 2026-07-26).
+/// The alternative — a factor on the column's own width — compounds, so its step size drifts with
+/// every press and `grow 10%` followed by `shrink 10%` loses 1% instead of landing back where it
+/// started. Against the working width the steps are uniform and the two verbs are exact inverses,
+/// which is also the only reading that composes with the ⅓/½/⅔ presets (`PresetSize.proportion`),
+/// since those are proportions of the same extent.
+///
+/// Distinct from `PresetSize` despite the identical arithmetic: that type is an absolute size *intent*
+/// ("be half the screen"), this one is a *change* ("be 10 points of screen wider"). A `grow` resolves
+/// one into the other, which is precisely why they are not the same type.
+public enum SizeDelta: Sendable, Codable, Equatable {
+    /// An absolute number of points (`grow 100px`). Points, not device pixels — the unit everything in
+    /// the core speaks; `px` is accepted as its spelling because it is what people type.
+    case points(Double)
+    /// A percentage of the working extent (`grow 10%` on an 1800 pt-wide working area is 180 pt),
+    /// spelled as a percentage rather than a fraction because that is how the user writes it.
+    case percent(Double)
+
+    /// This delta in points, against the working extent a percentage is measured on.
+    public func resolved(available: Double) -> Double {
+        switch self {
+        case .points(let points): return points
+        case .percent(let percent): return available * percent / 100
+        }
+    }
+}
+
 /// A user-facing way to name a workspace. Workspaces are **dynamic and per-monitor**, stacked
 /// vertically, so the user names one either absolutely by position or relative to the
 /// focused one. Deliberately *not* a `WorkspaceId` — the internal id is minted by the core and
@@ -115,6 +146,12 @@ public enum Command: Sendable, Codable, Equatable {
     case moveToMonitor(MonitorRef)
     /// Cycle the focused column through the preset widths.
     case cycleWidth
+    /// Widen the focused column by a delta — the continuous alternative to `cycleWidth`'s ladder.
+    /// Bounded above by the working width; a column already there is a silent no-op.
+    case grow(SizeDelta)
+    /// Narrow the focused column by a delta. Bounded below by a floor, and in practice by whatever
+    /// the app inside answers when asked to be that narrow (`SizeCorrection`).
+    case shrink(SizeDelta)
     /// Cycle the focused window through the preset heights (within its column).
     case cycleHeight
     /// Consume or expel: pull the adjacent window *into* this column, or push the focused
