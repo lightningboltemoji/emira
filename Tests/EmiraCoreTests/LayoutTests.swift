@@ -567,6 +567,65 @@ import Testing
         #expect(layout.strip(metrics: m).columnWidths[0] == 600)
     }
 
+    /// **The three width intents are a stack, not three ways of writing one number.** Fullscreen shadows
+    /// an override, which shadows the ladder — and because it shadows rather than replaces, coming back
+    /// off is *exact* for whatever was underneath. That is the entire reason `fullscreen` stores no
+    /// "what it was" and needs no restore policy.
+    @Test func fullscreenShadowsTheWidthUnderneathAndUncoversItExactly() {
+        var layout = fourColumns()
+        let m = LayoutMetrics(workingArea: Rect(x: 0, y: 0, width: 900, height: 600),
+                              widthPresets: PresetCycle([.proportion(1.0 / 3.0), .proportion(2.0 / 3.0)]),
+                              columnGap: 0, windowGap: 0)
+
+        // …over a ladder rung.
+        layout.setWidthPreset(1, ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 600)
+        layout.setFullscreen(true, ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 900)
+        layout.setFullscreen(false, ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 600)   // the rung, untouched
+        #expect(layout.columns[0].widthPreset == 1)
+
+        // …and over a `grow`n override, which is the case a saved point count would have to get right.
+        layout.setWidthOverride(.fixed(250), ofColumn: ColumnId(1))
+        layout.setFullscreen(true, ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 900)
+        #expect(layout.columns[0].widthOverride == .fixed(250))    // still there, merely shadowed
+        layout.setFullscreen(false, ofColumn: ColumnId(1))
+        #expect(layout.strip(metrics: m).columnWidths[0] == 250)
+    }
+
+    /// An explicit width verb clears fullscreen: a width the user asked for out loud must be one they
+    /// can see, and left shadowed it would be an invisible number.
+    @Test func anExplicitWidthIntentClearsFullscreen() {
+        for setIntent in [{ (l: inout Layout) in l.setWidthPreset(1, ofColumn: ColumnId(1)) },
+                          { (l: inout Layout) in l.setWidthOverride(.fixed(250), ofColumn: ColumnId(1)) }] {
+            var layout = fourColumns()
+            layout.setFullscreen(true, ofColumn: ColumnId(1))
+            setIntent(&layout)
+            #expect(!layout.columns[0].isFullscreen)
+        }
+    }
+
+    /// Fullscreen travels with an expelled window for the same reason the preset and the override do:
+    /// the window is on screen at that width, and an intent that failed to follow would snap it back as
+    /// a side effect of a structural edit.
+    @Test func anExtractedColumnInheritsFullscreen() {
+        var layout = fourColumns()
+        layout.setFullscreen(true, ofColumn: ColumnId(2))
+        layout.extract(window: w21, toNewColumnAt: 2)
+        #expect(layout.columns[1].isFullscreen)
+        #expect(layout.columns[2].isFullscreen)
+    }
+
+    /// Total, like its two siblings: an id no longer on the strip is a silent no-op, never a trap.
+    @Test func settingFullscreenOnAnUnknownColumnIsANoOp() {
+        var layout = fourColumns()
+        let before = layout
+        layout.setFullscreen(true, ofColumn: ColumnId(99))
+        #expect(layout == before)
+    }
+
     @Test func extractingClampsAnOutOfRangeIndexToTheEndsOfTheStrip() {
         var low = fourColumns(), high = fourColumns()
         low.extract(window: w21, toNewColumnAt: -5)
@@ -1112,6 +1171,16 @@ import Testing
         // Half of the content width, not half of the display.
         let half = ColumnLayout(id: ColumnId(1), windowIds: [w0])
         #expect(Layout(columns: [half]).resolvedWidth(of: half, metrics: m) == 460)
+    }
+
+    /// **`fullscreen` means the same 100% everything else does.** Against the content width, so a
+    /// fullscreen column fills the strip's area with the outer margin still showing — the same number
+    /// the ladder tops out at and `grow`'s ceiling clamps to. A second definition of "full" is how the
+    /// two verbs would come to rest one outer gap apart.
+    @Test func fullscreenIsTheContentWidthNotTheDisplayWidth() {
+        let m = metrics()                            // 1000 wide, 40 pt outer gaps ⇒ 920 of content
+        let column = ColumnLayout(id: ColumnId(1), windowIds: [w0], isFullscreen: true)
+        #expect(Layout(columns: [column]).resolvedWidth(of: column, metrics: m) == 920)
     }
 
     /// The width floor a correction imposes is capped at the content width too — one definition of

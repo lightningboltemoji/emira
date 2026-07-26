@@ -157,7 +157,10 @@ public enum Command: Sendable, Codable, Equatable {
     /// Consume or expel: pull the adjacent window *into* this column, or push the focused
     /// window *out* of it — direction selects which.
     case consumeOrExpel(Direction)
-    /// Toggle (or force) fullscreen for the focused window.
+    /// Toggle (or force) the focused **column** to the strip's full width — 100% of the content area,
+    /// the same top rung `cycleWidth` and `grow` resolve against. Not macOS's native full screen (no
+    /// new Space); the strip stays the strip and the neighbouring columns simply scroll out of view.
+    /// Toggling off restores the width the column already had, exactly (`ColumnLayout.isFullscreen`).
     case fullscreen(Toggle)
     /// Toggle (or force) floating (untiled) for the focused window.
     case float(Toggle)

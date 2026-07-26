@@ -85,13 +85,30 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
     /// Two intents rather than one union case, so that `cycleWidth` needs no policy for "which preset is
     /// a grown column nearest?" — it clears the override and resumes the ladder where the user left it.
     public var widthOverride: PresetSize?
+    /// Whether `fullscreen` has taken this column to the full width of the strip's area — a **third
+    /// layer above** `widthOverride` and `widthPreset` rather than a fourth way of writing a width
+    /// (2026-07-26).
+    ///
+    /// That stacking is the whole design, and it is the same argument `widthOverride` makes against
+    /// being a case of `widthPreset`, one level up. Because fullscreen *shadows* the width underneath
+    /// instead of overwriting it, **un-fullscreening needs no memory and no restore policy**: a column
+    /// grown to 40% is still 40% when the flag comes off, and so is one sitting on a ladder rung. The
+    /// alternative — save the old intent, put it back — has to answer what happens when the config
+    /// reloads with different presets, or the display changes, while the saved value ages in a corner.
+    /// Here nothing ages, because nothing was replaced.
+    ///
+    /// Not exclusive across the strip. Two fullscreen columns is two full-width columns, which is an
+    /// ordinary arrangement `grow` can already produce. A fullscreen is one-at-a-time only when it
+    /// *covers the output*, and a column that covers nothing has no such constraint to enforce.
+    public var isFullscreen: Bool
 
     public init(id: ColumnId, windowIds: [WindowId], widthPreset: Int = 0,
-                widthOverride: PresetSize? = nil) {
+                widthOverride: PresetSize? = nil, isFullscreen: Bool = false) {
         self.id = id
         self.windowIds = windowIds
         self.widthPreset = widthPreset
         self.widthOverride = widthOverride
+        self.isFullscreen = isFullscreen
     }
 }
 
@@ -333,10 +350,13 @@ public struct Layout: Sendable, Equatable, Codable {
     /// step off it": a cycle puts the column back on a preset, and the preset it lands on is the next one
     /// after wherever the ladder was last left — not a guess at which rung the grown width was nearest.
     /// Predictable beats clever, and the alternative is a nearest-match rule with no right answer.
+    ///
+    /// **And clears `isFullscreen`** — see `setWidthOverride`, which does it for the same reason.
     public mutating func setWidthPreset(_ index: Int, ofColumn id: ColumnId) {
         guard let i = columnIndex(withId: id) else { return }
         columns[i].widthPreset = index
         columns[i].widthOverride = nil
+        columns[i].isFullscreen = false
     }
 
     /// Pin a column to an explicit width, overriding its preset until the next `cycleWidth`
@@ -344,9 +364,29 @@ public struct Layout: Sendable, Equatable, Codable {
     /// total, and deliberately *not* bounds-checked: clamping is the reducer's, because the bound
     /// depends on the working area and on which direction the user asked to move
     /// (`Engine.resizeFocusedColumn`).
+    ///
+    /// **Clears `isFullscreen`, and that is a decision rather than hygiene.** A width the user asked for
+    /// out loud must be a width they can see; left shadowed by fullscreen it would be an invisible
+    /// number, and the next `shrink` against a column already at 100% would move nothing at all — a
+    /// dead knob, which is the silent failure this codebase keeps refusing. Cleared, the same press is
+    /// *continuous*: `Engine.resizeFocusedColumn` measures its delta from the column's **resolved**
+    /// width, which while fullscreen is the full width, so `shrink 10%` off a fullscreen column lands
+    /// on 90% and stays there.
     public mutating func setWidthOverride(_ size: PresetSize, ofColumn id: ColumnId) {
         guard let i = columnIndex(withId: id) else { return }
         columns[i].widthOverride = size
+        columns[i].isFullscreen = false
+    }
+
+    /// Take a column to the full width of the strip's area, or give it back the width it already had
+    /// (`ColumnLayout.isFullscreen`) — how `fullscreen` records its answer. Keyed by `ColumnId` and
+    /// total, like its two siblings above.
+    ///
+    /// Nothing is saved and nothing is restored: this only raises or lowers a layer *over* the width
+    /// intent, which is why turning it off is exact for a preset rung and a grown override alike.
+    public mutating func setFullscreen(_ on: Bool, ofColumn id: ColumnId) {
+        guard let i = columnIndex(withId: id) else { return }
+        columns[i].isFullscreen = on
     }
 
     // MARK: - Structural mutation (the strip's editing primitives)
@@ -445,23 +485,24 @@ public struct Layout: Sendable, Equatable, Codable {
     /// and the cover's animation identity key on. That guard is also what guarantees nothing is ever
     /// destroyed here, so `destroyedColumn` is always `nil`.
     ///
-    /// The new column **inherits the source's width intent** — its `widthPreset` *and* any
-    /// `widthOverride`: the window is on screen at that width, and resetting it would be a second
-    /// unrequested change arriving in the same motion. Both halves travel together for the same reason
-    /// they are stored together — an override that failed to follow would silently snap a grown column
-    /// back to its ladder rung on expel.
+    /// The new column **inherits the source's width intent** — its `widthPreset`, any `widthOverride`,
+    /// and `isFullscreen`: the window is on screen at that width, and resetting it would be a second
+    /// unrequested change arriving in the same motion. All three travel together for the same reason
+    /// they are stored together — an intent that failed to follow would silently snap a grown or
+    /// fullscreen column back to its ladder rung on expel.
     @discardableResult
     public mutating func extract(window: WindowId, toNewColumnAt index: Int) -> LayoutEdit {
         // The guard precedes the mint on purpose: `Layout`'s synthesized `Equatable` covers the
         // private allocator watermark, so a stray mint on the no-op path is a visible state change.
         guard let from = columnIndex(ofWindow: window),
               columns[from].windowIds.count > 1 else { return .none }
-        let preset = columns[from].widthPreset
-        let override = columns[from].widthOverride
+        let source = columns[from]
         let to = Swift.min(Swift.max(index, 0), columns.count)
         columns[from].windowIds.removeAll { $0 == window }   // never empties it (count > 1 above)
         columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [window],
-                                    widthPreset: preset, widthOverride: override),
+                                    widthPreset: source.widthPreset,
+                                    widthOverride: source.widthOverride,
+                                    isFullscreen: source.isFullscreen),
                        at: to)
         return LayoutEdit(moved: true, destroyedColumn: nil)
     }
@@ -488,12 +529,17 @@ public struct Layout: Sendable, Equatable, Codable {
     }
 
     /// A column's width in points: its cycled preset — or its explicit `widthOverride`, if `grow`/
-    /// `shrink` has stepped it off the ladder — **widened** to the widest size any of its windows
-    /// answered when last asked for that width (`SizeCorrection`).
+    /// `shrink` has stepped it off the ladder, or the **full content width** if `fullscreen` is on —
+    /// **widened** to the widest size any of its windows answered when last asked for that width
+    /// (`SizeCorrection`).
     ///
-    /// The override enters here and only here, which is what makes `grow`/`shrink` cost nothing
-    /// downstream: every query on this type already resolves widths through this function, so the
-    /// truth plane, the sweep, the scroll targets and the animated presentation plane all pick the
+    /// The three width intents are a **stack**, resolved top-down: fullscreen shadows an override,
+    /// which shadows the ladder. Nothing below is disturbed by something above it, which is what makes
+    /// un-fullscreening exact and needs no stored "what it was" (`ColumnLayout.isFullscreen`).
+    ///
+    /// Each enters here and only here, which is what makes `grow`/`shrink` and `fullscreen` cost
+    /// nothing downstream: every query on this type already resolves widths through this function, so
+    /// the truth plane, the sweep, the scroll targets and the animated presentation plane all pick the
     /// new width up together or not at all.
     ///
     /// Widening only. A window that came back *narrower* than we asked leaves a gap inside its column,
@@ -509,10 +555,13 @@ public struct Layout: Sendable, Equatable, Codable {
     ///
     /// Content, not working: a proportion is a share of the *logical* viewport, so "100%" is a column
     /// that fills the strip's area with the outer gaps still showing on either side — which is what a
-    /// user who asked for a margin means by full width.
+    /// user who asked for a margin means by full width. **`fullscreen` means exactly this 100%**, the
+    /// same one the ladder tops out at and `grow`'s ceiling clamps to: a second definition of "full" is
+    /// how the two verbs would come to rest one outer gap apart.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
         let available = metrics.contentArea.width
-        let preset = (column.widthOverride
+        let preset = (column.isFullscreen ? .proportion(1.0)
+            : column.widthOverride
             ?? metrics.widthPresets.size(at: column.widthPreset))
             .resolved(available: available)
         let floors = column.windowIds.compactMap {

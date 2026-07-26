@@ -363,6 +363,9 @@ public enum Engine {
         case .shrink(let delta):
             return handleResizeColumn(&s, by: delta, sign: -1)
 
+        case .fullscreen(let toggle):
+            return handleFullscreen(&s, toggle)
+
         case .moveWindow(let direction):
             return handleMoveWindow(&s, direction)
 
@@ -380,7 +383,7 @@ public enum Engine {
         //    selection ("heights are all-auto", `Layout.swift`), so there is nothing to cycle yet. It
         //    also can't ride the strip's own geometry the way a width can — a height is independent
         //    motion *within* one column, i.e. the `windowAnimators` channel.
-        //  · fullscreen / float           — need float/fullscreen state modeling on the window.
+        //  · float                        — needs floating state modeling on the window.
         //  · moveToWorkspace / focusWorkspace / moveToMonitor — workspaces + multi-monitor are M6.
         //  · closeWindow                  — needs a new `Effect` (an AX close) not in the vocabulary yet.
         //
@@ -388,7 +391,7 @@ public enum Engine {
         // answered out of band by the shell straight off `Runtime.state` (`Ipc/RequestRouter.swift`,
         // decided 2026-07-24) — routing it through the reducer would mean an `Effect` carrying a live
         // reply channel, which `Effect`'s `Codable`-value contract forbids for zero gain.
-        case .moveToWorkspace, .moveToMonitor, .cycleHeight, .fullscreen, .float,
+        case .moveToWorkspace, .moveToMonitor, .cycleHeight, .float,
              .focusWorkspace, .closeWindow, .dumpState:
             return []
         }
@@ -867,6 +870,35 @@ public enum Engine {
             case .percent, .points:            intent = .fixed(width)
             }
             layout.setWidthOverride(intent, ofColumn: column.id)
+        }
+    }
+
+    /// Take the focused column to the strip's full width, or hand back the width it already had —
+    /// `fullscreen`, the third and last verb built on `resizeFocusedColumn` (2026-07-26).
+    ///
+    /// **Deliberately the strip's fullscreen, not macOS's.** Nothing here asks for a native full-screen
+    /// Space (which would be a private-API fight we don't pick, and whose animation we could not own
+    /// anyway, `PRINCIPLES.md` §10); the column simply resolves to 100% of the content area — the same
+    /// 100% the preset ladder tops out at and `grow`'s ceiling clamps to, so the outer margin still
+    /// shows and the strip is still the strip. Its neighbours are pushed out of the viewport and park at
+    /// their slivers exactly as they would for a `grow` to the ceiling, and scroll back in when it
+    /// comes off, under the name the vocabulary already had.
+    ///
+    /// **It stores no "what it was", and that is the whole of why it is three lines.** `isFullscreen`
+    /// shadows the width intent rather than replacing it (`ColumnLayout.isFullscreen`), so coming back
+    /// off is exact for a ladder rung and a `grow`n override alike, survives a config reload that
+    /// changed the presets, and survives a display change — none of which a saved point count would.
+    ///
+    /// With **stackmates** this maximizes the *column*, so both windows stay on screen at half height
+    /// each. A solo-window fullscreen is a different feature and needs the per-window height selection
+    /// `Layout` deliberately doesn't have yet — the same state `cycleHeight` is waiting on.
+    ///
+    /// A column already at the full width toggles its flag and emits nothing to look at
+    /// (`resizeFocusedColumn`'s equal-widths guard), which is correct rather than a miss: the state
+    /// moved, so the *next* press restores as it should.
+    private static func handleFullscreen(_ s: inout State, _ toggle: Toggle) -> [Effect] {
+        resizeFocusedColumn(&s) { layout, column, _, _ in
+            layout.setFullscreen(toggle.resolved(current: column.isFullscreen), ofColumn: column.id)
         }
     }
 

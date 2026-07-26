@@ -415,6 +415,20 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width and the floor is a
     bare minimum, but each is widened to the current width when the column is already outside it — so a `grow` on a
     column a config deliberately made wider than the screen is a no-op rather than a sudden shrink to fit.
+  - **`fullscreen` is a third layer *shadowing* both, not a fourth way of writing a width.** It toggles the focused
+    **column** between its own width and 100% of the content area — the strip's fullscreen, not the system's: no
+    Space, nothing hidden, the neighbours simply park and scroll back. Because the flag shadows the override, which
+    shadows the preset, **coming off needs no memory and no restore policy**: a column grown to 40% is 40% again
+    exactly, and one on a ladder rung is that rung, re-resolved against whatever the presets say *now*. The
+    alternative (save the old intent, put it back) has to decide what a saved 500 pt means after the ladder was
+    rewritten, and there is no good answer.
+  - **An explicit width verb clears the flag**, which is a decision rather than hygiene: a width the user asked for
+    out loud must be a width they can see. Left shadowed it is an invisible number, and the next `shrink` on a column
+    already at 100% would move nothing at all — a dead knob. Cleared, the same press is *continuous* for free, since
+    the delta is taken from the resolved width.
+  - **Not exclusive, and column-scoped rather than window-scoped.** Two fullscreen columns is two full-width columns,
+    an arrangement `grow` already reaches. With stackmates this maximizes the **column**, so both windows stay on
+    screen at half height.
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
   **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's corner
   (`PRINCIPLES.md` §4a). A park slot is just target geometry, so placement is core-owned: one geometry authority,

@@ -1330,6 +1330,156 @@ import EmiraMotion
         }
     }
 
+    // MARK: - Fullscreen (the strip's, not the system's)
+
+    /// **The whole feature, as it was asked for:** a column at 40% goes to 100% and comes back to 40%.
+    /// Exactly 40% — because `isFullscreen` shadows the width intent instead of replacing it, so there
+    /// is nothing stored to restore and nothing to round.
+    @Test func fullscreenTogglesBetweenTheColumnsOwnWidthAndTheFullStripWidth() {
+        var s = Self.oneThirdSnap()                              // 1000-wide content area
+        (s, _) = Engine.reduce(s, .command(.grow(.points(400.0 - Self.third))))
+        #expect(Self.approxScalar(Self.width(s), 400))           // …a 40% column
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        #expect(s.layout.columns[0].isFullscreen)
+        #expect(Self.width(s) == 1000)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        #expect(!s.layout.columns[0].isFullscreen)
+        #expect(Self.approxScalar(Self.width(s), 400))           // back exactly, not near it
+    }
+
+    /// The same round trip from a **ladder rung**, which is the case a saved point count would have to
+    /// get right and this one doesn't have to think about: the preset is never touched, so a config
+    /// reload or a display change under a fullscreen column still uncovers the right width.
+    @Test func fullscreenUncoversALadderRungEvenAfterThePresetsChange() {
+        let config = Config(smoothTransitions: false)             // ⅓ / ½ / ⅔ of 1000
+        var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
+        (s, _) = Engine.reduce(s, .command(.cycleWidth))          // ⅓ → ½
+        #expect(Self.width(s) == 500)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(Self.width(s) == 1000)
+
+        // The presets change *while* the column is fullscreen. It stays full-width…
+        let rewritten = Config(widthPresets: PresetCycle([.proportion(0.25), .proportion(0.75)]),
+                               smoothTransitions: false)
+        (s, _) = Engine.reduce(s, .configChanged(rewritten))
+        #expect(Self.width(s) == 1000)
+        // …and uncovers the rung it was on, resolved against the *new* ladder. A stored 500 would have
+        // been a number about a config that no longer exists.
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(Self.width(s) == 750)                             // index 1, now ¾
+    }
+
+    /// `fullscreen` is `cycleWidth`'s motion with a different intent in front of it — the same second
+    /// animated quantity, the same transition over a viewport that need not move, the same real window
+    /// teleported to its final width behind the cover. Nothing downstream learned a new concept.
+    @Test func fullscreenAnimatesTheColumnWidthExactlyAsACycleDoes() {
+        var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
+        let column = s.layout.columns[0].id
+
+        let (f, ffx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        s = f
+        #expect(s.motion.isTransitioning)
+        #expect(Self.approxScalar(s.motion.columnWidth(column)?.current ?? 0, Self.third))
+        #expect(Self.approxScalar(s.motion.columnWidth(column)?.target ?? 0, 1000))
+        #expect(Self.capturedIds(in: ffx) == [WindowId(1)])
+
+        let (done, dfx) = Self.drive(s)
+        #expect(dfx.contains(.endTransition))
+        #expect(Self.approxScalar(Self.placement(of: WindowId(1), in: dfx)?.width ?? 0, 1000))
+        #expect(Self.width(done) == 1000)
+        #expect(done.motion.currentColumnWidths.isEmpty)
+    }
+
+    /// **The strip is still the strip.** Nothing is hidden and no Space is created: the neighbouring
+    /// column is simply pushed out of the viewport and parks at its sliver, exactly as it would for a
+    /// `grow` to the ceiling — and scrolls back in when fullscreen comes off.
+    ///
+    /// With a `columnGap`, deliberately: gapless, the revealed column's left edge lands exactly on the
+    /// departing one's right edge and which side of "visible" that falls on is decided by the last bit
+    /// of a `Double` (`Strip.visibleColumnIndices` is a strict overlap, and ⅓ of 1000 doesn't round).
+    /// That degeneracy is not what this test is about, and no real config has it.
+    @Test func fullscreenPushesTheNeighbouringColumnOffTheViewportAndBack() {
+        let config = Config(columnGap: 8, smoothTransitions: false)
+        var s = Self.run(Self.booted(config: config), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),                     // focused, column 1
+        ]).0
+
+        let (full, ffx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        s = full
+        #expect(Self.hasEffect(ffx) { if case .park(WindowId(1), _) = $0 { return true }; return false })
+        #expect(Self.width(s, 1) == 1000)
+
+        let (back, bfx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        #expect(Self.hasEffect(bfx) { if case .setFrame(WindowId(1), _) = $0 { return true }; return false })
+        #expect(Self.approxScalar(Self.width(back, 1), Self.third))
+    }
+
+    /// An explicit width verb clears fullscreen, and the press that clears it is **continuous**: the
+    /// delta comes off the *resolved* width, which while fullscreen is the full width. Without the
+    /// clear, `shrink` here would write a number nothing can show — a dead knob.
+    @Test func anExplicitWidthVerbClearsFullscreenAndActsAtOnce() {
+        var s = Self.oneThirdSnap()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(Self.width(s) == 1000)
+
+        (s, _) = Engine.reduce(s, .command(.shrink(.percent(10))))
+        #expect(!s.layout.columns[0].isFullscreen)
+        #expect(Self.width(s) == 900)                             // 100% − 10%, on the first press
+
+        // …and the ladder resumes the same way it does after a `grow`, with no nearest-rung guess.
+        let laddered = Config(smoothTransitions: false)           // ⅓ / ½ / ⅔
+        var t = Self.run(Self.booted(config: laddered), [.windowCreated(Self.snapshot(1))]).0
+        (t, _) = Engine.reduce(t, .command(.fullscreen(.on)))
+        (t, _) = Engine.reduce(t, .command(.cycleWidth))
+        #expect(!t.layout.columns[0].isFullscreen)
+        #expect(t.layout.columns[0].widthPreset == 1)             // ⅓ → ½, from where the ladder was
+        #expect(Self.width(t) == 500)
+    }
+
+    /// A column already at the full width has nothing to animate, so the command is silent — but the
+    /// *state* still moved, which is what makes the next press restore rather than do nothing twice.
+    @Test func fullscreenOnAnAlreadyFullWidthColumnIsSilentAndStillToggles() {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0)]), smoothTransitions: false)
+        var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
+        #expect(Self.width(s) == 1000)
+
+        let (full, ffx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        s = full
+        #expect(ffx.isEmpty)                                     // nothing to look at…
+        #expect(!s.motion.isTransitioning)
+        #expect(s.layout.columns[0].isFullscreen)                // …but the flag moved
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        #expect(!s.layout.columns[0].isFullscreen)
+    }
+
+    /// `.on`/`.off` assert an absolute state for a script or a rule, so repeating one is idempotent —
+    /// the whole reason `Toggle` has three cases rather than being a bare flip.
+    @Test func fullscreenOnAndOffAreAbsoluteAndIdempotent() {
+        var s = Self.oneThirdSnap()
+        for _ in 0..<2 {
+            (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+            #expect(s.layout.columns[0].isFullscreen)
+        }
+        for _ in 0..<2 {
+            (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+            #expect(!s.layout.columns[0].isFullscreen)
+        }
+    }
+
+    /// Total against a world with nothing to fullscreen, like every other command.
+    @Test func fullscreenWithNothingFocusedIsSilent() {
+        for toggle in [Toggle.on, .off, .toggle] {
+            let (s, fx) = Engine.reduce(Self.booted(), .command(.fullscreen(toggle)))
+            #expect(fx.isEmpty)
+            #expect(s.layout.isEmpty)
+        }
+    }
+
     @Test func cyclingWidthWrapsBackToTheFirstPreset() {
         var (s, _) = Self.run(Self.booted(), [
             .windowCreated(Self.snapshot(1)),
