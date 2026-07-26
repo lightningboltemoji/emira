@@ -485,7 +485,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     pass repeats to a fixpoint (≤ n passes, since the floored set only grows). A floor never overrides a pinned
     preset: a pin is the user's instruction, a floor is the app's constraint.
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
-  **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's corner
+  **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's **bottom-right**
+  corner, the window's own title bar left on screen as a grab handle and the nub's *height* carrying the stagger
   (`PRINCIPLES.md` §4a). A park slot is just target geometry, so placement is core-owned: one geometry authority,
   replay-testable, and unique frames keep identity rebinding unambiguous (`PRINCIPLES.md` §7).
   - **`Layout` gained four editing primitives, not four verbs** — `moveColumn`, `moveWindowWithinColumn`,

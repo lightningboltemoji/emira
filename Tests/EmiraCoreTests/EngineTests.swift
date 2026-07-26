@@ -1703,7 +1703,7 @@ import EmiraMotion
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
         #expect(s.motion.isCovered)
 
-        // w3's *real* window is parked (a corner sliver, off-screen left); its reconstruction *layer*
+        // w3's *real* window is parked (a nub in the bottom-right corner); its reconstruction *layer*
         // rides the natural, un-parked position (sliding off the *right* edge). The two disagree by
         // design — that's what makes a scrolled-off window glide off-screen instead of jumping to a
         // sliver. Assert every layer frame equals the natural frame, and w3's layer ≠ its parked real.

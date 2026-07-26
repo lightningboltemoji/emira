@@ -300,22 +300,31 @@ import Testing
 /// Deterministic, unique, staggered park slots for off-viewport windows (PRINCIPLES.md §4a, §7).
 @Suite struct ParkTests {
 
-    // Reused fixture: a 1440×900 working area at the origin; 1 pt slivers, 8 pt vertical stagger.
-    // rows-per-lane = floor(900 / 8) = 112.
+    // Reused fixture: a 1440×900 working area at the origin; 1 pt sliver of width, 40 pt of chrome,
+    // 8 pt stagger. rows-per-lane = floor((900 − 40) / 8) + 1 = 108.
     private let lot = ParkingLot(frame: Rect(x: 0, y: 0, width: 1440, height: 900))
     private let size = Size(width: 400, height: 300)
 
-    @Test func slotPokesVisibleSliverInFromTheLeft() {
-        // window shoved left so only 1 pt shows: x = 0 − 400 + 1 = −399, right edge at 1.
+    @Test func slotPokesACornerNubInFromTheBottomRight() {
+        // window shoved right so only 1 pt of its left edge shows (x = 1440 − 1) and down so only
+        // 40 pt of its top edge does (y = 900 − 40) — the title bar, the grabbable part.
         let s = lot.slot(ordinal: 0, size: size)
-        #expect(s == Rect(x: -399, y: 0, width: 400, height: 300))
-        #expect(s.maxX == lot.frame.minX + lot.visibleSliver)   // exactly `visibleSliver` on-screen
+        #expect(s == Rect(x: 1439, y: 860, width: 400, height: 300))
+        #expect(s.minX == lot.frame.maxX - lot.visibleSliver)   // exactly `visibleSliver` on-screen
+        #expect(s.minY == lot.frame.maxY - lot.visibleChrome)   // exactly `visibleChrome` of it
     }
 
-    @Test func successiveSlotsStaggerDownByStagger() {
-        #expect(lot.slot(ordinal: 0, size: size).minY == 0)
-        #expect(lot.slot(ordinal: 1, size: size).minY == 8)
-        #expect(lot.slot(ordinal: 2, size: size).minY == 16)
+    @Test func onlyTheNubIsOnScreenNotTheWholeHeight() {
+        // The point of a corner park: what the user sees is 1 × 40, not a full-height line down the
+        // edge. The rest of the window hangs off the display's right and bottom.
+        #expect(lot.slot(ordinal: 0, size: size).intersection(lot.frame)
+                == Rect(x: 1439, y: 860, width: 1, height: 40))
+    }
+
+    @Test func successiveSlotsGrowTheNubByStagger() {
+        #expect(lot.slot(ordinal: 0, size: size).minY == 860)   // 40 pt of chrome showing
+        #expect(lot.slot(ordinal: 1, size: size).minY == 852)   // 48
+        #expect(lot.slot(ordinal: 2, size: size).minY == 844)   // 56
         // same lane → same x, only y moves
         #expect(lot.slot(ordinal: 1, size: size).minX == lot.slot(ordinal: 0, size: size).minX)
     }
@@ -328,13 +337,32 @@ import Testing
         #expect(origins.count == frames.count)
     }
 
+    @Test func slotsDifferByMoreThanTheIdentityBindingTolerance() {
+        // "Unique" is not enough on its own: `WindowRegistry.bind` matches frames within ±2 pt per
+        // edge and refuses a window with two candidates, so slots a point apart would make two parked
+        // windows of one app ambiguous at rebind and neither would be managed. Every consecutive pair
+        // in a lane must clear that tolerance — which is why the stagger is 8 and not 1.
+        for n in 0..<20 {
+            let gap = abs(lot.slot(ordinal: n, size: size).minY - lot.slot(ordinal: n + 1, size: size).minY)
+            #expect(gap > 2)
+        }
+    }
+
     @Test func lanesWrapASliverFurtherInWhenRowsAreExhausted() {
-        // ordinal 112 == lane 1, row 0: y resets to the top, x pokes one more sliver in.
+        // ordinal 108 == lane 1, row 0: the nub resets to 40 pt tall, x pokes one more sliver in.
         let first = lot.slot(ordinal: 0, size: size)
-        let wrapped = lot.slot(ordinal: 112, size: size)
-        #expect(wrapped.minY == lot.frame.minY)                 // back to the top of the next lane
-        #expect(wrapped.minX == first.minX + lot.visibleSliver) // one sliver further on-screen
+        let wrapped = lot.slot(ordinal: 108, size: size)
+        #expect(wrapped.minY == first.minY)                     // back to a bare-chrome nub
+        #expect(wrapped.minX == first.minX - lot.visibleSliver) // one sliver further on-screen
         #expect(wrapped != first)
+    }
+
+    @Test func aLaneNeverGrowsTheNubPastTheWorkingArea() {
+        // The wrap point is chosen so the tallest nub in a lane still fits the working area — past
+        // that, growing it further is just the full-height sliver this design replaced.
+        for n in 0..<108 {
+            #expect(lot.slot(ordinal: n, size: size).minY >= lot.frame.minY)
+        }
     }
 
     @Test func negativeOrdinalsSnapToTheFirstSlot() {
@@ -344,7 +372,7 @@ import Testing
     @Test func slotKeepsTheWindowSizeAndStaysWarm() {
         let s = lot.slot(ordinal: 3, size: size)
         #expect(s.width == 400 && s.height == 300)              // reposition, never resize
-        #expect(s.intersects(lot.frame))                        // a sliver is genuinely on-screen
+        #expect(s.intersects(lot.frame))                        // a nub is genuinely on-screen
     }
 }
 
@@ -765,8 +793,9 @@ import Testing
         #expect(frames[w21] == Rect(x: 300, y: 300, width: 300, height: 300))
         // col2: fills its column.
         #expect(frames[w30] == Rect(x: 600, y: 0, width: 300, height: 600))
-        // col3 parked: ordinal 0, size 300×600 → x = 0 − 300 + 1 = −299, hugging the left edge.
-        #expect(frames[w40] == Rect(x: -299, y: 0, width: 300, height: 600))
+        // col3 parked: ordinal 0, size 300×600 → a nub in the bottom-right corner, x = 900 − 1 and
+        // y = 600 − 40, the rest of it off the display's right and bottom.
+        #expect(frames[w40] == Rect(x: 899, y: 560, width: 300, height: 600))
         #expect(frames.count == 5)                         // exhaustive over the strip's windows
     }
 
@@ -778,8 +807,8 @@ import Testing
         #expect(frames[w21] == Rect(x: 0, y: 300, width: 300, height: 300))
         #expect(frames[w30] == Rect(x: 300, y: 0, width: 300, height: 600))   // strip 600 → screen 300
         #expect(frames[w40] == Rect(x: 600, y: 0, width: 300, height: 600))   // strip 900 → screen 600
-        // col0 now off the left → parked at ordinal 0.
-        #expect(frames[w10] == Rect(x: -299, y: 0, width: 300, height: 600))
+        // col0 now off the left → parked at ordinal 0 (the corner nub, wherever it scrolled off).
+        #expect(frames[w10] == Rect(x: 899, y: 560, width: 300, height: 600))
     }
 
     @Test func targetFramesHonorTheWorkingAreaOriginAndGaps() {
@@ -829,13 +858,13 @@ import Testing
 
     @Test func naturalFramesSlideOffViewColumnsOffScreenInsteadOfParking() {
         // col3 [900,1200) is off the right of the [0,900) viewport. `targetFrames` parks it to a
-        // left-edge sliver; `naturalFrames` keeps it at its natural strip position, sliding off the
-        // *right* edge — full size, x = 900. The two disagree by design (layer slides, real parks).
+        // corner nub; `naturalFrames` keeps it at its natural strip position, sliding off the *right*
+        // edge — full size, x = 900. The two disagree by design (layer slides, real parks).
         let layout = fourColumns()
         let natural = layout.naturalFrames(scrollOffset: 0, metrics: metrics)
         let tiled = layout.targetFrames(scrollOffset: 0, metrics: metrics)
         #expect(natural[w40] == Rect(x: 900, y: 0, width: 300, height: 600))   // slid off the right edge
-        #expect(tiled[w40] == Rect(x: -299, y: 0, width: 300, height: 600))    // parked off the left edge
+        #expect(tiled[w40] == Rect(x: 899, y: 560, width: 300, height: 600))   // parked at its nub
         #expect(natural[w40] != tiled[w40])
     }
 
@@ -1243,17 +1272,18 @@ import Testing
     @Test func aColumnPastTheDisplayEdgeStillParks() {
         let m = metrics()
         let frames = fourColumns().targetFrames(scrollOffset: 0, metrics: m)
-        #expect(frames[w3]?.minX ?? 0 < 0)                                     // col3 at strip 1380
+        // col3 sits at strip 1380 — its natural frame would be x = 1420; it is at its nub instead.
+        #expect(frames[w3] == Rect(x: 999, y: 660, width: 460, height: 620))
         #expect(!fourColumns().visibleWindowIds(scrollOffset: 0, metrics: m).contains(w3))
     }
 
-    /// A park sliver hugs the **physical** edge. Inset by the margin it would poke a window 40 pt into
+    /// A park nub hugs the **physical** corner. Inset by the margin it would poke a window 40 pt into
     /// the screen on purpose, which is the opposite of what parking is for.
-    @Test func parkSliversHugThePhysicalEdgeNotTheContentEdge() {
+    @Test func parkNubsHugThePhysicalCornerNotTheContentEdge() {
         let m = metrics()
         // Scroll far right so col0 parks at ordinal 0.
         let frames = fourColumns().targetFrames(scrollOffset: 1380, metrics: m)
-        #expect(frames[w0] == Rect(x: -459, y: 0, width: 460, height: 620))    // 0 − 460 + 1, y = 0
+        #expect(frames[w0] == Rect(x: 999, y: 660, width: 460, height: 620))   // 1000 − 1, 700 − 40
     }
 
     // MARK: The other side of the split — scroll math frames against the logical viewport
@@ -1273,7 +1303,9 @@ import Testing
         #expect(frames[w1] == Rect(x: 40, y: 40, width: 460, height: 620))    // flush, content left
         #expect(frames[w2] == Rect(x: 500, y: 40, width: 460, height: 620))   // flush, content right
         #expect(frames[w3] == Rect(x: 960, y: 40, width: 460, height: 620))   // into the margin
-        #expect(frames[w0]?.minX ?? 0 < 0)                                     // scrolled off, parked
+        // …and col0 is the same rule on the other side: scrolled off the *content* area but still
+        // bleeding 40 pt into the left margin, so it is tiled there rather than parked.
+        #expect(frames[w0] == Rect(x: -420, y: 40, width: 460, height: 620))
     }
 
     /// Centering and the end-of-strip clamp frame against the content width for the same reason.

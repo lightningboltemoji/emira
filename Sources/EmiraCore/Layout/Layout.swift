@@ -21,7 +21,7 @@ import Foundation
 // **Coordinate transform.** Columns are placed in *virtual-strip* space (infinite x, origin 0) by
 // `Strip`; a window's on-screen frame is `contentArea.minX + (stripX − scrollOffset)` — the strip
 // position pulled into the viewport. `y`/`height` come straight from the content area (columns fill
-// its height). Parked windows are already in screen space (they hug the *working* area's edge — the
+// its height). Parked windows are already in screen space (they hug the *working* area's corner — the
 // physical one, not the strip's). All top-left origin (Geometry.swift), same as everything the shell
 // will Y-flip once at its boundary.
 //
@@ -118,7 +118,7 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
 public struct LayoutMetrics: Sendable, Equatable {
     /// The monitor's **physical** working area — screen-space, top-left, already inset past the menu
     /// bar/Dock by the shell. This is the extent that actually exists: what "on screen" means, and the
-    /// edge a parked sliver hugs. The strip itself is laid out inside `contentArea`, which this is
+    /// corner a parked nub hugs. The strip itself is laid out inside `contentArea`, which this is
     /// inset by the outer gaps to get.
     public var workingArea: Rect
     /// The width presets a column cycles through (`cycleWidth`). A column's `widthPreset` indexes it.
@@ -655,8 +655,8 @@ public struct Layout: Sendable, Equatable, Codable {
 
     /// **The payoff:** the target frame for every managed window at the given `scrollOffset`. A window
     /// whose column overlaps the viewport gets its tiled frame (strip position pulled into the
-    /// viewport); a window whose column is scrolled off gets a park slot (a sliver hugging the working
-    /// area's left edge, §4a/§10). The union is exhaustive over the strip's windows — one `Rect` each,
+    /// viewport); a window whose column is scrolled off gets a park slot (a nub in the working area's
+    /// bottom-right corner, §4a/§10). The union is exhaustive over the strip's windows — one `Rect` each,
     /// which is exactly what the shell sets via AX (tiled) or parks (off-viewport). This is the
     /// **truth-plane** placement: where the *real* window sits at rest.
     ///
@@ -672,7 +672,7 @@ public struct Layout: Sendable, Equatable, Codable {
         // margin by teleporting the window out of it (see `LayoutMetrics`' viewport note).
         let view = metrics.physicalViewport(at: scrollOffset)
         let visible = Set(s.visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
-        // Slivers hug the **physical** edge: a park slot inset by the outer gap would poke a window a
+        // Nubs hug the **physical** corner: a park slot inset by the outer gap would poke a window a
         // margin's width into the screen, which is the opposite of what parking is for.
         let lot = ParkingLot(frame: metrics.workingArea)
         let dx = area.minX - scrollOffset      // strip x → screen x for on-viewport columns

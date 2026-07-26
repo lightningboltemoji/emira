@@ -35,7 +35,10 @@ import EmiraCore
 // So the window is **inset by the struts**: the cover paints exactly the region the strip lives in, and
 // the chrome bands are simply left alone, showing the real, live menu bar and Dock. This is safe for the
 // same reason the strut exists — a managed window can never be in that band, tiled *or* parked, so there
-// is nothing there for the cover to hide (§4b step 3's no-exposure rule is about *moving* windows).
+// is nothing there for the cover to hide (§4b step 3's no-exposure rule is about *moving* windows). The
+// one exception is a hair thin: since parks became corner nubs (`Layout/Park.swift`, 2026-07-26) a
+// parked window's body crosses the Dock band on its way off the display — one point wide, at the far
+// right, uncovered.
 // Raising the cover above the menu bar instead would only substitute a stale menu bar for a doubled one.
 // The desktop base is still the whole display; it is placed at the display's rect in local coordinates
 // and clipped by the host layer, so the wallpaper behind the strip stays exactly where it was captured.

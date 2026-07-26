@@ -100,9 +100,21 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
 - Parking a window "off-screen" = **sliver-parking**. macOS will not let a window leave the screen entirely: ask for
   an *extreme* off-screen coordinate and it clamps to a ~40 px sliver in every direction (the top is fully blocked by
   the menu bar). But that clamp is **not a floor** — a *precise* position leaving ~1 px on screen is honored. So a
-  parked window sits at a unique, staggered slot hugging the working area's bottom-left corner, showing a
-  ~1 × 40 pt nub. Slots are computed by the layout engine like any other target geometry — deterministic and unique,
-  which keeps parked windows warm, keeps frames distinct for identity binding (§7), and stays out from under the Dock.
+  parked window sits at a unique, staggered slot showing a ~1 × 40 pt nub. Slots are computed by the layout engine
+  like any other target geometry — deterministic and unique, which keeps parked windows warm, keeps frames distinct
+  for identity binding (§7), and keeps the nub out from under the Dock.
+- **The nub is the window's top-left corner, at the working area's bottom-right.** Two choices, one reason each, both
+  about the *user's* relationship to a parked window rather than about macOS's rules:
+  - **~40 pt tall, not full height.** A park only needs enough visible pixels to be honored and stay warm; leaving the
+    window at full height draws a shadowed line down the whole screen edge for nothing. So a park is off *two* edges,
+    and distinctness then comes from the nub's *height* (40, 48, 56 …) instead of its position. The step has to clear
+    the ±2 pt frame tolerance identity binding uses — 1 pt apart would make two parked windows of one app ambiguous at
+    rebind, which costs both of them (§7). A tail of the window one point wide does cross the Dock band on its way off
+    the display, which is the one place a parked window is not under the cover.
+  - **Right edge, not left.** The nub is a **grab handle**: a user rescuing a parked window by hand throws the pointer
+    at the screen edge, where it stops. Against the right edge that lands on the window's own top-left corner — title
+    bar, draggable anywhere. Against the left it lands on the window's *far* edge, which is whatever toolbar control
+    the app put there.
 - **Because parked windows can't fully hide, they stay warm.** Occlusion is binary: any visible pixel makes a window
   `.visible` and its app keeps rendering. A window parked with a sliver showing kept drawing live video content over a
   3 s park. This inverts the risk the off-screen model was expected to carry — the danger was never "off-screen
