@@ -189,12 +189,27 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     /// A scoped window's real AX set landed. Total — an unknown id (or a repeat) no-ops.
     mutating func markLanded(_ id: WindowId) { awaitingLanding.remove(id) }
 
-    /// Re-arm the landing wait to *exactly* `moved` — the scoped windows a (re-)teleport actually
-    /// moved. The session is born awaiting the whole scope; the first teleport narrows that to the
-    /// windows that needed an AX set (a scoped window already at its target emits no `setFrame`, so no
-    /// `axLanded` will arrive for it), and an interrupt re-teleport re-arms it (moving the reals again
-    /// makes their earlier landings stale). Total.
+    /// Add `moved` — the scoped windows a (re-)teleport actually moved — to the landing wait.
+    ///
+    /// The session is born awaiting the whole scope; the first teleport narrows that to the windows
+    /// that needed an AX set (a scoped window already at its target emits no `setFrame`, so no
+    /// `axLanded` will arrive for it), and an interrupt re-teleport adds whatever it moved again.
+    ///
+    /// **It grows and never shrinks** (corrected 2026-07-26). Replacing the set outright was right for
+    /// the windows being re-teleported and wrong for everyone else: a re-teleport that moves *nothing*
+    /// — routine now that every redirect goes through `driveTransition` — would clear the wait for
+    /// windows whose sets are still in flight from the previous batch, and the cover could cross-fade
+    /// onto reals that have not arrived. Growing cannot hang the close instead, because a set already
+    /// issued always answers (`axLanded` or `axFailed`), and `holdTimeout` bounds the wait regardless.
+    /// The first narrowing still happens: the *initial* teleport is what replaces the scope-wide wait.
     mutating func armLandings<S: Sequence>(_ moved: S) where S.Element == WindowId {
+        awaitingLanding.formUnion(moved)
+    }
+
+    /// Narrow the landing wait to exactly `moved` — the initial teleport's form of `armLandings`,
+    /// where nothing is in flight yet and the scope-wide wait the session was born with is replaced by
+    /// the windows that genuinely needed a set.
+    mutating func setLandings<S: Sequence>(_ moved: S) where S.Element == WindowId {
         awaitingLanding = Set(moved)
     }
 
@@ -560,12 +575,13 @@ public struct Motion: Sendable, Equatable, Codable {
     /// A scoped window's real AX set landed (`Event.axLanded`). Total — no-op with no session.
     public mutating func markLanded(_ id: WindowId) { transition?.markLanded(id) }
 
-    /// Re-arm the landing wait to exactly `moved` — the scoped windows a (re-)teleport actually moved
-    /// (see `TransitionSession.armLandings`). The reducer calls this right after teleporting the reals
-    /// behind the cover, on both the initial raise and an interrupt re-teleport. Total — no-op with no
-    /// session.
-    public mutating func armLandings<S: Sequence>(_ moved: S) where S.Element == WindowId {
-        transition?.armLandings(moved)
+    /// Arm the landing wait with `moved` — the scoped windows a (re-)teleport actually moved (see
+    /// `TransitionSession.armLandings`). The reducer calls this right after teleporting the reals
+    /// behind the cover. The **initial** teleport replaces the scope-wide wait the session was born
+    /// with; every re-teleport after it only ever adds, so a redirect that moves nothing cannot free
+    /// sets that are still in flight. Total — no-op with no session.
+    public mutating func armLandings<S: Sequence>(_ moved: S, replacing: Bool = false) where S.Element == WindowId {
+        if replacing { transition?.setLandings(moved) } else { transition?.armLandings(moved) }
     }
 
     /// The hold-timeout fired (`Event.holdTimeout`) — record it before closing so the reducer keeps

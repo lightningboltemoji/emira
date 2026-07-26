@@ -50,14 +50,37 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var windowsByPid: [pid_t: [ScannedWindow]] = [:]
     var entries: [WindowListEntry] = []
 
+    /// How many times each app has been asked for its windows — the instrument for the scan
+    /// coalescer, which exists to keep this number off the app's serial AX lane.
+    private(set) var scanCounts: [pid_t: Int] = [:]
+
+    /// When true, `windows(of:then:)` parks its completion instead of answering, so a test can hold a
+    /// scan open and drive a *second* request into it. Without this every scan in the suite completed
+    /// before `handle(.windowAppeared(_:))` returned, and two overlapping scans of one app — the
+    /// condition the ghost-window bug lived in — were unreachable (2026-07-26).
+    var holdsAnswers = false
+    var pending: [(pid_t, @MainActor ([ScannedWindow]) -> Void)] = []
+
     func applications() -> [ScanTarget] { targets }
 
     func windows(of target: ScanTarget,
                  then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
-        completion(windowsByPid[target.pid] ?? [])
+        scanCounts[target.pid, default: 0] += 1
+        guard holdsAnswers else {
+            completion(windowsByPid[target.pid] ?? [])
+            return
+        }
+        pending.append((target.pid, completion))
     }
 
     func windowList() -> [WindowListEntry] { entries }
+
+    /// Answer the oldest parked scan.
+    func answerScan() {
+        guard !pending.isEmpty else { return }
+        let (pid, completion) = pending.removeFirst()
+        completion(windowsByPid[pid] ?? [])
+    }
 }
 
 /// An `ObservationSource` that records what it was asked to watch and answers frame reads on command.
@@ -184,6 +207,76 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     func id(titled title: String) -> WindowId? {
         created.first { $0.title == title }?.id
+    }
+}
+
+// MARK: - Scans that overlap (the burst, 2026-07-26)
+//
+// Four rapid ⌘N presses produce four `windowAppeared` notifications for one app. Answering each with
+// its own full re-scan puts four × (seven AX round trips per window) onto that app's *single serial
+// lane* — the same lane our placement writes queue on — so each scan's answer is joined against a
+// window list read progressively later than the frames it contains. That skew is what costs a window
+// its identity, so the fix is upstream of the join: ask once, and ask again afterwards.
+
+@Suite @MainActor struct WorldWatcherBurstTests {
+
+    @Test func aSecondNotificationDuringAScanIsCoalescedIntoOneRepeatScan() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.holdsAnswers = true
+        let before = world.windows.scanCounts[100] ?? 0
+
+        // Four ⌘N presses land while the first scan is still out on the lane.
+        for _ in 0..<4 { world.watcher.handle(.windowAppeared(100)) }
+        #expect(world.windows.scanCounts[100] == before + 1, "only one scan is in flight")
+        #expect(world.windows.pending.count == 1)
+
+        // When it returns, the coalesced request is honoured exactly once — not three more times.
+        world.windows.answerScan()
+        #expect(world.windows.scanCounts[100] == before + 2)
+        #expect(world.windows.pending.count == 1)
+
+        world.windows.answerScan()
+        #expect(world.windows.scanCounts[100] == before + 2, "and then it settles")
+        #expect(world.windows.pending.isEmpty)
+    }
+
+    @Test func aWindowTheWindowListKnowsAndAXDoesNotIsAskedAboutAgain() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.scheduler.fire()   // drain anything the boot scan scheduled
+
+        // A new Ghostty window exists as far as the window server is concerned, but the app has not
+        // described it over AX yet — the "asked too early" race, from the side that had no signal
+        // before. It leaves no `unbound` entry, so only `unclaimed` can notice it.
+        world.windows.entries.append(
+            WindowListEntry(number: 9, pid: 100, frame: rect(2100), isOnScreen: true))
+        world.watcher.handle(.windowAppeared(100))
+        #expect(world.created.map(\.title) == ["term", "one", "two"], "nothing invented")
+        #expect(world.scheduler.pending == 1, "a retry is scheduled")
+
+        // By the retry, AX describes it — and it is adopted, once.
+        world.windows.windowsByPid[100]?.append(
+            scanned(pid: 100, seed: 9, bundle: "com.mitchellh.ghostty", title: "new", frame: rect(2100)))
+        world.scheduler.fire()
+
+        #expect(world.created.map(\.title) == ["term", "one", "two", "new"])
+        #expect(world.registry.count == 4)
+    }
+
+    @Test func aKnownWindowIsReOfferedForWatchingSoAFailedRegistrationGetsAnotherChance() {
+        // `watch(windows:of:)` is idempotent, so re-offering costs nothing when the first attempt
+        // worked — and is the only second chance when it didn't. A window-level registration that
+        // failed silently means no destroy notification, i.e. a column that outlives its window.
+        let world = LiveWorld()
+        world.watcher.start()
+        let term = world.id(titled: "term")
+
+        world.watcher.handle(.windowAppeared(100))
+
+        let offers = world.source.watchedWindows.filter { $0.0 == 100 }
+        #expect(offers.count == 2, "boot, then the re-scan")
+        #expect(offers.last?.1 == [term].compactMap { $0 })
     }
 }
 

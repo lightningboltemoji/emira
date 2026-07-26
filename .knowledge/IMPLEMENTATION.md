@@ -150,6 +150,22 @@ never opens again, and the cover stops growing for the rest of the transition. T
 still is in flight spends its only chance at a layer), and asking it per window makes it incapable of starving. The
 **raise** keeps its all-or-nothing gate, because that one is about the base: a cover raised without it is not a cover.
 
+**A snap-path event arriving mid-transition *redirects* the session rather than returning nothing.** A
+`windowCreated` during a scroll reconciles the newcomer onto the strip; a branch that then retargets the viewport and
+emits no effects leaves it never placed, never captured, and never re-asserted, because nothing emits placements when
+a transition closes. Every such path goes through the same opens-or-redirects call the command paths use, which widens
+the scope, captures the newcomer and re-teleports the reals behind a raised cover. The consequence is that the
+landing wait **grows and never shrinks**: only the *initial* teleport replaces it, since a later re-teleport that
+moves nothing would otherwise clear the wait for sets still in flight and let the cover cross-fade onto reals that
+have not arrived.
+
+**`axFailed` records that we don't know where the window is.** Placement writes its target into `World`
+optimistically, which is what keeps a repeated idle event from re-emitting forever; the executor corrects that only
+when it could still read the frame back, which a timed-out write generally cannot. The lie then stands as truth and
+the placement diff skips the window forever. Marking it unverified makes that predicate answer `false`, and issuing
+the set clears it. Deliberately **not** a retry — nothing is scheduled — so a genuinely hung app costs one extra set
+per real event instead of a busy loop.
+
 **A deadline that fires must degrade, not black out.** Every `capture` is answered exactly once within a bounded
 deadline (250 ms), because the core raises the cover on the *last* `captureReady` and the hold-timeout only starts at
 the raise — a dropped ack is a command that silently does nothing, with nothing to rescue it. A head batch that
@@ -361,6 +377,11 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     between the two calls is invalid.
   - **New column ids are minted only inside `Layout`.** A re-issued `ColumnId` is not a cosmetic collision: it is the
     key `Motion.columnWidths` and the cover's animation identity hang on.
+  - **Focus off the strip is an entry condition, not a dead end.** `World` deliberately records whatever the system
+    says is focused — a dialog, furniture, a window an app raised itself — and activating an app surfaces whichever
+    window is `AXMain` at that moment, which need not be the one we asked for. So a focus command with no column to
+    start from re-enters the strip at the near end: `right` at the leftmost column, `left` at the rightmost. The
+    strip's own edges still no-op; no-wrap is a different fact.
 - **Rules engine:** pure predicates over window metadata → assign-to-workspace / float / initial-width. Definitions
   come from config; evaluation is pure. Built-in taxonomy defaults: only `AXStandardWindow` tiles;
   dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
@@ -423,6 +444,24 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     refresh rate during a drag and each answer queues on the *same serial lane* our placement writes use.
   - **A scan reports what *changed*, not what it saw.** A re-scan that announced an app's other four windows would
     steal the user's focus every time a fifth opened, since the reducer gives a new window focus.
+  - **Three rules keep the join from running twice** (`PRINCIPLES.md` §7): a known element goes straight to a rebind;
+    an entry already bound to a live window is not a candidate for anything; and `WindowRegistry.adopt` returns `nil`
+    rather than binding an element that already carries a different number.
+  - **`Report.unclaimed` is the join's other direction, and it must be on-screen-only.** `unbound` names a window AX
+    described that the list didn't; nothing named the reverse, so "the notification arrived before the window server
+    would list it" and "this window's AX attributes were unreadable" both left no trace and triggered no retry. Both
+    now feed the same bounded chain. The on-screen restriction is not a tweak: ordinary apps carry several off-screen
+    layer-0 entries that are not windows and never will be — four `1800×39` strips at the origin for Ghostty, Safari
+    *and* Finder — and counting them would mark every scan of those apps incomplete forever.
+  - **Scans coalesce per app, exactly as frame reads already do.** Four ⌘N presses otherwise produce four concurrent
+    full re-scans of one app, each seven AX round trips per window, on the one serial lane placement writes share. It
+    is the same argument coalescing makes for drags — a notification storm is a poll unless you coalesce it — and it
+    is *upstream* of the identity join: less lane pressure is less skew between the join's two sides.
+  - **A failed window-level observer registration rolls back.** Discarding the result while marking the window watched
+    optimistically makes a registration a busy app refused permanent *and* silent: no destroy notification, so `World`
+    keeps the window and the strip carries an empty column for the session. Registration is idempotent, so re-offering
+    an app's known windows on every scan costs nothing when the first attempt worked and is the only second chance
+    when it didn't.
 - **Capture** — ScreenCaptureKit stills; live streams *(later)*. Identity comes from `WindowRegistry`: bound once at
   first sight, keyed on the stable public `CGWindowID` thereafter.
   - **A capture batch is atomic** (stills + base together, acked together): per-window acks would let the core count

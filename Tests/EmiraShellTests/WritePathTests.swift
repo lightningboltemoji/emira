@@ -30,14 +30,18 @@ import EmiraCore
 
     /// Take a window into a registry and hand back its minted id. The AX element is addressed to a pid
     /// that isn't running: nothing here ever writes through it, which is the whole point of the seam.
+    ///
+    /// Keyed on the *window number*, not the pid, so two windows of one app get two distinct elements —
+    /// which is what real ones have, and what the registry now requires (`adopt` refuses to bind one
+    /// element to two window numbers).
     @discardableResult
     static func adopt(_ registry: WindowRegistry, pid: pid_t, number: CGWindowID) -> WindowId {
         registry.adopt(
             ObservedWindow(pid: pid, bundleId: "app.\(pid)", title: "w", role: .standard,
                            frame: .zero, isMinimized: false),
-            element: AXWindow(AXUIElementCreateApplication(pid)),
+            element: AXWindow(AXUIElementCreateApplication(pid_t(number))),
             number: number
-        ).id
+        )!.id
     }
 
     /// A state that knows one display and one tiled window per entry in `apps`, with each window

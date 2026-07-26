@@ -251,6 +251,12 @@ let watcher = WorldWatcher(
     scheduler: DispatchScheduler(),
     sink: runtime.sink)
 
+// A scan that gave up with something unaccounted for is the one failure the user cannot see from the
+// outside: the window is simply not managed, and nothing else says so.
+watcher.onIncompleteScan = { report in
+    log("scan gave up: \(report.summary)")
+}
+
 runtime.dispatch(.screensChanged(geometry.monitors(screens)))
 // Asynchronous by construction — every app is scanned on its own AX lane, so the boot cost is the
 // slowest app, not the sum. The report lands back on the main actor a few milliseconds later, by which

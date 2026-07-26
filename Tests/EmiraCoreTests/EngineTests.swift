@@ -398,13 +398,22 @@ import EmiraMotion
     @Test func transitionFeedbackEventsAreInertWhenIdle() {
         // With no session open (steady state), every transition-feedback event acks nothing and leaves
         // the state untouched — the totality guarantee for a stray ack that outlives its transition.
+        //
+        // `axFailed` is the one exception, and it is not about the transition: it says the frame the
+        // core optimistically recorded never happened, which is true with or without a session open
+        // (`World.unverified`, 2026-07-26). It still emits nothing — re-placing from here would be a
+        // busy loop against a hung app — so what it changes is only what the *next* placement asks.
         let (s0, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
-        for event: Event in [.tick(dt: 0.016), .axLanded(WindowId(1)), .axFailed(WindowId(1)),
+        for event: Event in [.tick(dt: 0.016), .axLanded(WindowId(1)),
                              .captureReady(WindowId(1)), .crossfadeDone, .holdTimeout] {
             let (s1, fx) = Engine.reduce(s0, event)
             #expect(fx.isEmpty)
             #expect(s1 == s0)
         }
+
+        let (failed, fx) = Engine.reduce(s0, .axFailed(WindowId(1)))
+        #expect(fx.isEmpty, "still emits nothing — the retry is the next real event, not this one")
+        #expect(failed.world.unverified == [WindowId(1)])
     }
 
     // MARK: - The animated transition session (§3/§4b)

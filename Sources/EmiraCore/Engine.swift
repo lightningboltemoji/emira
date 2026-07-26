@@ -260,7 +260,7 @@ public enum Engine {
                 guard let session = s.motion.transition else { return (s, []) }
                 var effects: [Effect] = [.beginTransition(session.bindings)]
                 effects += elevationEffects(s)      // z-order the bindings alone can't express
-                effects += teleportBehindCover(&s)
+                effects += teleportBehindCover(&s, initial: true)
                 return (s, effects)
             }
             if s.motion.isReadyToExtend {
@@ -300,9 +300,14 @@ public enum Engine {
             return (s, effects)
 
         case .axFailed(let id):
-            // A set timed out or was clamped away. During a transition, resolve its landing so a single
-            // stuck window can't wedge the cover open (the ~1 s `holdTimeout` is the ultimate backstop);
-            // true retry/drop reconciliation of the truth is a later refinement. Idle ⇒ no-op for now.
+            // A set timed out or was refused. During a transition, resolve its landing so a single
+            // stuck window can't wedge the cover open (the ~1 s `holdTimeout` is the ultimate backstop).
+            //
+            // And mark what `World` holds for it as a guess (`World.unverified`): the optimistic frame
+            // `emitPlacements` recorded is now known to be wrong, and nothing else will correct it —
+            // the executor reports a real frame only when it could read one back, which a timed-out
+            // write generally cannot. The next placement re-issues the set instead of skipping it.
+            s.world.markUnverified(id)
             s.motion.markLanded(id)
             let effects = maybeCloseTransition(&s)
             return (s, effects)
@@ -373,21 +378,34 @@ public enum Engine {
 
     /// Move keyboard focus. Horizontal (left/right) crosses to the neighbouring column and reveals
     /// it; vertical (up/down) moves within the focused column's stack (no scroll). With nothing
-    /// focused, either direction focuses the first window on the strip. No-op at an edge (no wrap) or
-    /// on an empty strip.
+    /// focused — or with focus resting somewhere the strip does not go — either direction re-enters
+    /// the strip at its near end. No-op at an edge (no wrap) or on an empty strip.
+    ///
+    /// **Focus off the strip is an entry condition, not a dead end** (corrected 2026-07-26). `World`
+    /// records whatever the system says is focused, including a window with no column: a dialog, a
+    /// window we classified as furniture, or one whose app raised it itself — and `AXWindowWriter.focus`
+    /// makes that routine, because activating an app surfaces whichever of its windows is `AXMain` at
+    /// that moment, which need not be the one we asked for. Returning `[]` there stranded *every*
+    /// direction permanently: the only escape was clicking a tiled window, and the user's report of
+    /// "focus hits a block" is exactly this. The strip's own edges still no-op — that is the no-wrap
+    /// rule and it is a different fact.
     private static func handleFocus(_ s: inout State, _ direction: Direction) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
 
-        // Nothing focused yet: focus the first window on the strip, wherever the direction pointed.
-        guard let current = s.world.focusedWindow else {
-            guard let first = s.layout.allWindowIds.first else { return [] }
-            s.world.setFocus(first)
-            return scrollReveal(&s, to: first, center: s.config.centerFocusedColumn) + [.focus(first)]
+        // Nothing focused, or focus is not on the strip: re-enter at the end the direction came from,
+        // so `right` from off-strip lands on the leftmost column and `left` on the rightmost.
+        let column = s.world.focusedWindow.flatMap { s.layout.columnIndex(ofWindow: $0) }
+        guard let column else {
+            let entry = direction == .left
+                ? s.layout.columns.last?.windowIds.first
+                : s.layout.columns.first?.windowIds.first
+            guard let entry else { return [] }
+            s.world.setFocus(entry)
+            return scrollReveal(&s, to: entry, center: s.config.centerFocusedColumn) + [.focus(entry)]
         }
 
         switch direction.axis {
         case .horizontal:
-            guard let column = s.layout.columnIndex(ofWindow: current) else { return [] }
             let targetColumn = direction == .right ? column + 1 : column - 1
             guard s.layout.columns.indices.contains(targetColumn),
                   let target = s.layout.columns[targetColumn].windowIds.first else { return [] }
@@ -396,7 +414,7 @@ public enum Engine {
             return scrollReveal(&s, to: target, center: s.config.centerFocusedColumn) + [.focus(target)]
 
         case .vertical:
-            guard let column = s.layout.columnIndex(ofWindow: current) else { return [] }
+            guard let current = s.world.focusedWindow else { return [] }
             let stack = s.layout.columns[column].windowIds
             guard let row = stack.firstIndex(of: current) else { return [] }
             let targetRow = direction == .down ? row + 1 : row - 1
@@ -637,18 +655,32 @@ public enum Engine {
     ///
     /// Transition-safe by construction: in the (rare) case a snap-path event lands while an animated
     /// scroll is still in flight, we must not `snap` the viewport out from under a raised cover — that
-    /// would tear the animation. We instead *redirect* the running scroll (retarget, velocity carried)
-    /// and leave the session's teleport/landing bookkeeping to the command path (`scrollReveal`). In
-    /// steady state — the overwhelmingly common case — this is a plain snap + place.
+    /// would tear the animation. We instead **redirect** the running session, which is exactly what
+    /// `driveTransition` is (retarget with velocity carried, widen the scope, capture what that added,
+    /// and re-teleport the reals behind a raised cover). In steady state — the overwhelmingly common
+    /// case — this is a plain snap + place.
+    ///
+    /// **Redirecting used to mean retargeting and nothing else, and that dropped windows** (corrected
+    /// 2026-07-26). A `windowCreated` arriving mid-transition reconciles the newcomer onto the strip on
+    /// the line above, and the old branch then returned no effects at all: no `setFrame` (so the real
+    /// window stayed wherever the app opened it), no `capture` (so it had no layer and the cover slid a
+    /// hole where it should be), and nothing re-asserts placement afterwards, because `closeTransition`
+    /// emits nothing. One rapid ⌘N landing inside a focus scroll was enough — a column on the strip
+    /// with its window loose behind the cover. Going through `driveTransition` closes all three, and it
+    /// is the same call the command paths already make.
     private static func reveal(_ s: inout State, _ id: WindowId, center: Bool) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
+        let start = s.motion.viewportOffset.current
         let offset = center
             ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
-            : s.layout.scrollOffsetToReveal(window: id, from: s.motion.viewportOffset.current, metrics: metrics)
+            : s.layout.scrollOffsetToReveal(window: id, from: start, metrics: metrics)
         if s.motion.isTransitioning {
-            if let offset { s.motion.retargetViewport(to: offset) }
-            return []
+            // A window with no column (a float taking focus) reveals to nowhere; the session keeps the
+            // destination it already had, and the scope is still re-checked against it.
+            let end = offset ?? s.motion.viewportOffset.target
+            return driveTransition(&s, to: end,
+                                   scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
         }
         if let offset { s.motion.snapViewport(to: offset) }
         return emitPlacements(&s)
@@ -819,7 +851,11 @@ public enum Engine {
     /// are repositioned (a park→park window's sliver ordinal can shift too), but only *scoped* moves are
     /// waited on — park→park motion is invisible and doesn't gate the close (§3). Reuses the
     /// `emitPlacements` diff+optimistic-update discipline, just at the target offset rather than current.
-    private static func teleportBehindCover(_ s: inout State) -> [Effect] {
+    ///
+    /// - Parameter initial: the teleport at the cover's raise, which *replaces* the scope-wide landing
+    ///   wait the session was born with. Every later re-teleport only adds to it, because sets from the
+    ///   previous batch may still be in flight (`Motion.armLandings`).
+    private static func teleportBehindCover(_ s: inout State, initial: Bool = false) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(), let scope = s.motion.transition?.windows else { return [] }
         let offset = s.motion.viewportOffset.target
@@ -837,7 +873,7 @@ public enum Engine {
             s.world.updateFrame(id, to: target)     // optimistic: AX will land here (or axFailed)
             if scopeSet.contains(id) { moved.append(id) }
         }
-        s.motion.armLandings(moved)                 // wait only on the scoped windows that moved
+        s.motion.armLandings(moved, replacing: initial)   // wait on the scoped windows that moved
         return effects
     }
 
@@ -956,6 +992,8 @@ public enum Engine {
     /// window at the right size in the wrong place must still move.
     private static func isAlreadyPlaced(_ world: World, _ id: WindowId,
                                         at target: Rect, question: Size?) -> Bool {
+        // A frame we have been told is a guess is not evidence of anything (`World.unverified`).
+        guard !world.unverified.contains(id) else { return false }
         guard let known = world.windows[id]?.frame else { return false }
         if approximatelyEqual(known, target) { return true }
         guard let correction = world.corrections[id], let question,

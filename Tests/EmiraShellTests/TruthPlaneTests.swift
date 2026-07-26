@@ -42,7 +42,18 @@ private func scanned(pid: pid_t = 100, bundle: String = "com.test.app", title: S
     ScannedWindow(
         observed: observed(pid: pid, bundle: bundle, title: title, role: role,
                            frame: frame, minimized: minimized),
-        element: AXWindow(AXUIElementCreateApplication(pid)))
+        element: windowElement(pid: pid, frame: frame))
+}
+
+/// A distinct AX element per window, seeded from its app and frame.
+///
+/// Two windows of one app previously shared `AXUIElementCreateApplication(pid)`, which real windows
+/// never do — and since 2026-07-26 the registry refuses to bind one element to two window numbers, so
+/// the shortcut stopped being harmless. Frame is a sound seed here because the identity join needs
+/// distinct frames anyway.
+private func windowElement(pid: pid_t, frame: Rect) -> AXWindow {
+    AXWindow(AXUIElementCreateApplication(
+        pid_t(truncatingIfNeeded: Int(pid) &* 1_000_003 &+ Int(frame.minX) &* 1009 &+ Int(frame.minY))))
 }
 
 private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
@@ -246,11 +257,15 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 
 @Suite @MainActor struct WindowRegistryTests {
 
+    /// A distinct AX element per window. Real windows never share one, and since 2026-07-26 `adopt`
+    /// refuses to bind a single element to two window numbers — the ghost-column guard.
+    private func element(_ seed: pid_t) -> AXWindow { AXWindow(AXUIElementCreateApplication(seed)) }
+
     @Test func idsAreMintedOncePerWindowNumber() {
         let registry = WindowRegistry()
 
-        let first = registry.adopt(observed(frame: rect(0)), element: AXWindow(AXUIElementCreateSystemWide()), number: 41)
-        let second = registry.adopt(observed(frame: rect(700)), element: AXWindow(AXUIElementCreateSystemWide()), number: 42)
+        let first = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
+        let second = registry.adopt(observed(frame: rect(700)), element: element(42), number: 42)!
 
         #expect(first.id != second.id)
         #expect(registry.count == 2)
@@ -267,8 +282,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         let stale = AXWindow(AXUIElementCreateApplication(100))
         let fresh = AXWindow(AXUIElementCreateApplication(200))
 
-        let first = registry.adopt(observed(frame: rect(0)), element: stale, number: 41)
-        let again = registry.adopt(observed(title: "renamed", frame: rect(700)), element: fresh, number: 41)
+        let first = registry.adopt(observed(frame: rect(0)), element: stale, number: 41)!
+        let again = registry.adopt(observed(title: "renamed", frame: rect(700)), element: fresh, number: 41)!
 
         #expect(again.id == first.id)
         #expect(registry.count == 1)
@@ -280,7 +295,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         let window = observed(bundle: "com.apple.Safari", title: "Apple", role: .dialog,
                               frame: rect(120, 30), minimized: true)
 
-        let snapshot = registry.adopt(window, element: AXWindow(AXUIElementCreateSystemWide()), number: 7)
+        let snapshot = registry.adopt(window, element: element(7), number: 7)!
 
         #expect(snapshot.bundleId == "com.apple.Safari")
         #expect(snapshot.title == "Apple")
@@ -296,22 +311,22 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // after a window is destroyed, so a stale number → id entry would eventually hand a dead
         // window's identity — and its position on the strip — to an unrelated new window.
         let registry = WindowRegistry()
-        let first = registry.adopt(observed(frame: rect(0)), element: AXWindow(AXUIElementCreateSystemWide()), number: 41)
+        let first = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
 
         registry.forget(first.id)
         #expect(registry.count == 0)
         #expect(registry.id(forNumber: 41) == nil)
         #expect(registry.element(for: first.id) == nil)
 
-        let reused = registry.adopt(observed(frame: rect(0)), element: AXWindow(AXUIElementCreateSystemWide()), number: 41)
+        let reused = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
         #expect(reused.id != first.id)
     }
 
     @Test func quittingAnAppForgetsExactlyItsOwnWindows() {
         let registry = WindowRegistry()
-        let a1 = registry.adopt(observed(pid: 100, frame: rect(0)), element: AXWindow(AXUIElementCreateSystemWide()), number: 1)
-        let a2 = registry.adopt(observed(pid: 100, frame: rect(700)), element: AXWindow(AXUIElementCreateSystemWide()), number: 2)
-        let b1 = registry.adopt(observed(pid: 200, frame: rect(1400)), element: AXWindow(AXUIElementCreateSystemWide()), number: 3)
+        let a1 = registry.adopt(observed(pid: 100, frame: rect(0)), element: element(1), number: 1)!
+        let a2 = registry.adopt(observed(pid: 100, frame: rect(700)), element: element(2), number: 2)!
+        let b1 = registry.adopt(observed(pid: 200, frame: rect(1400)), element: element(3), number: 3)!
 
         let gone = registry.forget(app: 100)
 
@@ -328,8 +343,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         let a = AXWindow(AXUIElementCreateApplication(100))
         let b = AXWindow(AXUIElementCreateApplication(200))
 
-        let first = registry.adopt(observed(pid: 100, frame: rect(0)), element: a, number: 1)
-        let second = registry.adopt(observed(pid: 200, frame: rect(700)), element: b, number: 2)
+        let first = registry.adopt(observed(pid: 100, frame: rect(0)), element: a, number: 1)!
+        let second = registry.adopt(observed(pid: 200, frame: rect(700)), element: b, number: 2)!
 
         #expect(registry.id(for: AXWindow(AXUIElementCreateApplication(100))) == first.id)
         #expect(registry.id(for: AXWindow(AXUIElementCreateApplication(200))) == second.id)
@@ -342,7 +357,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // `Event` about a window the core has already removed.
         let registry = WindowRegistry()
         let element = AXWindow(AXUIElementCreateApplication(100))
-        let window = registry.adopt(observed(pid: 100, frame: rect(0)), element: element, number: 1)
+        let window = registry.adopt(observed(pid: 100, frame: rect(0)), element: element, number: 1)!
 
         registry.forget(window.id)
 

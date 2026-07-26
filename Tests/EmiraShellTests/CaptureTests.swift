@@ -107,7 +107,7 @@ import EmiraCore
             _ = registry.adopt(
                 ObservedWindow(pid: 100, bundleId: "com.test.app", title: "w\(id)", role: .standard,
                                frame: Rect(x: 0, y: 0, width: 100, height: 100), isMinimized: false),
-                element: AXWindow(AXUIElementCreateApplication(100)),
+                element: AXWindow(AXUIElementCreateApplication(pid_t(id))),   // distinct per window
                 number: CGWindowID(id))
         }
         return registry

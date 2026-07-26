@@ -220,16 +220,31 @@ public final class AXObservationSource: ObservationSource {
         guard !fresh.isEmpty else { return }
         watchedWindows[app, default: [:]].merge(fresh) { existing, _ in existing }
 
+        // **A failed registration is rolled back so it can be retried** (2026-07-26).
+        // `AXObserverAddNotification` is a round trip, and a busy app — one opening four windows at
+        // once, say — answers `.cannotComplete`. Discarding that verdict while `watchedWindows` stayed
+        // marked made the failure permanent *and* silent: the window's `uiElementDestroyed` never
+        // arrives, so `World` keeps it, `Layout` keeps its column, and the strip carries an empty slot
+        // for the rest of the session. Un-marking is the whole fix, because `WorldWatcher` re-offers
+        // every window of an app on every subsequent scan of it.
         let handle = ObserverHandle(observer: observer, refcon: selfPointer())
-        let elements = Array(fresh.values)
+        let elements = fresh
         client.perform(app: app) { _ in
-            for element in elements {
+            elements.compactMap { id, element in
+                // Every notification attempted rather than short-circuiting, for the same reason
+                // `watch(app:)` gives: a window observed for half of what it does is worse than one
+                // we know we have to ask about again.
+                var ok = true
                 for name in AXNotification.window {
-                    _ = AXObserverAddNotification(
+                    let result = AXObserverAddNotification(
                         handle.observer, element.element, name as CFString, handle.refcon)
+                    ok = (result == .success) && ok
                 }
+                return ok ? nil : id
             }
-        } then: { _ in }
+        } then: { [weak self] failed in
+            for id in failed { self?.watchedWindows[app]?[id] = nil }
+        }
     }
 
     public func unwatch(window id: WindowId, of app: pid_t) {

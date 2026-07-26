@@ -166,6 +166,22 @@ public struct World: Sendable, Equatable, Codable {
     /// a handful of stubborn apps is not a trade worth making. Keyed by the same id as `windows` and
     /// garbage-collected by the same `remove`, so the two cannot drift.
     public private(set) var corrections: [WindowId: SizeCorrection]
+    /// Windows whose recorded frame is a guess we know to be wrong.
+    ///
+    /// Placement records its target into `windows` **optimistically** — we asked, it will land, and a
+    /// failure comes back as `Event.axFailed` — which is what stops a repeated idle event from
+    /// re-emitting the same set forever. But `axFailed` is precisely the case where it did *not* land,
+    /// and the executor can only correct the frame when it could still *read* it back
+    /// (`AXExecutor.report`); a write that timed out usually cannot be read either, so nothing arrives
+    /// and the optimistic value stands as truth. The window then sits wherever the app left it while
+    /// `Engine.isAlreadyPlaced` skips it on every future placement — a column-shaped hole on the strip
+    /// with a real window loose behind it, for as long as its target doesn't happen to change.
+    ///
+    /// So `axFailed` records the one thing we do know: **that we don't know**. Membership makes
+    /// `isAlreadyPlaced` answer `false`, so the next placement re-issues the set; issuing it clears the
+    /// mark (`updateFrame`). It is deliberately *not* a retry — nothing here schedules anything, so a
+    /// genuinely hung app costs one extra set per real event rather than a busy loop (2026-07-26).
+    public private(set) var unverified: Set<WindowId>
 
     /// An empty world — the launch state before any window is enumerated. Populate via the mutators.
     public init() {
@@ -174,6 +190,7 @@ public struct World: Sendable, Equatable, Codable {
         self.monitors = []
         self.focusedWindow = nil
         self.corrections = [:]
+        self.unverified = []
     }
 
     // MARK: - Mutators (each folds exactly one truth-plane Event; all are total)
@@ -201,14 +218,28 @@ public struct World: Sendable, Equatable, Codable {
         guard let window = windows.removeValue(forKey: id) else { return }
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
+        unverified.remove(id)
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
         }
     }
 
     /// Fold `Event.windowFrameChanged`: update the last-known truth frame. No-op on an unknown id.
+    ///
+    /// Also the optimistic write from `Engine.emitPlacements`. Either way the recorded frame is now
+    /// the freshest answer we have, so it clears any `unverified` mark: an observation is the truth,
+    /// and a re-issued set is the question being asked again.
     public mutating func updateFrame(_ id: WindowId, to frame: Rect) {
+        guard windows[id] != nil else { return }
         windows[id]?.frame = frame
+        unverified.remove(id)
+    }
+
+    /// Fold `Event.axFailed`: the app refused or never answered the write, so what `windows` holds for
+    /// this id is a guess we have been told is wrong. See `unverified`.
+    public mutating func markUnverified(_ id: WindowId) {
+        guard windows[id] != nil else { return }
+        unverified.insert(id)
     }
 
     /// Fold `Event.placementCorrected`: record that asking this window for `wanted` produced `actual`.

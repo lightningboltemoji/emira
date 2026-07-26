@@ -314,6 +314,11 @@ Much of the "slow AX" pain is self-inflicted and controllable:
   unprivileged**, which is why identity costs exactly *one* user permission and not two: the window list's numbers,
   pids and bounds need no grant, titles come from AX, and `SCWindow.windowID` is the same integer, so capture inherits
   the bindings.
+  - **"Once" is load-bearing: a window that already has an identity is never re-joined.** Both sides of the join are
+    snapshots of a moving system — AX frames read on the app's serial lane, the window list read later on the main
+    actor — and *the thing moving windows in between is us*, since placement writes queue on that same lane. Under a
+    burst, a stale read reports window A at the frame window B has since taken, A matches B's entry **uniquely**, and
+    nothing looks wrong. Re-joining a bound window can therefore only ever produce a *wrong* answer.
   - A notification hands back an `AXUIElement` and nothing else — the case yabai answers with
     `_AXUIElementGetWindow`. First-sight binding answers it by keeping the *reverse* map (element → `WindowId`), which
     works because `AXUIElement` compares **structurally**: the element arriving with a notification is a different

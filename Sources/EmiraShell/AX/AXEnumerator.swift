@@ -110,11 +110,17 @@ public final class AXEnumerator {
         public let seenWindows: Int
         /// The windows that could not be given a stable identity, and why.
         public let unbound: [Unbound]
+        /// How many windows of the scanned apps the window server lists that AX did not describe —
+        /// a window that appeared between the two reads, or one whose AX attributes were unreadable.
+        /// Like `unbound`, a reason to ask again (`WorldWatcher`).
+        public let unclaimed: Int
 
         /// How many apps were scanned.
         public var scannedApps: Int { apps.count }
         /// How many windows came away with an identity, new or already held.
         public var boundWindows: Int { snapshots.count + rebound.count }
+        /// Whether this scan saw something it could not account for, on either side of the join.
+        public var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 }
 
         /// A window AX described but that we declined to manage.
         public struct Unbound: Sendable, Equatable {
@@ -124,14 +130,18 @@ public final class AXEnumerator {
             public let reason: WindowIdentity.Rejection.Reason
         }
 
-        /// One line for the boot log.
+        /// One line for the log — at boot, and for every steady-state scan that saw something it could
+        /// not account for. A window manager quietly not managing something is the failure the user
+        /// cannot debug, and until 2026-07-26 only the boot scan ever said anything.
         public var summary: String {
-            let base = "\(boundWindows)/\(seenWindows) windows bound across \(scannedApps) apps"
-            guard !unbound.isEmpty else { return base }
-            let detail = unbound
-                .map { "\($0.bundleId) “\($0.title)” (\($0.reason.rawValue))" }
-                .joined(separator: ", ")
-            return base + "; unbound: " + detail
+            var line = "\(boundWindows)/\(seenWindows) windows bound across \(scannedApps) apps"
+            if !unbound.isEmpty {
+                line += "; unbound: " + unbound
+                    .map { "\($0.bundleId) “\($0.title)” (\($0.reason.rawValue))" }
+                    .joined(separator: ", ")
+            }
+            if unclaimed > 0 { line += "; \(unclaimed) listed but not described by AX" }
+            return line
         }
     }
 
@@ -165,7 +175,8 @@ public final class AXEnumerator {
             // No apps is a legitimate answer (a freshly booted machine, or — far more likely — the
             // Accessibility grant is missing and nothing will ever answer). Complete anyway: a
             // callback that never fires would leave the daemon waiting forever on an empty desktop.
-            completion(Report(snapshots: [], rebound: [], apps: [], seenWindows: 0, unbound: []))
+            completion(Report(snapshots: [], rebound: [], apps: [], seenWindows: 0,
+                              unbound: [], unclaimed: 0))
             return
         }
 
@@ -182,26 +193,79 @@ public final class AXEnumerator {
 
     /// Join, adopt, and describe. Split out so the interesting half is one straight-line function over
     /// values.
+    ///
+    /// **A window we already know is never re-joined** (2026-07-26). Identity is bound once, at first
+    /// sight, and kept for the window's life (`PRINCIPLES.md` §7) — so re-running a *frame* match for a
+    /// window that already has an id can only ever produce a wrong answer. The two sides of the join
+    /// are snapshots of a moving system taken at different instants (see the file header), and the
+    /// thing moving windows in between is *us*: a placement write queued on the same lane as the AX
+    /// read. Under a burst of window creation the stale read reports window A at the frame window B has
+    /// since taken, A matches B's list entry uniquely, and nothing about that looks wrong to the join.
+    /// Skipping known elements removes the whole failure mode rather than tightening a tolerance
+    /// against it, and it makes the "bound once, at first sight" claim literally true in the code.
     private func finish(_ scanned: [ScannedWindow], apps: [ScanTarget]) -> Report {
-        let binding = WindowIdentity.bind(scanned.map(\.observed), to: source.windowList())
-        var snapshots: [WindowSnapshot] = []
+        let entries = source.windowList()
+
         var rebound: [WindowId] = []
+        var fresh: [ScannedWindow] = []
+        for window in scanned {
+            if let id = registry.id(for: window.element) {
+                // Re-adopting refreshes the AX element and the observed metadata against the id it
+                // already has; the number is the one already on file, so the join is not consulted.
+                if let record = registry.record(id) {
+                    registry.adopt(window.observed, element: window.element, number: record.number)
+                }
+                rebound.append(id)
+            } else {
+                fresh.append(window)
+            }
+        }
+
+        // An entry already bound to a live window is not a candidate for anything: its identity is
+        // settled. Withholding it is the second half of the same rule — it stops a stale frame from
+        // claiming a *known* window's entry as well as from claiming an unknown one's.
+        let available = entries.filter { registry.id(forNumber: $0.number) == nil }
+        let binding = WindowIdentity.bind(fresh.map(\.observed), to: available)
+
+        var snapshots: [WindowSnapshot] = []
+        var claimed: Set<CGWindowID> = []
         for match in binding.matches {
-            // Asked *before* adopting, because adopting is what makes it known. This one line is the
-            // difference between a re-scan being a silent refresh and a re-scan announcing five births.
-            let known = registry.id(forNumber: match.number) != nil
-            let snapshot = registry.adopt(scanned[match.observed].observed,
-                                          element: scanned[match.observed].element,
-                                          number: match.number)
-            if known { rebound.append(snapshot.id) } else { snapshots.append(snapshot) }
+            guard let snapshot = registry.adopt(fresh[match.observed].observed,
+                                                element: fresh[match.observed].element,
+                                                number: match.number) else { continue }
+            claimed.insert(match.number)
+            snapshots.append(snapshot)
         }
         let unbound = binding.rejections.map { rejection in
-            let observed = scanned[rejection.observed].observed
+            let observed = fresh[rejection.observed].observed
             return Report.Unbound(bundleId: observed.bundleId, title: observed.title,
                                   frame: observed.frame, reason: rejection.reason)
         }
+
+        // The window server shows a window of an app we just scanned, and AX did not describe it — the
+        // mirror image of `unbound`, and the half that had no signal at all before. It is how "the
+        // notification arrived before the app would list the window" looks from this side, and it is
+        // also what a window whose AX attributes were unreadable leaves behind (`snapshot()` drops it
+        // before the join, so it never reaches `unbound` either). Both are the §2 "asked too early"
+        // race, so both now reach the same bounded retry.
+        //
+        // **Only entries the window server calls on screen count**, and that restriction is what makes
+        // this usable rather than a permanent retry loop. A real desktop shows ordinary apps carrying
+        // several layer-0 entries that are not windows and never will be — Ghostty, Safari and Finder
+        // each answer with four `1800×39` strips at the origin, plus 64×64 and 0×0 oddments — and all
+        // of them are off screen. Counting those would make every scan of those apps "incomplete"
+        // forever, i.e. three scans where one would do, which is precisely the lane pressure the
+        // coalescer upstream exists to remove. An *on-screen* entry is the case worth asking again
+        // about: it is a window the user can see, and we have no identity for it. (A window on another
+        // Space or in the Dock is off screen and therefore not chased; it is adopted when it comes
+        // back, by the notification that brings it.)
+        let scannedPids = Set(apps.map(\.pid))
+        let unclaimed = available.filter {
+            $0.isOnScreen && scannedPids.contains($0.pid) && !claimed.contains($0.number)
+        }
+
         return Report(snapshots: snapshots, rebound: rebound, apps: apps,
-                      seenWindows: scanned.count, unbound: unbound)
+                      seenWindows: scanned.count, unbound: unbound, unclaimed: unclaimed.count)
     }
 
     /// The fan-out's accumulator. A reference type because several escaping completions append to it;

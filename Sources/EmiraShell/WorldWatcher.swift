@@ -62,6 +62,15 @@ public final class WorldWatcher {
     private let scheduler: any DelayScheduler
     private let sink: EventSink
 
+    /// Called for every scan that could not account for something it saw — on either side of the join.
+    ///
+    /// Only the *boot* scan was ever reported (the daemon's `start` completion), so through 2026-07-26
+    /// a steady-state window that failed to bind was invisible: no log line, no state-dump entry,
+    /// nothing but a window sitting untiled on the desktop. `AXEnumerator`'s own header says a window
+    /// manager quietly not managing something is the failure the user cannot debug; this is that
+    /// sentence made true after launch as well.
+    public var onIncompleteScan: (@MainActor (AXEnumerator.Report) -> Void)?
+
     /// Every app we know how to re-scan, by pid. Populated from scan reports and from launches.
     private var apps: [pid_t: ScanTarget] = [:]
 
@@ -74,6 +83,14 @@ public final class WorldWatcher {
 
     /// Windows that moved again while their read was out. Re-read exactly once when it returns.
     private var moved: Set<WindowId> = []
+
+    /// Apps with a scan out on a lane right now. The gate on the *scan* coalescer — the same shape as
+    /// `reading`, for the same reason (2026-07-26).
+    private var scanning: Set<pid_t> = []
+
+    /// Apps that produced another `windowAppeared` while their scan was out. Re-scanned exactly once
+    /// when it returns.
+    private var rescan: Set<pid_t> = []
 
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
                 scheduler: any DelayScheduler, sink: EventSink) {
@@ -109,6 +126,8 @@ public final class WorldWatcher {
         case .appTerminated(let pid):
             apps[pid] = nil
             observing.remove(pid)
+            scanning.remove(pid)
+            rescan.remove(pid)
             source.unwatch(app: pid)
             // The registry is the authority on what the app owned; the core is told window by window,
             // because `World` has no notion of an app dying — only of windows going away.
@@ -157,8 +176,24 @@ public final class WorldWatcher {
 
     /// Scan a set of apps and absorb the result, carrying the attempt number so the report knows
     /// whether it is allowed to ask again.
+    ///
+    /// **At most one scan per app is ever in flight** (2026-07-26), the same rule `readFrame` keeps for
+    /// frame reads and for the same reason: four rapid ⌘N presses produce four `windowAppeared`
+    /// notifications, and answering each with its own full re-scan puts four × (7 AX round trips per
+    /// window) onto the app's *single serial lane* — the same lane our placement writes queue on, under
+    /// a 250 ms per-call timeout. The scans then answer progressively later than the window list they
+    /// are joined against, which is precisely the skew that costs a window its identity. A request that
+    /// arrives while a scan is out sets a dirty bit honoured once when it returns, so the app is always
+    /// re-asked, never re-asked four times over.
     private func scan(_ targets: [ScanTarget], attempt: Int) {
-        enumerator.enumerate(apps: targets) { [weak self] report in
+        let admitted = targets.filter { target in
+            guard scanning.contains(target.pid) else { return true }
+            rescan.insert(target.pid)
+            return false
+        }
+        guard !admitted.isEmpty else { return }
+        for target in admitted { scanning.insert(target.pid) }
+        enumerator.enumerate(apps: admitted) { [weak self] report in
             self?.absorb(report, attempt: attempt)
         }
     }
@@ -167,6 +202,7 @@ public final class WorldWatcher {
     /// whether the gaps in it are worth asking about again.
     private func absorb(_ report: AXEnumerator.Report, attempt: Int) {
         for target in report.apps {
+            scanning.remove(target.pid)
             ensureWatching(target, attempt: attempt)
         }
 
@@ -175,10 +211,16 @@ public final class WorldWatcher {
         // would be observed only from its *next* move onward. (Our own move then echoes back as a
         // `windowFrameChanged` that agrees with what the core already recorded optimistically, so it
         // costs one read and changes nothing. Being blind to a real move costs correctness.)
+        //
+        // **`rebound` is offered too** (2026-07-26). Registration is idempotent — `watch(windows:of:)`
+        // skips anything already registered — so re-offering a known window costs nothing when the
+        // first attempt worked, and is the *only* second chance when it didn't. A registration that
+        // failed leaves a window whose destroy notification never arrives, i.e. a column that outlives
+        // its window: an empty slot on the strip, forever.
         var byApp: [pid_t: [WindowId]] = [:]
-        for snapshot in report.snapshots {
-            guard let record = registry.record(snapshot.id) else { continue }
-            byApp[record.pid, default: []].append(snapshot.id)
+        for id in report.snapshots.map(\.id) + report.rebound {
+            guard let record = registry.record(id) else { continue }
+            byApp[record.pid, default: []].append(id)
         }
         for (pid, ids) in byApp {
             source.watch(windows: ids, of: pid)
@@ -187,10 +229,21 @@ public final class WorldWatcher {
             sink(.windowCreated(snapshot))
         }
 
-        // A window AX described but the window list didn't is the race in §2 above. Ask again, once,
-        // against the same apps — not against `source.applications()`, which may answer differently and
-        // turn a one-app retry into a full re-scan.
-        guard !report.unbound.isEmpty, attempt + 1 < Self.maxScanAttempts else { return }
+        // Something appeared while the scan was out. Ask again now rather than through the retry
+        // budget: this is not a race we are waiting out, it is a request we deliberately coalesced.
+        let pending = report.apps.filter { rescan.remove($0.pid) != nil }
+        if !pending.isEmpty { scan(pending, attempt: 0) }
+
+        // A window one side of the join described and the other didn't is the race in §2 above — now
+        // in both directions (`Report.unclaimed`). Ask again, once, against the same apps — not against
+        // `source.applications()`, which may answer differently and turn a one-app retry into a full
+        // re-scan.
+        guard report.isIncomplete else { return }
+        // Reported on the *last* attempt only: the earlier ones are the race being waited out, and
+        // saying so every 150 ms would make the ordinary case look like a fault.
+        if attempt + 1 >= Self.maxScanAttempts { onIncompleteScan?(report) }
+
+        guard attempt + 1 < Self.maxScanAttempts else { return }
         let targets = report.apps
         scheduler.schedule(after: Self.rescanDelay) { [weak self] in
             self?.scan(targets, attempt: attempt + 1)

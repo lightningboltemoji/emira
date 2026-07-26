@@ -290,14 +290,26 @@ public final class WindowRegistry {
 
     public init() {}
 
-    /// Take a bound window into management and return the `WindowSnapshot` the core is told about.
+    /// Take a bound window into management and return the `WindowSnapshot` the core is told about, or
+    /// `nil` if the bind contradicts one we already hold.
     ///
     /// **Idempotent by window number.** A second enumeration of a window we already know reuses its id
     /// and refreshes its AX element rather than minting a new one — so a re-scan produces
     /// `windowCreated` events the reducer already treats as last-writer-wins updates (`World.insert`),
     /// and nothing on the strip duplicates.
+    ///
+    /// **A contradiction is refused, not resolved.** If this element is already bound to a *different*
+    /// window number, the join was fed two reads taken at different instants and matched a stale AX
+    /// frame onto a newer window's list entry (2026-07-26). Minting here would put a second id — a
+    /// column with no window behind it — on the strip, move `idByElement` onto the newer id so the old
+    /// window's own notifications resolve to the wrong one, and leave the real newcomer with its
+    /// number already spent. `AXEnumerator` no longer asks (a known element skips the join entirely),
+    /// so this is the belt to that braces: identity is made once and kept, and there is exactly one
+    /// place that can be true.
     @discardableResult
-    public func adopt(_ observed: ObservedWindow, element: AXWindow, number: CGWindowID) -> WindowSnapshot {
+    public func adopt(_ observed: ObservedWindow, element: AXWindow,
+                      number: CGWindowID) -> WindowSnapshot? {
+        if let existing = idByElement[element], records[existing]?.number != number { return nil }
         let id: WindowId
         if let existing = idByNumber[number] {
             id = existing
