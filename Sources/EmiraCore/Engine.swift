@@ -1241,6 +1241,24 @@ public enum Engine {
               let question = s.layout.uncorrectedSize(of: id, metrics: metrics)
         else { return [] }
 
+        // **A narrower answer teaches only when it answered the question** (2026-07-26) — the guard that
+        // keeps `Layout.resolvedWidth`'s new downward direction from recursing.
+        //
+        // Narrowing means the column follows the answer down, so the *next* request is the answer
+        // rather than the question. An app that always returns a little less than it is asked would
+        // then walk the column toward nothing, one placement at a time — a spiral the old
+        // widen-only rule could not reach, because its request never changed. Learning at most one
+        // narrowing per question bounds it absolutely: the column may shrink to what the app said when
+        // asked for the width the *layout* wants, and no further.
+        //
+        // The widening direction keeps learning unconditionally, and the asymmetry is the invariant
+        // rather than taste: too wide overlaps a neighbour and must be absorbed however late it
+        // arrives; too narrow only leaves space. The residual is a pathological app that never
+        // converges, which costs one extra set per real event and never a busy loop — the same bound,
+        // and the same reasoning, as `axFailed`'s deliberate non-retry (`World.unverified`).
+        if actual.width < requested.width - 0.5,
+           !approximatelyEqualScalar(requested.width, question.width) { return [] }
+
         let column = s.layout.columns[index]
         let before = s.layout.resolvedWidth(of: column, metrics: metrics)
         s.world.noteCorrection(id, wanted: question, actual: actual.size)
@@ -1255,6 +1273,15 @@ public enum Engine {
         // teleported to, or the cross-fade has something to pop against.
         if s.motion.isTransitioning, !approximatelyEqualScalar(before, after) {
             s.motion.animateColumnWidth(column.id, from: before, to: after, params: s.config.resizeSpring)
+            // **And re-aim the viewport, because a width is not only a width** (2026-07-26). Every
+            // scroll target is derived from the same column widths this just changed, so a session that
+            // keeps its destination is travelling to a place computed for a strip that no longer
+            // exists. Measured on a `grow` the app refused: the column correctly collapsed back, the
+            // viewport stayed **300 pt past the strip's end**, and the user saw phantom desktop tacked
+            // onto the side — surviving until the *next* command's `emitPlacements` clamp snapped it
+            // away with no animation. Two animated quantities over one geometry; correcting one and not
+            // the other is what left them disagreeing.
+            return reaimViewport(&s, corrected)
         }
 
         // Mid-capture there is no cover yet and no real window has moved for this session; the raise's
@@ -1262,6 +1289,27 @@ public enum Engine {
         // would move real windows out from under a transition that hasn't started hiding them.
         if s.motion.isCovered { return teleportBehindCover(&s) }
         return s.motion.isTransitioning ? [] : emitPlacements(&s)
+    }
+
+    /// Re-derive where an open transition is travelling to, after something changed the geometry its
+    /// destination was computed from. `driveTransition` does the rest — retarget with velocity carried,
+    /// widen the scope over the newly-swept interval, capture what that adds, and re-teleport the reals
+    /// behind a raised cover — so this is only the arithmetic `resizeFocusedColumn` performs when a
+    /// resize *starts*, applied again when the answer changes what that resize turned out to mean.
+    ///
+    /// Falls back to the plain re-teleport with nothing focused: there is no column to frame on, and the
+    /// destination the session already has is as good an answer as exists.
+    private static func reaimViewport(_ s: inout State, _ metrics: LayoutMetrics) -> [Effect] {
+        guard let focused = s.world.focusedWindow else {
+            return s.motion.isCovered ? teleportBehindCover(&s) : []
+        }
+        let start = s.motion.viewportOffset.current
+        let end = (s.config.centerFocusedColumn
+            ? s.layout.scrollOffsetToCenter(window: focused, metrics: metrics)
+            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: metrics))
+            ?? s.motion.viewportOffset.target
+        return driveTransition(&s, to: end,
+                               scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
     }
 
     /// Whether a window needs no set: it is already at its target, **or** it is at the answer we know

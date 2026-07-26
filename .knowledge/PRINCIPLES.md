@@ -211,6 +211,12 @@ Much of the "slow AX" pain is self-inflicted and controllable:
 - **Observe, don't poll.** Use `AXObserver` for moved/resized/created/destroyed — but budget for apps that emit late
   or not at all, so keep a poll fallback.
 - **Expect clamping.** Apps clamp to min/max/constraints; you may need size → position → size again to land exactly.
+- **We cannot know a window's minimum size, and we do not try.** There is no public AX attribute for it —
+  `NSWindow.minSize` is not exported and `kAXMinValueAttribute` belongs to value-taking controls — and probing for one
+  (set 1×1, read back) would visibly resize every window at adoption. But the answer is *already being measured*: a
+  placement reads the frame back, so the rule is not "learn the constraint", it is **ask the question once, then use
+  the answer — and re-ask when the question changes**. What a window last answered is keyed by the question that
+  produced it, so nothing has to expire.
 - **`kAXWindowsAttribute` is not a list of windows.** Finder answers it with the desktop — an `AXScrollArea` with no
   title, subrole or full-screen attribute. So the classifier is *failable*: an unrecognized **role** means "not a
   window" and is dropped at the AX boundary, while an unrecognized **subrole** means "a real window we leave alone".

@@ -429,6 +429,47 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **Not exclusive, and column-scoped rather than window-scoped.** Two fullscreen columns is two full-width columns,
     an arrangement `grow` already reaches. With stackmates this maximizes the **column**, so both windows stay on
     screen at half height.
+- **What an app answered is a fact the geometry consults, in both directions** (`World.corrections`, one
+  `SizeCorrection { wanted, actual }` per window, `PRINCIPLES.md` §5). `wanted` is the **uncorrected** layout size —
+  computed by running the ordinary geometry against metrics with the corrections emptied — so the question cannot
+  drift from the answer. A preset cycle, a gap or strut edit, a display change or a change in column membership all
+  change the question, which retires the record with no expiry to maintain.
+  - **Keying on the question is what stops a ratchet, and the alternative genuinely fails.** A stored `minWidth` is
+    raised by any refusal-to-shrink — but the first refusal observed might be character-cell quantization at a *large*
+    preset (ask 900, get 904), and 904 then floors the ⅓ preset forever, so the column can never be 600 again and
+    nothing will ever ask it to. There is no threshold separating "a minimum" from "a grid" without guessing a number.
+    Against its question, 904 is simply not consulted when the question is 600.
+  - **`Layout.resolvedWidth` says what a column is for: a column is as wide as the widest width its windows can
+    actually achieve for the width it was asked.** A window that has answered contributes its answer, one that has not
+    contributes the intent, and `max` is what makes a single expression cover both directions. The invariant chooses
+    it: a window refusing to *shrink* needs the room, since less would overlap its neighbour — the one thing the strip
+    promises — while a column *none* of whose windows can grow is holding room nobody can use. A mixed stack keeps the
+    intent, because one window that can fill it is reason enough.
+  - **Corrections ride in `LayoutMetrics`, and that placement is the load-bearing one.** Every geometry entry point
+    already takes `metrics`, so a correction cannot be forgotten at a call site — and it *must* reach all of them,
+    because a `targetFrames` that widened a column while the visibility, sweep and scroll queries kept the preset
+    would accumulate different left edges and place windows at the wrong x. The same argument the Y-flip makes:
+    something that cannot break beats something that must be maintained.
+  - **A park teaches nothing.** A park slot is a 1 px sliver at the working area's edge, and a window will refuse a
+    resize there that it accepts the moment it scrolls back into view — so an answer given at a park describes
+    off-viewport geometry, not the window, and recording it would freeze the column at whatever width it was parked
+    at. Hence a drifted **tile** is a placement correction that carries its request along (an answer is only evidence
+    in relation to its question), while a drifted **park** is ordinary external drift.
+  - **The downward direction can recurse, and is bounded where the evidence is.** Narrowing means the column follows
+    the answer down, so the *next* request is the answer rather than the question — and an app that always returns
+    slightly less than asked would walk the column toward nothing. So a **narrower** answer is learned only when the
+    request that produced it *was* the question: at most one narrowing per question. The widening direction keeps
+    learning unconditionally, and the asymmetry is the invariant rather than taste — too wide overlaps a neighbour and
+    must be absorbed however late it arrives; too narrow only leaves space.
+  - **A correction under a raised cover springs rather than jumps.** Every layer frame is re-derived from the strip's
+    geometry each tick, so a column that changes width between two frames pops. The change goes under the same width
+    animator `cycle-width` uses, retargeted in place — which is also *required* during a resize, since the layers must
+    converge on the width the reals were teleported to. Mid-*capture*, the correction is recorded and nothing is
+    placed: the raise's own teleport is moments away and reads it.
+  - **Heights are the same fact on the other axis**, and `Column` grew a **water-fill** for it: an auto window whose
+    floor exceeds its equal share takes the floor and stops sharing, the remainder re-divides among the rest, and the
+    pass repeats to a fixpoint (≤ n passes, since the floored set only grows). A floor never overrides a pinned
+    preset: a pin is the user's instruction, a floor is the app's constraint.
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
   **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's corner
   (`PRINCIPLES.md` §4a). A park slot is just target geometry, so placement is core-owned: one geometry authority,

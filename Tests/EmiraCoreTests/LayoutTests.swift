@@ -870,14 +870,35 @@ import Testing
                 == Rect(x: 0, y: 0, width: 300, height: 600))
     }
 
-    @Test func aNarrowerAnswerDoesNotShrinkTheColumn() {
-        // A terminal quantizing 8 pt *down* leaves a gap inside its column, which is cosmetic; only
-        // the other direction overlaps a neighbour, which is the invariant the strip promises. So
-        // geometry widens and never narrows — quiescence for this case is the reducer's job
-        // (`Engine.isAlreadyPlaced`), not the layout's.
+    @Test func aNarrowerAnswerNarrowsTheColumnAndTheStripClosesUp() {
+        // **Corrected 2026-07-26.** This asserted the column stayed 300 — "geometry widens and never
+        // narrows", because an under-filled column was thought to be a cosmetic gap. A column's width
+        // *is* strip extent: the shortfall is phantom desktop that scroll targets, the tile-vs-park
+        // split and the sweep all treat as content, and it is permanent because the intent is stored.
+        // So the column follows the answer down, and every column right of it closes up — derived, from
+        // the same accumulated widths that already carried the widening direction.
         let narrow = corrected(w10, actual: Size(width: 292, height: 600))
-        #expect(fourColumns().targetFrames(scrollOffset: 0, metrics: narrow)[w10]
+        let frames = fourColumns().targetFrames(scrollOffset: 0, metrics: narrow)
+        #expect(frames[w10] == Rect(x: 0, y: 0, width: 292, height: 600))
+        #expect(frames[w20] == Rect(x: 292, y: 0, width: 300, height: 300))
+        #expect(frames[w30] == Rect(x: 592, y: 0, width: 300, height: 600))
+    }
+
+    /// Keyed to its question in both directions: an answer given to a width nobody is asking for any
+    /// more is not consulted, so a preset cycle retires it with no expiry to maintain.
+    @Test func aNarrowerAnswerToADifferentQuestionIsIgnored() {
+        let stale = corrected(w10, wanted: Size(width: 450, height: 600),
+                              actual: Size(width: 292, height: 600))
+        #expect(fourColumns().targetFrames(scrollOffset: 0, metrics: stale)[w10]
                 == Rect(x: 0, y: 0, width: 300, height: 600))
+    }
+
+    /// **A mixed stack keeps the intent**, and that is what makes `max` the right operator rather than
+    /// `min`. w20 refuses to be 300 wide, but its stackmate w21 has never been asked and may well fill
+    /// it — so the column holds its preset, and only a column *nobody* in it can fill gives ground.
+    @Test func aColumnWhoseOtherWindowMayStillFillItKeepsItsWidth() {
+        let narrow = corrected(w20, actual: Size(width: 240, height: 300))
+        #expect(fourColumns().strip(metrics: narrow).columnWidths[1] == 300)
     }
 
     @Test func aColumnIsNeverWidenedPastTheViewport() {

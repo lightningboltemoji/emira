@@ -1330,6 +1330,59 @@ import EmiraMotion
         }
     }
 
+
+    /// **The reported sequence, in full** (2026-07-26). A window that will not grow, at the right-hand
+    /// end of a strip: `grow`, `focus` away and back, `grow`, `shrink`, `grow`, `grow`. What was
+    /// observed was phantom desktop tacked onto the side after every `grow` — surviving until the next
+    /// command, which snapped it away with no animation.
+    ///
+    /// The column was never the problem: it collapsed back to 333⅓ each time, correctly. The **viewport**
+    /// did not. Every scroll target derives from the same column widths a correction changes, so a
+    /// session that keeps the destination it was given is travelling to a place computed for a strip
+    /// that no longer exists — measured here at **316 against a strip whose end is 16**, i.e. 300 pt of
+    /// bare desktop. Two animated quantities over one geometry, and only one of them was being corrected.
+    ///
+    /// The invariant this pins is the general one, not the six steps: **after any command settles, the
+    /// viewport is inside the strip it describes.**
+    @Test func aRefusedResizeNeverLeavesTheViewportPastTheStripsEnd() {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]), columnGap: 8)
+        var (s, _) = Self.run(Self.booted(config: config), [
+            .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
+            .windowCreated(Self.snapshot(3)),
+        ])
+        (s, _) = Self.drive(s)
+
+        /// The stubborn app: w3 answers ⅓ of the working width to every question, in either direction.
+        func refuse(_ fx: [Effect]) {
+            guard let asked = Self.placement(of: WindowId(3), in: fx),
+                  abs(asked.width - Self.third) > 0.5 else { return }
+            var landed = asked
+            landed.size = Size(width: Self.third, height: asked.height)
+            (s, _) = Engine.reduce(s, .placementCorrected(WindowId(3), requested: asked, actual: landed))
+        }
+
+        for command: Command in [.grow(.points(300)), .focus(.left), .focus(.right),
+                                 .grow(.points(300)), .shrink(.points(100)),
+                                 .grow(.points(300)), .grow(.points(300))] {
+            var (next, fx) = Engine.reduce(s, .command(command))
+            s = next
+            for w in s.motion.transition?.windows ?? [] {
+                (next, fx) = Engine.reduce(s, .captureReady(w))
+                s = next
+            }
+            refuse(fx)
+            (s, _) = Self.drive(s)
+
+            let metrics = s.metrics()!
+            let offset = s.motion.viewportOffset.current
+            let end = s.layout.clampScrollOffset(offset, metrics: metrics)
+            #expect(Self.approxScalar(offset, end),
+                    "after \(command): viewport at \(offset), strip ends at \(end)")
+            // …and the column is always the width the window will actually be, never the one it refused.
+            #expect(Self.approxScalar(Self.width(s, 2), Self.third), "after \(command)")
+        }
+    }
+
     // MARK: - Fullscreen (the strip's, not the system's)
 
     /// **The whole feature, as it was asked for:** a column at 40% goes to 100% and comes back to 40%.
@@ -1469,6 +1522,103 @@ import EmiraMotion
             (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
             #expect(!s.layout.columns[0].isFullscreen)
         }
+    }
+
+    /// **A window that refuses to *grow* must stop being asked, exactly as one that refuses to shrink
+    /// does.** Reported from use (2026-07-26): fullscreen System Settings — which is 723 pt wide and
+    /// will not be anything else — and it stretches, snaps back, and then **stretches and snaps back
+    /// again on every subsequent `focus left`/`right`**.
+    ///
+    /// The record was never the problem: `SizeCorrection` is symmetric and had `{wanted: full, actual:
+    /// 723}` on file throughout. What was asymmetric is who *consumes* it. A refused **shrink** answers
+    /// wider, so `Layout.resolvedWidth` widens the column and the target simply becomes the answer —
+    /// geometry quiets it, robustly. A refused **grow** answers narrower, geometry deliberately does not
+    /// follow (an under-filled column is a cosmetic gap), so quieting it rested entirely on
+    /// `isAlreadyPlaced` — which requires the **position** to match too. A scroll moves the window, so
+    /// the diff legitimately re-emits, and the rect it re-emitted carried the *aspirational* width. We
+    /// knew the answer and asked the question anyway, once per scroll, forever.
+    @Test func aWindowThatRefusedToGrowIsNotAskedAgainOnEveryScroll() {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
+                            columnGap: 8, smoothTransitions: false)
+        var s = Self.run(Self.booted(config: config), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+        ]).0
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))        // focus w1, the stubborn one
+
+        // Fullscreen it: the column goes to 1000, and the app answers 400 and will not budge.
+        var (next, fx) = Engine.reduce(s, .command(.fullscreen(.on)))
+        s = next
+        let asked = try! #require(Self.placement(of: WindowId(1), in: fx))
+        #expect(asked.width == 1000)
+        var landed = asked
+        landed.size = Size(width: 400, height: asked.height)
+        (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
+
+        // The column follows the answer down — no phantom 600 pt of strip nobody can fill…
+        #expect(Self.width(s, 0) == 400)
+        // …and the window is therefore asked for the width it actually gives, at every offset the strip
+        // reaches. This is the assertion the bug fails: before the fix, each scroll re-asked for 1000.
+        for direction in [Direction.right, .left, .right] {
+            (next, fx) = Engine.reduce(s, .command(.focus(direction)))
+            s = next
+            if let re = Self.placement(of: WindowId(1), in: fx) {
+                #expect(re.width == 400, "focus \(direction) re-asked for \(re.width)")
+            }
+        }
+    }
+
+    /// **The half the user actually watches, and the reason the fix belongs in the width and not at the
+    /// write.** The real window never grew — what stretched was the *cover's layer*, and the "snap
+    /// back" was the cross-fade retiring it over a window that had always been 400.
+    ///
+    /// Because the refusal now reaches the column's resolved width, and that width is already an
+    /// animated quantity, the layer **springs back** rather than being clamped: it expands toward 1000,
+    /// the answer lands, and it settles onto 400 continuously. That collapse is the feedback — "it said
+    /// no" — and the continuity is what distinguishes it from the one-frame jump a clamp produces.
+    @Test func aRefusedGrowSpringsTheLayerBackInsteadOfJumping() throws {
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]), columnGap: 8)
+        var (s, _) = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))])
+        (s, _) = Self.drive(s)                                   // settle the arrival
+
+        // Fullscreen opens a transition; the cover raises and the real is teleported to 1000…
+        var (next, fx) = Engine.reduce(s, .command(.fullscreen(.on)))
+        s = next
+        (next, fx) = Engine.reduce(s, .captureReady(WindowId(1)))
+        s = next
+        let layer = try #require(s.motion.transition?.bindings.first?.layer)
+        let asked = try #require(Self.placement(of: WindowId(1), in: fx))
+        #expect(asked.width == 1000)
+
+        // …the layer is on its way out to 1000…
+        var widths: [Double] = []
+        for _ in 0..<8 {
+            (next, fx) = Engine.reduce(s, .tick(dt: 1.0 / 120))
+            s = next
+            if let f = Self.layerFrame(of: layer, in: fx) { widths.append(f.width) }
+        }
+        #expect(widths.last! > Self.third + 1)                   // genuinely stretching
+
+        // …and then the app answers 400, under the raised cover.
+        var landed = asked
+        landed.size = Size(width: 400, height: asked.height)
+        (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
+
+        widths = []
+        for _ in 0..<600 {
+            (next, fx) = Engine.reduce(s, .tick(dt: 1.0 / 120))
+            s = next
+            if let f = Self.layerFrame(of: layer, in: fx) { widths.append(f.width) }
+            if !s.motion.isTransitioning { break }
+        }
+        // It collapses to what the window is…
+        #expect(Self.approxScalar(widths.last!, 400))
+        // …and gets there continuously, which is the property that separates this fix from the patch
+        // it replaced. The layer peaks near 739 and settles on 400; a clamp shows up as a single
+        // frame-to-frame step of ~340 pt, a spring at 120 fps as ~29. The bound sits between them with
+        // room on both sides rather than hugging the measurement.
+        let biggestStep = zip(widths, widths.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        #expect(biggestStep < 100, "layer jumped \(biggestStep) pt in one frame")
     }
 
     /// Total against a world with nothing to fullscreen, like every other command.
@@ -1639,23 +1789,54 @@ import EmiraMotion
         #expect(again.isEmpty)
     }
 
-    @Test func aNarrowerAnswerStopsUsAskingWithoutShrinkingTheColumn() {
-        // A terminal quantizing 8 pt *down* leaves a gap inside its column — cosmetic, and not worth
-        // narrowing the strip for. But it must still go quiet, which is why the quiescence rule lives
-        // in the placement diff rather than in the geometry.
+    @Test func aNarrowerAnswerNarrowsTheColumnToWhatTheWindowCanBe() {
+        // **Corrected 2026-07-26.** This asserted the opposite — the column kept its preset and
+        // quiescence was the placement diff's job — on the grounds that an under-filled column is "a
+        // gap, which is cosmetic". It is not: a column's width is strip extent, so the shortfall is
+        // desktop that scroll targets, tile-vs-park and the sweep all treat as content. The column now
+        // follows the answer down, and quiescence comes free because the target *is* what the window is.
         var s = Self.twoColumns()
         let narrow = Rect(x: 0, y: 0, width: Self.third - 8, height: 800)
-        let (next, fx) = Engine.reduce(s, .placementCorrected(
+        let (next, _) = Engine.reduce(s, .placementCorrected(
             WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 800), actual: narrow))
         s = next
 
-        #expect(fx.isEmpty)                                            // nothing moved
-        // …and the column kept its preset
         let width = try! #require(s.layout.resolvedWidth(ofColumn: s.layout.columns[0].id,
                                                          metrics: s.metrics()!))
-        #expect(Self.approxScalar(width, Self.third))
+        #expect(Self.approxScalar(width, Self.third - 8))              // …to what it can be
         let (_, again) = Engine.reduce(s, .dragEnded)
-        #expect(Self.placement(of: WindowId(1), in: again) == nil)     // and stays quiet
+        #expect(Self.placement(of: WindowId(1), in: again) == nil)     // and goes quiet
+    }
+
+    /// **The recursion guard** — a narrower answer teaches only when it answered the *question*.
+    /// Because the column now follows an answer down, the next request is the answer rather than the
+    /// question; an app that always returns a little less would otherwise walk the column toward
+    /// nothing, one placement at a time. At most one narrowing per question.
+    @Test func anAppThatAlwaysReturnsLessCannotWalkTheColumnDown() {
+        var s = Self.twoColumns()
+        let question = Self.third
+
+        // First refusal, given to the question itself: learned, and the column follows.
+        (s, _) = Engine.reduce(s, .placementCorrected(
+            WindowId(1), requested: Rect(x: 0, y: 0, width: question, height: 800),
+            actual: Rect(x: 0, y: 0, width: question - 8, height: 800)))
+        #expect(Self.approxScalar(Self.width(s), question - 8))
+
+        // Every later refusal answers a request we made *because* of the first one, so it teaches
+        // nothing — the column holds, rather than stepping down 8 pt per event forever.
+        for step in 1...5 {
+            (s, _) = Engine.reduce(s, .placementCorrected(
+                WindowId(1), requested: Rect(x: 0, y: 0, width: question - 8, height: 800),
+                actual: Rect(x: 0, y: 0, width: question - 8 - Double(step) * 8, height: 800)))
+            #expect(Self.approxScalar(Self.width(s), question - 8), "step \(step)")
+        }
+
+        // …while the *widening* direction keeps learning unconditionally, because too wide overlaps a
+        // neighbour and that is the invariant the strip promises.
+        (s, _) = Engine.reduce(s, .placementCorrected(
+            WindowId(1), requested: Rect(x: 0, y: 0, width: question - 8, height: 800),
+            actual: Rect(x: 0, y: 0, width: 500, height: 800)))
+        #expect(Self.approxScalar(Self.width(s), 500))
     }
 
     @Test func aReportThatAnswersAQuestionNobodyIsAskingRecordsTruthAndTeachesNothing() {

@@ -89,18 +89,36 @@ public struct SizeCorrection: Sendable, Equatable, Codable {
         self.actual = actual
     }
 
-    /// This answer's width, if it answers `question` and is *larger* — i.e. the window refused to be
-    /// as narrow as we asked. `nil` otherwise, which covers both a stale question and an app that came
-    /// back *narrower*: an under-filled slot is a gap (cosmetic), an over-filled one is an overlap
-    /// (the one invariant the strip promises), so only the second direction moves geometry.
-    public func widthFloor(forQuestion question: Double, tolerance: Double = 0.5) -> Double? {
-        guard abs(wanted.width - question) <= tolerance, actual.width > question + tolerance
-        else { return nil }
+    /// This answer's width, if it answers `question` — **in either direction** (corrected 2026-07-26).
+    ///
+    /// This was `widthFloor`, and it consulted the answer only when it was *larger*, on the grounds
+    /// that an over-filled slot is an overlap (the one invariant the strip promises) while an
+    /// under-filled one is "a gap, which is cosmetic". The second half was wrong, and the product said
+    /// so within the hour: a column's width **is strip extent** — it sets where every column right of it
+    /// begins, what a scroll reveals, what is tiled versus parked, and what the sweep captures. A
+    /// 1800 pt column holding a 723 pt window is 1077 pt of desktop the whole layout treats as content,
+    /// and it is permanent, because the intent that produced it is stored.
+    ///
+    /// So an answer is an answer. The *direction* still matters, but it belongs where the column is
+    /// assembled rather than here: `Layout.resolvedWidth` takes the **widest** width its windows can
+    /// actually achieve, which absorbs a refusal-to-shrink (that window needs the room) and a
+    /// refusal-to-grow (nobody can use the room) with one `max` instead of two rules.
+    public func width(forQuestion question: Double, tolerance: Double = 0.5) -> Double? {
+        guard abs(wanted.width - question) <= tolerance else { return nil }
         return actual.width
     }
 
-    /// This answer's height, if it answers `question` and is taller. The vertical mirror of
-    /// `widthFloor` — the case a stacked column reaches when its share drops below what an app accepts.
+    /// This answer's height, if it answers `question` and is **taller** — the case a stacked column
+    /// reaches when its share drops below what an app accepts, feeding `Column`'s height water-fill.
+    ///
+    /// Still one-directional, where `width(forQuestion:)` above stopped being so, and the asymmetry is
+    /// real rather than an oversight. A column's *width* is strip extent, so an intent no window can
+    /// fill is phantom desktop; a column's *height* is the viewport's, fixed, and a window that refuses
+    /// to be as tall as its share leaves space with nowhere to go but a gap inside the column — which
+    /// is the genuinely cosmetic case the width rule was wrongly assumed to be. A shorter answer will
+    /// therefore still be re-asked on a placement whose position changed; that is the vertical shadow
+    /// of the bug fixed above, unobserved in the product (no app has yet refused a height) and left
+    /// unbuilt rather than guessed at.
     public func heightFloor(forQuestion question: Double, tolerance: Double = 0.5) -> Double? {
         guard abs(wanted.height - question) <= tolerance, actual.height > question + tolerance
         else { return nil }

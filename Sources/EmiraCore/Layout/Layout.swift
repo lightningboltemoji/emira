@@ -542,16 +542,35 @@ public struct Layout: Sendable, Equatable, Codable {
     /// the truth plane, the sweep, the scroll targets and the animated presentation plane all pick the
     /// new width up together or not at all.
     ///
-    /// Widening only. A window that came back *narrower* than we asked leaves a gap inside its column,
-    /// which is cosmetic; one that came back wider would overlap the next column, which breaks the
-    /// strip's one promise. So only the second direction moves geometry — the first is handled by not
-    /// asking again (`Engine.alreadyAnswered`).
+    /// **Both directions, one `max`** (corrected 2026-07-26). This read "widening only", because a
+    /// window coming back *narrower* was thought to leave a merely cosmetic gap. It does not: a column's
+    /// width is strip extent, so an intent no window can fill becomes phantom desktop that scroll
+    /// targets, the tile-vs-park split and the sweep all treat as content — permanently, since the
+    /// intent is stored. The rule that replaces it says what a column is for:
     ///
-    /// Capped at the **content** width. Two stacked windows on *different* quantization grids can chase
-    /// each other a few points at a time — A widens the column, B answers wider still — and while that
-    /// does terminate (at the grids' common multiple), the cap bounds it absolutely. It costs nothing
-    /// real: a column that wide already fills the viewport, and `Strip.offsetToReveal` handles an
-    /// over-wide column by showing its left edge.
+    /// > A column is as wide as **the widest width its windows can actually achieve** for the width it
+    /// > was asked. A window that has answered contributes its answer; one that has not contributes the
+    /// > intent, because an unasked window may well fill it.
+    ///
+    /// `max` is what makes one rule cover both directions, and it is the invariant that chooses it: a
+    /// window that refuses to *shrink* needs the room (anything less overlaps its neighbour, the one
+    /// thing the strip promises), while a column all of whose windows refuse to *grow* is holding room
+    /// nobody can use. A mixed stack keeps the intent — one window that can fill it is reason enough.
+    ///
+    /// Making a refusal reach *this* number rather than the write is the whole of the fix, because this
+    /// number is already animated (`Motion.columnWidths`): the column springs out toward the intent and
+    /// springs back when the answer lands, which is a visible "it said no" instead of a one-frame jump,
+    /// and every neighbour follows by derivation. Quiescence comes free with it — the target becomes
+    /// what the window already is, so the placement diff simply stops emitting.
+    ///
+    /// Capped at the **content** width, but only once an answer is in play, so a config that
+    /// deliberately asks for columns wider than the screen (`width-presets = [1.5]`) is still honored.
+    /// Two stacked windows on *different* quantization grids can chase each other a few points at a
+    /// time — A widens the column, B answers wider still — and while that does terminate (at the grids'
+    /// common multiple), the cap bounds it absolutely. It costs nothing real: a column that wide already
+    /// fills the viewport, and `Strip.offsetToReveal` handles an over-wide column by showing its left
+    /// edge. The *downward* runaway this opens is bounded in the reducer instead, where the evidence is
+    /// (`Engine.handlePlacementCorrected` learns a narrower answer only when it answered the question).
     ///
     /// Content, not working: a proportion is a share of the *logical* viewport, so "100%" is a column
     /// that fills the strip's area with the outer gaps still showing on either side — which is what a
@@ -559,16 +578,31 @@ public struct Layout: Sendable, Equatable, Codable {
     /// same one the ladder tops out at and `grow`'s ceiling clamps to: a second definition of "full" is
     /// how the two verbs would come to rest one outer gap apart.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
-        let available = metrics.contentArea.width
-        let preset = (column.isFullscreen ? .proportion(1.0)
+        let intent = uncorrectedWidth(of: column, metrics: metrics)
+        var answered = false
+        let achievable = column.windowIds.map { id -> Double in
+            guard let answer = metrics.corrections[id]?.width(forQuestion: intent) else { return intent }
+            answered = true
+            return answer
+        }
+        // No window has been asked this yet ⇒ the intent stands, uncapped: a config asking for columns
+        // wider than the screen is honored on purpose, and there is no evidence here to override it.
+        guard answered, let widest = achievable.max() else { return intent }
+        return Swift.min(widest, metrics.contentArea.width)
+    }
+
+    /// The width this column asks for before any window has answered back — the resolution stack
+    /// (fullscreen ▸ override ▸ preset) with no `SizeCorrection` consulted.
+    ///
+    /// This *is* the question a correction answers, which is why it is named rather than inlined: it
+    /// agrees with `uncorrectedSize`'s width by construction (that runs the whole geometry against
+    /// `metrics.uncorrected`, where the corrections are empty and this is exactly what is left), and an
+    /// answer matched against a question nobody asked is the one way this machinery goes wrong.
+    private func uncorrectedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
+        (column.isFullscreen ? .proportion(1.0)
             : column.widthOverride
             ?? metrics.widthPresets.size(at: column.widthPreset))
-            .resolved(available: available)
-        let floors = column.windowIds.compactMap {
-            metrics.corrections[$0]?.widthFloor(forQuestion: preset)
-        }
-        guard let widest = floors.max() else { return preset }
-        return Swift.min(Swift.max(preset, widest), available)
+            .resolved(available: metrics.contentArea.width)
     }
 
     /// A column's resolved width by id — what `cycleWidth` must animate *to*, so the presentation
