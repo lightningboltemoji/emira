@@ -105,7 +105,9 @@ import EmiraCore
     }
 
     @Test func aFullRoundTripSurvivesTheBuffer() throws {
-        let sent = [Request(.focus(.right)), Request(.moveToWorkspace(.index(2))), Request(.dumpState)]
+        let sent = [Request(.focus(.right)),
+                    Request(.moveToWorkspace(.name(WorkspaceName("2")!))),
+                    Request(.dumpState)]
         var stream = Data()
         for request in sent { stream.append(try Wire.encode(request)) }
 

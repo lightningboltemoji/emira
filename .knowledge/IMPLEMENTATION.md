@@ -71,6 +71,7 @@ enum Command {
     case focus(Direction)            // left/right/up/down
     case moveWindow(Direction)
     case moveToWorkspace(WorkspaceRef)
+    case moveToWorkspaceAndFocus(WorkspaceRef)   // …and follow it there
     case moveToMonitor(MonitorRef)
     case cycleWidth                  // preset column widths
     case grow(SizeDelta)             // …and the continuous alternative to that ladder
@@ -238,7 +239,11 @@ emira/
 │   │   └── Animator.swift           # {current, velocity, target}; advance(dt); retarget(); nudge()
 │   ├── EmiraCore/
 │   │   ├── Geometry.swift           # own Rect/Point/Size on the virtual strip (not CG*)
-│   │   ├── Ids.swift                # WindowId, ColumnId, MonitorId, LayerId
+│   │   ├── Ids.swift                # WindowId, ColumnId, MonitorId, LayerId — no WorkspaceId:
+│   │   │                            # workspaces are a fixed *named* domain, not minted tokens
+│   │   ├── WorkspaceName.swift      # the 36 workspace addresses in **key** order — `1`–`9`, `0`, then
+│   │   │                            # `a`–`z`. A rank plus its character; `1` is the launch address and
+│   │   │                            # `0` is the tenth, so rank order is *not* alphabetical
 │   │   ├── Command.swift            # §2 — the one vocabulary
 │   │   ├── CommandSyntax.swift      # its surface spelling: parse(argv)/words/usage (CLI + keybinds)
 │   │   ├── KeyChord.swift           # the *other* surface spelling: `cmd-alt-h` ⇄ modifiers + a named
@@ -261,6 +266,11 @@ emira/
 │   │   │   │                        # the four structural editing primitives — reorder a column,
 │   │   │   │                        # reorder within a stack, merge into a column, extract into a
 │   │   │   │                        # new one — that `move-window`/`consume-or-expel` compose from
+│   │   │   ├── Workspaces.swift     # the 36 strips, which one is focused, and the *one* ColumnId
+│   │   │   │                        # allocator they share. Owns the queries that span strips:
+│   │   │   │                        # membership reconciliation, the park-ordinal run, `targetFrames`
+│   │   │   │                        # over the whole set, each strip's scroll/focus **memory**,
+│   │   │   │                        # `WorkspaceRef` resolution, and the atomic cross-strip `move`
 │   │   │   ├── Strip.swift          # infinite-axis math, viewport scroll, centering
 │   │   │   ├── Column.swift         # vertical stack, heights
 │   │   │   ├── Presets.swift        # cyclable width/height presets, inner gaps, struts
@@ -523,6 +533,43 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     window is `AXMain` at that moment, which need not be the one we asked for. So a focus command with no column to
     start from re-enters the strip at the near end: `right` at the leftmost column, `left` at the rightmost. The
     strip's own edges still no-op; no-wrap is a different fact.
+- **Workspaces: 36 strips, one focused, the rest parked in full** (`PRINCIPLES.md` §1). Nothing is persisted across
+  restart, so a daemon restart adopts every window onto the focused workspace — accepted deliberately, and the most
+  annoying consequence of the charter.
+  - **One `ColumnId` space, not one per strip.** A per-strip watermark would make column #1 on workspace `1` and
+    column #1 on workspace `3` the *same* id — and `Motion.columnWidths` is keyed by a bare one, so an in-flight
+    resize on one workspace would re-aim a column on another. The allocator lives on `Workspaces` and is passed
+    `inout` to the two mutators that mint, so the compiler asks for it at every call site.
+  - **One park-ordinal run across the whole set.** With every window on every unfocused workspace parked, per-strip
+    ordinals would give two windows the same nub — breaking both the ±2 pt first-sight identity join and the
+    no-overlap invariant, silently, one of them permanently.
+  - **`State.layout` is a settable computed projection** of the focused strip — single storage, not a second
+    authority. Nearly every question the reducer asks *is* about one strip; only the handful that genuinely span
+    workspaces (reconcile, `targetFrames`, placement emission, the teleport behind a cover, and a placement
+    correction, which asks whichever strip holds the window) stop using it. `visibleWindowIds` still asks the
+    **focused** strip alone, which is the whole model in one line: everything else parks by construction.
+  - **A switch is `focused` moving plus a placement pass.** "Everything that is not the focused strip is parked" was
+    already what `targetFrames` meant, and a park is a frame like any other — so the verbs needed no new `Effect` and
+    nothing in `EmiraShell`. What they genuinely needed was *memory*: each strip's scroll offset and last-focused
+    window, written on the way out and read on the way in, which is still the only moment either is touched.
+  - **`WorkspaceRef` has five cases** — a name, plus `next`/`previous` (one address, occupied or not) and
+    `nextOccupied`/`previousOccupied` (the next address *holding* a window). Both pairs clamp at the ends rather than
+    wrapping, and resolving to the workspace you are on is how "nowhere to go" is spelled, so the edge rule exists
+    once. **Materialized-but-empty is not occupied** — a workspace you passed through once should not keep answering
+    `next-non-empty` forever.
+  - **The cross-strip move is one call**, because the decomposition (take it off there, put it on here) passes through
+    a state with a window on *no* strip, where a placement pass landing in between leaves a real window wherever it
+    happens to be. That is `Layout`'s four-primitives argument one level up, over the container's invariant instead of
+    the strip's. The window's width intent travels with it — the size is one the user asked for out loud.
+  - **A remembered focus is an invariant of the container, not a check at the switch.** `reconcile` clears one that is
+    no longer on its own strip (the window closed, minimized, floated, or was moved elsewhere), because membership is
+    the fact that function is already about. A switch focuses the remembered window, else the strip's first, else
+    nothing.
+  - **Cross-workspace `focusChanged` is the path only the product produces.** Cmd-Tab, a Dock click or an app raising
+    its own window can name a window on a workspace nobody is looking at, and the reveal promise is about the
+    *window*. It snap-switches, then reveals. Two orderings are load-bearing: focus is recorded **inside** the switch
+    (setting it first would make the outgoing record read `nil` and wipe the memory of the workspace being left), and
+    **no focus effect is emitted**, which makes the echo loop unrepresentable rather than merely unlikely.
 - **Rules engine:** pure predicates over window metadata → assign-to-workspace / float / initial-width. Definitions
   come from config; evaluation is pure. Built-in taxonomy defaults: only `AXStandardWindow` tiles;
   dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
@@ -845,7 +892,7 @@ is fully trustworthy before a single real window moves.
 | **M3** | Truth plane | AXClient/enumerator/writer/observers + WindowRegistry + WorldWatcher; instant, correct tiling of **real** windows; snap-reveal on external focus; taxonomy defaults; drag-end re-tile | **done** — AeroSpace parity |
 | **M4** | The signature scroll | Capture + Reconstruction + Transition; motion under cover; the cover that grows on a retarget; the animated resize | **done** |
 | **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated | MenuBar + bundle outstanding |
-| **M6** | Full layout model | Virtual workspaces, per-monitor strips, window/workspace rules, monitor hotplug | next |
+| **M6** | Full layout model | Virtual workspaces, per-monitor strips, window rules, monitor hotplug | the workspace model and its verbs are in, snapped; per-monitor strips and rules are not |
 | **M7** | Deluxe *(optional)* | Continuous trackpad gestures, live-stream layers, focus-ring overlay, overview/zoom-out | later |
 
 **M5 is the line.** A complete emira is M0–M5: it tiles, scrolls smoothly, is keyboard-driven, configurable, and

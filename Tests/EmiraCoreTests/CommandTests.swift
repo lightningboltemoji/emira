@@ -50,7 +50,8 @@ import Testing
         let commands: [Command] = [
             .focus(.left), .focus(.right), .focus(.up), .focus(.down),
             .moveWindow(.left), .moveWindow(.down),
-            .moveToWorkspace(.index(3)), .moveToWorkspace(.next), .moveToWorkspace(.previous),
+            .moveToWorkspace(.name(WorkspaceName("3")!)), .moveToWorkspace(.next),
+            .moveToWorkspace(.previous), .moveToWorkspaceAndFocus(.nextOccupied),
             .moveToMonitor(.direction(.right)), .moveToMonitor(.index(2)),
             .moveToMonitor(.next), .moveToMonitor(.previous),
             .cycleWidth, .cycleHeight,
@@ -59,7 +60,8 @@ import Testing
             .consumeOrExpel(.left), .consumeOrExpel(.right),
             .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
             .float(.on), .float(.toggle),
-            .focusWorkspace(.index(1)), .focusWorkspace(.next),
+            .focusWorkspace(.name(WorkspaceName("a")!)), .focusWorkspace(.next),
+            .focusWorkspace(.previousOccupied),
             .closeWindow, .centerColumn, .reloadConfig, .dumpState,
         ]
         let encoder = JSONEncoder()
@@ -71,7 +73,10 @@ import Testing
     }
 
     @Test func workspaceAndMonitorRefsRoundTrip() throws {
-        let workspaceRefs: [WorkspaceRef] = [.index(0), .index(7), .next, .previous]
+        let workspaceRefs: [WorkspaceRef] = [
+            .name(.first), .name(.last), .name(WorkspaceName("7")!),
+            .next, .previous, .nextOccupied, .previousOccupied,
+        ]
         let monitorRefs: [MonitorRef] = [.direction(.up), .index(1), .next, .previous]
         let encoder = JSONEncoder(), decoder = JSONDecoder()
         for r in workspaceRefs {

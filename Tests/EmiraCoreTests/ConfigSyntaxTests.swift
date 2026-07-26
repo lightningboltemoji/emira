@@ -420,7 +420,7 @@ import EmiraMotion
         alt-r = "reload-config"
         """)
         #expect(config.keys.map(\.command)
-                == [.focusWorkspace(.index(1)), .closeWindow, .reloadConfig])
+                == [.focusWorkspace(.name(WorkspaceName("1")!)), .closeWindow, .reloadConfig])
     }
 
     @Test func anUnreadableChordIsRefusedWithItsLine() {

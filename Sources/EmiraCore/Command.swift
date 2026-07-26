@@ -99,17 +99,34 @@ public enum SizeDelta: Sendable, Codable, Equatable {
     }
 }
 
-/// A user-facing way to name a workspace. Workspaces are **dynamic and per-monitor**, stacked
-/// vertically, so the user names one either absolutely by position or relative to the
-/// focused one. Deliberately *not* a `WorkspaceId` — the internal id is minted by the core and
-/// isn't something a keybind or CLI arg can spell; the shell resolves a `WorkspaceRef` to an id.
+/// A user-facing way to name one of the 36 workspace addresses (`WorkspaceName`) — absolutely, by the
+/// single character that spells it, or relative to the focused one.
+///
+/// **Two relative motions, not one** (decided 2026-07-26). `next`/`previous` step one *address*,
+/// occupied or not; `nextOccupied`/`previousOccupied` step to the next address that actually holds a
+/// window. The difference is walking the domain versus walking what you have open, and both are worth
+/// a keybind.
+///
+/// **Both pairs clamp at the ends — no wrap.** `next` at `"z"` and `previous` at `"0"` resolve to the
+/// workspace you are already on, i.e. to nothing, which is exactly what `focus left|right` already does
+/// at the strip's edges. Same fact, one axis over.
+///
+/// Deliberately still a *reference* rather than a `WorkspaceName`: a relative ref has no name until it
+/// is resolved against the focused workspace and the occupancy of the set, which is
+/// `Workspaces.resolve(_:)`'s job. `.name` is the one case that needs no resolving, and it carries the
+/// real type rather than an `Int` because the address space is fixed and a bad character is a parse
+/// error rather than a lookup that fails later.
 public enum WorkspaceRef: Sendable, Codable, Equatable {
-    /// 1-based position among the focused monitor's workspaces.
-    case index(Int)
-    /// The next workspace down (dynamic: creates a fresh empty one past the end).
+    /// The address spelled by its character — `1`…`9`, `0`, then `a`…`z`.
+    case name(WorkspaceName)
+    /// The next address along, occupied or not.
     case next
-    /// The previous workspace up.
+    /// The previous address, occupied or not.
     case previous
+    /// The next address holding a window.
+    case nextOccupied
+    /// The previous address holding a window.
+    case previousOccupied
 }
 
 /// A user-facing way to name a monitor — by spatial direction from the focused one, by absolute
@@ -140,8 +157,11 @@ public enum Command: Sendable, Codable, Equatable {
     /// Move the focused window one slot in the given direction (reorder within/between columns,
     /// or push it to the next column along the ribbon).
     case moveWindow(Direction)
-    /// Move the focused window to another workspace.
+    /// Move the focused window to another workspace, leaving focus behind on this one.
     case moveToWorkspace(WorkspaceRef)
+    /// Move the focused window to another workspace **and follow it there** — the same edit as
+    /// `moveToWorkspace` plus the switch, which is the only thing the two differ in.
+    case moveToWorkspaceAndFocus(WorkspaceRef)
     /// Move the focused window (and follow it) to another monitor.
     case moveToMonitor(MonitorRef)
     /// Cycle the focused column through the preset widths.

@@ -271,7 +271,8 @@ runtime.dispatch(.screensChanged(geometry.monitors(screens)))
 // time its windows have already been dispatched and placed.
 watcher.start { report in
     log("enumerated \(report.summary)")
-    log("managing \(runtime.state.layout.columns.count) columns on "
+    log("managing \(runtime.state.layout.columns.count) columns on workspace "
+        + "\(runtime.state.workspaces.focused) of \(runtime.state.workspaces.materialized.count), "
         + "\(runtime.state.world.monitors.count) display(s)")
 }
 

@@ -13,7 +13,11 @@ The model:
 - **An infinite horizontal strip of columns.** Windows live in columns arranged left-to-right on a conceptually
   infinite ribbon. You scroll the ribbon left/right to bring columns into view.
 - **Columns hold one or more windows** stacked vertically, with cyclable preset widths. Windows never overlap.
-- **Dynamic workspaces**, per-monitor (GNOME-style dynamic, not fixed slots).
+- **Workspaces are a fixed, ordered address space of 36 names** — `1`–`9`, then `0`, then `a`–`z`, the order the keys
+  sit in — each its own infinite strip, one focused and the rest parked in full. Not GNOME-style dynamic: there is no
+  creation policy, no deletion policy and nothing to collapse, which is strictly less machinery. Nobody counts
+  workspaces from zero on a keyboard-driven window manager; they press the key at the left end of the number row, so
+  `1` is the launch address and `0` is the tenth.
 - **Buttery animations are the aspiration.** Smooth scrolling and window motion are what make a strip feel alive —
   niri is the proof of that. On macOS it is the hard part, because — unlike a Wayland compositor — **we do not own the
   pixels.** Each app renders its own window; we can only ask apps (slowly, over the Accessibility API) to move/resize,

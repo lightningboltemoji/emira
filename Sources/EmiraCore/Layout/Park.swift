@@ -20,7 +20,10 @@ import Foundation
 //    window that has two candidates, so successive slots must differ by *more* than that tolerance.
 //    That is what `stagger` is for, and why it is 8 pt rather than 1 — the nub's height is the only
 //    thing telling two same-size parked windows of one app apart, since a right-edge park gives them
-//    all the same `minX` whatever their widths.
+//    all the same `minX` whatever their widths. **Both axes have to clear it**, which is what
+//    `laneStep` is for: the wrap into a new lane moves only `x`, and at one sliver it moved it by
+//    1 pt — inside the tolerance, so lane 1 row 0 and lane 0 row 0 were indistinguishable. Only a
+//    populated workspace set parks enough windows to reach a second lane at all (2026-07-26).
 //  · **Grabbable.** The nub is the window's own **top-left corner** — the title bar, the one place a
 //    window can always be dragged from — held against the working area's *right* edge. A user
 //    rescuing a parked window by hand throws the pointer at the screen's right edge (where it stops)
@@ -58,13 +61,32 @@ public struct ParkingLot: Sendable, Equatable {
     /// Must clear `WindowRegistry`'s ±2 pt binding tolerance, or two parked windows of one app become
     /// ambiguous at rebind and neither is managed.
     public let stagger: Double
+    /// How much further on-screen each new **lane** pokes — the horizontal counterpart of `stagger`,
+    /// and it exists for exactly the same reason (2026-07-26).
+    ///
+    /// This used to be `visibleSliver` itself, i.e. 1 pt, and that was a latent identity collision:
+    /// lane 1 row 0 sits at the *same* `y`, `width` and `height` as lane 0 row 0 and 1 pt away in `x`,
+    /// which is **inside** `WindowRegistry.bind`'s ±2 pt per-edge tolerance. The two are then
+    /// indistinguishable at cold-start rebind and both are refused — the very failure the stagger was
+    /// introduced to prevent, one axis over.
+    ///
+    /// Nothing could reach it before workspaces: a lane holds ~107 rows and no real *strip* parks that
+    /// many columns. A populated 36-workspace set can, because every window on every unfocused
+    /// workspace is parked and the ordinals are one run across the whole set
+    /// (`Workspaces.targetFrames`). So this is not a new hazard — it is an old one that only now has a
+    /// way to happen.
+    ///
+    /// 4 pt rather than 8: x is the axis the user actually sees (it is how far the nub intrudes), so
+    /// it stays as small as it can be while clearing the tolerance with margin.
+    public let laneStep: Double
 
     public init(frame: Rect, visibleSliver: Double = 1, visibleChrome: Double = 40,
-                stagger: Double = 8) {
+                stagger: Double = 8, laneStep: Double = 4) {
         self.frame = frame
         self.visibleSliver = visibleSliver
         self.visibleChrome = visibleChrome
         self.stagger = stagger
+        self.laneStep = laneStep
     }
 
     /// How many staggered rows a lane holds before a new one starts: as many as fit before the nub
@@ -87,9 +109,10 @@ public struct ParkingLot: Sendable, Equatable {
         let rows = rowsPerLane
         let lane = n / rows
         let row = n % rows
-        // Poke `visibleSliver` px in from the right; each new lane pokes one sliver further, so lanes
-        // never share an x (still tiny, still warm). The body sits off-screen right of `frame.maxX`.
-        let pokeX = visibleSliver * Double(lane + 1)
+        // Poke `visibleSliver` px in from the right; each new lane pokes `laneStep` further, so two
+        // lanes never sit within the identity-binding tolerance of each other (still tiny, still
+        // warm). The body sits off-screen right of `frame.maxX`.
+        let pokeX = visibleSliver + Double(lane) * laneStep
         let x = frame.maxX - pokeX
         // …and the top edge `visibleChrome` px up from the bottom, one stagger taller per row. The
         // rest of the window hangs below the working area, off the bottom of the display.

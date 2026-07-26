@@ -70,6 +70,7 @@ extension Command {
         case .focus(let direction):           return ["focus", direction.rawValue]
         case .moveWindow(let direction):      return ["move-window", direction.rawValue]
         case .moveToWorkspace(let ref):       return ["move-to-workspace", ref.word]
+        case .moveToWorkspaceAndFocus(let r): return ["move-to-workspace-and-focus", r.word]
         case .moveToMonitor(let ref):         return ["move-to-monitor", ref.word]
         case .cycleWidth:                     return ["cycle-width"]
         case .grow(let delta):                return ["grow", delta.word]
@@ -95,7 +96,7 @@ extension Command {
     /// ```swift
     /// try Command.parse(["focus", "left"])            // .focus(.left)
     /// try Command.parse(["fullscreen"])               // .fullscreen(.toggle) — the useful default
-    /// try Command.parse(["move-to-workspace", "3"])   // .moveToWorkspace(.index(3))
+    /// try Command.parse(["move-to-workspace", "3"])   // .moveToWorkspace(.name("3"))
     /// ```
     ///
     /// - Throws: `CommandSyntaxError`, whose `description` is already a printable diagnostic.
@@ -207,6 +208,10 @@ extension Command {
              summary: "Move the focused window to a workspace.",
              build: { verb, args in .moveToWorkspace(try workspaceRef(args, verb: verb)) }),
 
+        Verb("move-to-workspace-and-focus", arguments: Grammar.workspace,
+             summary: "Move the focused window to a workspace and follow it.",
+             build: { verb, args in .moveToWorkspaceAndFocus(try workspaceRef(args, verb: verb)) }),
+
         Verb("move-to-monitor", arguments: Grammar.monitor,
              summary: "Move the focused window to a monitor.",
              build: { verb, args in .moveToMonitor(try monitorRef(args, verb: verb)) }),
@@ -223,7 +228,11 @@ extension Command {
     private enum Grammar {
         static let direction = "<left|right|up|down>"
         static let toggle = "[on|off|toggle]"
-        static let workspace = "<next|prev|N>"
+        // The four relative motions are folded into one bracket rather than listed flat
+        // (`next|prev|next-non-empty|prev-non-empty`, 15 characters longer). `usage` pads every
+        // summary to the widest signature, and this fragment appears on the longest verb in the
+        // table — spelled flat it pushed *every* other verb's summary out past column 90.
+        static let workspace = "<0-9|a-z|(next|prev)[-non-empty]>"
         static let monitor = "<left|right|up|down|next|prev|N>"
         static let delta = "<Npx|N%>"
     }
@@ -277,7 +286,7 @@ extension Command {
     /// **A magnitude, strictly.** The verb carries the sign, so `grow -10%` is refused rather than
     /// quietly becoming a second spelling of `shrink 10%` — one operation, one spelling. The guard also
     /// catches everything else `Double` is happy to read: `nan`, `inf`, `1e400`, and `0` (a resize by
-    /// nothing is a typo, the same judgement `workspaceRef` makes about index `0`).
+    /// nothing is a typo, the same judgement `monitorRef` makes about index `0`).
     ///
     /// `px` and `pt` are the same suffix, and a bare number means points too. The core's unit is
     /// **points** everywhere — CoreGraphics' unit, not device pixels — but `px` is what people reach
@@ -298,18 +307,30 @@ extension Command {
         return isPercent ? .percent(value) : .points(value)
     }
 
+    /// A workspace address (`1`…`9`, `0`, `a`…`z`) or one of the four relative motions.
+    ///
+    /// **`0` names the first workspace; it used to be a syntax error** (reversed 2026-07-26). This
+    /// reader parsed a 1-based `Int` and refused `0` with the comment *"`0` is a mistake, not workspace
+    /// zero"* — which was right while workspaces were a dynamic list the user counted from one. They
+    /// are a fixed named domain now (`WorkspaceName`), `0` is its first address, and it is where focus
+    /// rests at launch. The guard is deleted knowingly rather than adapted: there is no index left to
+    /// be off by one.
+    ///
+    /// Two of the four motions take a short spelling as well (`prev`, `prev-non-empty`) because they
+    /// are what people type; the canonical spellings are the long ones, and `Command.words` emits those.
     private static func workspaceRef(_ args: [String], verb: String) throws -> WorkspaceRef {
         let word = try only(args, verb: verb, expected: Grammar.workspace)
         switch word {
         case "next": return .next
         case "previous", "prev": return .previous
+        case "next-non-empty": return .nextOccupied
+        case "previous-non-empty", "prev-non-empty": return .previousOccupied
         default:
-            // 1-based, like the user counts them; `0` is a mistake, not workspace zero.
-            guard let index = Int(word), index >= 1 else {
+            guard let name = WorkspaceName(word) else {
                 throw CommandSyntaxError.badArgument(verb: verb, value: word,
                                                      expected: Grammar.workspace)
             }
-            return .index(index)
+            return .name(name)
         }
     }
 
@@ -353,12 +374,15 @@ extension SizeDelta {
 }
 
 extension WorkspaceRef {
-    /// How this reference is written as a single word (`"next"`, `"previous"`, `"3"`).
+    /// How this reference is written as a single word (`"3"`, `"a"`, `"next"`, `"prev-non-empty"`'s
+    /// canonical `"previous-non-empty"`).
     var word: String {
         switch self {
-        case .index(let index): return String(index)
+        case .name(let name): return name.description
         case .next: return "next"
         case .previous: return "previous"
+        case .nextOccupied: return "next-non-empty"
+        case .previousOccupied: return "previous-non-empty"
         }
     }
 }

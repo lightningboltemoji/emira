@@ -2229,12 +2229,16 @@ import EmiraMotion
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
         ])
-        var reconciled = s.layout
+        // Against the whole workspace set rather than the focused strip alone (2026-07-26), which is
+        // strictly stronger: `Workspaces`' equality covers the shared `ColumnAllocator`, so a handler
+        // that minted a `ColumnId` on its way to doing nothing is now caught here too — the property
+        // `Layout.extract`'s guard-before-mint exists to keep.
+        var reconciled = s.workspaces
         reconciled.reconcile(stripWindowIds: s.world.stripWindowIds)
         for command in Self.structuralCommands {
             let (n, fx) = Engine.reduce(s, .command(command))
             #expect(fx.isEmpty, "\(command)")
-            #expect(n.layout == reconciled, "\(command)")
+            #expect(n.workspaces == reconciled, "\(command)")
         }
     }
 

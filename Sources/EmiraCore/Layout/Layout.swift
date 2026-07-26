@@ -30,9 +30,11 @@ import Foundation
 // query wants is never arbitrary; see the viewport note on `LayoutMetrics`.
 //
 // Scope of this slice (deferrals, documented so the gaps read as intentional):
-//  · **One strip = one workspace on one monitor.** Multiple workspaces (a collection of strips) and
-//    per-monitor strips are M6 — a `Layout` here is a single strip. The `LayoutMetrics.workingArea`
-//    is the monitor's; a multi-strip container wraps this later.
+//  · **One strip = one workspace on one monitor.** A `Layout` is a single strip, and the multi-strip
+//    container this doc predicted now exists: `Workspaces` (2026-07-26) holds the 36-address
+//    workspace set, owns the `ColumnId` allocator every strip mints from, and answers the queries
+//    that genuinely span strips (membership reconciliation, park-slot allocation, placement). What is
+//    still M6 is **per-monitor** strips — `LayoutMetrics.workingArea` is the one monitor's.
 //  · **Heights are all-auto.** Per-window height *selection* (the persistent `cycleHeight` state) is
 //    a later slice; every window currently shares its column's height equally (`Column`'s auto path,
 //    already tested). Width-preset cycling *is* modeled (each column carries a `widthPreset` index),
@@ -43,8 +45,8 @@ import Foundation
 //    verbs: "alone in its column ⇒ the column moves, stacked ⇒ the window pops out" is a choice,
 //    and choices live beside `handleFocus`, which already makes the same distinction. Two rules bind
 //    every mutator: each is **atomic over the invariants** (no caller ever observes an empty column or
-//    a window in none), and **new `ColumnId`s are minted only in this file** — never by rebuilding
-//    through `init(columns:)`, which rewinds the allocator (see its doc).
+//    a window in none), and **new `ColumnId`s come only from the `ColumnAllocator` a caller hands in**
+//    — one id space across every workspace, never a watermark per strip (see `ColumnAllocator`).
 //  · **A structural edit is animated from the outside, and `Layout` keeps no before-state.** Unlike a
 //    scroll (one offset) or a resize (one width per column), an edit that inserts or removes a column
 //    shifts the strip *discretely* — before and after are two different `Layout`s, not two values of
@@ -55,8 +57,10 @@ import Foundation
 //    the authority on where a window belongs *now* — and the animation lives entirely in the lag
 //    behind that answer. `naturalFrames`'s `widths:` override now has two callers keeping the same
 //    discipline: pass one map, use it for both reads, or the delta stops being purely structural.
-//  · **Cross-workspace / cross-monitor moves** (`moveToWorkspace`, `moveToMonitor`) are M6 — they move
-//    a window between *strips*, which needs the multi-strip container that doesn't exist yet.
+//  · **Cross-workspace / cross-monitor moves** (`moveToWorkspace`, `moveToMonitor`) still don't exist,
+//    but for different reasons now (2026-07-26). `moveToWorkspace` moves a window between *strips*,
+//    which the container it needs — `Workspaces` — can now express; it is waiting on the commands
+//    slice, not on a missing type. `moveToMonitor` needs per-monitor strips, which remain M6.
 
 /// One column's structure: its stable id, the ordered window stack (top→bottom), and the index of
 /// its currently-selected width preset (cycled by `cycleWidth`; resolved against the monitor at
@@ -248,45 +252,77 @@ public struct LayoutEdit: Sendable, Equatable {
     public static let none = LayoutEdit(moved: false, destroyedColumn: nil)
 }
 
-/// The arrangement of one strip: its ordered columns and the allocator that mints their ids. Holds
-/// structure only; frames are computed on demand from a `scrollOffset` + `LayoutMetrics`. Value type,
-/// `Codable` for state dumps / replay (the allocator watermark is part of that state, so ids stay
-/// unique across a serialization round-trip).
+/// The monotonic `ColumnId` source — **one watermark for the whole workspace set**, not one per strip.
+///
+/// It is a parameter to `Layout`'s two minting mutators rather than a field on `Layout`, and that is
+/// the whole of the 2026-07-26 decision behind it. With a watermark per strip, column #1 on workspace
+/// `0` and column #1 on workspace `3` are the *same* `ColumnId` — and `Motion.columnWidths` is keyed
+/// by a bare `ColumnId`, so an in-flight resize on one workspace would re-aim a column on another, and
+/// `LayoutEdit.destroyedColumn` would retire the wrong animator. One id space is the same answer
+/// `WindowId` and `LayerId` already give; this type is what makes the compiler ask for it at every
+/// call site rather than leaving it to be remembered.
+///
+/// Part of `Workspaces`' serialized state, so replay reproduces identical ids (IMPLEMENTATION.md §7).
+/// Never rewinds.
+public struct ColumnAllocator: Sendable, Equatable, Codable {
+    /// The next raw id to hand out.
+    private var next: UInt64
+
+    /// A fresh allocator, starting at 1.
+    public init() {
+        self.next = 1
+    }
+
+    /// An allocator resuming at `next` (never below 1) — for replay and for `Workspaces` seeding
+    /// itself past an explicitly-supplied arrangement.
+    public init(next: UInt64) {
+        self.next = Swift.max(next, 1)
+    }
+
+    /// Hand out the next id. The only place a `ColumnId` comes into existence.
+    public mutating func mint() -> ColumnId {
+        defer { next += 1 }
+        return ColumnId(next)
+    }
+
+    // Encode as the bare number, exactly as `Id` does and for the same reason — a legible dump.
+    public init(from decoder: any Decoder) throws {
+        next = try decoder.singleValueContainer().decode(UInt64.self)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(next)
+    }
+}
+
+/// The arrangement of one strip: its ordered columns. Holds structure only; frames are computed on
+/// demand from a `scrollOffset` + `LayoutMetrics`. Value type, `Codable` for state dumps / replay.
+///
+/// **It mints nothing of its own.** New `ColumnId`s come from a `ColumnAllocator` the caller passes
+/// in, which `Workspaces` owns on behalf of every strip (see that type). That is what makes this
+/// type's `Equatable` purely *structural* — two layouts with the same columns are equal, full stop —
+/// and it is what deleted the watermark-rewind hazard `init(columns:)` used to carry a warning about:
+/// a number that doesn't live here cannot be rewound by rebuilding this.
 public struct Layout: Sendable, Equatable, Codable {
     /// The columns, left→right. `private(set)` so the one structural invariant — every column is
     /// non-empty and each window appears in at most one column — is maintained only through the
     /// mutators below.
     public private(set) var columns: [ColumnLayout]
-    /// Monotonic `ColumnId` watermark — the next raw id to mint. Part of serialized state so replay
-    /// reproduces identical ids (IMPLEMENTATION.md §7). Never rewinds.
-    private var nextColumnRaw: UInt64
 
     /// An empty strip — no columns. Populate via `reconcile`.
     public init() {
         self.columns = []
-        self.nextColumnRaw = 1
     }
 
     /// Construct from an explicit column arrangement (for the reducer building a specific layout, and
-    /// for tests). The allocator resumes past the highest id present, so subsequent `reconcile`
-    /// mints never collide with the supplied columns.
-    ///
-    /// **Never rebuild an existing `Layout` through this initializer.** The watermark resumes past the
-    /// highest *supplied* id, so it **rewinds** whenever a column has been dropped — and the next mint
-    /// then re-issues a `ColumnId` that a `Motion.columnWidths` animator (and the cover's animation
-    /// identity) may still be keyed on. The structural mutators below edit `columns` in place for
-    /// exactly this reason.
+    /// for tests). Supplied ids are taken as given; keeping the allocator past them is the caller's
+    /// job, and `Workspaces.init(focused:strips:)` is where that is done once.
     public init(columns: [ColumnLayout]) {
         self.columns = columns
-        self.nextColumnRaw = (columns.map(\.id.raw).max() ?? 0) + 1
     }
 
     public var isEmpty: Bool { columns.isEmpty }
-
-    private mutating func mintColumnId() -> ColumnId {
-        defer { nextColumnRaw += 1 }
-        return ColumnId(nextColumnRaw)
-    }
 
     // MARK: - Membership queries
 
@@ -322,24 +358,76 @@ public struct Layout: Sendable, Equatable, Codable {
     ///
     ///   The anchor must be the window focused *before* the newcomer arrived: the reducer gives a new
     ///   window focus on sight, and by the time this runs it has no column to sit beside yet.
+    ///
+    /// **The reducer does not call this; `Workspaces.reconcile` does** (2026-07-26). Membership is a
+    /// question about the whole workspace set — departures leave *every* strip, newcomers join the
+    /// *focused* one — so the container composes this call out of the two halves below. This stays the
+    /// single-strip authority both go through, and the one-workspace case is byte-for-byte what it was.
     public mutating func reconcile(stripWindowIds ids: [WindowId],
-                                   insertingAfter anchor: WindowId? = nil) {
-        let target = Set(ids)
-        // 1. Drop departed windows; remove any column left empty.
+                                   insertingAfter anchor: WindowId? = nil,
+                                   columnIds: inout ColumnAllocator) {
+        removeWindows(notIn: Set(ids))
+        let present = Set(allWindowIds)
+        adopt(ids.filter { !present.contains($0) }, after: anchor, columnIds: &columnIds)
+    }
+
+    /// Drop every window not in `keep`, removing any column they empty — the *departure* half of
+    /// `reconcile`, and the only half an **unfocused** workspace ever runs. Total; a repeat call
+    /// changes nothing.
+    public mutating func removeWindows(notIn keep: Set<WindowId>) {
         for i in columns.indices {
-            columns[i].windowIds.removeAll { !target.contains($0) }
+            columns[i].windowIds.removeAll { !keep.contains($0) }
         }
         columns.removeAll { $0.windowIds.isEmpty }
-        // 2. Insert newcomers (present in `ids`, absent from every column) as new single-window
-        //    columns, preserving `ids` order, beside the anchor or at the end.
-        let present = Set(allWindowIds)
-        let newcomers = ids.filter { !present.contains($0) }
+    }
+
+    /// Insert `newcomers` as fresh single-window columns, in the order given, beside `anchor` (or at
+    /// the far end) — the *arrival* half of `reconcile`, and the only half that mints. The caller owes
+    /// the guarantee that a newcomer is on no strip at all; `Workspaces` establishes it by subtracting
+    /// the other workspaces' windows before it delegates here.
+    ///
+    /// - Parameter source: a column whose **width intent** the new columns take instead of the ladder's
+    ///   first rung. `nil` — a genuinely new window — starts on the ladder, which is the rule this had
+    ///   always applied. Non-`nil` for the arrival half of a cross-workspace move
+    ///   (`Workspaces.move(window:to:insertingAfter:)`), where the window is already on screen at that
+    ///   width and re-tiling it would be a second change nobody asked for. Same argument, and the same
+    ///   three fields travelling together, as `extract`'s.
+    public mutating func adopt(_ newcomers: [WindowId], after anchor: WindowId?,
+                               like source: ColumnLayout? = nil,
+                               columnIds: inout ColumnAllocator) {
         guard !newcomers.isEmpty else { return }
         var at = anchor.flatMap { columnIndex(ofWindow: $0) }.map { $0 + 1 } ?? columns.count
         for id in newcomers {
-            columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [id], widthPreset: 0), at: at)
+            columns.insert(ColumnLayout(id: columnIds.mint(), windowIds: [id],
+                                        widthPreset: source?.widthPreset ?? 0,
+                                        widthOverride: source?.widthOverride,
+                                        isFullscreen: source?.isFullscreen ?? false),
+                           at: at)
             at += 1
         }
+    }
+
+    /// Drop `window` from this strip, removing the column it empties — the *departure* half of a
+    /// cross-workspace move.
+    ///
+    /// **Internal, and that is the whole statement.** Every mutator around it is public because each
+    /// leaves the window set intact; this one leaves a window on **no strip at all**, which is an
+    /// invariant `Layout` does not own and cannot restore. Only `Workspaces.move(window:to:
+    /// insertingAfter:)` may call it, because only that call puts the window down again in the same
+    /// breath — which is the atomicity rule the four primitives above keep, stated one level up where
+    /// the invariant actually lives.
+    ///
+    /// Total, like its siblings: a window on no column here no-ops.
+    @discardableResult
+    mutating func remove(window: WindowId) -> LayoutEdit {
+        guard let from = columnIndex(ofWindow: window) else { return .none }
+        columns[from].windowIds.removeAll { $0 == window }
+        guard columns[from].windowIds.isEmpty else {
+            return LayoutEdit(moved: true, destroyedColumn: nil)
+        }
+        let destroyed = columns[from].id
+        columns.remove(at: from)
+        return LayoutEdit(moved: true, destroyedColumn: destroyed)
     }
 
     /// Set a column's width-preset index (the reducer computes the next index via the width
@@ -491,15 +579,17 @@ public struct Layout: Sendable, Equatable, Codable {
     /// they are stored together — an intent that failed to follow would silently snap a grown or
     /// fullscreen column back to its ladder rung on expel.
     @discardableResult
-    public mutating func extract(window: WindowId, toNewColumnAt index: Int) -> LayoutEdit {
-        // The guard precedes the mint on purpose: `Layout`'s synthesized `Equatable` covers the
-        // private allocator watermark, so a stray mint on the no-op path is a visible state change.
+    public mutating func extract(window: WindowId, toNewColumnAt index: Int,
+                                 columnIds: inout ColumnAllocator) -> LayoutEdit {
+        // The guard precedes the mint on purpose: a no-op must not consume an id. That used to be
+        // visible in `Layout`'s own `Equatable` (the watermark was a stored property here); now the
+        // evidence is one level up, in `Workspaces`' allocator — the reason is unchanged.
         guard let from = columnIndex(ofWindow: window),
               columns[from].windowIds.count > 1 else { return .none }
         let source = columns[from]
         let to = Swift.min(Swift.max(index, 0), columns.count)
         columns[from].windowIds.removeAll { $0 == window }   // never empties it (count > 1 above)
-        columns.insert(ColumnLayout(id: mintColumnId(), windowIds: [window],
+        columns.insert(ColumnLayout(id: columnIds.mint(), windowIds: [window],
                                     widthPreset: source.widthPreset,
                                     widthOverride: source.widthOverride,
                                     isFullscreen: source.isFullscreen),
@@ -664,7 +754,16 @@ public struct Layout: Sendable, Equatable, Codable {
     /// set, so `ParkingLot`'s per-ordinal uniqueness guarantees no two parked windows collide
     /// (identity-rebind safety, §7). A parked window keeps its tiled *size* (parking repositions,
     /// never resizes) — the size comes from the same `Column` distribution it would have on-screen.
-    public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId: Rect] {
+    ///
+    /// **The ordinal run is an input, because uniqueness is a property of the whole workspace set**
+    /// (2026-07-26). Every window on every *unfocused* workspace is parked too, so an ordinal range
+    /// local to one strip would hand two windows the same nub — breaking the ±2 pt first-sight
+    /// identity join (`PRINCIPLES.md` §7) *and* the no-overlap invariant, silently and permanently.
+    /// `Workspaces.targetFrames` allocates one run across all strips and passes each its share;
+    /// `parkingFrom: 0` is the single-strip case and is what the whole product did before there was a
+    /// second workspace to collide with.
+    public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics,
+                             parkingFrom firstOrdinal: Int = 0) -> [WindowId: Rect] {
         let area = metrics.contentArea
         let s = strip(metrics: metrics)
         // Visibility is the **physical** question — a column with pixels anywhere on the display is
@@ -679,7 +778,7 @@ public struct Layout: Sendable, Equatable, Codable {
         let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]
-        var parkOrdinal = 0
+        var parkOrdinal = firstOrdinal
         for (i, column) in columns.enumerated() {
             if visible.contains(i) {
                 for (w, f) in zip(column.windowIds, stripFrames[i]) {
@@ -693,6 +792,40 @@ public struct Layout: Sendable, Equatable, Codable {
             }
         }
         return frames
+    }
+
+    /// **Every** window on this strip parked, from `firstOrdinal` — what an *unfocused* workspace is:
+    /// no viewport looking at it, so nothing is tiled and the whole strip waits at its nubs
+    /// (`Workspaces.targetFrames`).
+    ///
+    /// Sizes come from this strip's own geometry — a parked window keeps the size it *would* have if
+    /// its workspace were focused, because parking repositions and never resizes. Sharing
+    /// `columnStripFrames` with `targetFrames` is what guarantees that rather than restating it: a
+    /// window that switches workspaces changes address, not shape.
+    public func parkedFrames(metrics: LayoutMetrics, parkingFrom firstOrdinal: Int) -> [WindowId: Rect] {
+        let s = strip(metrics: metrics)
+        let lot = ParkingLot(frame: metrics.workingArea)
+        let stripFrames = columnStripFrames(s, area: metrics.contentArea, metrics: metrics)
+
+        var frames: [WindowId: Rect] = [:]
+        var ordinal = firstOrdinal
+        for (i, column) in columns.enumerated() {
+            for (w, f) in zip(column.windowIds, stripFrames[i]) {
+                frames[w] = lot.slot(ordinal: ordinal, size: f.size)
+                ordinal += 1
+            }
+        }
+        return frames
+    }
+
+    /// The windows `targetFrames` parks at `scrollOffset`, in the order it assigns their ordinals —
+    /// the complement of `visibleWindowIds`, and therefore the *count* of ordinals this strip
+    /// consumes. `Workspaces.targetFrames` reads it to know where the next strip's run begins.
+    public func parkedWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
+        let view = metrics.physicalViewport(at: scrollOffset)
+        let visible = Set(strip(metrics: metrics)
+            .visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
+        return windowIds(inColumns: columns.indices.filter { !visible.contains($0) })
     }
 
     /// The **presentation-plane** counterpart to `targetFrames`: the natural on-screen frame for every

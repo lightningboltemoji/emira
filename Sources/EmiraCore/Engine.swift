@@ -75,28 +75,53 @@ import EmiraMotion
 public struct State: Sendable, Equatable, Codable {
     /// Truth: what actually exists on the system (windows, apps, monitors, focus).
     public var world: World
-    /// Structure: how the strip's windows are arranged into columns.
-    public var layout: Layout
+    /// Structure: the 36-address workspace set — one strip per materialized workspace, which one is
+    /// focused, and the `ColumnId` allocator they share. The **storage** `layout` projects from.
+    public var workspaces: Workspaces
     /// Animation: the viewport-offset scroll, independent per-window motion, the transition session.
     public var motion: Motion
     /// The parsed config values the reducer reads (gaps, presets, struts, scroll feel).
     public var config: Config
 
+    /// The focused workspace's strip — **a projection of `workspaces`, not a second authority**, the
+    /// same shape `LayoutMetrics.contentArea` is. Settable, so every read *and* write of "the strip"
+    /// reads the same as it did before workspaces existed.
+    ///
+    /// It stays because it is right, not merely because it is cheap: the overwhelming majority of what
+    /// the reducer and the layout engine ask is a question about *one* strip — which column holds the
+    /// focus, what a width preset resolves to, where a scroll reveals. Only the handful of queries that
+    /// genuinely span workspaces go to `workspaces` directly: membership reconciliation, the truth-plane
+    /// `targetFrames` and its park-ordinal run, the placement walks, and the two mutators that mint a
+    /// `ColumnId`. Everything else would gain nothing from spelling `workspaces.focusedStrip` and would
+    /// lose the ~85 source and ~110 test references that already say what they mean.
+    public var layout: Layout {
+        get { workspaces.focusedStrip }
+        set { workspaces.focusedStrip = newValue }
+    }
+
     /// A fresh, empty state — the launch state before any window or monitor is enumerated. The
     /// viewport spring is seeded from the config so scroll feel is config-driven from the first frame.
     public init(config: Config = Config()) {
         self.world = World()
-        self.layout = Layout()
+        self.workspaces = Workspaces()
         self.motion = Motion(viewportOffset: 0, params: config.scrollSpring)
         self.config = config
     }
 
     /// Full memberwise init — for the reducer building a specific state, for replay, and for tests.
-    public init(world: World, layout: Layout, motion: Motion, config: Config) {
+    public init(world: World, workspaces: Workspaces, motion: Motion, config: Config) {
         self.world = world
-        self.layout = layout
+        self.workspaces = workspaces
         self.motion = motion
         self.config = config
+    }
+
+    /// The single-strip init: `layout` becomes the focused workspace's strip and nothing else is
+    /// materialized. What every caller that predates workspaces means, and what it has always meant.
+    public init(world: World, layout: Layout, motion: Motion, config: Config) {
+        self.init(world: world,
+                  workspaces: Workspaces(focused: .first, strips: [.first: layout]),
+                  motion: motion, config: config)
     }
 
     /// The layout metrics for the current monitor + config, or `nil` when no display is known yet
@@ -190,11 +215,15 @@ public enum Engine {
 
         case .focusChanged(let id):
             // Externally-initiated focus (Cmd-Tab, Dock click, self-activation) *and* the echo of our
-            // own `focus` effect. Record it and **snap** the viewport to reveal it — we made no
-            // motion, so we owe no animation (§4a). No `focus` effect: the shell already moved focus.
-            s.world.setFocus(id)
-            guard let id else { return (s, []) }   // focus left every managed window
-            let effects = reveal(&s, id, center: s.config.centerFocusedColumn)
+            // own `focus` effect. **Snap** the viewport to reveal it — and, since 2026-07-26, snap to
+            // its *workspace* first if it lives on another one. We made no motion, so we owe no
+            // animation (§4a). No `focus` effect either way: the shell already moved focus.
+            guard let id else {
+                s.world.setFocus(nil)              // focus left every managed window
+                return (s, [])
+            }
+            // Focus is recorded *inside*, deliberately — see `revealAcrossWorkspaces`.
+            let effects = revealAcrossWorkspaces(&s, id)
             return (s, effects)
 
         case .windowMinimized(let id):
@@ -372,6 +401,15 @@ public enum Engine {
         case .consumeOrExpel(let direction):
             return handleConsumeOrExpel(&s, direction)
 
+        case .focusWorkspace(let ref):
+            return handleFocusWorkspace(&s, ref)
+
+        case .moveToWorkspace(let ref):
+            return handleMoveToWorkspace(&s, ref, follow: false)
+
+        case .moveToWorkspaceAndFocus(let ref):
+            return handleMoveToWorkspace(&s, ref, follow: true)
+
         case .reloadConfig:
             // Pure pass-through: the core has no idea where the file is or what it says. The shell
             // reads it and answers with `configChanged` — or with nothing at all, if it doesn't parse.
@@ -384,15 +422,14 @@ public enum Engine {
         //    also can't ride the strip's own geometry the way a width can — a height is independent
         //    motion *within* one column, i.e. the `windowAnimators` channel.
         //  · float                        — needs floating state modeling on the window.
-        //  · moveToWorkspace / focusWorkspace / moveToMonitor — workspaces + multi-monitor are M6.
+        //  · moveToMonitor                — per-monitor strips are M6's other half.
         //  · closeWindow                  — needs a new `Effect` (an AX close) not in the vocabulary yet.
         //
         // `dumpState` is different: it is **permanently** a no-op here, not a deferral. It's a *read*,
         // answered out of band by the shell straight off `Runtime.state` (`Ipc/RequestRouter.swift`,
         // decided 2026-07-24) — routing it through the reducer would mean an `Effect` carrying a live
         // reply channel, which `Effect`'s `Codable`-value contract forbids for zero gain.
-        case .moveToWorkspace, .moveToMonitor, .cycleHeight, .float,
-             .focusWorkspace, .closeWindow, .dumpState:
+        case .moveToMonitor, .cycleHeight, .float, .closeWindow, .dumpState:
             return []
         }
     }
@@ -411,7 +448,7 @@ public enum Engine {
     /// "focus hits a block" is exactly this. The strip's own edges still no-op — that is the no-wrap
     /// rule and it is a different fact.
     private static func handleFocus(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
 
         // Nothing focused, or focus is not on the strip: re-enter at the end the direction came from,
         // so `right` from off-strip lands on the leftmost column and `left` on the rightmost.
@@ -507,7 +544,7 @@ public enum Engine {
     /// emitting one anyway would be a redundant AX set that can make an app raise itself. No wrap at
     /// either edge, matching `handleFocus`; the clamping in `Layout`'s mutators is what produces it.
     private static func handleMoveWindow(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         // Metrics guard before the mutation, as `handleCycleWidth` does: with no display known there
         // is no correct frame to place the result at, so the strip stays exactly as it was.
         guard let metrics = s.metrics(),
@@ -525,8 +562,8 @@ public enum Engine {
         case .horizontal:
             edit = column.windowIds.count == 1
                 ? s.layout.moveColumn(column.id, to: direction == .right ? index + 1 : index - 1)
-                : s.layout.extract(window: focused,
-                                   toNewColumnAt: direction == .right ? index + 1 : index)
+                : s.workspaces.extract(window: focused,
+                                       toNewColumnAt: direction == .right ? index + 1 : index)
         case .vertical:
             guard let row = column.windowIds.firstIndex(of: focused) else { return [] }
             edit = s.layout.moveWindowWithinColumn(focused, to: direction == .down ? row + 1 : row - 1)
@@ -555,7 +592,7 @@ public enum Engine {
     /// because the strip has an origin, not an edge: index 0 and `columns.count` are ordinary places on
     /// an unbounded axis.
     private static func handleConsumeOrExpel(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
@@ -570,8 +607,8 @@ public enum Engine {
         switch direction {
         case .left, .right:
             if column.windowIds.count > 1 {
-                edit = s.layout.extract(window: focused,
-                                        toNewColumnAt: direction == .right ? index + 1 : index)
+                edit = s.workspaces.extract(window: focused,
+                                            toNewColumnAt: direction == .right ? index + 1 : index)
             } else {
                 let side = direction == .right ? index + 1 : index - 1
                 guard s.layout.columns.indices.contains(side) else { return [] }
@@ -589,7 +626,7 @@ public enum Engine {
             edit = s.layout.move(window: pulled, toColumn: column.id, at: column.windowIds.count)
 
         case .up:
-            edit = s.layout.extract(window: focused, toNewColumnAt: index + 1)
+            edit = s.workspaces.extract(window: focused, toNewColumnAt: index + 1)
         }
         return finishStructuralEdit(&s, edit, focused: focused, mover: mover, old: old)
     }
@@ -687,6 +724,184 @@ public enum Engine {
         return [.elevateLayer(layer)]
     }
 
+    // MARK: - Workspaces (the second axis, and it snaps)
+    //
+    // Switching workspaces is a *jump* in this slice, on purpose. It is the rhythm the project has
+    // already used three times — `move-window` and `consume-or-expel` shipped as snaps at M5 part 3
+    // and were animated at iteration 25; arrivals and departures did the same on 2026-07-26 — and both
+    // times animating afterwards exposed a placeholder the snap had been hiding, which is only cheap to
+    // find if the structure underneath is already right. The vertical transition is its own slice.
+    //
+    // There is no new mechanism here at all, and that is the finding worth keeping. A workspace switch
+    // is `Workspaces.focused` moving plus `emitPlacements` — because "everything that is not the
+    // focused strip is parked" was already what `Workspaces.targetFrames` meant, and a park is a frame
+    // like any other. What the two verbs genuinely needed was *memory* (`WorkspaceState`), which is
+    // state rather than machinery.
+
+    /// Switch the focused workspace.
+    ///
+    /// Resolving to the workspace we are already on is a **silent no-op** — nothing moved, so there is
+    /// nothing to say. That is also how `next` at `"z"` and `next-non-empty` with nothing to the right
+    /// come out, because `Workspaces.resolve` clamps rather than wrapping; the edge behaviour is one
+    /// rule in one place, matching `focus left|right` at the strip's edges.
+    private static func handleFocusWorkspace(_ s: inout State, _ ref: WorkspaceRef) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        let destination = s.workspaces.resolve(ref)
+        guard destination != s.workspaces.focused else { return [] }
+        return switchWorkspace(&s, to: destination)
+    }
+
+    /// Move the focused **window** to another workspace, optionally following it there.
+    ///
+    /// **A window, not its column**, matching `move-window`'s vocabulary: a window with stackmates
+    /// leaves them behind exactly as `move-window left|right` pops it out of their column. A
+    /// `move-column-to-workspace` is a later verb rather than a missing half of this one.
+    ///
+    /// On the destination it opens **beside whatever that workspace was last focused on**, the same
+    /// rule `reconcile(stripWindowIds:insertingAfter:)` already applies to a newcomer — so a run of
+    /// moves builds a group in the order they were sent instead of scattering them at the far end.
+    /// It then *becomes* that workspace's remembered focus, which is what makes the follow verb and
+    /// a later `focus-workspace` land on the same window.
+    ///
+    /// **The two verbs differ only in where focus ends up, and both answers already existed.** Staying
+    /// means the moved window took focus with it, so `successor` picks the neighbour — the surviving
+    /// stackmate, else the column that slid into its place, which is literally the same call a close
+    /// makes. Following is `switchWorkspace`, told which window to keep focus on.
+    private static func handleMoveToWorkspace(_ s: inout State, _ ref: WorkspaceRef,
+                                              follow: Bool) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        let destination = s.workspaces.resolve(ref)
+        guard destination != s.workspaces.focused,
+              let moved = s.world.focusedWindow,
+              let index = s.layout.columnIndex(ofWindow: moved) else { return [] }
+
+        var effects = abandonTransition(&s)
+        // Read before the edit: the column's id tells us afterwards whether the departure emptied it,
+        // and its index is where focus falls back to if it did.
+        let column = s.layout.columns[index].id
+        let edit = s.workspaces.move(window: moved, to: destination,
+                                     insertingAfter: s.workspaces[lastFocusOf: destination])
+        guard edit.moved else { return effects }
+        if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
+        // The window is on another strip now, so a displacement measuring its lag behind *this* layout
+        // is measuring against nothing — `departFromStrip` retires one for the identical reason.
+        s.motion.removeWindowAnimator(moved)
+        s.workspaces[lastFocusOf: destination] = moved
+
+        if follow { return effects + switchWorkspace(&s, to: destination, focusing: moved) }
+
+        // Staying: focus left with the window, so it lands on the neighbour. An emptied strip has no
+        // neighbour to land on and focus rests off it — the same supported state an empty workspace
+        // leaves behind, and `handleFocus`'s off-strip entry condition recovers from it.
+        guard let heir = successor(s.layout, column: column, at: index) else {
+            s.world.setFocus(nil)
+            return effects + emitPlacements(&s)
+        }
+        s.world.setFocus(heir)
+        return effects + reveal(&s, heir, center: s.config.centerFocusedColumn) + [.focus(heir)]
+    }
+
+    /// The body of a workspace switch — shared by `focus-workspace`, `move-to-workspace-and-focus`, and
+    /// the cross-workspace `focusChanged`. Five steps, in this order because each one's input is the
+    /// previous one's output:
+    ///
+    ///  1. Store the **live** viewport offset and the current strip focus into the *outgoing*
+    ///     workspace's record. That is the whole of per-workspace scroll and focus memory, and it is
+    ///     two lines because `WorkspaceState` is where they live.
+    ///  2. Move `focused`, materializing the destination if this is its first sight.
+    ///  3. Seed the viewport from the incoming record — a **snap**, not a retarget. Nothing is
+    ///     animating; there is no motion to carry velocity through.
+    ///  4. Pick the window to focus: the caller's, else the one this workspace was left on, else the
+    ///     first on its strip. An **empty** workspace has none and focus is left resting off the strip
+    ///     — an already-supported state rather than a case needing a rule of its own, because
+    ///     `handleFocus`'s off-strip entry condition re-enters at the near end, so the very next
+    ///     `focus left|right` recovers.
+    ///  5. Reveal and place. `reveal` is deliberately *after* the seed rather than instead of it: the
+    ///     remembered offset is restored first and the minimal reveal then moves it only if the window
+    ///     being focused is not on screen there — which the remembered pair never is, and which a
+    ///     freshly-arrived window (the follow verb, a never-visited workspace) frequently is. Without
+    ///     it a `move-to-workspace-and-focus` could land the user focused on something off-screen,
+    ///     which is the one thing §4a's externally-focused rule says must never happen.
+    ///
+    /// The placement itself needs nothing new: `emitPlacements` walks every window on every workspace
+    /// and `visibleWindowIds` asks the **focused** strip alone, so the arriving strip tiles and the
+    /// departing one parks by construction.
+    ///
+    /// - Parameter announcingFocus: whether to emit `.focus`. `false` on the `focusChanged` path, where
+    ///   the shell has already moved focus — asking again is a redundant AX set that can make an app
+    ///   raise itself, and an echo we would then have to absorb.
+    private static func switchWorkspace(_ s: inout State, to destination: WorkspaceName,
+                                        focusing wanted: WindowId? = nil,
+                                        announcingFocus: Bool = true) -> [Effect] {
+        var effects = abandonTransition(&s)
+
+        let outgoing = s.workspaces.focused
+        s.workspaces[scrollOffsetOf: outgoing] = s.motion.viewportOffset.current
+        // Only a window on the outgoing *strip* is worth remembering: a float or a window we classified
+        // as furniture has no column to come back to.
+        s.workspaces[lastFocusOf: outgoing] =
+            s.world.focusedWindow.flatMap { s.layout.columnIndex(ofWindow: $0) == nil ? nil : $0 }
+
+        s.workspaces.focus(destination)
+        s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: destination])
+
+        guard let target = wanted ?? s.workspaces[lastFocusOf: destination]
+                ?? s.layout.allWindowIds.first else {
+            return effects + emitPlacements(&s)          // an empty workspace: nothing to focus
+        }
+        s.world.setFocus(target)
+        s.workspaces[lastFocusOf: destination] = target
+        effects += reveal(&s, target, center: s.config.centerFocusedColumn)
+        if announcingFocus { effects.append(.focus(target)) }
+        return effects
+    }
+
+    /// Reveal an externally-focused window, **switching workspaces first if it lives on another one**
+    /// (2026-07-26).
+    ///
+    /// Cmd-Tab, a Dock click and an app raising its own window can all name a window on a workspace the
+    /// user is not looking at, and §4a's promise is about the *window*: the user must never be focused
+    /// on something they cannot see. So the switch snaps and then reveals — the same reasoning verbatim
+    /// as the plain reveal's snap, because we made no motion and owe no animation. This is the path
+    /// synthetic tests will not force on you; it exists because a real desktop produces it whether or
+    /// not we handle it.
+    ///
+    /// **Focus is recorded inside the switch, not before it**, and the ordering is load-bearing: step 1
+    /// stores the *outgoing* workspace's remembered focus, and setting `World.focusedWindow` to a window
+    /// on another strip first would make that read `nil` and wipe the memory of the workspace being left.
+    ///
+    /// **No `.focus` effect on this path, which is also what makes a loop unrepresentable.** The shell
+    /// already moved focus. The echo of our own placements comes back as `axLanded`/`windowFrameChanged`,
+    /// not as focus; and were a `focusChanged` to arrive again for the same window it would now name one
+    /// on the focused workspace and fall into the ordinary `reveal`, which is idempotent once everything
+    /// is placed.
+    private static func revealAcrossWorkspaces(_ s: inout State, _ id: WindowId) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        if let home = s.workspaces.workspace(of: id), home != s.workspaces.focused {
+            return switchWorkspace(&s, to: home, focusing: id, announcingFocus: false)
+        }
+        s.world.setFocus(id)
+        return reveal(&s, id, center: s.config.centerFocusedColumn)
+    }
+
+    /// Drop an in-flight transition before a workspace verb rearranges the world underneath it.
+    ///
+    /// **A cover is a picture of one workspace.** Every layer in it is bound to a window that is about
+    /// to be parked wholesale, so the interrupt every other command performs — retarget the session and
+    /// re-teleport behind it (`driveTransition`) — has no meaning here: it would leave those layers
+    /// sliding toward frames on a strip nobody is looking at, while `emitPlacements` moved the reals out
+    /// from under them. The session is closed and the cover cross-faded away at once. A hard cut is the
+    /// honest presentation of a change we are deliberately not animating in this slice.
+    ///
+    /// `closeTransition` snaps the viewport to the target the abandoned scroll was travelling to, which
+    /// is also the right thing for the outgoing workspace to remember: where it would have come to rest,
+    /// not where it happened to be when the key was pressed.
+    private static func abandonTransition(_ s: inout State) -> [Effect] {
+        guard s.motion.isTransitioning else { return [] }
+        s.motion.closeTransition()
+        return [.endTransition]
+    }
+
     // MARK: - Placement (the instant-correct core, §4a)
 
     /// Snap the viewport to reveal `id`'s column (centered, or minimally revealed per config) and
@@ -710,7 +925,7 @@ public enum Engine {
     /// with its window loose behind the cover. Going through `driveTransition` closes all three, and it
     /// is the same call the command paths already make.
     private static func reveal(_ s: inout State, _ id: WindowId, center: Bool) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
         let start = s.motion.viewportOffset.current
         let offset = center
@@ -746,7 +961,7 @@ public enum Engine {
     ///    aim the viewport spring at the end. The cover is raised — and the reals teleported — later,
     ///    once every capture is in (`captureReady`).
     private static func scrollReveal(_ s: inout State, to id: WindowId, center: Bool) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
         let start = s.motion.viewportOffset.current
         let end = center
@@ -938,7 +1153,7 @@ public enum Engine {
         _ s: inout State,
         _ retarget: (inout Layout, ColumnLayout, LayoutMetrics, Double) -> Void
     ) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
@@ -1018,20 +1233,25 @@ public enum Engine {
     /// - Parameter initial: the teleport at the cover's raise, which *replaces* the scope-wide landing
     ///   wait the session was born with. Every later re-teleport only adds to it, because sets from the
     ///   previous batch may still be in flight (`Motion.armLandings`).
+    ///
+    /// Spans workspaces, like `emitPlacements` and for the same reason: the windows on the *other*
+    /// workspaces are parked, and a park is a frame like any other. `visibleWindowIds` still asks the
+    /// **focused** strip alone, which is the whole model in one line — everything else parks by
+    /// construction.
     private static func teleportBehindCover(_ s: inout State, initial: Bool = false) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(), let scope = s.motion.transition?.windows else { return [] }
         let offset = s.motion.viewportOffset.target
-        let frames = s.layout.targetFrames(scrollOffset: offset, metrics: metrics)
+        let frames = s.workspaces.targetFrames(scrollOffset: offset, metrics: metrics)
         let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
-        let questions = s.layout.naturalFrames(scrollOffset: 0, metrics: metrics.uncorrected)
+        let questions = s.workspaces.uncorrectedSizes(metrics: metrics)
         let scopeSet = Set(scope)
 
         var effects: [Effect] = []
         var moved: [WindowId] = []
-        for id in s.layout.allWindowIds {
+        for id in s.workspaces.allWindowIds {
             guard let target = frames[id] else { continue }
-            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]?.size) { continue }
+            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
             effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
             s.world.updateFrame(id, to: target)     // optimistic: AX will land here (or axFailed)
             if scopeSet.contains(id) { moved.append(id) }
@@ -1095,7 +1315,7 @@ public enum Engine {
     /// change. `nil` with no display known, which is also the caller's signal that there is nothing to
     /// place. Named for what it is used for: the half of a structural difference that stops being true.
     private static func strandedGeometry(_ s: inout State) -> StructuralSnapshot? {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return nil }
         return structuralSnapshot(s, metrics)
     }
@@ -1118,7 +1338,7 @@ public enum Engine {
     /// width the window already has rather than the ladder's first rung (`keepExistingWidth`).
     private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
                                       old: StructuralSnapshot, keepingWidth: Bool = false) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
         // A window that didn't actually join a column (no metrics, a rule that floated it) has nothing
         // to animate; the ordinary placement pass still runs.
         guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + [.focus(id)] }
@@ -1192,7 +1412,7 @@ public enum Engine {
     /// on the strip (a floating one closing rearranges nothing) and a strip left empty.
     private static func departFromStrip(_ s: inout State, _ id: WindowId,
                                         _ leave: (inout State) -> Void) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         // Read all three *before* the removal: the column's id so we can tell afterwards whether it
         // died, its index so focus can land where the window was, and the geometry we are leaving,
         // which is the half of the difference that stops existing.
@@ -1203,7 +1423,7 @@ public enum Engine {
         leave(&s)
         // The departed window's own lag is measured against a layout that no longer places it.
         s.motion.removeWindowAnimator(id)
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
 
         // Focus may have gone with it. Choose the successor *before* framing the strip, because that
         // is what the viewport is aimed at.
@@ -1252,13 +1472,18 @@ public enum Engine {
                                                  requested: Rect, actual: Rect) -> [Effect] {
         s.world.updateFrame(id, to: actual)          // truth first, exactly as `windowFrameChanged` does
 
+        // Asked of whichever workspace holds the window, not of the focused one. A parked window on
+        // another workspace is still placed by us and can still refuse the size, and a guard that
+        // silently declined to learn from it would leave that window failing `isAlreadyPlaced` and
+        // being re-set on every event, forever. Identical for a single workspace, where the strip
+        // holding the window *is* the focused strip.
         guard let metrics = s.metrics(),
-              let index = s.layout.columnIndex(ofWindow: id),
-              let live = s.layout.targetFrames(scrollOffset: s.motion.viewportOffset.target,
-                                               metrics: metrics)[id],
+              let (name, column) = s.workspaces.column(containing: id),
+              let live = s.workspaces.targetFrames(scrollOffset: s.motion.viewportOffset.target,
+                                                   metrics: metrics)[id],
               approximatelyEqualSize(requested.size, live.size),      // not stale
               !approximatelyEqualSize(actual.size, requested.size),   // actually about size
-              let question = s.layout.uncorrectedSize(of: id, metrics: metrics)
+              let question = s.workspaces[name].uncorrectedSize(of: id, metrics: metrics)
         else { return [] }
 
         // **A narrower answer teaches only when it answered the question** (2026-07-26) — the guard that
@@ -1279,11 +1504,10 @@ public enum Engine {
         if actual.width < requested.width - 0.5,
            !approximatelyEqualScalar(requested.width, question.width) { return [] }
 
-        let column = s.layout.columns[index]
-        let before = s.layout.resolvedWidth(of: column, metrics: metrics)
+        let before = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
         s.world.noteCorrection(id, wanted: question, actual: actual.size)
         guard let corrected = s.metrics() else { return [] }
-        let after = s.layout.resolvedWidth(of: column, metrics: corrected)
+        let after = s.workspaces[name].resolvedWidth(of: column, metrics: corrected)
 
         // Under a cover every layer frame is re-derived from the strip's geometry each tick, so a
         // column that changes width between two frames *jumps*. Put the change under the resize spring
@@ -1366,7 +1590,7 @@ public enum Engine {
     /// this is what keeps a repeated idle event from re-emitting the same set forever. Reconciles
     /// first so structural churn (a new/departed window) is reflected before frames are computed.
     private static func emitPlacements(_ s: inout State) -> [Effect] {
-        s.layout.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
 
         // Bring the resting viewport back inside the strip (2026-07-26). The strip can shrink without
@@ -1387,14 +1611,17 @@ public enum Engine {
         }
 
         let offset = s.motion.viewportOffset.current
-        let frames = s.layout.targetFrames(scrollOffset: offset, metrics: metrics)
+        let frames = s.workspaces.targetFrames(scrollOffset: offset, metrics: metrics)
         let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
-        let questions = s.layout.naturalFrames(scrollOffset: 0, metrics: metrics.uncorrected)
+        let questions = s.workspaces.uncorrectedSizes(metrics: metrics)
 
         var effects: [Effect] = []
-        for id in s.layout.allWindowIds {          // deterministic column-then-stack order
+        // Every window on every workspace, in placement order (focused strip first, then the rest by
+        // name; column-then-stack within each). `visible` is the **focused** strip's on-screen set and
+        // nothing else's — which is exactly the model: one workspace is looked at, the rest are parked.
+        for id in s.workspaces.allWindowIds {
             guard let target = frames[id] else { continue }
-            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]?.size) { continue }
+            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
             effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
             s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
         }

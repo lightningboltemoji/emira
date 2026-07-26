@@ -348,13 +348,35 @@ import Testing
         }
     }
 
-    @Test func lanesWrapASliverFurtherInWhenRowsAreExhausted() {
-        // ordinal 108 == lane 1, row 0: the nub resets to 40 pt tall, x pokes one more sliver in.
+    @Test func lanesWrapALaneStepFurtherInWhenRowsAreExhausted() {
+        // ordinal 108 == lane 1, row 0: the nub resets to 40 pt tall, x pokes one lane step further.
         let first = lot.slot(ordinal: 0, size: size)
         let wrapped = lot.slot(ordinal: 108, size: size)
-        #expect(wrapped.minY == first.minY)                     // back to a bare-chrome nub
-        #expect(wrapped.minX == first.minX - lot.visibleSliver) // one sliver further on-screen
+        #expect(wrapped.minY == first.minY)                  // back to a bare-chrome nub
+        #expect(wrapped.minX == first.minX - lot.laneStep)   // one lane step further on-screen
         #expect(wrapped != first)
+    }
+
+    /// **The wrap has to clear the identity tolerance too, and it did not** (2026-07-26). Lane 1 row 0
+    /// shares its `y`, `width` and `height` with lane 0 row 0, so `x` is the *only* edge telling them
+    /// apart — and at one `visibleSliver` it told them apart by 1 pt, inside `WindowRegistry.bind`'s
+    /// ±2 pt per-edge match. Two parked windows of one app there would both be refused at cold-start
+    /// rebind, which is exactly the failure `stagger` exists to prevent, one axis over.
+    ///
+    /// Only a *workspace set* parks enough windows to reach a second lane (~107 rows), which is why
+    /// this was latent until now and why the whole-set assertion below is the one that matters: every
+    /// pair, not just consecutive ones, must differ by more than the tolerance on at least one edge.
+    @Test func everyPairOfSlotsClearsTheIdentityBindingToleranceAcrossLanes() {
+        let slots = (0..<250).map { lot.slot(ordinal: $0, size: size) }   // three lanes' worth
+        func ambiguous(_ a: Rect, _ b: Rect) -> Bool {
+            abs(a.minX - b.minX) <= 2 && abs(a.minY - b.minY) <= 2
+                && abs(a.width - b.width) <= 2 && abs(a.height - b.height) <= 2
+        }
+        for i in slots.indices {
+            for j in (i + 1)..<slots.count where ambiguous(slots[i], slots[j]) {
+                Issue.record("ordinals \(i) and \(j) are indistinguishable at rebind")
+            }
+        }
     }
 
     @Test func aLaneNeverGrowsTheNubPastTheWorkingArea() {
@@ -384,6 +406,12 @@ import Testing
     private let w10 = WindowId(10), w20 = WindowId(20), w21 = WindowId(21)
     private let w30 = WindowId(30), w40 = WindowId(40)
 
+    // The minting mutators take a `ColumnAllocator`, which lives in `Workspaces` in the product
+    // (2026-07-26: one id space across every workspace, since `Motion.columnWidths` is keyed by a bare
+    // `ColumnId`), so a bare `Layout` is handed one. Each test that mints declares its own local
+    // `var ids = ColumnAllocator(next: 5)` — seeded past `fourColumns`' explicit ids 1–4, which is
+    // exactly what `Workspaces.init(focused:strips:)` does for an explicitly-supplied arrangement.
+
     // Reused metrics: a 900×600 working area at the origin; each column ⅓ of the width = 300 pt;
     // no gaps (clean arithmetic). Strip of four 300-wide columns → content 1200, viewport 900.
     private let metrics = LayoutMetrics(
@@ -405,26 +433,29 @@ import Testing
     // MARK: reconcile — the World→Layout membership bridge
 
     @Test func reconcileAppendsNewcomersAsSingleWindowColumns() {
+        var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20, w30])
+        layout.reconcile(stripWindowIds: [w10, w20, w30], columnIds: &ids)
         #expect(layout.columns.count == 3)
         #expect(layout.columns.map(\.windowIds) == [[w10], [w20], [w30]])  // one each, input order
         #expect(layout.allWindowIds == [w10, w20, w30])
     }
 
     @Test func reconcileDropsDepartedWindowsAndEmptyColumns() {
+        var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20, w30])
+        layout.reconcile(stripWindowIds: [w10, w20, w30], columnIds: &ids)
         let idOfW20Column = layout.columns[1].id
-        layout.reconcile(stripWindowIds: [w10, w30])       // w20 gone → its column emptied → dropped
+        layout.reconcile(stripWindowIds: [w10, w30], columnIds: &ids)       // w20 gone → its column emptied → dropped
         #expect(layout.columns.map(\.windowIds) == [[w10], [w30]])
         #expect(layout.columnIndex(withId: idOfW20Column) == nil)
     }
 
     @Test func reconcilePreservesExistingColumnIdentityAndArrangement() {
+        var ids = ColumnAllocator(next: 5)
         // A two-window column survives a churn that only adds a newcomer: same column id, same stack.
         var layout = Layout(columns: [ColumnLayout(id: ColumnId(7), windowIds: [w20, w21])])
-        layout.reconcile(stripWindowIds: [w20, w21, w40])
+        layout.reconcile(stripWindowIds: [w20, w21, w40], columnIds: &ids)
         #expect(layout.columns[0].id == ColumnId(7))       // identity preserved
         #expect(layout.columns[0].windowIds == [w20, w21]) // arrangement preserved
         #expect(layout.columns[1].windowIds == [w40])      // newcomer appended as its own column
@@ -433,10 +464,11 @@ import Testing
     }
 
     @Test func reconcileIsIdempotentForAnUnchangedSet() {
+        var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20])
+        layout.reconcile(stripWindowIds: [w10, w20], columnIds: &ids)
         let before = layout.columns
-        layout.reconcile(stripWindowIds: [w10, w20])
+        layout.reconcile(stripWindowIds: [w10, w20], columnIds: &ids)
         #expect(layout.columns == before)                  // no churn, no new columns minted
     }
 
@@ -521,8 +553,9 @@ import Testing
     }
 
     @Test func extractingAStackedWindowMintsANewSingleWindowColumnAtTheGivenIndex() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
-        let edit = layout.extract(window: w21, toNewColumnAt: 2)
+        let edit = layout.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)
         #expect(edit.moved)
         #expect(edit.destroyedColumn == nil)                  // the source keeps w20, so it survives
         #expect(layout.columns.count == 5)
@@ -532,9 +565,10 @@ import Testing
     }
 
     @Test func extractingLeftAndExtractingRightDifferByOneIndex() {
+        var ids = ColumnAllocator(next: 5)
         var left = fourColumns(), right = fourColumns()
-        left.extract(window: w21, toNewColumnAt: 1)           // source sits at index 1 → land before it
-        right.extract(window: w21, toNewColumnAt: 2)          // → land after it
+        left.extract(window: w21, toNewColumnAt: 1, columnIds: &ids)           // source sits at index 1 → land before it
+        right.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)          // → land after it
         #expect(left.columns.map(\.windowIds) == [[w10], [w21], [w20], [w30], [w40]])
         #expect(right.columns.map(\.windowIds) == [[w10], [w20], [w21], [w30], [w40]])
     }
@@ -545,16 +579,18 @@ import Testing
     /// underneath every animator. `Layout`'s synthesized `Equatable` covers the private allocator
     /// watermark, so comparing the whole value catches the stray mint too.
     @Test func extractingAWindowAlreadyAloneInItsColumnIsANoOp() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         let before = layout
-        #expect(layout.extract(window: w10, toNewColumnAt: 3) == .none)
+        #expect(layout.extract(window: w10, toNewColumnAt: 3, columnIds: &ids) == .none)
         #expect(layout == before)
     }
 
     @Test func anExtractedColumnInheritsTheWidthPresetItLeft() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         layout.setWidthPreset(1, ofColumn: ColumnId(2))       // the stacked column, now preset 1
-        layout.extract(window: w21, toNewColumnAt: 2)
+        layout.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)
         #expect(layout.columns[2].widthPreset == 1)
         // Two presets in the cycle would resolve differently; with one, both are still 300.
         let m = LayoutMetrics(workingArea: Rect(x: 0, y: 0, width: 900, height: 600),
@@ -567,9 +603,10 @@ import Testing
     /// An override is part of the width *intent*, so it travels with the window the same way the preset
     /// does — otherwise an expel would silently snap a grown column back onto the ladder.
     @Test func anExtractedColumnInheritsTheWidthOverrideItLeft() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         layout.setWidthOverride(.fixed(420), ofColumn: ColumnId(2))
-        layout.extract(window: w21, toNewColumnAt: 2)
+        layout.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)
         #expect(layout.columns[1].widthOverride == .fixed(420))
         #expect(layout.columns[2].widthOverride == .fixed(420))
         #expect(layout.strip(metrics: metrics).columnWidths[1] == 420)
@@ -639,9 +676,10 @@ import Testing
     /// the window is on screen at that width, and an intent that failed to follow would snap it back as
     /// a side effect of a structural edit.
     @Test func anExtractedColumnInheritsFullscreen() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         layout.setFullscreen(true, ofColumn: ColumnId(2))
-        layout.extract(window: w21, toNewColumnAt: 2)
+        layout.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)
         #expect(layout.columns[1].isFullscreen)
         #expect(layout.columns[2].isFullscreen)
     }
@@ -655,9 +693,10 @@ import Testing
     }
 
     @Test func extractingClampsAnOutOfRangeIndexToTheEndsOfTheStrip() {
+        var ids = ColumnAllocator(next: 5)
         var low = fourColumns(), high = fourColumns()
-        low.extract(window: w21, toNewColumnAt: -5)
-        high.extract(window: w21, toNewColumnAt: 99)
+        low.extract(window: w21, toNewColumnAt: -5, columnIds: &ids)
+        high.extract(window: w21, toNewColumnAt: 99, columnIds: &ids)
         #expect(low.columns.first?.windowIds == [w21])
         #expect(high.columns.last?.windowIds == [w21])
     }
@@ -665,8 +704,9 @@ import Testing
     /// The strip has an origin, not an edge — index 0 is an ordinary place on an unbounded axis, so an
     /// expel there creates its column rather than refusing like a consume with no neighbour would.
     @Test func extractingAtTheStripOriginStillCreatesTheColumn() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
-        #expect(layout.extract(window: w21, toNewColumnAt: 0).moved)
+        #expect(layout.extract(window: w21, toNewColumnAt: 0, columnIds: &ids).moved)
         #expect(layout.columns[0].windowIds == [w21])
         #expect(layout.columns.count == 5)
     }
@@ -735,6 +775,7 @@ import Testing
     /// The two rules `Layout.columns` is `private(set)` to protect. Run a mixed script and re-check
     /// after every step, because a mutator that breaks either one does it transiently.
     @Test func noStructuralMutationEverBreaksTheStripsInvariants() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         let all = Set(layout.allWindowIds)
         func check(_ step: String) {
@@ -743,11 +784,11 @@ import Testing
             #expect(layout.allWindowIds.count == all.count, "window duplicated after \(step)")
         }
         layout.moveColumn(ColumnId(2), to: 0);                          check("moveColumn")
-        layout.extract(window: w21, toNewColumnAt: 0);                  check("extract left")
+        layout.extract(window: w21, toNewColumnAt: 0, columnIds: &ids);                  check("extract left")
         layout.move(window: w21, toColumn: ColumnId(1), at: 0);         check("merge")
         layout.moveWindowWithinColumn(w21, to: 1);                      check("reorder")
         layout.move(window: w30, toColumn: ColumnId(4), at: 0);         check("merge onto w40")
-        layout.extract(window: w30, toNewColumnAt: 99);                 check("extract right")
+        layout.extract(window: w30, toNewColumnAt: 99, columnIds: &ids);                 check("extract right")
         layout.moveColumn(ColumnId(4), to: 0);                          check("moveColumn again")
         layout.move(window: w10, toColumn: ColumnId(2), at: 0);         check("merge alone")
     }
@@ -757,25 +798,27 @@ import Testing
     /// in isolation. `World.stripWindowIds` is id-sorted, deliberately unrelated to layout order, so
     /// that is what we hand back.
     @Test func aStructuralMutationSurvivesTheNextReconcile() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
-        layout.extract(window: w21, toNewColumnAt: 0)
+        layout.extract(window: w21, toNewColumnAt: 0, columnIds: &ids)
         layout.moveColumn(ColumnId(1), to: 3)
         let arranged = layout
-        layout.reconcile(stripWindowIds: [w10, w20, w21, w30, w40])   // id order, as World supplies
+        layout.reconcile(stripWindowIds: [w10, w20, w21, w30, w40], columnIds: &ids)   // id order, as World supplies
         #expect(layout == arranged)
     }
 
     /// Guards the `init(columns:)` watermark-rewind hazard: a mutator that rebuilt the layout through
     /// that initializer would resume the allocator below a destroyed column's id and re-issue it.
     @Test func columnIdsAreNeverReusedAfterAColumnIsDestroyed() {
+        var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         var seen = Set(layout.columns.map(\.id))
-        layout.extract(window: w21, toNewColumnAt: 4)                 // mints 5
+        layout.extract(window: w21, toNewColumnAt: 4, columnIds: &ids)                 // mints 5
         seen.formUnion(layout.columns.map(\.id))
         let born = try! #require(layout.columnIndex(ofWindow: w21))
         let dead = layout.columns[born].id
         #expect(layout.move(window: w21, toColumn: ColumnId(3), at: 0).destroyedColumn == dead)
-        layout.extract(window: w21, toNewColumnAt: 0)                 // mints again, must not reuse
+        layout.extract(window: w21, toNewColumnAt: 0, columnIds: &ids)                 // mints again, must not reuse
         let reborn = try! #require(layout.columns.first?.id)
         #expect(reborn == ColumnId(6))
         #expect(!seen.contains(reborn))
@@ -1134,26 +1177,14 @@ import Testing
         #expect(layout.columnIndex(ofWindow: WindowId(999)) == nil)
     }
 
+    /// `Layout`'s serialized state is now **purely structural** — the allocator watermark moved to
+    /// `Workspaces` (2026-07-26), so there is nothing here but the columns. The round-trip that pins
+    /// the watermark moved with it: `WorkspaceTests.aRoundTrippedSetMintsTheSameNextColumnId`.
     @Test func layoutRoundTripsThroughCodable() throws {
         let layout = fourColumns()
         let data = try JSONEncoder().encode(layout)
         let back = try JSONDecoder().decode(Layout.self, from: data)
-        #expect(back == layout)                            // columns + allocator watermark preserved
-    }
-
-    /// The watermark is serialized state (§7 replay), and the only way to observe it is to mint. Mutate
-    /// first so it has advanced past `max(id)`, then check that the original and the decoded copy hand
-    /// out the *same* next id — a round-trip that dropped it would silently re-issue ColumnId(5).
-    @Test func aRoundTrippedLayoutMintsTheSameNextColumnId() throws {
-        var layout = fourColumns()
-        layout.extract(window: w21, toNewColumnAt: 0)      // mints 5; watermark now 6
-        var back = try JSONDecoder().decode(Layout.self, from: try JSONEncoder().encode(layout))
         #expect(back == layout)
-        let churn = [w10, w20, w21, w30, w40, WindowId(50)]   // a newcomer, so both must mint
-        layout.reconcile(stripWindowIds: churn)
-        back.reconcile(stripWindowIds: churn)
-        #expect(back.columns.last?.id == layout.columns.last?.id)
-        #expect(back.columns.last?.id == ColumnId(6))
     }
 }
 

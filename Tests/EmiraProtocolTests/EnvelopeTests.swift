@@ -102,14 +102,18 @@ enum CommandSamples {
     static let all: [Command] = [
         .focus(.left), .focus(.down),
         .moveWindow(.right), .moveWindow(.up),
-        .moveToWorkspace(.index(3)), .moveToWorkspace(.next), .moveToWorkspace(.previous),
+        .moveToWorkspace(.name(WorkspaceName("3")!)), .moveToWorkspace(.next),
+        .moveToWorkspace(.previous), .moveToWorkspace(.nextOccupied),
+        .moveToWorkspaceAndFocus(.name(WorkspaceName("a")!)),
+        .moveToWorkspaceAndFocus(.previousOccupied),
         .moveToMonitor(.direction(.left)), .moveToMonitor(.index(2)), .moveToMonitor(.next),
         .moveToMonitor(.previous),
         .cycleWidth, .cycleHeight,
         .consumeOrExpel(.right),
         .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
         .float(.on), .float(.toggle),
-        .focusWorkspace(.index(1)), .focusWorkspace(.next), .focusWorkspace(.previous),
+        .focusWorkspace(.name(.first)), .focusWorkspace(.next), .focusWorkspace(.previous),
+        .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
         .closeWindow, .centerColumn, .reloadConfig, .dumpState,
     ]
 }

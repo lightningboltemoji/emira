@@ -39,9 +39,11 @@ import Testing
         #expect(json == "[5,7]")
     }
 
+    /// (Was written against `WorkspaceId`, deleted 2026-07-26 — workspaces are a fixed named domain,
+    /// not minted tokens. `MonitorId` is the same `Id` machinery and makes the same point.)
     @Test func idsDecodeFromBareNumbers() throws {
-        let decoded = try JSONDecoder().decode([WorkspaceId].self, from: Data("[1,2,3]".utf8))
-        #expect(decoded == [WorkspaceId(1), WorkspaceId(2), WorkspaceId(3)])
+        let decoded = try JSONDecoder().decode([MonitorId].self, from: Data("[1,2,3]".utf8))
+        #expect(decoded == [MonitorId(1), MonitorId(2), MonitorId(3)])
     }
 
     /// The point of the phantom tag: different id kinds with the same raw value are distinct types

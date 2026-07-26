@@ -2,7 +2,7 @@ import Foundation
 
 /// A strongly-typed opaque identifier.
 ///
-/// The phantom `Tag` makes the five id kinds mutually non-interchangeable at compile time even
+/// The phantom `Tag` makes the four id kinds mutually non-interchangeable at compile time even
 /// though all wrap a `UInt64` — passing a `ColumnId` where a `WindowId` is expected simply won't
 /// compile, closing off a whole class of mix-up bugs for free.
 ///
@@ -38,18 +38,22 @@ public struct Id<Tag>: Sendable, Hashable, Comparable, Codable, CustomStringConv
 
 // Phantom tags — uninhabited enums that exist only to distinguish id kinds at the type level.
 // They carry no values and are never instantiated.
+//
+// There is deliberately no workspace tag. `WorkspaceTag`/`WorkspaceId` lived here for a minted-token
+// model we are not building: workspaces are a **fixed named domain** of 36 addresses, not a dynamic
+// set handed opaque ids (`WorkspaceName`, 2026-07-26). They were deleted rather than left as a second
+// way to name a workspace — the same call the project made when it deleted `FakeWorld` instead of
+// keeping it as a fallback.
 public enum WindowTag {}
 public enum ColumnTag {}
-public enum WorkspaceTag {}
 public enum MonitorTag {}
 public enum LayerTag {}
 
 /// Identifies a managed window (bound to a `CGWindowID` by the shell's `WindowRegistry`).
 public typealias WindowId = Id<WindowTag>
-/// Identifies a column on the strip (a vertical stack of windows).
+/// Identifies a column on the strip (a vertical stack of windows). Minted by `ColumnAllocator`, one
+/// id space across every workspace.
 public typealias ColumnId = Id<ColumnTag>
-/// Identifies a dynamic workspace (a region of the off-screen strip; per-monitor).
-public typealias WorkspaceId = Id<WorkspaceTag>
 /// Identifies a monitor / display.
 public typealias MonitorId = Id<MonitorTag>
 /// Identifies a presentation-plane layer in the reconstruction overlay (§4b).

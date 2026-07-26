@@ -15,7 +15,10 @@ import Testing
     static let all: [Command] = [
         .focus(.left), .focus(.right), .focus(.up), .focus(.down),
         .moveWindow(.left), .moveWindow(.down),
-        .moveToWorkspace(.index(3)), .moveToWorkspace(.next), .moveToWorkspace(.previous),
+        .moveToWorkspace(.name(WorkspaceName("3")!)), .moveToWorkspace(.next),
+        .moveToWorkspace(.previous), .moveToWorkspace(.nextOccupied),
+        .moveToWorkspace(.previousOccupied),
+        .moveToWorkspaceAndFocus(.name(WorkspaceName("a")!)), .moveToWorkspaceAndFocus(.next),
         .moveToMonitor(.direction(.right)), .moveToMonitor(.index(2)),
         .moveToMonitor(.next), .moveToMonitor(.previous),
         .cycleWidth, .cycleHeight,
@@ -24,7 +27,9 @@ import Testing
         .consumeOrExpel(.left), .consumeOrExpel(.right),
         .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
         .float(.on), .float(.off), .float(.toggle),
-        .focusWorkspace(.index(1)), .focusWorkspace(.next), .focusWorkspace(.previous),
+        .focusWorkspace(.name(.first)), .focusWorkspace(.name(.last)),
+        .focusWorkspace(.next), .focusWorkspace(.previous),
+        .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
         .closeWindow, .centerColumn, .reloadConfig, .dumpState,
     ]
 
@@ -53,8 +58,13 @@ import Testing
     @Test func canonicalSpellingsAreStable() {
         #expect(Command.focus(.left).words == ["focus", "left"])
         #expect(Command.moveWindow(.down).words == ["move-window", "down"])
-        #expect(Command.moveToWorkspace(.index(3)).words == ["move-to-workspace", "3"])
+        #expect(Command.moveToWorkspace(.name(WorkspaceName("3")!)).words == ["move-to-workspace", "3"])
         #expect(Command.moveToWorkspace(.previous).words == ["move-to-workspace", "previous"])
+        #expect(Command.moveToWorkspaceAndFocus(.name(WorkspaceName("a")!)).words
+                == ["move-to-workspace-and-focus", "a"])
+        #expect(Command.focusWorkspace(.nextOccupied).words == ["focus-workspace", "next-non-empty"])
+        #expect(Command.focusWorkspace(.previousOccupied).words
+                == ["focus-workspace", "previous-non-empty"])
         #expect(Command.moveToMonitor(.direction(.right)).words == ["move-to-monitor", "right"])
         #expect(Command.consumeOrExpel(.left).words == ["consume-or-expel", "left"])
         #expect(Command.fullscreen(.toggle).words == ["fullscreen", "toggle"])
@@ -70,6 +80,11 @@ import Testing
         #expect(try Command.parse(["focus-workspace", "prev"]) == .focusWorkspace(.previous))
         #expect(try Command.parse(["move-to-workspace", "prev"]) == .moveToWorkspace(.previous))
         #expect(try Command.parse(["move-to-monitor", "prev"]) == .moveToMonitor(.previous))
+        // `prev-non-empty` is the short spelling; `previous-non-empty` is what `words` emits.
+        #expect(try Command.parse(["focus-workspace", "prev-non-empty"])
+                == .focusWorkspace(.previousOccupied))
+        #expect(try Command.parse(["focus-workspace", "previous-non-empty"])
+                == .focusWorkspace(.previousOccupied))
     }
 
     /// The spelling a keybind actually wants: bare `fullscreen` means "flip it".
@@ -82,7 +97,8 @@ import Testing
     /// The form a config binding's right-hand side arrives in (`alt-h = "focus left"`, M5).
     @Test func aWholeLineParsesLikeArgv() throws {
         #expect(try Command.parse(line: "focus left") == .focus(.left))
-        #expect(try Command.parse(line: "  move-to-workspace   2  ") == .moveToWorkspace(.index(2)))
+        #expect(try Command.parse(line: "  move-to-workspace   2  ")
+                == .moveToWorkspace(.name(WorkspaceName("2")!)))
         #expect(try Command.parse(line: "cycle-width") == .cycleWidth)
     }
 
@@ -153,14 +169,38 @@ import Testing
         #expect(error == .missingArgument(verb: "grow", expected: "<Npx|N%>"))
     }
 
-    /// Workspaces and monitors are 1-based the way a user counts them, so `0` is a mistake — and a
-    /// silently-accepted `0` would index a different workspace than the one typed.
-    @Test func referenceIndicesAreOneBasedAndPositive() throws {
-        #expect(try Command.parse(["focus-workspace", "1"]) == .focusWorkspace(.index(1)))
+    /// Monitors are still 1-based the way a user counts them, so `0` is a mistake — and a
+    /// silently-accepted `0` would index a different monitor than the one typed.
+    @Test func monitorIndicesAreOneBasedAndPositive() throws {
         #expect(try Command.parse(["move-to-monitor", "2"]) == .moveToMonitor(.index(2)))
         for bad in ["0", "-1", "two", "1.5", ""] {
-            #expect(throws: CommandSyntaxError.self) { try Command.parse(["focus-workspace", bad]) }
             #expect(throws: CommandSyntaxError.self) { try Command.parse(["move-to-monitor", bad]) }
+        }
+    }
+
+    /// **Workspaces went the other way, deliberately** (2026-07-26). `workspaceRef` used to parse a
+    /// 1-based `Int` and refuse `0` with "`0` is a mistake, not workspace zero", which was right while
+    /// workspaces were a dynamic list. They are a fixed 36-address domain now, spelled in *key* order —
+    /// `1` is the first address and where the daemon starts, `0` is the tenth — and every address is one
+    /// character. So there is no index left to be off by one, and a two-character or out-of-domain word
+    /// is the only way to get it wrong.
+    @Test func aWorkspaceIsNamedByItsCharacterAndOneIsTheFirstOne() throws {
+        #expect(try Command.parse(["focus-workspace", "1"]) == .focusWorkspace(.name(.first)))
+        #expect(try Command.parse(["focus-workspace", "0"])
+                == .focusWorkspace(.name(WorkspaceName("0")!)))          // accepted, and it is the tenth
+        #expect(try Command.parse(["focus-workspace", "9"]) == .focusWorkspace(.name(WorkspaceName("9")!)))
+        #expect(try Command.parse(["focus-workspace", "a"]) == .focusWorkspace(.name(WorkspaceName("a")!)))
+        #expect(try Command.parse(["focus-workspace", "z"]) == .focusWorkspace(.name(.last)))
+        // Every one of the 36 round-trips through the CLI spelling.
+        for name in WorkspaceName.all {
+            #expect(try Command.parse(["move-to-workspace", name.description])
+                    == .moveToWorkspace(.name(name)))
+        }
+        // Case-sensitive like the type it parses into, and nothing outside the domain.
+        for bad in ["A", "10", "-1", "1.5", "", "next-workspace", "aa", "!"] {
+            #expect(throws: CommandSyntaxError.self, "accepted '\(bad)'") {
+                try Command.parse(["focus-workspace", bad])
+            }
         }
     }
 
