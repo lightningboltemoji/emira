@@ -184,6 +184,14 @@ Start with **static layers, reconcile-on-release**; escalate to live layers if t
 Real size is app-bound. Set it via AX; if the reflow is visibly janky, cross-fade a scaled screenshot over it until
 the app redraws. Accept a brief soft frame on heavy apps.
 
+> **The soft frame is a choice, not a verdict.** The cost floor says only the owning app can make resized pixels; it
+> does *not* say what we show while it does. `[animation] window` picks: **`stretch`** scales the still to the rect —
+> geometry exact, text distorted for the length of the motion — or **`crop`** holds the still at capture scale
+> anchored top-left, so text is never distorted and is simply not all there yet, with the desktop showing through the
+> space a growing window has not filled. Both are honest about the same missing pixels; they differ over which lie
+> they refuse to tell. This needed no new mechanism either: the two emit an *identical* `Effect` stream, because the
+> core says where a window **is** and never how to paint one.
+
 > **This needs no mechanism of its own — the cover already is one.** "Scaled screenshot over the reflow, then
 > cross-fade" *is* the §4b cover, viewed from one command over: the reals teleport to their final **size** behind it,
 > the layers hold stills that the resize animation scales, and the existing cross-fade retires them when the AX

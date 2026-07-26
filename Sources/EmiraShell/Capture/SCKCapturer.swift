@@ -79,7 +79,13 @@ public final class SCKCapturer: SurfaceCapturer {
             var surfaces: [WindowId: CapturedSurface] = [:]
             for shot in shots.windows {
                 guard let id = numbers[shot.number] else { continue }
-                surfaces[id] = CapturedSurface(image: shot.image, frame: shot.frame)
+                // Measured here, once per still, because this is where the pixels are freshest and
+                // the scale they were taken at is known for certain. `WindowAnimation.crop` is the
+                // only consumer, and a few dozen bytes of alpha is cheaper than the branch that
+                // would ask whether anyone needs it.
+                surfaces[id] = CapturedSurface(
+                    image: shot.image, frame: shot.frame,
+                    cornerRadius: CapturedSurface.measuredCornerRadius(of: shot.image, scale: scale))
             }
             completion(CaptureBatch(surfaces: surfaces, base: shots.base))
         }

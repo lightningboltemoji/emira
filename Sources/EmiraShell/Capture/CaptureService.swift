@@ -51,10 +51,86 @@ public struct CapturedSurface: Sendable {
     public let image: CGImage
     /// Where the window was when it was captured, in core coordinates.
     public let frame: Rect
+    /// The corner radius baked into `image`, in points — `nil` when it couldn't be read off the
+    /// pixels (see `measuredCornerRadius`). Only `WindowAnimation.crop` needs it: that mode paints a
+    /// window's *extent* rather than its pixels, so it has to reproduce a silhouette the capture would
+    /// otherwise have carried for free.
+    public let cornerRadius: Double?
 
-    public init(image: CGImage, frame: Rect) {
+    public init(image: CGImage, frame: Rect, cornerRadius: Double? = nil) {
         self.image = image
         self.frame = frame
+        self.cornerRadius = cornerRadius
+    }
+
+    /// Read a window's corner radius **out of its own capture**, in points.
+    ///
+    /// There is no public API for another window's corner radius, and a hard-coded constant is a
+    /// number that is wrong on the next macOS — so this measures instead of asking or assuming, which
+    /// is possible because the shape is already in the pixels we hold. A window capture is transparent
+    /// outside its rounded corners: the same property `WindowAnimation.stretch`'s alpha-derived shadow
+    /// has rested on since the first fidelity spike (`Reconstruction.makeLayer`).
+    ///
+    /// The measurement is the corner's **area**, not an edge walk, and the difference is the whole
+    /// reason this works. Scanning down the leftmost column for the first opaque pixel looks exact —
+    /// the point `(0, y)` is inside the shape precisely for `y ≥ r` — and is not, because the arc is
+    /// *tangent* to the left edge there. It leaves the edge quadratically, so the boundary pixel is
+    /// already half-covered well above the tangent point and a threshold scan answers about
+    /// `r − √r`: 8.6 for a radius of 12, which is 28% short and reads as a visibly tight corner.
+    ///
+    /// Area has no such blind spot. A quarter-disc leaves `r²(1 − π/4)` of its bounding square
+    /// uncovered, and **antialiasing conserves coverage** — a boundary pixel's alpha *is* its covered
+    /// fraction — so summing the alpha deficit over a corner-sized block measures that wedge whatever
+    /// the rasterizer did to its edges, and inverting gives `r` directly. It also degrades gracefully:
+    /// a corner that isn't a perfect quarter-circle (macOS draws a continuous curve, not a circular
+    /// one) yields the circular radius enclosing the same area, which is the right answer for a
+    /// silhouette we are about to draw with `cornerRadius` anyway.
+    ///
+    /// A square-cornered window (a full-screen one, some panels) answers 0, which is also correct.
+    /// `nil` means the pixels couldn't say — an image with no usable alpha at all, or a corner too
+    /// large to have been the thing we measured. The caller supplies its own fallback rather than
+    /// being handed a fabricated number.
+    public static func measuredCornerRadius(of image: CGImage, scale: CGFloat) -> Double? {
+        guard scale > 0, image.width > 0, image.height > 0 else { return nil }
+        // Comfortably past any plausible window corner, in pixels — so a wedge that fills a large
+        // fraction of the block is evidence we measured something other than a corner.
+        let probe = min(96 * Int(scale.rounded()), min(image.width, image.height))
+        guard probe > 0 else { return nil }
+
+        // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0
+        // of each pixel is unambiguously the alpha — the one detail here that is easy to get silently
+        // wrong, and a `CGBitmapContext` has no legal alpha-only format to sidestep it with.
+        let stride = probe * 4
+        guard let context = CGContext(
+            data: nil, width: probe, height: probe, bitsPerComponent: 8, bytesPerRow: stride,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue)
+        else { return nil }
+
+        // Core Graphics draws from a bottom-left origin into a top-down buffer, so aligning the
+        // image's *top* with the block's top means placing its origin `probe − height` below zero.
+        // Get this backwards and the bottom-left corner is measured instead — plausible, and wrong by
+        // however much the two corners disagree.
+        context.draw(image, in: CGRect(x: 0, y: CGFloat(probe - image.height),
+                                       width: CGFloat(image.width), height: CGFloat(image.height)))
+        guard let data = context.data else { return nil }
+
+        let bytes = data.bindMemory(to: UInt8.self, capacity: probe * stride)
+        var uncovered = 0.0
+        for row in 0..<probe {
+            for column in 0..<probe {
+                uncovered += Double(255 - bytes[row * stride + column * 4])
+            }
+        }
+        uncovered /= 255
+
+        // `r²(1 − π/4)` inverted. The bound rejects a block that is mostly transparent, which is not a
+        // rounded corner: a capture with no alpha information at all, or a probe that has wandered off
+        // the window entirely.
+        let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
+        guard radius <= Double(probe) / 2 else { return nil }
+        return radius / Double(scale)
     }
 }
 

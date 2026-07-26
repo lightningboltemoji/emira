@@ -78,6 +78,21 @@ public struct Config: Sendable, Equatable, Codable {
     /// Whether a focus change centers the focused column or does the minimal scroll that reveals
     /// it. `false` — minimal reveal — is the default.
     public var centerFocusedColumn: Bool
+    /// How a window's captured still is painted into the rect it occupies during a transition —
+    /// scaled to fit it (`.stretch`) or held at capture scale and cropped/uncovered (`.crop`).
+    ///
+    /// **The third value the reducer never reads**, after `holdTimeout` and `keys`, and the least
+    /// ambiguous of the three: the core's emitted geometry is *identical* under both settings, so
+    /// this cannot reach `Engine.reduce` even in principle. It is a fact about how the compositor
+    /// paints a still, and only the compositor knows how big the still is (`CapturedSurface.frame`).
+    /// It rides in `Config` for the reason the other two do — the user writes it in the TOML beside
+    /// `smooth-transitions`, and splitting config across two homes by which side of the seam consumes
+    /// it would be the worse arrangement.
+    ///
+    /// It is therefore also invisible on a pure scroll, where nothing changes size: the two modes
+    /// differ only when a window's rect stops matching the still that was captured of it — a resize,
+    /// a structural edit, an arrival, a fullscreen toggle.
+    public var windowAnimation: WindowAnimation
     /// Whether a scroll animates under a layered cover (PRINCIPLES.md §4b) or simply snaps (§4a).
     ///
     /// **Not a taste knob — a capability bit.** The cover is made of captured pixels, and capture needs
@@ -127,6 +142,7 @@ public struct Config: Sendable, Equatable, Codable {
         resizeSpring: SpringParams = .smooth,
         moveSpring: SpringParams = .smooth,
         centerFocusedColumn: Bool = false,
+        windowAnimation: WindowAnimation = .stretch,
         smoothTransitions: Bool = true,
         holdTimeout: Double = 1.0,
         keys: [KeyBinding] = []
@@ -140,6 +156,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.resizeSpring = resizeSpring
         self.moveSpring = moveSpring
         self.centerFocusedColumn = centerFocusedColumn
+        self.windowAnimation = windowAnimation
         self.smoothTransitions = smoothTransitions
         self.holdTimeout = holdTimeout
         self.keys = keys

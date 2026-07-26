@@ -590,4 +590,38 @@ import EmiraMotion
         #expect(ConfigSyntaxTests.diagnostic("[layout]\nstruts = 8\n")
                 == .unknownKey(line: 2, key: "layout.struts"))
     }
+
+    // MARK: `animation.window` — the schema's one word-valued key
+
+    @Test func theWindowAnimationIsStretchUntilAskedOtherwise() throws {
+        #expect(try ConfigSyntaxTests.parse("").windowAnimation == .stretch)
+        #expect(try ConfigSyntaxTests.parse("[animation]\nhold-timeout = 2\n").windowAnimation == .stretch)
+    }
+
+    @Test func bothWindowAnimationsParse() throws {
+        #expect(try ConfigSyntaxTests.parse("[animation]\nwindow = \"crop\"\n").windowAnimation == .crop)
+        #expect(try ConfigSyntaxTests.parse("[animation]\nwindow = \"stretch\"\n").windowAnimation == .stretch)
+    }
+
+    /// The diagnostic lists the legal words, and it lists them *off the type* — so a third
+    /// `WindowAnimation` case would be accepted and named here with nothing in the schema to update.
+    @Test func anUnknownWordIsRefusedAndTheLegalOnesNamed() {
+        #expect(ConfigSyntaxTests.diagnostic("[animation]\nwindow = \"fill\"\n")
+                == .badValue(line: 2, key: "animation.window",
+                             message: "must be \"stretch\" or \"crop\", not \"fill\""))
+    }
+
+    @Test func anUnquotedWindowAnimationIsRefused() {
+        #expect(ConfigSyntaxTests.diagnostic("[animation]\nwindow = true\n")
+                == .badValue(line: 2, key: "animation.window",
+                             message: "must be a word in quotes, not a boolean"))
+    }
+
+    /// It is a key of `[animation]`, not a table of its own — `[animation.window]` is the spelling of
+    /// a spring, and the springs are the three that exist. Refused at the **header**, on the line the
+    /// user wrote it, rather than at the key underneath it.
+    @Test func theWindowAnimationIsNotATable() {
+        #expect(ConfigSyntaxTests.diagnostic("[animation.window]\nstiffness = 800\n")
+                == .unknownKey(line: 1, key: "animation.window"))
+    }
 }

@@ -626,6 +626,35 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     parked — and it is why the daemon reads the struts *once* and hands the same value to both the core and the
     overlay: the invariant holds only while the two agree. The desktop base is still the whole display, placed at the
     display's rect in local coordinates and clipped by the host layer, so the wallpaper stays where it was captured.
+  - **`Reconstruction` is the only place `Config.windowAnimation` means anything, and it is one animation with two
+    renderers.** The obvious shape — a window-animation protocol with two conformers — is wrong, because the two modes
+    emit a **byte-identical `Effect` stream**: `setLayerFrame` says *where a window is*, never how to paint one, so
+    the core's geometry does not depend on the setting and cannot. Everything that differs is downstream of a fact
+    only the shell holds — how big the still it is holding actually is — so the whole feature is two frame assignments
+    plus one pure function, and `Engine`, `Motion`, `Effect` and `CoverSurface` are untouched. `stretch` is one layer
+    scaled to the core's rect; `crop` is three.
+  - **One rule covers both directions of a crop, and it is a rule about the *anchor* alone**: the still goes at its
+    own size, pinned to the rect's top-left, overflowing when the window has shrunk past it. Centering the grow would
+    have needed `max(0, (rect − still)/2)` and two cases; top-left is where a window's own content is anchored, so the
+    title bar and traffic lights stay where the real ones are about to be. The cases meet continuously at equality, so
+    an overshooting spring or a mid-flight reversal crosses between them without the content jumping — and the axes
+    need no cases at all, which is why this isn't a `contentsGravity` constant: a `consume` grows a window's width
+    while halving its height, and a gravity is one value for both axes.
+  - **Three layers, because a shadow and a clip cannot share one.** A `CALayer` with `masksToBounds` on cannot draw
+    its own shadow, and a crop must clip or a shrinking window ends in a square edge where the cut still covers the
+    rounded extent it sits in. So `root` casts the shadow, `clip` rounds and masks, and `still` draws at capture scale
+    and overflows — the ordinary AppKit idiom, which removes every per-corner special case in exchange for two layers
+    nobody sees.
+  - **The corner radius is measured off the capture, not chosen.** `crop` paints a window's *silhouette* at a size no
+    capture of it exists at, so it has to reproduce a shape the pixels would otherwise have carried for free. There is
+    no public API for another window's corner radius and a constant goes stale with the next macOS — but the shape is
+    already in the alpha, the same property the synthesized shadow has always rested on. **Measure the corner's
+    *area*, not its edge:** scanning the leftmost column for the first opaque pixel looks exact and is not, because
+    the arc is *tangent* to the edge there and leaves it quadratically, so a threshold answers about `r − √r` — 28%
+    short at a radius of 12, and visibly tight. A quarter-disc leaves `r²(1 − π/4)` of its square uncovered and
+    antialiasing *conserves* coverage, so summing the alpha deficit over a corner-sized block inverts to `r` within a
+    quarter-pixel regardless of what the rasterizer did to the edges, and degrades honestly on a continuous (squircle)
+    corner by yielding the circular radius enclosing the same area.
 - **DisplayLinkDriver** — the frame clock; emits `tick(dt)` only while a transition is active (idle = no ticks).
 - **Hotkeys** — global binds via Carbon `RegisterEventHotKey`. The deciding property is not latency, it is
   **consumption**: an `NSEvent` global monitor is already available to us under the AX grant, but it cannot swallow
@@ -687,7 +716,9 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
 `EmiraCore`, and so is the **parse** (`ConfigSyntax.swift` — a `String → Config` function is pure by construction);
 the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
-`center-focused-column`, and animation params (spring stiffness/damping, durations). Struts are deliberately *not* a
+`center-focused-column`, and animation params (spring stiffness/damping, durations, and `animation.window` —
+`"stretch"` or `"crop"`, the only config value that reaches the *compositor* rather than the reducer). Struts are
+deliberately *not* a
 key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with
 them and measured inside them. Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.
 

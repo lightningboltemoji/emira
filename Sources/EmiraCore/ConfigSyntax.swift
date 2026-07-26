@@ -37,6 +37,7 @@ import EmiraMotion
 // [animation]
 // smooth-transitions = true             # false = always snap (PRINCIPLES.md §4a)
 // hold-timeout = 1.0                    # seconds a cover may stay up waiting for AX to land
+// window = "stretch"                    # or "crop" — how a still is painted into a changing rect
 //
 // [animation.scroll]                    # the viewport scroll
 // stiffness = 800
@@ -159,6 +160,9 @@ extension Config {
         if let seconds = try table.number("animation.hold-timeout", greaterThan: 0) {
             config.holdTimeout = seconds
         }
+        if let animation: WindowAnimation = try table.word("animation.window") {
+            config.windowAnimation = animation
+        }
         if let spring = try table.spring("animation.scroll", default: config.scrollSpring) {
             config.scrollSpring = spring
         }
@@ -194,6 +198,29 @@ extension TOMLTable {
                                              message: "must be true or false, not \(value.kindName)")
         }
         return flag
+    }
+
+    /// A quoted word drawn from a fixed vocabulary — an enumeration the user spells out rather than a
+    /// number or a flag.
+    ///
+    /// Generic over the enum so the *list of legal words is the type itself*: a case added to
+    /// `WindowAnimation` is accepted by the file and named in the diagnostic with nothing here to
+    /// update. Same discipline as the unknown-key check at the top of this file — one list, and it is
+    /// the code that reads it.
+    fileprivate mutating func word<T: RawRepresentable & CaseIterable>(
+        _ key: String
+    ) throws -> T? where T.RawValue == String {
+        guard let value = take(key) else { return nil }
+        guard case .string(let text) = value.payload else {
+            throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                             message: "must be a word in quotes, not \(value.kindName)")
+        }
+        guard let word = T(rawValue: text) else {
+            let legal = T.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: " or ")
+            throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                             message: "must be \(legal), not \"\(text)\"")
+        }
+        return word
     }
 
     /// A number, optionally bounded. Both bounds are spelled as separate parameters rather than a

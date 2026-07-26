@@ -145,6 +145,12 @@ case .failure(let error):
     log("config: \(error) — using defaults")
 }
 
+// The one config value that reaches the *compositor* rather than the reducer: how a still is painted
+// into a rect that no longer matches it (`Config.windowAnimation`). Set here and again on every reload,
+// for the same reason `applyKeys` is — the core cannot carry it, because the geometry it emits is
+// identical under both settings.
+reconstruction.animation = config.windowAnimation
+
 // MARK: - The pump
 
 let truth = AXExecutor(registry: registry, writer: AXWindowWriter(client: axClient))
@@ -222,9 +228,10 @@ applyKeys(config)
 // Now that there is a pump, a reload has somewhere to go. Only a *successful* parse becomes an event;
 // a failure is logged and the running config stands.
 //
-// Two subsystems care about a reload, and they are told separately: the reducer re-lays-out the strip,
-// and the hotkey manager re-takes the chords. Both read the *same* post-`applyEnvironment` value, so
-// the keyboard and the layout can never be configured from different files.
+// Three subsystems care about a reload, and they are told separately: the reducer re-lays-out the
+// strip, the hotkey manager re-takes the chords, and the compositor changes how it paints a still. All
+// three read the *same* post-`applyEnvironment` value, so the keyboard, the layout and the cover can
+// never be configured from different files.
 loader.onLoad = { result in
     switch result {
     case .success(let parsed):
@@ -232,6 +239,7 @@ loader.onLoad = { result in
         log("config: reloaded \(loader.path)")
         runtime.dispatch(.configChanged(live))
         applyKeys(live)
+        reconstruction.animation = live.windowAnimation
     case .failure(let error):
         log("config: \(error) — keeping the previous settings")
     }

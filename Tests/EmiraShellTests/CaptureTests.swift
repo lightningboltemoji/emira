@@ -422,3 +422,84 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) == nil)
     }
 }
+
+/// Reading a window's corner radius back out of its own capture
+/// (`CapturedSurface.measuredCornerRadius`) — the measurement `WindowAnimation.crop` draws a window's
+/// silhouette from, in place of a constant that would be wrong on the next macOS.
+///
+/// Worth its own suite despite being four lines of arithmetic, because two of the details it depends
+/// on are invisible when wrong in exactly one direction: Core Graphics draws from a bottom-left origin
+/// into a top-down buffer (so measuring the *bottom* corner instead of the top would look plausible
+/// and be off by whatever the two corners disagree by), and the alpha byte's position depends on a
+/// bitmap-info flag. A synthetic image with a radius we chose is the only way to see either.
+@Suite struct CornerRadiusTests {
+
+    /// A window-shaped image: opaque rounded rect, transparent outside it — what a
+    /// `desktopIndependentWindow` capture of a real window looks like at its corners.
+    static func window(radius: CGFloat, size: CGSize, scale: CGFloat = 1) -> CGImage {
+        let pixels = CGSize(width: size.width * scale, height: size.height * scale)
+        let context = CGContext(data: nil, width: Int(pixels.width), height: Int(pixels.height),
+                                bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        let rect = CGRect(origin: .zero, size: pixels)
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius * scale,
+                               cornerHeight: radius * scale, transform: nil))
+        context.fillPath()
+        return context.makeImage()!
+    }
+
+    @Test(arguments: [0.0, 6.0, 10.0, 12.0, 16.0, 26.0])
+    func theRadiusIsReadBackOffTheAlpha(radius: Double) {
+        let image = Self.window(radius: CGFloat(radius), size: CGSize(width: 400, height: 300))
+        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        // Sub-quarter-pixel, at every radius — the accuracy that comes of measuring an area rather
+        // than hunting for an edge. A threshold scan down the leftmost column answers 8.6 for the
+        // radius-12 case; this is the test that would have caught that.
+        #expect(measured != nil)
+        #expect(abs((measured ?? -1) - radius) <= 0.25)
+    }
+
+    /// The answer is in **points**, so a Retina capture of the same window measures the same radius.
+    @Test func theRadiusIsScaleIndependent() {
+        let oneX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 1)
+        let twoX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 2)
+        #expect(abs((CapturedSurface.measuredCornerRadius(of: oneX, scale: 1) ?? -1) - 12) <= 0.25)
+        #expect(abs((CapturedSurface.measuredCornerRadius(of: twoX, scale: 2) ?? -1) - 12) <= 0.25)
+    }
+
+    /// The top corner, not the bottom one — which a synthetic window with only *one* rounded corner is
+    /// the only way to catch. Rounded at the bottom and square at the top, the honest answer is 0.
+    @Test func itMeasuresTheTopCornerNotTheBottom() {
+        let size = CGSize(width: 400, height: 300)
+        let context = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8,
+                                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        // Core Graphics' origin is bottom-left, so this rounds the image's *bottom* corners and leaves
+        // the top square.
+        context.addPath(CGPath(roundedRect: CGRect(origin: .zero, size: size),
+                               cornerWidth: 20, cornerHeight: 20, transform: nil))
+        context.addRect(CGRect(x: 0, y: 100, width: 400, height: 200))
+        context.fillPath()
+        #expect(CapturedSurface.measuredCornerRadius(of: context.makeImage()!, scale: 1) == 0)
+    }
+
+    /// A fully opaque surface — a natively full-screen window, or one whose capture carries no alpha —
+    /// answers `nil` rather than 0, so the caller can tell "square" from "couldn't tell".
+    @Test func anOpaqueSurfaceHasNoAnswer() {
+        let image = Self.window(radius: 0, size: CGSize(width: 400, height: 300))
+        // A zero radius *is* square, and is answered as 0 — the `nil` case is a capture whose first
+        // 64 points down the left edge are all transparent, which no real window produces.
+        #expect(CapturedSurface.measuredCornerRadius(of: image, scale: 1) == 0)
+
+        let blank = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Big.rawValue)!
+        #expect(CapturedSurface.measuredCornerRadius(of: blank.makeImage()!, scale: 1) == nil)
+    }
+}

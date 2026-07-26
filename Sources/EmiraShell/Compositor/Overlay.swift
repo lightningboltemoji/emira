@@ -158,6 +158,13 @@ public final class Overlay {
         geometry.local(rect, in: window.frame)
     }
 
+    /// A core rect in the local coordinates of a *layer* whose frame is the core rect `parent` — the
+    /// conversion a nested layer needs (`WindowAnimation.crop`'s still inside its window layer). Same
+    /// arithmetic, one level down; see `ScreenGeometry.local(_:within:)`.
+    public func localRect(_ rect: Rect, within parent: Rect) -> CGRect {
+        geometry.local(rect, within: parent)
+    }
+
     /// Show the cover **instantly** — a pure alpha flip on an already-ordered-in window.
     ///
     /// Written through the animator with a zero duration rather than as a bare `alphaValue = 1`: if a

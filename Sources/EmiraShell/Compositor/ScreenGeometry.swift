@@ -82,6 +82,22 @@ public struct ScreenGeometry: Sendable, Equatable {
                       height: global.height)
     }
 
+    /// A core (top-left) rect in the **local** coordinates of a layer whose own frame is the core rect
+    /// `parent` — a sublayer's frame inside its superlayer, one level below `local(_:in:)`.
+    ///
+    /// No `flipHeight` appears in it, and that is the point rather than an oversight: a reflection
+    /// about the primary display's half-height cancels itself between two rects measured from the same
+    /// origin, leaving a *local* reflection about the parent's own mid-line. So this is still the one
+    /// flip, expressed for a nested layer — which is why it belongs here beside its sibling instead of
+    /// as arithmetic open-coded in `Reconstruction`, where `y` conventions are exactly what a reader
+    /// cannot check by eye.
+    public func local(_ rect: Rect, within parent: Rect) -> CGRect {
+        CGRect(x: rect.minX - parent.minX,
+               y: parent.maxY - rect.maxY,
+               width: rect.width,
+               height: rect.height)
+    }
+
     /// The region a display reserves for system chrome, as the core's `EdgeInsets` — the menu bar and
     /// notch at the top, the Dock on whichever edge it lives (IMPLEMENTATION.md §4a: tiled windows
     /// never sit under either).

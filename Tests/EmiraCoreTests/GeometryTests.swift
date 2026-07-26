@@ -133,6 +133,55 @@ import Testing
         #expect(r.inset(by: EdgeInsets(uniform: 8)) == Rect(x: 8, y: 8, width: 84, height: 84))
     }
 
+    // MARK: The crop — where `WindowAnimation.crop` pins a still
+    //
+    // The anchor, and only the anchor: the *cutting* is the compositor's rounded clip, so this
+    // deliberately answers a rect that overflows rather than one that fits.
+
+    @Test func aGrownWindowKeepsTheStillInItsTopLeftCorner() {
+        // Grown 600×400 → 900×500. The still keeps its own size, pinned to the corner; the remaining
+        // 300×100 is space the window has yet to fill.
+        let rect = Rect(x: 100, y: 50, width: 900, height: 500)
+        #expect(rect.anchoring(Size(width: 600, height: 400))
+                == Rect(x: 100, y: 50, width: 600, height: 400))
+    }
+
+    /// The still **overflows** rather than being trimmed, and that is the correction of 2026-07-26:
+    /// trimming it to fit left the clip nothing to round, so the cut edge stayed square.
+    @Test func aShrunkWindowOverflowsInsteadOfBeingTrimmed() {
+        // 600×400 → 300×400: the still still says 600 wide, hanging 300 pt past the right edge.
+        let rect = Rect(x: 100, y: 50, width: 300, height: 400)
+        let placed = rect.anchoring(Size(width: 600, height: 400))
+        #expect(placed == Rect(x: 100, y: 50, width: 600, height: 400))
+        #expect(placed.maxX > rect.maxX)
+    }
+
+    /// The `consume` case, and the one that caught the inverted vertical anchor in the product: the
+    /// window loses height, so the still must hang past the **bottom**. Hanging past the top would
+    /// throw away the title bar, which is what the first version did.
+    @Test func aWindowLosingHeightHangsPastTheBottomNotTheTop() {
+        let rect = Rect(x: 0, y: 100, width: 900, height: 200)
+        let placed = rect.anchoring(Size(width: 600, height: 400))
+        #expect(placed.minY == rect.minY)                        // tops flush — nothing cut off above
+        #expect(placed.maxY > rect.maxY)                         // the overflow is all below
+    }
+
+    /// At the raise a layer sits at its own capture frame, where the placement is the identity — so
+    /// `.stretch` and `.crop` put identical pixels on screen and neither mode can pop.
+    @Test func theCaptureFrameIsTheIdentity() {
+        let frame = Rect(x: 37, y: 91, width: 600, height: 400)
+        #expect(frame.anchoring(frame.size) == frame)
+    }
+
+    /// Both axes at once, in opposite directions — a `consume` grows a window's width while halving
+    /// its height. The anchor is one corner, so neither axis needs a case of its own.
+    @Test func theAxesAreIndependent() {
+        let rect = Rect(x: 0, y: 0, width: 900, height: 200)
+        let placed = rect.anchoring(Size(width: 600, height: 400))
+        #expect(placed.maxX < rect.maxX)                         // grown: room to spare on the right
+        #expect(placed.maxY > rect.maxY)                         // shrunk: overflowing below
+    }
+
     // MARK: Codable
 
     @Test func rectRoundTripsThroughCodable() throws {

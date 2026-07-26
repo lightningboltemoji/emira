@@ -192,3 +192,68 @@ public struct EdgeInsets: Sendable, Equatable, Codable {
         self.init(top: value, left: value, bottom: value, right: value)
     }
 }
+
+// MARK: - The window animation
+//
+// The two ways a captured still can be painted into the rect the core says its window occupies this
+// frame (`[animation] window` in the config file). They are two *renderings* of one animation, not two
+// animations: both produce a byte-identical `Effect` stream, because the core's geometry does not
+// depend on which one is in force. Nothing in `Engine`, `Motion` or `Effect` reads any of this — the
+// choice is made entirely in the compositor, which is the only place that knows how big the still it
+// is holding actually is (`Compositor/Reconstruction.swift`).
+//
+// The arithmetic lives here anyway, and unused by the core, for the reason `CommandSyntax` and
+// `KeyChord` do: it is a pure function over value types, so here it is exhaustively testable with no
+// window server, and the shell is left holding two frame assignments.
+
+/// How a window's captured still is mapped into the rect it occupies this frame.
+///
+/// The two are opposite trades against the same fact — during a resize we hold pixels of the *old*
+/// size and only the owning app can produce new ones (`PRINCIPLES.md` §6). `stretch` keeps the
+/// geometry exact and distorts the content; `crop` keeps the content exact and lets the geometry be
+/// incomplete.
+public enum WindowAnimation: String, Sendable, Equatable, Codable, CaseIterable {
+    /// Scale the still to fill the rect. Geometry is always exact and the content is always all
+    /// there, at the cost of distorting it: a 600 pt still shown at 900 pt is stretched *text* for
+    /// the length of the motion — the visible, honest cost recorded in `PRINCIPLES.md` §10 (M4
+    /// part 3). The default, and what every validated transition to date was judged on.
+    case stretch
+    /// Hold the still at its captured scale, anchored at the rect's **top-left**. A window that has
+    /// grown shows the desktop through the space it hasn't filled yet; a window that has shrunk is
+    /// cut off on the right and the bottom. Text never distorts — it is simply not all there yet,
+    /// which is also true of the real window behind the cover.
+    ///
+    /// Top-left on *both* sides deliberately: it is where a window's own content is anchored, so the
+    /// title bar and the traffic lights stay where the real ones are about to be, and growing and
+    /// shrinking become one rule rather than two (`Rect.anchoring(_:)`).
+    case crop
+}
+
+extension Rect {
+
+    /// Where a still of size `natural` sits inside this rect when it keeps its captured scale
+    /// (`WindowAnimation.crop`) — pinned to the rect's **top-left**, at its own size, whether that is
+    /// smaller than the rect or larger than it.
+    ///
+    /// One rule covers both directions, and it is a rule about the *anchor*, not about fitting. Where
+    /// the rect is larger, the still sits un-scaled in a corner of a space the window has yet to fill.
+    /// Where the still is larger, it deliberately **overflows**, and whoever draws it is responsible
+    /// for cutting it off — which is the compositor's rounded clip, so the cut follows the window's
+    /// own corner instead of ending in a square edge.
+    ///
+    /// **The overflow is the design (corrected 2026-07-26).** The first version returned the
+    /// *intersection* and a matching `CALayer.contentsRect`, so the still was pre-trimmed to fit
+    /// exactly. That was wrong twice over: `contentsRect`'s origin is the **bottom**-left on a
+    /// non-flipped macOS layer, so a window losing height showed its bottom and lost its title bar
+    /// off the top; and because the trimmed still never crossed the clip's bounds, the rounded clip
+    /// had nothing to cut and the cut edge stayed square. Both faults lived in the assignment to a
+    /// Core Animation property, which no test of this function could have reached — so the fix is to
+    /// have no such property, and to let the clip that already existed do the work it was added for.
+    ///
+    /// Top-left on both sides is where a window's own content is anchored: the title bar and traffic
+    /// lights stay where the real ones are about to be, and the two directions meet continuously at
+    /// equality, so an overshooting spring crosses between them without the content jumping.
+    public func anchoring(_ natural: Size) -> Rect {
+        Rect(origin: origin, size: natural)
+    }
+}
