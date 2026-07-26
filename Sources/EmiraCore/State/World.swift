@@ -279,6 +279,23 @@ public struct World: Sendable, Equatable, Codable {
         corrections[id] = SizeCorrection(wanted: wanted, actual: actual)
     }
 
+    /// Forget what these windows last answered, so the next placement asks them afresh.
+    ///
+    /// **A correction is a cache of one app's last answer, and a resize command is a cache
+    /// invalidation** (2026-07-26). The record's own rule was "ask the question once, then use the
+    /// answer — and re-ask when the question changes", which treats a refusal as a standing fact about
+    /// the window. It is not: a window's limits are usually a property of *what it is currently
+    /// showing*, so an app that could not be 900 pt wide with one tab open may be perfectly willing
+    /// with another. Nothing observes that, and nothing can — so the moment the user asks for a size
+    /// again is the moment to find out, by asking the app rather than consulting a memory of it.
+    ///
+    /// Called only from the explicit resize verbs (`Engine.resizeFocusedColumn`), never from a
+    /// placement: a scroll must stay quiet, and quiescence between commands is exactly what the record
+    /// is for.
+    public mutating func forgetCorrections(of ids: [WindowId]) {
+        for id in ids { corrections[id] = nil }
+    }
+
     /// Fold `Event.focusChanged`: record where focus landed (or `nil` if it left every managed
     /// window). Stores the argument verbatim — referential validity is the reducer's contract; World
     /// only *enforces* the destroy-clears-focus invariant (see `remove`).

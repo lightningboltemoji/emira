@@ -461,6 +461,20 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     request that produced it *was* the question: at most one narrowing per question. The widening direction keeps
     learning unconditionally, and the asymmetry is the invariant rather than taste — too wide overlaps a neighbour and
     must be absorbed however late it arrives; too narrow only leaves space.
+  - **A refusal is a cache of one answer, not a fact about the window — so a resize verb re-asks.** The record's own
+    rule ("ask once, then use the answer") assumed a window's limits are a property of the *window*. They are usually
+    a property of what it is currently *showing*: an app that will not be 900 pt wide with one tab open may be
+    perfectly willing with another, and nothing observes that or can. So the explicit resize verbs retire the record
+    for their column and genuinely re-ask, because the moment the user asks for a size again is exactly the moment to
+    find out rather than to consult a memory. **That also answers "how do we give feedback for a refusal" without a
+    mechanism for it**: there is no bounce to stage. There is an attempt, and the spring home *is* what a failed
+    attempt looks like. Called only from the verbs, never from a placement — a scroll must stay quiet, and quiescence
+    between commands is what the record is for.
+  - **The viewport is derived from the widths too, so a correction re-aims it.** Every scroll target is computed from
+    the same column widths a correction changes, so a session that keeps the destination it was given is travelling
+    somewhere computed for a strip that no longer exists — leaving phantom desktop tacked onto the side of the strip,
+    exactly the width the app refused. Correcting one animated quantity and not the other over one geometry is the
+    whole defect; a correction re-aims the scroll through the same call a resize makes when it *starts*.
   - **A correction under a raised cover springs rather than jumps.** Every layer frame is re-derived from the strip's
     geometry each tick, so a column that changes width between two frames pops. The change goes under the same width
     animator `cycle-width` uses, retargeted in place — which is also *required* during a resize, since the layers must

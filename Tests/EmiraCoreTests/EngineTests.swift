@@ -1267,26 +1267,57 @@ import EmiraMotion
             (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
         }
 
-        var (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))   // asks 233⅓
-        s = next
-        refuseBelow300(&s, fx)
-        #expect(Self.width(s) == 300)                            // the column is built around the answer
-
-        (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))       // from 300, asks 200
-        s = next
-        refuseBelow300(&s, fx)
-        #expect(Self.width(s) == 300)
-
-        // Third press: 300 − 100 is the question already answered, so nothing is asked and nothing moves.
-        (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))
-        s = next
-        #expect(fx.isEmpty)
-        #expect(!s.motion.isTransitioning)
-        #expect(Self.width(s) == 300)
+        // **Every press asks** (corrected 2026-07-26). This used to assert that the third press was
+        // *silent* — 300 − 100 re-derives a question already on file, so there was nothing to ask. That
+        // was right about the arithmetic and wrong about the world: an app's limits are usually a
+        // property of what it is currently showing, so the refusal is a cache of one answer and not a
+        // standing fact. A resize verb therefore retires it and genuinely re-asks; the column springs
+        // out and back each time, which is a real attempt rather than feedback staged to look like one.
+        for press in 1...3 {
+            let (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))
+            s = next
+            #expect(Self.placement(of: WindowId(1), in: fx) != nil, "press \(press) asked nothing")
+            refuseBelow300(&s, fx)
+            #expect(Self.width(s) == 300, "press \(press)")      // the column is built around the answer
+        }
 
         // …and growing out of the floor works on the first press — no dead zone to walk back through.
         (s, _) = Engine.reduce(s, .command(.grow(.points(100))))
         #expect(Self.width(s) == 400)
+    }
+
+    /// **Why it re-asks instead of bouncing, and the case that decides it.** A window's limits are
+    /// usually a property of what it is currently *showing* — change tabs and the same app will accept a
+    /// width it just refused. Nothing reports that and nothing can, so the record is a cache of one
+    /// answer rather than a standing fact about the window. Here the limit lifts between presses and the
+    /// very next `grow` succeeds, with nothing having told emira anything changed.
+    @Test func aWindowWhoseLimitLiftsGrowsOnTheNextPress() {
+        var s = Self.oneThirdSnap()
+        var limit = 500.0
+        /// The app under test: it accepts any width up to `limit` and answers `limit` above it.
+        func answer(_ s: inout State, _ fx: [Effect]) {
+            guard let asked = Self.placement(of: WindowId(1), in: fx), asked.width > limit else { return }
+            var landed = asked
+            landed.size = Size(width: limit, height: asked.height)
+            (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
+        }
+
+        var (next, fx) = Engine.reduce(s, .command(.grow(.points(300))))      // 333⅓ → asks 633⅓
+        s = next
+        answer(&s, fx)
+        #expect(Self.width(s) == 500)                             // built around what it allows
+
+        (next, fx) = Engine.reduce(s, .command(.grow(.points(300))))          // 500 → asks 800
+        s = next
+        #expect(Self.placement(of: WindowId(1), in: fx)?.width == 800)        // it really asks again…
+        answer(&s, fx)
+        #expect(Self.width(s) == 500)                             // …and is really refused again
+
+        limit = 5000                                              // the user switches tabs
+        (next, fx) = Engine.reduce(s, .command(.grow(.points(300))))
+        s = next
+        answer(&s, fx)
+        #expect(Self.width(s) == 800)                             // no longer refused, so it grows
     }
 
     /// The ladder and the continuous knob are alternatives, and `cycle-width` is how you get back on the

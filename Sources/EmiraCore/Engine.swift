@@ -841,8 +841,11 @@ public enum Engine {
     /// dead zone — press shrink three times against a terminal's floor and the first three *grows*
     /// afterwards do nothing visible, because they are walking back through widths the app already
     /// refused. Measured from what is on screen, a refused shrink instead converges: the second press
-    /// re-derives the *same* question, the recorded answer applies, and the command goes silent, while a
-    /// grow moves immediately.
+    /// re-derives the *same* question and lands on the same place, while a grow moves immediately.
+    /// *(That second press used to be **silent** — the recorded answer applied and nothing was asked.
+    /// Corrected 2026-07-26: it now re-asks and visibly springs out and back. The arithmetic is
+    /// unchanged and still the reason there is no dead zone; only the decision to consult the cache
+    /// instead of the app has been reversed. See `World.forgetCorrections`.)*
     ///
     /// **The clamp can stop a resize; it may never reverse one.** The ceiling is the **content** width
     /// (the user's "bounded by 100%") and the floor is `minimumColumnWidth` — but each is widened to
@@ -952,22 +955,39 @@ public enum Engine {
         let departing = s.layout.visibleWindowIds(scrollOffset: start, metrics: metrics)
 
         retarget(&s.layout, column, metrics, fromWidth)
-        let toWidth = s.layout.resolvedWidth(ofColumn: column.id, metrics: metrics) ?? fromWidth
+        // What the user asked for, before any recorded answer is applied — `metrics.uncorrected` is the
+        // question, by the same construction `SizeCorrection` is keyed on.
+        let toWidth = s.layout.resolvedWidth(ofColumn: column.id, metrics: metrics.uncorrected) ?? fromWidth
 
-        // Nothing to look at: a single-preset cycle, two presets that resolve to the same points, a
-        // `grow` already at the ceiling, or a `shrink` against a floor the app has already insisted on.
-        // Any stored intent still moved, so a later press in the other direction acts at once;
-        // `emitPlacements` diffs to nothing and the command is silent.
+        // Nothing to look at: a single-preset cycle, two presets that resolve to the same points, or a
+        // `grow`/`shrink` whose clamp left the intent exactly where it was. Any stored intent still
+        // moved, so a later press in the other direction acts at once; `emitPlacements` diffs to
+        // nothing and the command is silent.
         guard !approximatelyEqualScalar(fromWidth, toWidth) else { return emitPlacements(&s) }
+
+        // **The user asked again, so ask the *app* again** (2026-07-26). Until here a recorded refusal
+        // was consulted on this path too, which made the second press of a `grow` against an app's
+        // limit resolve straight back to the width it already had — `fromWidth == toWidth`, and the
+        // command went silent with no motion at all.
+        //
+        // Silence was the wrong answer because the premise behind it was wrong. A window's limits are
+        // usually a property of *what it is currently showing*: the app that refused 900 pt with one
+        // tab open may accept it with another, and nothing observes that or can. So a resize verb
+        // retires the record and genuinely re-asks. If the constraint has lifted, the window grows; if
+        // it has not, the refusal comes back and springs the column home — the bounce, arising from a
+        // real attempt rather than being staged as feedback for one. The cost is one AX round trip and
+        // one cover per press against an immovable app, which is what asking actually costs.
+        s.world.forgetCorrections(of: column.windowIds)
+        guard let asked = s.metrics() else { return emitPlacements(&s) }
 
         // Where the focused column sits under the *new* widths — a resize scrolls too, because a column
         // that just grew may no longer fit where it was.
         let end = (s.config.centerFocusedColumn
-            ? s.layout.scrollOffsetToCenter(window: focused, metrics: metrics)
-            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: metrics)) ?? start
+            ? s.layout.scrollOffsetToCenter(window: focused, metrics: asked)
+            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: asked)) ?? start
 
         let scope = scopeUnion(s.layout, departing,
-                               s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
+                               s.layout.sweptWindowIds(from: start, to: end, metrics: asked))
 
         // §4a, for a machine with no Screen Recording grant or an empty scope: resize at once. The
         // column still ends up exactly the width the animated path would have converged on.
