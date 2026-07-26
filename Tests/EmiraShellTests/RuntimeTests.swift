@@ -159,10 +159,11 @@ import EmiraCore
 
         #expect(runtime.state.motion.isCovered)                 // captures in, cover up
         #expect(runtime.state.world.focusedWindow == WindowId(2))
-        // Captured both scoped windows (visible at the start offset ∪ at the end offset), then raised.
+        // Captured every scoped window — the two the scroll sweeps, plus w1 as the shoulder past its
+        // left end (`Layout.sweptWindowIds`) — then raised.
         let bindings = executor.effects.compactMap { if case .beginTransition(let b) = $0 { return b }; return nil }
         #expect(bindings.count == 1)
-        #expect(bindings.first?.map(\.window) == [WindowId(2), WindowId(3)])
+        #expect(bindings.first?.map(\.window) == [WindowId(1), WindowId(2), WindowId(3)])
         // …and the reals teleported behind it, in the same turn.
         #expect(executor.effects.contains { if case .setFrame(WindowId(2), _) = $0 { return true }; return false })
         #expect(executor.effects.contains { if case .park(WindowId(3), _) = $0 { return true }; return false })

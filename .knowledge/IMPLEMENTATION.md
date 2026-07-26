@@ -133,6 +133,23 @@ presentation plane and mid-teleport on the truth plane, and dropping it would ab
 one-column commands cannot tell the sweep apart from "visible at the start ∪ visible at the end", which is exactly
 why it should be right before one can.
 
+**And it carries a shoulder, because growing on a retarget still grows too late.** The stills a widened scope asks
+for take a capture round trip and *nothing holds the layers back while they are out*; with minimal-reveal scrolling
+the newcomer's leading edge sits exactly one `column-gap` past the destination the session was already aiming at, so
+the layers cross into it within a few frames of the press. So `sweptWindowIds` returns the swept run **flanked by the
+column just outside each end** — the ones a further command can reach. It is nearly free where it is paid, because
+the head batch is a *fan-out* whose critical path is the full-display base capture, while an extension costs a
+*serial* round trip that lands mid-motion. Deliberately not `visibleWindowIds`' business: that query means "what is on
+screen" and the reducer parks its complement, so a shouldered answer there would place two parked columns on the
+strip.
+
+**The extend gate asks per window, not per session.** Demanding that *every* outstanding capture be in is correct for
+one extension and starves under a stream of them — each command adds a capture before the previous lands, the gate
+never opens again, and the cover stops growing for the rest of the transition. The gate exists for a real reason
+(`extendCover` mints a layer id for every unbound window and the shell binds it *once*, so naming a window whose
+still is in flight spends its only chance at a layer), and asking it per window makes it incapable of starving. The
+**raise** keeps its all-or-nothing gate, because that one is about the base: a cover raised without it is not a cover.
+
 **A deadline that fires must degrade, not black out.** Every `capture` is answered exactly once within a bounded
 deadline (250 ms), because the core raises the cover on the *last* `captureReady` and the hold-timeout only starts at
 the raise — a dropped ack is a command that silently does nothing, with nothing to rescue it. A head batch that

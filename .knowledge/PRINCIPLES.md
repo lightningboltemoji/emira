@@ -133,8 +133,9 @@ mini-compositor, animate in it, and cross-fade back to the real desktop.
    easing, on a `CADisplayLink`. Real per-window motion, not a sliding photograph.
 5. **Wait for truth to land, then cross-fade out.** Hold the reconstruction until the real windows have actually
    arrived at their AX targets (observe + poll) — scoped to the windows the viewport *sweeps* between its start and
-   end offsets, and growing whenever a retarget aims the session somewhere it was not scoped for — and bounded by a
-   ~1 s hold-timeout (then reveal truth and reconcile; `IMPLEMENTATION.md` §3). _This is a feature:_ the overlay masks
+   end offsets, growing whenever a retarget aims the session somewhere it was not scoped for, and carrying a
+   one-column **shoulder** past each end, since a capture is a round trip and the pixels for wherever the *next*
+   command can aim have to already be there — and bounded by a ~1 s hold-timeout (then reveal truth and reconcile; `IMPLEMENTATION.md` §3). _This is a feature:_ the overlay masks
    slow AX placement — a busy Chrome/JVM window can take its time teleporting while the user sees only our smooth
    layers. Cross-fade to the real desktop once they're aligned.
 

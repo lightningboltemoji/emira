@@ -157,9 +157,28 @@ public struct TransitionSession: Sendable, Equatable, Codable {
         return added
     }
 
-    /// Scoped windows with no layer yet — what a raised cover still owes. Empty in steady session
-    /// state; non-empty only between an `extend` and the cover growing to match.
-    var unboundWindows: [WindowId] { windows.filter { layerIds[$0] == nil } }
+    /// Scoped windows that have a still and no layer yet — what a raised cover still owes and can
+    /// actually pay. Empty in steady session state; non-empty only between a `captureReady` and the
+    /// cover growing to match.
+    ///
+    /// **Pending captures are excluded, and that is load-bearing (2026-07-26).** `extendCover` mints a
+    /// layer id for everything this returns and the shell binds it *once*, skipping any window it has
+    /// no still for — so naming a window whose capture is still in flight spends its only chance at a
+    /// layer and leaves it a hole for the rest of the transition. Through iteration 25 the guard
+    /// against that lived in the *gate* instead (`Motion.isReadyToExtend` demanded `captureComplete`,
+    /// i.e. every outstanding capture in the whole session), which is correct for one extension and
+    /// **starves** under a stream of them: each new command adds a capture before the previous one
+    /// lands, `captureComplete` is never true again, and the cover stops growing entirely — a scoped
+    /// window then rides the whole transition with no layer, showing a full column of wallpaper.
+    /// Measured on a spammed `move-window`: 600 pt, versus 130 pt for the plain late-extension hole.
+    ///
+    /// Asking the question per window instead makes the gate incapable of starving — a still binds the
+    /// moment it lands, whatever else is outstanding — and is strictly lower latency besides. The
+    /// *raise* keeps its all-or-nothing gate (`isReadyToRaise`), because that one is about the base:
+    /// a cover raised without it is not a cover.
+    var unboundWindows: [WindowId] {
+        windows.filter { layerIds[$0] == nil && !pendingCaptures.contains($0) }
+    }
 
     /// Install layer ids minted for windows that joined after the raise. Total — no-op before it.
     mutating func bindLayers(_ ids: [WindowId: LayerId]) {
@@ -585,12 +604,15 @@ public struct Motion: Sendable, Equatable, Codable {
         return t.phase == .capturing && t.captureComplete
     }
 
-    /// Ready to *grow* the cover: raised, every outstanding capture in (including the extension's),
-    /// and at least one scoped window still without a layer. The reducer's cue to `extendCover()` +
-    /// emit `Effect.extendCover`.
+    /// Ready to *grow* the cover: raised, and at least one scoped window whose still has landed is
+    /// still without a layer. The reducer's cue to `extendCover()` + emit `Effect.extendCover`.
+    ///
+    /// Deliberately **not** gated on `captureComplete` — see `TransitionSession.unboundWindows`. A
+    /// session-wide gate here starves under a stream of interrupts, because each command adds a
+    /// capture before the last one lands and the cover simply stops growing.
     public var isReadyToExtend: Bool {
         guard let t = transition else { return false }
-        return t.phase == .covered && t.captureComplete && !t.unboundWindows.isEmpty
+        return t.phase == .covered && !t.unboundWindows.isEmpty
     }
 
     /// Ready to cross-fade out: `.covered`, every scoped AX set landed, and all animators settled. The

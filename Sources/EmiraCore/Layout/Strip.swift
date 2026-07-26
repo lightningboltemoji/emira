@@ -126,4 +126,18 @@ public struct Strip: Sendable, Equatable {
         }
         return result
     }
+
+    /// `run` plus the column immediately outside each of its ends — its **shoulders** — clamped to the
+    /// strip and still ascending. Empty in, empty out.
+    ///
+    /// A run of columns overlapping an interval is contiguous (columns are ordered, non-overlapping and
+    /// positively wide), and `visibleColumnIndices` emits it ascending, so the ends are `first` and
+    /// `last` and this adds at most two indices.
+    public func shoulderedColumnIndices(_ run: [Int]) -> [Int] {
+        guard let first = run.first, let last = run.last else { return [] }
+        var result = run
+        if first > 0 { result.insert(first - 1, at: 0) }
+        if last < count - 1 { result.append(last + 1) }
+        return result
+    }
 }

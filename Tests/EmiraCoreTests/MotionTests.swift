@@ -342,6 +342,34 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(4)) == LayerId(4))
     }
 
+    /// **A still binds as soon as it lands, whatever else is outstanding (2026-07-26).** The gate used
+    /// to be session-wide (`captureComplete`), which is correct for one extension and starves under a
+    /// stream of them: with a command arriving before the last capture answers there is always
+    /// something pending, the gate never opens again, and the cover stops growing for the rest of the
+    /// transition — a scoped window then rides it with no layer at all. Here w4's still is in while
+    /// w5's is not, and w4 must not be made to wait for it.
+    @Test func aPendingCaptureDoesNotHoldBackALayerWhoseStillHasLanded() {
+        var m = Motion()
+        m.openTransition(scope: Self.scope)
+        for w in Self.scope { m.markCaptured(w) }
+        m.raiseCover()
+
+        _ = m.extendTransition(scope: [WindowId(4)])
+        _ = m.extendTransition(scope: [WindowId(5)])     // a second interrupt, before the first answers
+        #expect(!m.isReadyToExtend)                      // neither still is in yet
+
+        m.markCaptured(WindowId(4))
+        #expect(m.isReadyToExtend)                       // w4 binds now; w5 is still out
+        #expect(m.extendCover().map(\.window) == [WindowId(4)])
+        #expect(m.layerId(for: WindowId(4)) != nil)
+        #expect(m.layerId(for: WindowId(5)) == nil)      // not named, so its one chance is not spent
+
+        m.markCaptured(WindowId(5))
+        #expect(m.extendCover().map(\.window) == [WindowId(5)])
+        #expect(m.layerId(for: WindowId(5)) != nil)
+        #expect(!m.isReadyToExtend)
+    }
+
     @Test func extendAndExtendCoverAreTotal() {
         var m = Motion()
         #expect(m.extendTransition(scope: [WindowId(1)]).isEmpty)   // no session

@@ -196,8 +196,11 @@ import EmiraMotion
         #expect(s.motion.isCovered == false)                    // still capturing — cover not raised
         #expect(s.motion.viewportOffset.target == 1000)         // aimed left one viewport
         #expect(s.motion.viewportOffset.current == 2000)        // hasn't moved yet (no ticks)
-        // Scope = {w2, w3}: a capture each, and *no* real teleport yet (nothing exposed before cover).
-        #expect(Set(Self.capturedIds(in: fx)) == Set([WindowId(2), WindowId(3)]))
+        // Scope = {w2, w3} swept, plus w1 as the left shoulder — the column one further `focus left`
+        // would pull in, captured now because a capture requested then would arrive too late
+        // (`Layout.sweptWindowIds`). A capture each, and *no* real teleport yet (nothing is exposed
+        // before the cover is up).
+        #expect(Set(Self.capturedIds(in: fx)) == Set([WindowId(1), WindowId(2), WindowId(3)]))
         #expect(!Self.hasEffect(fx) { if case .setFrame = $0 { return true }; return false })
         #expect(!Self.hasEffect(fx) { if case .beginTransition = $0 { return true }; return false })
 
@@ -414,7 +417,7 @@ import EmiraMotion
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))       // open the scroll w3 → w2 (target 1000)
         let scope = s.motion.transition?.windows ?? []
-        #expect(Set(scope) == Set([WindowId(2), WindowId(3)]))
+        #expect(Set(scope) == Set([WindowId(1), WindowId(2), WindowId(3)]))  // swept {w2,w3} + w1's shoulder
         #expect(s.motion.isCovered == false)                     // still capturing
 
         // Every capture in → raise the cover and teleport the reals to their end frames (offset 1000):
@@ -529,6 +532,165 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, 1000))
     }
 
+    // MARK: - The cover has no holes, at any command rate (2026-07-26)
+
+    /// ⅓ columns with the gaps a real config carries — the geometry both hole defects below were
+    /// measured on. The gap is not incidental: minimal-reveal scrolling leaves the next column exactly
+    /// one `columnGap` past the destination the session is already aiming at, which is what makes it
+    /// enter the viewport almost immediately after a retarget rather than comfortably later.
+    static let spamConfig = Config(columnGap: 8, windowGap: 8)
+
+    /// A frame-stepped world with **latency** — the one thing `drive` cannot model. `drive` acks every
+    /// capture synchronously, so a hole that exists only between a `capture` and its `captureReady` is
+    /// invisible to it. Here an effect resolves a fixed number of frames after it is emitted, and
+    /// commands keep arriving while the answers are still out.
+    private struct LatentWorld {
+        var state: State
+        var frame = 0
+        let captureLatency: Int
+        let axLatency = 2
+        var inbox: [Int: [Event]] = [:]
+
+        init(_ state: State, captureLatency: Int) {
+            self.state = state
+            self.captureLatency = captureLatency
+        }
+
+        mutating func send(_ event: Event) {
+            let (next, fx) = Engine.reduce(state, event)
+            state = next
+            for e in fx {
+                switch e {
+                case .capture(let w):
+                    inbox[frame + captureLatency, default: []].append(.captureReady(w))
+                case .setFrame(let w, _), .park(let w, _):
+                    inbox[frame + axLatency, default: []].append(.axLanded(w))
+                default: break
+                }
+            }
+        }
+
+        mutating func step() {
+            for e in inbox.removeValue(forKey: frame) ?? [] { send(e) }
+            send(.tick(dt: 1.0 / 120))
+            frame += 1
+        }
+
+        /// The widest band of viewport a window wants to occupy and has no layer to be drawn with —
+        /// i.e. how much wallpaper the cover is showing where a window should be. Zero unless the cover
+        /// is up: before the raise the user is looking at the real desktop, which is the truth and not
+        /// a hole.
+        func hole() -> Double {
+            guard state.motion.isCovered, let metrics = state.metrics() else { return 0 }
+            let view = metrics.workingArea
+            let frames = state.layout.naturalFrames(scrollOffset: state.motion.viewportOffset.current,
+                                                    metrics: metrics,
+                                                    widths: state.motion.currentColumnWidths)
+            var worst = 0.0
+            for id in state.layout.allWindowIds where state.motion.layerId(for: id) == nil {
+                guard let natural = frames[id] else { continue }
+                // Exactly the rect `Engine.emitLayerFrames` would blit, if this window had a layer.
+                let f = natural.displaced(by: state.motion.displacement(of: id))
+                worst = max(worst, min(min(f.maxX, view.maxX) - max(f.minX, view.minX), view.width))
+            }
+            return worst
+        }
+    }
+
+    /// Settle a ten-column strip at one end, then hammer `command` and report the widest hole the
+    /// cover ever showed.
+    private static func worstHoleWhileSpamming(_ command: Command, settlingWith settle: Command,
+                                               presses: Int, gapFrames: Int,
+                                               captureLatency: Int) -> Double {
+        var w = LatentWorld(booted(config: spamConfig), captureLatency: captureLatency)
+        for i in 1...10 { w.send(.windowCreated(snapshot(UInt64(i)))) }
+        for _ in 0..<12 {                                   // run to one end, unhurried
+            w.send(.command(settle))
+            var guardCount = 0
+            while w.state.motion.isTransitioning && guardCount < 5000 { w.step(); guardCount += 1 }
+        }
+
+        var worst = 0.0
+        for _ in 0..<presses {
+            w.send(.command(command))
+            worst = max(worst, w.hole())
+            for _ in 0..<gapFrames { w.step(); worst = max(worst, w.hole()) }
+        }
+        var guardCount = 0
+        while w.state.motion.isTransitioning && guardCount < 5000 {
+            w.step(); worst = max(worst, w.hole()); guardCount += 1
+        }
+        return worst
+    }
+
+    /// **The invariant the whole scoping story exists to hold:** while the cover is up, every window
+    /// the layers would draw inside the viewport has a layer to be drawn with. One that doesn't is a
+    /// window-shaped patch of wallpaper sliding across the cover — the artifact M4 part 1 photographed
+    /// and M4 part 2 closed for an *uninterrupted* transition, which is why it only ever showed when
+    /// commands were spammed.
+    ///
+    /// Two independent latency defects broke it, and neither is reachable from a harness that acks
+    /// instantly:
+    ///
+    ///  · **The late extension.** A retarget widens the scope correctly, but the stills it asks for
+    ///    arrive after the layers have already crossed into the territory they cover. Fixed by
+    ///    capturing a **shoulder** past each end of the sweep (`Layout.sweptWindowIds`), so the column
+    ///    a further command can reach is already on the cover. Measured before: 130–140 pt of hole.
+    ///  · **The starved extension.** Under a *stream* of interrupts there is always a capture
+    ///    outstanding, so a session-wide `captureComplete` gate never opens again and the cover stops
+    ///    growing at all. Fixed by asking the question per window
+    ///    (`TransitionSession.unboundWindows`). Measured before: 600 pt — an entire column.
+    ///
+    /// The press rates bracket reality: 4 frames ≈ 33 ms is faster than a key repeat, 40 ≈ 333 ms is a
+    /// full settle. The capture latencies bracket the measured extension batch (36 ms ≈ 4 frames) at
+    /// 1× and 2×.
+    ///
+    /// **What is *not* claimed.** No fixed lookahead can be an absolute guarantee — a user can always
+    /// press faster than pixels can be fetched — so the residual is characterized rather than hidden,
+    /// by `theShoulderBuysAtLeastOneCommandIntervalOfRunway` below.
+    @Test(arguments: [4, 6, 10, 20, 40] as [Int], [4, 8] as [Int])
+    func theCoverNeverShowsAHoleHoweverFastTheCommandsArrive(gapFrames: Int, captureLatency: Int) {
+        for (command, settle) in Self.spammableCommands {
+            let worst = Self.worstHoleWhileSpamming(command, settlingWith: settle, presses: 8,
+                                                    gapFrames: gapFrames, captureLatency: captureLatency)
+            #expect(worst == 0, "\(command) at \(gapFrames)-frame intervals, \(captureLatency)-frame captures")
+        }
+    }
+
+    /// **The shape of the residual, pinned.** A shoulder is one column of lookahead, so what it buys is
+    /// bounded — and the bound is worth knowing rather than discovering. It divides the vocabulary in
+    /// two, for a reason that is about *what the command does to the strip*:
+    ///
+    ///  · A **scroll** or a **resize** moves the viewport over a strip whose column order is fixed, so
+    ///    the shoulder is the column that will arrive next, by construction. Holes are unreachable at
+    ///    any capture latency — swept to 500 ms in development, which is past the capture plane's own
+    ///    250 ms deadline, i.e. past the point where the batch stops being a race and starts being a
+    ///    timeout.
+    ///  · A **structural edit** re-orders the strip *and* scrolls it, so a column reaches the viewport
+    ///    edge earlier in the travel than a plain scroll would bring it. The runway is then about one
+    ///    command interval — measured as tolerating a capture of `interval + 1` frames, i.e. this test
+    ///    asserts the honest floor. Against the real 36 ms batch that is ~2× headroom even at a press
+    ///    rate faster than key repeat, and it degrades into a *narrower* hole rather than a cliff.
+    @Test(arguments: [6, 10, 15, 20, 30] as [Int])
+    func theShoulderBuysAtLeastOneCommandIntervalOfRunway(gapFrames: Int) {
+        for (command, settle) in Self.spammableCommands {
+            let worst = Self.worstHoleWhileSpamming(command, settlingWith: settle, presses: 8,
+                                                    gapFrames: gapFrames, captureLatency: gapFrames)
+            #expect(worst == 0, "\(command) at \(gapFrames)-frame intervals and captures")
+        }
+    }
+
+    /// Every command that can open a transition, paired with the one that settles the strip at the
+    /// opposite end first so the spam has runway to travel.
+    static let spammableCommands: [(Command, Command)] = [
+        (.focus(.left), .focus(.right)),
+        (.focus(.right), .focus(.left)),
+        (.moveWindow(.left), .focus(.right)),
+        (.moveWindow(.right), .focus(.left)),
+        (.cycleWidth, .focus(.right)),
+        (.centerColumn, .focus(.right)),
+    ]
+
     // MARK: - The cover that grows (M4 part 2)
 
     /// **The hole, closed.** A session's scope is fixed when it opens, but an interrupting command
@@ -542,29 +704,31 @@ import EmiraMotion
             .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
             .windowCreated(Self.snapshot(3)), .windowCreated(Self.snapshot(4)),
         ])
-        // Scroll w4 → w3 and get the cover up. Scope is exactly the two columns that motion touches.
+        // Scroll w4 → w3 and get the cover up. Scope is the two columns the motion touches, plus w2 as
+        // the shoulder past its left end (`Layout.sweptWindowIds`); w4 is the last column, so there is
+        // no shoulder to its right.
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        #expect(s.motion.transition?.windows == [WindowId(3), WindowId(4)])
+        #expect(s.motion.transition?.windows == [WindowId(2), WindowId(3), WindowId(4)])
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
         #expect(s.motion.isCovered)
         for _ in 0..<4 { (s, _) = Engine.reduce(s, .tick(dt: 1.0 / 120)) }
 
-        // INTERRUPT: aim at w2, a column the cover has no pixels for.
+        // INTERRUPT: aim at w2. The shoulder means its pixels are already on the cover — that is the
+        // point of it — so what the widened scope newly names is w1, the *next* shoulder along.
         let (i, ifx) = Engine.reduce(s, .command(.focus(.left)))
         #expect(i.motion.isCovered)                              // still the same cover
-        #expect(Self.capturedIds(in: ifx) == [WindowId(2)])      // …and it asked for the missing still
-        #expect(i.motion.transition?.windows == [WindowId(3), WindowId(4), WindowId(2)])
-        #expect(i.motion.transition?.layerId(for: WindowId(2)) == nil)   // no layer until it lands
-        // The newcomer is teleported behind the cover like the rest, so its landing gates the close.
-        #expect(i.motion.transition?.awaitingLanding.contains(WindowId(2)) == true)
+        #expect(Self.capturedIds(in: ifx) == [WindowId(1)])      // …and it asked for the missing still
+        #expect(i.motion.transition?.windows == [WindowId(2), WindowId(3), WindowId(4), WindowId(1)])
+        #expect(i.motion.transition?.layerId(for: WindowId(2)) != nil)   // already covered: no hole
+        #expect(i.motion.transition?.layerId(for: WindowId(1)) == nil)   // no layer until it lands
 
         // The still lands → the cover grows, and the new layer is placed in the same batch.
-        let (g, gfx) = Engine.reduce(i, .captureReady(WindowId(2)))
+        let (g, gfx) = Engine.reduce(i, .captureReady(WindowId(1)))
         let added: [LayerBinding] = gfx.compactMap { if case .extendCover(let b) = $0 { return b }; return nil }
             .flatMap { $0 }
         #expect(added.count == 1)
-        #expect(added.first?.window == WindowId(2))
-        let layer = try! #require(g.motion.transition?.layerId(for: WindowId(2)))
+        #expect(added.first?.window == WindowId(1))
+        let layer = try! #require(g.motion.transition?.layerId(for: WindowId(1)))
         #expect(added.first?.layer == layer)
         // A fresh id, not one of the layers already on the cover.
         #expect(!(g.motion.transition?.bindings.dropLast().map(\.layer).contains(layer) ?? true))
@@ -589,7 +753,7 @@ import EmiraMotion
         let (i, ifx) = Engine.reduce(s, .command(.focus(.left))) // interrupt while still `.capturing`
         s = i
 
-        #expect(Self.capturedIds(in: ifx) == [WindowId(2)])
+        #expect(Self.capturedIds(in: ifx) == [WindowId(1)])      // the next shoulder along
         #expect(!s.motion.isCovered)
         #expect(!Self.hasEffect(ifx) { if case .setFrame = $0 { return true }; return false })  // nothing moved yet
 
@@ -599,7 +763,7 @@ import EmiraMotion
         }
         let bindings: [LayerBinding] = raiseFx
             .compactMap { if case .beginTransition(let b) = $0 { return b }; return nil }.flatMap { $0 }
-        #expect(bindings.map(\.window) == [WindowId(3), WindowId(4), WindowId(2)])
+        #expect(bindings.map(\.window) == [WindowId(2), WindowId(3), WindowId(4), WindowId(1)])
         #expect(!Self.hasEffect(raiseFx) { if case .extendCover = $0 { return true }; return false })
     }
 
@@ -729,33 +893,39 @@ import EmiraMotion
     /// geometry alone would give it no captured layer, and it would slide out of view as a hole showing
     /// the wallpaper: M4 part 1's finding, arriving by a different route.
     ///
-    /// ½/full presets on a 1000-wide display. Three 500-wide columns, viewport parked at 500 so cols 1
-    /// and 2 are on screen; cycling col1 to full (1000) makes it fill the viewport by itself and evicts
-    /// col2 entirely.
+    /// ¼/full presets on a 1000-wide display. Four 250-wide columns all on screen at offset 0; cycling
+    /// col1 to full (1000) makes it fill the viewport by itself and evicts cols 2 **and** 3 — two
+    /// columns, deliberately, so that one of them lands outside the shoulder the sweep already carries
+    /// (`Layout.sweptWindowIds`) and the two-geometry union is the only thing that can account for it.
     @Test func aResizeScopesTheColumnItPushesOffTheScreen() {
-        let config = Config(widthPresets: PresetCycle([.proportion(0.5), .proportion(1.0)]))
+        let config = Config(widthPresets: PresetCycle([.proportion(0.25), .proportion(1.0)]))
         var (s, _) = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
             .windowCreated(Self.snapshot(3)),
+            .windowCreated(Self.snapshot(4)),
         ])
         (s, _) = Engine.reduce(s, .focusChanged(WindowId(2)))
-        #expect(Self.approxScalar(s.motion.viewportOffset.current, 500))
-        #expect(s.layout.visibleWindowIds(scrollOffset: 500, metrics: s.metrics()!)
-                == [WindowId(2), WindowId(3)])
+        #expect(Self.approxScalar(s.motion.viewportOffset.current, 0))
+        #expect(s.layout.visibleWindowIds(scrollOffset: 0, metrics: s.metrics()!)
+                == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
 
         let (c, cfx) = Engine.reduce(s, .command(.cycleWidth))
         s = c
-        // Under the *new* geometry the viewport holds col1 alone — yet w3 is scoped and captured,
-        // because it was on screen under the old one and has to be drawn on its way out.
-        #expect(s.layout.sweptWindowIds(from: 500, to: s.motion.viewportOffset.target,
-                                        metrics: s.metrics()!) == [WindowId(2)])
-        #expect(s.motion.transition?.windows == [WindowId(2), WindowId(3)])   // layout order = z-order
-        #expect(Self.capturedIds(in: cfx) == [WindowId(2), WindowId(3)])
+        // Under the *new* geometry the viewport holds col1 alone; the sweep and its shoulders reach
+        // only as far as w3. w4 is scoped and captured purely because it was on screen under the *old*
+        // geometry and has to be drawn on its way out.
+        #expect(s.layout.sweptWindowIds(from: 0, to: s.motion.viewportOffset.target,
+                                        metrics: s.metrics()!)
+                == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(s.motion.transition?.windows                                  // layout order = z-order
+                == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
+        #expect(Self.capturedIds(in: cfx)
+                == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
 
         let (done, _) = Self.drive(s)
         #expect(done.motion.isTransitioning == false)
-        #expect(done.layout.strip(metrics: done.metrics()!).columnWidths == [500, 1000, 500])
+        #expect(done.layout.strip(metrics: done.metrics()!).columnWidths == [250, 1000, 250, 250])
     }
 
     /// A resize arriving mid-scroll joins the open session rather than opening a second one — the same
@@ -1475,11 +1645,16 @@ import EmiraMotion
     /// — so a window that merely scrolled into scope would end up drawn over the window the user is
     /// moving. The re-elevation rides in the same contiguous presentation run as the addition, i.e.
     /// the same `CATransaction`, so the wrong order is never composited even once.
+    ///
+    /// Five columns rather than three, so the strip is long enough that a scroll can still reach past
+    /// the shoulder the sweep already carries and produce a genuine newcomer to be buried by.
     @Test func growingTheCoverReElevatesTheMoverOverTheNewcomer() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
-            .windowCreated(Self.snapshot(3)),          // focused, rightmost
+            .windowCreated(Self.snapshot(3)),
+            .windowCreated(Self.snapshot(4)),
+            .windowCreated(Self.snapshot(5)),          // focused, rightmost
         ])
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
@@ -1497,7 +1672,7 @@ import EmiraMotion
 
         let extendIndex = try! #require(extendFx.firstIndex { if case .extendCover = $0 { return true }
                                                               return false })
-        let mover = try! #require(s.motion.layerId(for: WindowId(3)))
+        let mover = try! #require(s.motion.layerId(for: WindowId(5)))
         let elevateIndex = try! #require(extendFx.firstIndex(of: .elevateLayer(mover)))
         #expect(elevateIndex > extendIndex)     // after the addition, or it would be buried again
     }
@@ -1706,11 +1881,16 @@ import EmiraMotion
         #expect(n.layout.columns.map(\.windowIds) == [[WindowId(1), WindowId(2)], [WindowId(3)]])
         #expect(n.motion.isCovered)                    // one session throughout, never a second
         #expect(!Self.hasEffect(fx) { if case .beginTransition = $0 { return true }; return false })
-        // …and it **widens** the scope. Riding `driveTransition` is what closed the gap the snapping
-        // version left: the edit relocates `w1` from its park sliver into the top half of a column
+        // …and the invariant that matters holds: every window the edit puts on screen is in the
+        // cover's scope. The edit relocates `w1` from its park sliver into the top half of a column
         // that is now on screen, and a window sliding into view with no captured layer is the hole
-        // that showed wallpaper in M4 part 1.
-        #expect(Self.capturedIds(in: fx).contains(WindowId(1)))
+        // that showed wallpaper in M4 part 1. Riding `driveTransition` is what closed it — whether a
+        // given window arrives via this widening or via the shoulder the original sweep already
+        // carried (`Layout.sweptWindowIds`) is an implementation detail of *when* it was captured.
+        let scoped = Set(n.motion.transition?.windows ?? [])
+        #expect(scoped.contains(WindowId(1)))
+        #expect(scoped.isSuperset(of: n.layout.visibleWindowIds(
+            scrollOffset: n.motion.viewportOffset.target, metrics: n.metrics()!)))
         // The reals teleported into the *new* structure behind the still-raised cover.
         #expect(Self.approx(Self.placement(of: WindowId(1), in: fx) ?? .zero,
                             Rect(x: 0, y: 0, width: 1000, height: 400)))

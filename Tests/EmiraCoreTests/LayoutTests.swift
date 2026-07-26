@@ -878,13 +878,34 @@ import Testing
         #expect(layout.sweptWindowIds(from: 0, to: 900, metrics: narrow) == [w10, w20, w21, w30, w40])
     }
 
-    @Test func sweptWindowIdsAreDirectionAgnosticAndDegenerateToVisible() {
+    @Test func sweptWindowIdsAreDirectionAgnostic() {
         let layout = fourColumns()
         #expect(layout.sweptWindowIds(from: 300, to: 0, metrics: metrics)
                 == layout.sweptWindowIds(from: 0, to: 300, metrics: metrics))
-        // A zero-length sweep is exactly the still-frame question.
-        #expect(layout.sweptWindowIds(from: 0, to: 0, metrics: metrics)
-                == layout.visibleWindowIds(scrollOffset: 0, metrics: metrics))
+    }
+
+    /// The scope is the sweep **plus a shoulder on each end** — the column a further command can pull
+    /// into view before a capture requested at that moment could possibly arrive (2026-07-26). A
+    /// zero-length sweep is therefore *not* the still-frame question; it is that question widened by
+    /// one column on either side.
+    @Test func sweptWindowIdsCarryAShoulderPastEachEndOfTheSweep() {
+        let layout = fourColumns()
+        // Viewport 900 at offset 0 shows col0–col2; col3 is the shoulder past the right end.
+        #expect(layout.visibleWindowIds(scrollOffset: 0, metrics: metrics) == [w10, w20, w21, w30])
+        #expect(layout.sweptWindowIds(from: 0, to: 0, metrics: metrics) == [w10, w20, w21, w30, w40])
+        // Off the origin, a shoulder appears on the left too: at 300 the viewport shows col1–col3,
+        // and col0 is one `focus left` away.
+        #expect(layout.visibleWindowIds(scrollOffset: 300, metrics: metrics) == [w20, w21, w30, w40])
+        #expect(layout.sweptWindowIds(from: 300, to: 300, metrics: metrics) == [w10, w20, w21, w30, w40])
+    }
+
+    /// The shoulder is clamped to the strip, never invented: a sweep that already reaches both ends
+    /// has nothing to flank it with, and the answer is the whole strip rather than out-of-range indices.
+    @Test func aShoulderStopsAtTheEndsOfTheStrip() {
+        let layout = fourColumns()
+        #expect(layout.sweptWindowIds(from: 0, to: 1200, metrics: metrics)
+                == [w10, w20, w21, w30, w40])
+        #expect(Layout().sweptWindowIds(from: 0, to: 300, metrics: metrics).isEmpty)
     }
 
     @Test func scrollOffsetToRevealPullsAnOffViewColumnIntoView() {

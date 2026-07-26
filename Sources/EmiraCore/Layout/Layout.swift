@@ -537,10 +537,33 @@ public struct Layout: Sendable, Equatable, Codable {
     /// `w + |b − a|` parked at `min(a,b)`. So the sweep is the query `visibleWindowIds` already
     /// answers, asked of a wider window; there is no new geometry and no interval arithmetic to get
     /// wrong.
+    ///
+    /// **Plus a shoulder on each end (2026-07-26).** The scope is the swept run *flanked* by the column
+    /// just outside either end, which are the columns one further command can pull into view. They are
+    /// captured for a motion that will not show them, and the reason is **latency, not geometry**: a
+    /// retarget widens the scope correctly (`Motion.extendTransition`) but its stills take a capture
+    /// round trip to arrive, and with minimal-reveal scrolling the newcomer's leading edge sits one
+    /// `columnGap` past the destination the session was already aiming at — so the layers cross into it
+    /// almost immediately and the cover shows wallpaper there until `extendCover` lands. Measured at
+    /// 130–140 pt of hole on a spammed `focus`, and *only* when interrupted, since an uninterrupted
+    /// transition raises no cover until every still is in.
+    ///
+    /// A shoulder is what makes the pixels already be there. It is nearly free where it is paid — the
+    /// head batch is a fan-out whose critical path is the full-display base capture, so one or two more
+    /// window stills alongside it cost almost nothing, while an extension costs a *serial* round trip
+    /// that lands mid-motion. And it stays correct under repeated interrupts: each retarget captures
+    /// the *next* shoulder while the spring, always lagging behind a spammed target, has not yet
+    /// reached the one before it.
+    ///
+    /// This is deliberately not `visibleWindowIds`' business. That query means "what is on screen", and
+    /// the reducer parks its complement — a shouldered answer there would place two parked columns on
+    /// the strip.
     public func sweptWindowIds(from: Double, to: Double, metrics: LayoutMetrics) -> [WindowId] {
-        windowIds(inColumns: strip(metrics: metrics).visibleColumnIndices(
+        let strip = strip(metrics: metrics)
+        let swept = strip.visibleColumnIndices(
             viewportWidth: metrics.workingArea.width + abs(to - from),
-            offset: Swift.min(from, to)))
+            offset: Swift.min(from, to))
+        return windowIds(inColumns: strip.shoulderedColumnIndices(swept))
     }
 
     /// The windows stacked in the given column indices, flattened in layout order (left→right,
