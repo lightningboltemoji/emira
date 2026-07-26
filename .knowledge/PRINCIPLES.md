@@ -132,19 +132,22 @@ mini-compositor, animate in it, and cross-fade back to the real desktop.
 4. **Animate the layers, however we like.** Slide the window layers to scroll the strip, at independent rates, with
    easing, on a `CADisplayLink`. Real per-window motion, not a sliding photograph.
 5. **Wait for truth to land, then cross-fade out.** Hold the reconstruction until the real windows have actually
-   arrived at their AX targets (observe + poll), bounded by a ~1 s hold-timeout (then reveal truth and reconcile;
-   `IMPLEMENTATION.md` §3). _This is a feature:_ the overlay masks slow AX placement — a busy Chrome/JVM window can
-   take its time teleporting while the user sees only our smooth layers. Cross-fade to the real desktop once they're
-   aligned.
+   arrived at their AX targets (observe + poll) — scoped to the windows the viewport *sweeps* between its start and
+   end offsets, and growing whenever a retarget aims the session somewhere it was not scoped for — and bounded by a
+   ~1 s hold-timeout (then reveal truth and reconcile; `IMPLEMENTATION.md` §3). _This is a feature:_ the overlay masks
+   slow AX placement — a busy Chrome/JVM window can take its time teleporting while the user sees only our smooth
+   layers. Cross-fade to the real desktop once they're aligned.
 
-> **This is proven, not hoped for.** A reconstruction of a single window raised over the real thing is
-> imperceptible — "confusingly good" — and the one visible gap, the missing window shadow, is closed by
-> synthesizing a per-layer `CALayer` drop shadow that travels with the window. The full loop (opaque cover →
-> hidden AX teleport → ghost-free slide → wait-for-AX → cross-fade reveal) reads as indistinguishable from native,
-> and visibly smoother than AeroSpace, whose window-switch **flashing** is exactly the artifact the cover
-> eliminates. Up to three windows pan in perfect lockstep under one cover, all reals teleporting behind it, with a
-> single seamless reveal. Overlay appear-pop is killed with `animationBehavior = .none` plus keeping the overlay
-> ordered-in at `alpha 0`, so a raise is a pure alpha flip.
+> **The cover is made of real pixels.** One ScreenCaptureKit still per scoped window
+> (`SCContentFilter(desktopIndependentWindow:)`, so a column parked at its 1 px sliver is captured in full), over a
+> base that is the display captured *excluding* those windows — wallpaper, menu bar and every non-moving window, with
+> window-shaped holes for the layers to sit in. The one gap a reconstruction has is the **window shadow**, which macOS
+> does not put in a window's surface, so we synthesize a per-layer `CALayer` drop shadow that travels with it. Overlay
+> appear-pop is killed with `animationBehavior = .none` plus keeping the overlay ordered-in at `alpha 0`, so a raise is
+> a pure alpha flip. Judged the only way it can be judged — mid-transition screenshots — it is indistinguishable from
+> native, and visibly smoother than AeroSpace, whose window-switch **flashing** is exactly the artifact the cover
+> eliminates: AeroSpace teleports the raw window with nothing in front of it, and we never let the eye touch the
+> transition.
 
 > **Why this beats both a flat cover and per-window overlays.** A flat cover can't do per-window motion (it's one
 > photo). Gappy per-window overlays expose the real windows (we can't hide them without SkyLight). A **full, opaque,
@@ -178,7 +181,15 @@ Start with **static layers, reconcile-on-release**; escalate to live layers if t
 ### 4d. Resize
 
 Real size is app-bound. Set it via AX; if the reflow is visibly janky, cross-fade a scaled screenshot over it until
-the app redraws (observe `kAXWindowResizedNotification`, poll fallback). Accept a brief soft frame on heavy apps.
+the app redraws. Accept a brief soft frame on heavy apps.
+
+> **This needs no mechanism of its own — the cover already is one.** "Scaled screenshot over the reflow, then
+> cross-fade" *is* the §4b cover, viewed from one command over: the reals teleport to their final **size** behind it,
+> the layers hold stills that the resize animation scales, and the existing cross-fade retires them when the AX
+> landing says the app has caught up. What a resize actually needed was in the *core*, not the shell — a second
+> animated quantity, the column's resolved width, since every frame on the strip derives from it
+> (`IMPLEMENTATION.md` §6). The residual soft frame is real and visible in a mid-motion screenshot: a still stretched
+> by 50% is stretched text for the length of the motion.
 
 ---
 
@@ -199,6 +210,12 @@ Much of the "slow AX" pain is self-inflicted and controllable:
 - **Observe, don't poll.** Use `AXObserver` for moved/resized/created/destroyed — but budget for apps that emit late
   or not at all, so keep a poll fallback.
 - **Expect clamping.** Apps clamp to min/max/constraints; you may need size → position → size again to land exactly.
+- **`kAXWindowsAttribute` is not a list of windows.** Finder answers it with the desktop — an `AXScrollArea` with no
+  title, subrole or full-screen attribute. So the classifier is *failable*: an unrecognized **role** means "not a
+  window" and is dropped at the AX boundary, while an unrecognized **subrole** means "a real window we leave alone".
+- **A missing Accessibility grant makes AX return nothing, without an error.** Check it first and fatally: a window
+  manager that silently manages nothing is the worst failure available, and it is indistinguishable from a desktop
+  with no windows on it.
 
 ---
 
@@ -207,12 +224,22 @@ Much of the "slow AX" pain is self-inflicted and controllable:
 - **We cannot hide, alpha, transform, or re-level a foreign window.** Those need SkyLight (SIP-off). All masking must
   be done with covers made of our own overlay windows. This is _the_ constraint that shapes §4.
 - **Resized content must come from the app.** The floor on resize smoothness is the app's own responsiveness.
+- **AX subroles describe a window's *presentation*, not its identity or its kind.** A natively full-screen Safari
+  window reports subrole `AXDialog` with an empty title; a TextEdit document created programmatically reports
+  `AXDialog` while the same app's file-backed window reports `AXStandardWindow`. This is a property of the API, not of
+  one app — so the taxonomy checks full-screen *before* the subrole, and nothing may treat a subrole as a stable fact
+  about a window.
 - **macOS will not let a window go fully off-screen.** Extreme coordinates clamp to a ~40 px sliver; precise ones
   leave as little as ~1 px. The consequence is §4a's sliver park, and the compensation is that a window which cannot
   hide cannot be throttled for being hidden.
 - **ScreenCaptureKit needs Screen Recording permission** (TCC) — a normal user grant, no SIP change. Budget for the
-  onboarding prompt. macOS also **periodically re-prompts** users to keep allowing screen capture; under our charter
-  nothing can be done about it — accept it, and set expectations in onboarding copy.
+  onboarding prompt. macOS also **periodically re-prompts** users to keep allowing screen capture, mid-session and
+  while capture is already working; under our charter nothing can be done about it — accept it, set expectations in
+  onboarding copy, and treat the grant as a value that can change under a running daemon rather than one read at boot.
+  Without it, the honest behaviour is **not to raise a cover at all**: `Config.smoothTransitions` degrades emira to
+  §4a — instant, correct placement, i.e. AeroSpace parity — and every window still lands exactly where the smooth path
+  would have put it. A coloured rectangle sliding where a window should be is worse than no animation, which is why
+  there is no placeholder fallback anywhere in the daemon.
 - **Snapshot layers freeze _content_, never motion.** With static layers a window's _content_ is frozen during a
   transition (its movement is always smooth). Live ScreenCaptureKit layers remove even that, at a per-window
   streaming cost. Keep transitions short regardless.
@@ -279,10 +306,18 @@ Much of the "slow AX" pain is self-inflicted and controllable:
 
 - **No private symbols.** By policy we do not link or `dlopen` `SkyLight`, and we avoid private AX SPI — in particular
   the private `_AXUIElementGetWindow`. Instead, window identity is **bound once, at first sight**: the shell matches an
-  AX window to its `SCWindow` by **pid + frame + title** at a moment when frames are essentially always unique, then
-  keys on the stable public `CGWindowID` (`SCWindow.windowID`) forever after — immune to later frame/title collisions
-  (titles are unstable; parked frames would otherwise collide). Unique park slots (§4a) keep even cold-start
-  rebinding — a daemon restart with windows already parked — unambiguous.
+  AX window to a `CGWindowListCopyWindowInfo` entry by **owner + frame**, and — only when those tie — by whether the
+  window server calls the entry on-screen, then keys on the stable public `CGWindowID` forever after. Immune to later
+  frame/title collisions (titles are unstable; parked frames would otherwise collide), and unique park slots (§4a)
+  keep even cold-start rebinding — a daemon restart with windows already parked — unambiguous. **The join is
+  unprivileged**, which is why identity costs exactly *one* user permission and not two: the window list's numbers,
+  pids and bounds need no grant, titles come from AX, and `SCWindow.windowID` is the same integer, so capture inherits
+  the bindings.
+  - A notification hands back an `AXUIElement` and nothing else — the case yabai answers with
+    `_AXUIElementGetWindow`. First-sight binding answers it by keeping the *reverse* map (element → `WindowId`), which
+    works because `AXUIElement` compares **structurally**: the element arriving with a notification is a different
+    allocation from the one enumeration stored, and `CFEqual` says they are the same window. Pointer identity would
+    have silently never matched.
 - **Linking:** `ApplicationServices` (AX — a C API, imports cleanly), `AppKit`/`Cocoa` (overlay windows, run loop),
   `ScreenCaptureKit` (capture), `QuartzCore` (Core Animation layers; `CADisplayLink` via `NSScreen.displayLink` — the
   macOS 26 floor means no `CoreVideo`/`CVDisplayLink` fallback to carry).
