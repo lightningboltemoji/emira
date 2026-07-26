@@ -26,7 +26,12 @@ import EmiraMotion
 // [layout]
 // column-gap = 0                        # points between columns
 // window-gap = 0                        # points between windows stacked in a column
-// width-presets = [0.333, 0.5, 0.667]   # ≤ 1 is a fraction of the working width; > 1 is points
+// outer-gap = 0                         # points of margin at every edge of the working area
+// outer-gap-top = 0                     # …and the four per-side overrides
+// outer-gap-left = 0
+// outer-gap-bottom = 0
+// outer-gap-right = 0
+// width-presets = [0.333, 0.5, 0.667]   # ≤ 1 is a fraction of the *content* width; > 1 is points
 // center-focused-column = false         # false = scroll the minimum that reveals the column
 //
 // [animation]
@@ -74,9 +79,19 @@ import EmiraMotion
 // nobody asked it to. An unbound emira steals nothing. The daemon says how many bindings are live at
 // boot, naming the file, so "none" is reported rather than merely being true.
 //
+// **`outer-gap` is spelled flat, not dotted (2026-07-26).** `outer-gap.left` would in fact parse —
+// `TOML.swift` flattens the document to dotted paths in one dictionary, so `layout.outer-gap` and
+// `layout.outer-gap.left` are simply two distinct keys and neither reader would notice the other. It is
+// still the wrong spelling: it makes one key both a scalar and a table, which real TOML forbids, so the
+// day the hand-rolled grammar is replaced by a strict one every config file using it breaks. The flat
+// form costs one `take` per side, reads like the `column-gap`/`window-gap` it belongs beside, and is
+// legal TOML in any parser.
+//
 // **What is deliberately *not* a key.** `struts` is a fact about the hardware, read off
 // `NSScreen.visibleFrame` by the daemon and handed to both the core and the overlay (M4 part 3 — the
-// invariant holds only while the two agree), so a config file cannot contradict the menu bar.
+// invariant holds only while the two agree), so a config file cannot contradict the menu bar. A user
+// who wants a margin at the screen's edge wants `outer-gap`, which is additive with the struts and
+// measured inside them.
 
 /// Why a config file couldn't be read. `CustomStringConvertible` because every one of these is shown
 /// to a human who is looking at that file in an editor — so each names the line.
@@ -133,6 +148,9 @@ extension Config {
         table.acceptTable("layout")
         if let gap = try table.number("layout.column-gap", atLeast: 0) { config.columnGap = gap }
         if let gap = try table.number("layout.window-gap", atLeast: 0) { config.windowGap = gap }
+        if let gaps = try table.edgeInsets("layout.outer-gap", default: config.outerGaps) {
+            config.outerGaps = gaps
+        }
         if let flag = try table.bool("layout.center-focused-column") { config.centerFocusedColumn = flag }
         if let presets = try table.presetCycle("layout.width-presets") { config.widthPresets = presets }
 
@@ -207,7 +225,35 @@ extension TOMLTable {
         return number
     }
 
-    /// The width cycle. **A value ≤ 1 is a fraction of the working width; a value > 1 is a point
+    /// A four-edge inset written as a base key plus per-side overrides: `outer-gap` sets all four and
+    /// `outer-gap-left` (and its three siblings) replaces one of them. Reading the base first and
+    /// letting each side overwrite it *is* the precedence rule, so there is nothing to enforce.
+    ///
+    /// `default` is the value the per-side keys refine when the base key is absent, which is what makes
+    /// `outer-gap-left` alone mean "just the left edge" rather than "the left edge, and zero elsewhere".
+    ///
+    /// Returns `nil` when the file sets none of the five, so an absent setting keeps the `Config()`
+    /// default rather than asserting zero over it — the same shape as `spring` and every other reader
+    /// here. Negative is refused like the other gaps: a negative margin would push the strip back under
+    /// the menu bar the struts exist to keep it out of.
+    fileprivate mutating func edgeInsets(_ key: String, default fallback: EdgeInsets) throws -> EdgeInsets? {
+        let uniform = try number(key, atLeast: 0)
+        var insets = uniform.map(EdgeInsets.init(uniform:)) ?? fallback
+        var set = uniform != nil
+        // Read order, not file order, decides which of two bad sides is reported — the same property
+        // `spring` has for `stiffness` before `damping-ratio`.
+        let sides: [(String, WritableKeyPath<EdgeInsets, Double>)] = [
+            ("top", \.top), ("left", \.left), ("bottom", \.bottom), ("right", \.right),
+        ]
+        for (name, edge) in sides {
+            guard let value = try number("\(key)-\(name)", atLeast: 0) else { continue }
+            insets[keyPath: edge] = value
+            set = true
+        }
+        return set ? insets : nil
+    }
+
+    /// The width cycle. **A value ≤ 1 is a fraction of the content width; a value > 1 is a point
     /// count** — the one piece of cleverness in the schema, and it earns its place: `[0.333, 0.5]`
     /// and `[600, 900]` are both what a user means by them, and `PresetSize` already models the two
     /// as distinct cases (`Presets.swift`), so nothing is lost in translation. The alternative

@@ -29,10 +29,27 @@ public struct Config: Sendable, Equatable, Codable {
     public var columnGap: Double
     /// Gap between vertically-adjacent windows within a column (inter-window only).
     public var windowGap: Double
+    /// The margin held clear at the edges of the working area — the strip's **outer** gaps
+    /// (`outer-gap`, and the four `outer-gap-<side>` overrides), the third member of the family
+    /// `columnGap` and `windowGap` belong to. The three are spelled separately, and until 2026-07-26
+    /// only the inner two existed.
+    ///
+    /// **Not a strut, though `struts` below is the same arithmetic.** A strut is forbidden ground; an
+    /// outer gap is empty at rest and *crossed in motion* — a column scrolling in slides through it,
+    /// which is why the cover must not shrink with it. The full reasoning lives on
+    /// `LayoutMetrics.outerGaps`, next to the geometry that depends on it.
+    ///
+    /// Additive with `struts`, and in that order: the hardware's reservation first, then the user's
+    /// margin inside it. So `outer-gap-top` measures down from the menu bar, not from the screen.
+    public var outerGaps: EdgeInsets
     /// The reserved region around the working area — the menu-bar/notch at the top, the Dock edge,
     /// outer margins. The monitor frame is inset by this to get the layout's working area, so tiled
     /// windows never sit under the menu bar or Dock (PRINCIPLES.md §4a). Top-left origin: `top` is
     /// the menu-bar edge.
+    ///
+    /// **A fact about the hardware, not a preference** — read off `NSScreen.visibleFrame` by the daemon
+    /// and deliberately not a config key (`ConfigSyntax.swift`). A user who wants a margin wants
+    /// `outerGaps`; the two are additive and only one of them is theirs to set.
     public var struts: EdgeInsets
     /// The spring that drives the viewport-offset scroll (the one scalar a strip scroll animates,
     /// PRINCIPLES.md §7). Used to seed `Motion.viewportOffset`.
@@ -104,6 +121,7 @@ public struct Config: Sendable, Equatable, Codable {
         widthPresets: PresetCycle = .defaultWidths,
         columnGap: Double = 0,
         windowGap: Double = 0,
+        outerGaps: EdgeInsets = .zero,
         struts: EdgeInsets = .zero,
         scrollSpring: SpringParams = .smooth,
         resizeSpring: SpringParams = .smooth,
@@ -116,6 +134,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.widthPresets = widthPresets
         self.columnGap = columnGap
         self.windowGap = windowGap
+        self.outerGaps = outerGaps
         self.struts = struts
         self.scrollSpring = scrollSpring
         self.resizeSpring = resizeSpring

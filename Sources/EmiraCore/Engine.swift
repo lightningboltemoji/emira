@@ -110,6 +110,7 @@ public struct State: Sendable, Equatable, Codable {
             widthPresets: config.widthPresets,
             columnGap: config.columnGap,
             windowGap: config.windowGap,
+            outerGaps: config.outerGaps,
             corrections: world.corrections)
     }
 }
@@ -164,7 +165,8 @@ public enum Engine {
             guard let before else { return (s, []) }
             // Bound first, deliberately: `(s, arriveOnStrip(&s, …))` reads `s` into the tuple *before*
             // the `inout` call mutates it, so the reducer would return the pre-arrival state.
-            let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before)
+            let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before,
+                                        keepingWidth: snapshot.wasAlreadyOpen)
             return (s, effects)
 
         case .windowDestroyed(let id):
@@ -839,15 +841,20 @@ public enum Engine {
     /// re-derives the *same* question, the recorded answer applies, and the command goes silent, while a
     /// grow moves immediately.
     ///
-    /// **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width
+    /// **The clamp can stop a resize; it may never reverse one.** The ceiling is the **content** width
     /// (the user's "bounded by 100%") and the floor is `minimumColumnWidth` — but each is widened to
     /// the current width if the column is already outside it, so a `grow` on a column deliberately
     /// configured wider than the screen (`width-presets = [1.5]`) is a no-op rather than a sudden
     /// shrink to fit.
+    ///
+    /// Content rather than working, so that 100% here is the same 100% the preset ladder resolves
+    /// against (`Layout.resolvedWidth`): with an outer gap set, a full-width column fills the strip's
+    /// area and leaves the margin showing. Two definitions of "full" is how `grow` would come to a stop
+    /// one gap wider than `cycle-width`'s top rung.
     private static func handleResizeColumn(_ s: inout State, by delta: SizeDelta,
                                            sign: Double) -> [Effect] {
         resizeFocusedColumn(&s) { layout, column, metrics, from in
-            let available = metrics.workingArea.width
+            let available = metrics.contentArea.width
             let ceiling = Swift.max(available, from)
             let floor = Swift.min(minimumColumnWidth, from)
             let width = Swift.min(Swift.max(from + sign * delta.resolved(available: available), floor),
@@ -1054,17 +1061,53 @@ public enum Engine {
     ///
     /// It is the `mover` too — it is the thing that arrived, and on the way to its column it passes
     /// over the windows making room for it.
+    ///
+    /// `keepingWidth` is the launch scan's arrival (`WindowSnapshot.wasAlreadyOpen`): the column takes the
+    /// width the window already has rather than the ladder's first rung (`keepExistingWidth`).
     private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
-                                      old: StructuralSnapshot) -> [Effect] {
+                                      old: StructuralSnapshot, keepingWidth: Bool = false) -> [Effect] {
         s.layout.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
         // A window that didn't actually join a column (no metrics, a rule that floated it) has nothing
         // to animate; the ordinary placement pass still runs.
         guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + [.focus(id)] }
+        // Before the geometry below is taken, so the frame this arrival is animated *to* is the seeded
+        // one. An adopted window then only travels to its place on the strip; it does not also resize.
+        if keepingWidth { keepExistingWidth(&s, id) }
 
         let opened = s.world.windows[id]?.frame
         let seeded = opened.map { old.including(id, at: $0) } ?? old
         let edit = LayoutEdit(moved: true, destroyedColumn: nil)
         return finishStructuralEdit(&s, edit, focused: id, mover: id, old: seeded) + [.focus(id)]
+    }
+
+    /// Seed a just-adopted column with the width its window **already has**, instead of the first rung of
+    /// the preset ladder (2026-07-26).
+    ///
+    /// This is the launch scan's case and only the launch scan's (`WindowSnapshot.wasAlreadyOpen`). emira
+    /// keeps no layout across restarts (PRINCIPLES.md §10), so the desktop it meets at boot *is* the
+    /// user's arrangement — and putting every window on the narrowest preset discards that in the first
+    /// frame, resizing windows nobody asked to resize. Tiling them where they already are costs nothing to
+    /// undo: the seed is a `widthOverride`, so `cycle-width` clears it and resumes the ladder exactly as
+    /// it does after a `grow` (`Layout.setWidthPreset`).
+    ///
+    /// **Clamped to the working width, and stored as a proportion** — the same decision twice. Wider than
+    /// the screen is not a state the strip reaches on its own: neither the ladder nor `grow`'s ceiling
+    /// goes past 100%, and a column that overflowed the viewport at boot would greet the user with a
+    /// window whose right edge is cut off. Keeping the seed a fraction rather than a point count is what
+    /// makes that clamp survive a display change, the way every other width on the strip does.
+    ///
+    /// A window with no readable width falls through to the preset, which is the honest answer: there is
+    /// nothing to keep.
+    private static func keepExistingWidth(_ s: inout State, _ id: WindowId) {
+        guard let metrics = s.metrics(), metrics.contentArea.width > 0,
+              let index = s.layout.columnIndex(ofWindow: id),
+              let width = s.world.windows[id]?.frame.width, width > 0 else { return }
+        // Content width, like every other proportion on the strip: a window that filled the screen at
+        // boot is adopted as a *full-width column*, which under an outer gap is one margin narrower.
+        // Measuring it against the physical extent would store a fraction above 1 and clamp it back to
+        // one anyway — the clamp is what makes the two readings agree, not the arithmetic.
+        let fraction = Swift.min(width / metrics.contentArea.width, 1.0)
+        s.layout.setWidthOverride(.proportion(fraction), ofColumn: s.layout.columns[index].id)
     }
 
     /// Where focus lands when the window holding it leaves the strip: a surviving stackmate in the same

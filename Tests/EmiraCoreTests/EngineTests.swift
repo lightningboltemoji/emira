@@ -43,8 +43,10 @@ import EmiraMotion
     }
 
     static func snapshot(_ raw: UInt64, bundle: String = "com.test.app", title: String = "w",
-                         role: WindowRole = .standard, frame: Rect = Rect(x: 300, y: 300, width: 200, height: 200)) -> WindowSnapshot {
-        WindowSnapshot(id: WindowId(raw), bundleId: bundle, title: title, role: role, frame: frame)
+                         role: WindowRole = .standard, frame: Rect = Rect(x: 300, y: 300, width: 200, height: 200),
+                         wasAlreadyOpen: Bool = false) -> WindowSnapshot {
+        WindowSnapshot(id: WindowId(raw), bundleId: bundle, title: title, role: role, frame: frame,
+                       wasAlreadyOpen: wasAlreadyOpen)
     }
 
     /// Drive a state to rest: answer every capture, land every AX set, and tick until the animators
@@ -232,6 +234,90 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .windowFrameChanged(WindowId(1), drifted))
         #expect(fx.isEmpty)                                    // no fighting the user mid-drag
         #expect(s.world.windows[WindowId(1)]?.frame == drifted) // but the drift is recorded
+    }
+
+    // MARK: - The desktop emira meets at boot (2026-07-26)
+    //
+    // emira keeps no layout across restarts (§10), so the widths on screen when the launch scan runs are
+    // the only record of the user's arrangement there is. An adopted window keeps the width it already
+    // has; a window opened afterwards is the app's default and belongs on the ladder.
+
+    /// The whole of it: a window emira met already open is tiled at its own width, not at ⅓.
+    @Test func aWindowAdoptedAtBootKeepsTheWidthItAlreadyHad() {
+        let snap = Config(smoothTransitions: false)
+        let adopted = Self.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500),
+                                    wasAlreadyOpen: true)
+        let (s, fx) = Engine.reduce(Self.booted(config: snap), .windowCreated(adopted))
+
+        #expect(Self.width(s) == 640)
+        #expect(s.layout.columns[0].widthOverride == .proportion(0.64))
+        // …and it is tiled there: only the *position* changes, so the arrival never resizes a window
+        // the user did not ask to resize.
+        let placed = Self.placement(of: WindowId(1), in: fx)
+        #expect(placed != nil)
+        #expect(Self.approx(placed!, Rect(x: 0, y: 0, width: 640, height: 800)))
+    }
+
+    /// The one correction we do make. Wider than the viewport is not a state the strip reaches on its
+    /// own — neither the ladder nor `grow`'s ceiling goes past 100% — so an adopted window is brought to
+    /// the edge of it rather than greeting the user with its right edge cut off.
+    @Test func anAdoptedWindowWiderThanTheScreenIsClampedToOneHundredPercent() {
+        let snap = Config(smoothTransitions: false)
+        let huge = Self.snapshot(1, frame: Rect(x: -200, y: 0, width: 1400, height: 900),
+                                 wasAlreadyOpen: true)
+        let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(huge))
+
+        #expect(Self.width(s) == 1000)                                   // the working width, exactly
+        #expect(s.layout.columns[0].widthOverride == .proportion(1.0))
+    }
+
+    /// The seed is a *fraction*, like every other width on the strip — which is what makes the clamp
+    /// survive the display changing under it.
+    @Test func anAdoptedWidthTracksTheMonitorTheWayAPresetDoes() {
+        let snap = Config(smoothTransitions: false)
+        let half = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 500, height: 800),
+                                 wasAlreadyOpen: true)
+        var (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(half))
+        #expect(Self.width(s) == 500)
+
+        (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: MonitorId(1),
+                                                               frame: Rect(x: 0, y: 0, width: 2000, height: 800))]))
+        #expect(Self.width(s) == 1000)   // still half the working width, not still 500 points
+    }
+
+    /// A window born under a running daemon has no arrangement to preserve: its width is whatever its
+    /// app defaults to, and the ladder is where it belongs.
+    @Test func aWindowOpenedAfterBootStillTakesTheFirstPreset() {
+        let snap = Config(smoothTransitions: false)
+        let born = Self.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500))
+        let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(born))
+
+        #expect(Self.approxScalar(Self.width(s), Self.third))
+        #expect(s.layout.columns[0].widthOverride == nil)
+    }
+
+    /// The seed costs the user nothing to undo, because it is a `widthOverride` and nothing new:
+    /// `cycle-width` clears it and resumes the ladder exactly as it does after a `grow`.
+    @Test func cycleWidthClearsAnAdoptedWidthLikeAnyOtherOverride() {
+        let config = Config(smoothTransitions: false)                    // ⅓ / ½ / ⅔
+        let adopted = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 640, height: 500),
+                                    wasAlreadyOpen: true)
+        var (s, _) = Engine.reduce(Self.booted(config: config), .windowCreated(adopted))
+
+        (s, _) = Engine.reduce(s, .command(.cycleWidth))
+        #expect(s.layout.columns[0].widthOverride == nil)
+        #expect(s.layout.columns[0].widthPreset == 1)
+        #expect(Self.width(s) == 500)
+    }
+
+    /// Total against a window with no width to keep — the preset answers, as it did before.
+    @Test func anAdoptedWindowWithNoWidthFallsBackToThePreset() {
+        let snap = Config(smoothTransitions: false)
+        let empty = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 0, height: 0), wasAlreadyOpen: true)
+        let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(empty))
+
+        #expect(s.layout.columns[0].widthOverride == nil)
+        #expect(Self.approxScalar(Self.width(s), Self.third))
     }
 
     // MARK: - Focus & reveal (snap)
@@ -2278,5 +2364,81 @@ import EmiraMotion
         let (b, fxB) = Self.run(State(), events)
         #expect(a == b)
         #expect(fxA == fxB)
+    }
+}
+
+/// Outer gaps at the reducer (2026-07-26). `Layout` owns the geometry and `OuterGapTests` owns its
+/// arithmetic; what belongs here is the one consequence only `Engine` can show — that a column bleeding
+/// into the margin is placed with `.setFrame`, not `.park`. That switch is the reason the layout's
+/// visibility query is asked of the physical extent, and it is a fact about effects, not about rects.
+@Suite struct OuterGapEngineTests {
+
+    /// Four ½-width columns on a 1000 pt display with a 50 pt margin: the content area is 900 wide, so
+    /// a column is 450 and two of them fill it exactly. Scrolled to the origin, the columns land at
+    /// screen 50 · 500 · 950 · 1400 — so the third begins inside the right margin and is still on the
+    /// display, and the fourth is past it entirely.
+    private static let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
+                                       outerGaps: EdgeInsets(uniform: 50),
+                                       smoothTransitions: false)
+
+    /// The placement effects for a settled four-column world scrolled to its origin.
+    ///
+    /// Two things this has to do that a plain `world(4)` doesn't. **Focus the first window**, because a
+    /// world built by creating windows leaves focus on the newest and the viewport scrolled to it, and
+    /// the margin is only interesting at a known offset. **Perturb every frame first**, because
+    /// `emitPlacements` skips windows already where they belong — a settled world re-asserts *nothing*,
+    /// so asking it for effects would answer with an empty batch that trivially satisfies any claim
+    /// about what is in it.
+    private static func placements() -> (placed: [WindowId: Rect], parked: [WindowId], display: Rect) {
+        var s = EngineTests.settle(EngineTests.world(4, config: config))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))
+        s = EngineTests.settle(s)
+        for raw in 1...4 {
+            (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(UInt64(raw)),
+                                                          Rect(x: 0, y: 0, width: 10, height: 10)))
+        }
+        let (after, effects) = Engine.reduce(s, .dragEnded)
+        var placed: [WindowId: Rect] = [:]
+        var parked: [WindowId] = []
+        for effect in effects {
+            switch effect {
+            case .setFrame(let w, let r): placed[w] = r
+            case .park(let w, _): parked.append(w)
+            default: continue
+            }
+        }
+        return (placed, parked, after.world.monitors.first!.frame)
+    }
+
+    @Test func aColumnInTheMarginIsPlacedNotParked() {
+        let (placed, _, display) = Self.placements()
+        #expect(placed[WindowId(1)] == Rect(x: 50, y: 50, width: 450, height: 700))
+        #expect(placed[WindowId(2)] == Rect(x: 500, y: 50, width: 450, height: 700))
+        // The one that matters: it starts inside the margin and runs off the display, and it is a
+        // `setFrame` rather than a `park`.
+        #expect(placed[WindowId(3)] == Rect(x: 950, y: 50, width: 450, height: 700))
+        #expect(placed[WindowId(3)]!.maxX > display.maxX)
+    }
+
+    /// The complement, so the test above isn't just "nothing ever parks": the fourth column is past the
+    /// display edge entirely and parks as it always did.
+    @Test func aColumnPastTheDisplayStillParks() {
+        let (placed, parked, _) = Self.placements()
+        #expect(parked == [WindowId(4)])
+        #expect(placed[WindowId(4)] == nil)
+    }
+
+    /// `grow`'s ceiling is the content width, so a full-width column leaves the margin showing rather
+    /// than filling the display — the same 100% the preset ladder resolves against.
+    @Test func growStopsAtTheContentWidthNotTheDisplayWidth() {
+        var s = EngineTests.world(2, config: Self.config)
+        for _ in 0..<10 {
+            let (next, fx) = Engine.reduce(s, .command(.grow(.percent(25))))
+            s = EngineTests.settle(next, fx)
+        }
+        let metrics = s.metrics()!
+        let focused = s.world.focusedWindow!
+        let column = s.layout.columns[s.layout.columnIndex(ofWindow: focused)!]
+        #expect(s.layout.resolvedWidth(of: column, metrics: metrics) == 900)   // content, not 1000
     }
 }

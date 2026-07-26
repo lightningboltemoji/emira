@@ -344,6 +344,24 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.registry.count == 4)
     }
 
+    @Test func theBootScanSaysItsWindowsWereAlreadyOpenAndALaterScanDoesNot() {
+        // The one scan whose windows emira did not watch open (2026-07-26). The core keeps an adopted
+        // window's existing width instead of snapping it onto the narrowest preset, so the difference
+        // between "the desktop I found" and "a window that just opened" has to survive the trip.
+        let world = LiveWorld()
+        world.watcher.start()
+        #expect(world.created.map(\.wasAlreadyOpen) == [true, true, true])
+
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three",
+                    frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.watcher.handle(.windowAppeared(200))
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == false)   // born under a running daemon
+    }
+
     @Test func aWindowAppearingInAnAppWeDoNotTrackIsSilence() {
         // An accessory process, or an app that quit between the notification and here. There is
         // nothing to scan and nothing to say.
@@ -394,6 +412,21 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(world.created.map(\.title) == ["term", "one", "two"])
         #expect(world.scheduler.pending == 0)               // bound, so nothing more is scheduled
+    }
+
+    @Test func aBootWindowThatNeededTheRetryIsStillAWindowWeFoundAlreadyOpen() {
+        // The flag rides the retry chain. A window that took a second attempt to bind was no less
+        // already open than its siblings, and losing it there would tile that one window differently
+        // from the rest of the desktop for no reason the user could ever see.
+        let world = LiveWorld()
+        world.windows.entries.removeAll { $0.number == 3 }   // "two" is not listed yet
+
+        world.watcher.start()
+        world.windows.entries.append(WindowListEntry(number: 3, pid: 200, frame: rect(1400)))
+        world.scheduler.fire()
+
+        #expect(world.created.map(\.title) == ["term", "one", "two"])
+        #expect(world.created.map(\.wasAlreadyOpen) == [true, true, true])
     }
 
     @Test func theRetryIsBoundedRatherThanARepeatingScanOfTheUsersDesktop() {

@@ -71,6 +71,8 @@ import EmiraMotion
         [layout]
         column-gap = 8
         window-gap = 4
+        outer-gap = 16
+        outer-gap-left = 24
         width-presets = [0.25, 0.5, 900]
         center-focused-column = true
 
@@ -89,6 +91,7 @@ import EmiraMotion
         let config = try Self.parse(text)
         #expect(config.columnGap == 8)
         #expect(config.windowGap == 4)
+        #expect(config.outerGaps == EdgeInsets(top: 16, left: 24, bottom: 16, right: 16))
         #expect(config.centerFocusedColumn)
         #expect(!config.smoothTransitions)
         #expect(config.holdTimeout == 2.5)
@@ -506,5 +509,85 @@ import EmiraMotion
         #expect(config.columnGap == 8)
         #expect(config.holdTimeout == 2.0)
         #expect(config.keys.count == 1)
+    }
+}
+
+/// `outer-gap` and its four per-side overrides (2026-07-26) — the one setting in the schema written as
+/// a *family* of keys rather than one, so precedence and partial specification both need pinning.
+@Suite struct OuterGapConfigTests {
+
+    @Test func theBareKeySetsAllFourEdges() throws {
+        let config = try ConfigSyntaxTests.parse("[layout]\nouter-gap = 12\n")
+        #expect(config.outerGaps == EdgeInsets(uniform: 12))
+    }
+
+    /// A side on its own means *that side*, not "that side and zero elsewhere" — which is why the
+    /// reader refines the running default rather than starting from scratch.
+    @Test func oneSideAloneLeavesTheOthersAtTheirDefault() throws {
+        let config = try ConfigSyntaxTests.parse("[layout]\nouter-gap-left = 20\n")
+        #expect(config.outerGaps == EdgeInsets(top: 0, left: 20, bottom: 0, right: 0))
+    }
+
+    /// Precedence is read order and nothing else: the bare key seeds all four, each side overwrites.
+    /// File order is irrelevant — a user who writes the override first still gets the override.
+    @Test func aSideOverridesTheBareKeyWhicheverOrderTheyAreWritten() throws {
+        let after = try ConfigSyntaxTests.parse("[layout]\nouter-gap = 8\nouter-gap-right = 40\n")
+        let before = try ConfigSyntaxTests.parse("[layout]\nouter-gap-right = 40\nouter-gap = 8\n")
+        #expect(after.outerGaps == EdgeInsets(top: 8, left: 8, bottom: 8, right: 40))
+        #expect(before.outerGaps == after.outerGaps)
+    }
+
+    @Test func allFourSidesCanBeNamedIndividually() throws {
+        let text = """
+        [layout]
+        outer-gap-top = 1
+        outer-gap-left = 2
+        outer-gap-bottom = 3
+        outer-gap-right = 4
+        """
+        #expect(try ConfigSyntaxTests.parse(text).outerGaps
+                == EdgeInsets(top: 1, left: 2, bottom: 3, right: 4))
+    }
+
+    @Test func absentKeysLeaveTheGapsAtZero() throws {
+        #expect(try ConfigSyntaxTests.parse("[layout]\ncolumn-gap = 8\n").outerGaps == .zero)
+    }
+
+    /// Refused like the other gaps: a negative margin would push the strip back under the menu bar the
+    /// struts exist to keep it out of.
+    @Test func aNegativeGapIsRefused() {
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap = -1\n")
+                == .badValue(line: 2, key: "layout.outer-gap", message: "must be at least 0"))
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap-top = -1\n")
+                == .badValue(line: 2, key: "layout.outer-gap-top", message: "must be at least 0"))
+    }
+
+    @Test func aNonNumberIsRefused() {
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap = true\n")
+                == .badValue(line: 2, key: "layout.outer-gap",
+                             message: "must be a number, not a boolean"))
+    }
+
+    /// The family's names are exact. A plausible-looking sibling is a typo, and a typo is a diagnostic
+    /// — the schema's standing rule, applied to the one place where near-misses are easy to invent.
+    @Test func aPlausibleNearMissIsStillAnUnknownKey() {
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gaps = 8\n")
+                == .unknownKey(line: 2, key: "layout.outer-gaps"))
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap-horizontal = 8\n")
+                == .unknownKey(line: 2, key: "layout.outer-gap-horizontal"))
+    }
+
+    /// `outer-gap.left` is the spelling this schema deliberately *doesn't* use (`ConfigSyntax.swift`).
+    /// The flat grammar would happily store it, so nothing but this test says so — it is refused as the
+    /// unknown key it is, rather than silently doing nothing.
+    @Test func theDottedSpellingIsRefusedRatherThanSilentlyIgnored() {
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap.left = 20\n")
+                == .unknownKey(line: 2, key: "layout.outer-gap.left"))
+    }
+
+    /// `struts` remain the daemon's to set. A user reaching for a margin is reaching for `outer-gap`.
+    @Test func strutsAreStillNotAKey() {
+        #expect(ConfigSyntaxTests.diagnostic("[layout]\nstruts = 8\n")
+                == .unknownKey(line: 2, key: "layout.struts"))
     }
 }

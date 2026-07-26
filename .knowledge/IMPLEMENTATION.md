@@ -372,8 +372,34 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       *travel* rather than appear, with every column it displaces handled by the ordinary loop.
     - **Boot animates too, deliberately**: the launch scan's adoptions coalesce into one session, and carving out an
       exception would mean a second vocabulary for "a window we found" versus "a window you made".
-- **Geometry & the strip:** infinite-axis coordinates, column widths/heights, gaps, and **struts** (reserve the
-  menu-bar/notch region so tiled windows never sit under it).
+- **Geometry & the strip:** infinite-axis coordinates, column widths/heights, inner gaps (`column-gap`,
+  `window-gap`), **outer gaps** at the edges of the working area, and **struts** (reserve the menu-bar/notch region so
+  tiled windows never sit under it).
+  - **An outer gap is not a strut, and that is the whole design.** The arithmetic is identical — both are
+    `Rect.inset(by:)` — so the tempting implementation folds the gaps into the struts in one line. It is wrong,
+    because the two insets mean opposite things about *motion*. A strut is **forbidden ground**: no managed window is
+    ever inside it, tiled or parked, which is precisely what licensed the strut-inset cover. An outer gap is **empty
+    at rest and crossed in motion** — a column scrolling in slides through it — and the cover clips, so a
+    strut-shaped outer gap would cut every layer off at the margin's inner edge and a window would pop into being
+    there instead of sliding through. Two insets that compute the same thing and disagree about what may cross them
+    are two quantities.
+  - **So there are two viewports, and every geometry query picks a side.** `LayoutMetrics.contentArea` is the
+    *logical* viewport (the working area inset by the outer gaps) and `workingArea` keeps meaning the *physical*
+    extent. **Logical** is where the strip lives: a width proportion resolves against it (so 100% leaves the margin
+    showing, and `grow`'s ceiling moves with it), column 0 starts at its left edge, columns are as tall as it, and
+    every scroll target frames against it — *"reveal this column" means put it where it can comfortably be seen,
+    inside the margin, not flush with the screen edge.* **Physical** is what is on screen: tile-vs-park, the capture
+    scope, and the edge a sliver hugs.
+  - **The physical half is load-bearing and it looks harmless.** `Layout.visibleWindowIds` *is* the reducer's
+    setFrame-vs-park switch. Ask it of the logical viewport and a column whose leading edge sits in the margin gets
+    parked to its 1 px sliver — the margin enforced by teleporting windows out of it, which is the clipping this
+    design exists to avoid, reintroduced through the back door. Worse, it pops the cross-fade, because the
+    presentation plane draws that column from geometry that never parks. The conversion costs no new geometry: the
+    physical viewport in strip space is the logical one *outset* by the horizontal gaps.
+  - **A neighbour bleeds into the margin at rest iff `outer-gap > column-gap`.** After a reveal leaves a column flush
+    with the content's right edge, its neighbour starts one `column-gap` further on while the display ends one
+    `outer-gap-right` further on. Bleed is a supported state, not a defect — windows may overflow the viewport, that
+    is the premise — but a user who wants a clean margin now knows the inequality that gives them one.
 - **Width resolution is a stack, and a column steps *off* the preset ladder rather than rewriting it.** `cycle-width`
   advances a preset index; `grow`/`shrink` write an explicit `widthOverride` that shadows it, and `cycle-width` clears
   the override and resumes from the rung the ladder was last left on. That is why the override is a second field
@@ -591,9 +617,16 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
 `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`). The **parsed values** are a pure `Config` struct in
 `EmiraCore`, and so is the **parse** (`ConfigSyntax.swift` — a `String → Config` function is pure by construction);
 the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`), gaps
-(`column-gap`, `window-gap`), `width-presets` and `height-presets`, `center-focused-column`, and animation params
-(spring stiffness/damping, durations). Struts are deliberately *not* a key — they are read off `NSScreen.visibleFrame`.
-Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.
+(`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
+`center-focused-column`, and animation params (spring stiffness/damping, durations). Struts are deliberately *not* a
+key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with
+them and measured inside them. Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.
+
+**Per-side overrides are spelled flat (`outer-gap-left`), not dotted.** `outer-gap.left` would in fact parse — the
+grammar flattens a document to dotted paths in one dictionary, so the two are simply distinct keys — and it is still
+the wrong spelling, because it makes one key both a scalar and a table, which real TOML forbids. Every config file
+using it would break the day the hand-rolled grammar is replaced, so the dotted form is *refused* as an unknown key
+rather than silently ignored.
 
 **The format is TOML's spelling over a hand-rolled subset.** The value of TOML is familiarity (editors highlight it,
 AeroSpace users write it) and a subset keeps all of that; what a conforming implementation would add is dates,

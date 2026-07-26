@@ -171,9 +171,22 @@ public struct WindowSnapshot: Sendable, Equatable, Codable {
     /// call site stays a four-argument one.
     public let isMinimized: Bool
 
+    /// Whether emira met this window **already open** rather than watching it appear — true for exactly
+    /// the launch scan's adoptions (`WorldWatcher.start`), false for every window born under a running
+    /// daemon.
+    ///
+    /// The second fact here that only launch enumeration can supply, and it is `isMinimized`'s reason
+    /// again: a scan meets a desktop the user has already arranged. emira keeps no layout across restarts
+    /// (PRINCIPLES.md §10), so the widths on screen at boot are the *only* record of that arrangement
+    /// there is — which is why the core seeds an adopted window's column with the width it already has
+    /// instead of the first rung of the preset ladder (`Engine.keepExistingWidth`, 2026-07-26). A window
+    /// that opens later has no such history: its width is its app's default, and the ladder is where it
+    /// belongs.
+    public let wasAlreadyOpen: Bool
+
     public init(
         id: WindowId, bundleId: String, title: String, role: WindowRole,
-        frame: Rect, isMinimized: Bool = false
+        frame: Rect, isMinimized: Bool = false, wasAlreadyOpen: Bool = false
     ) {
         self.id = id
         self.bundleId = bundleId
@@ -181,6 +194,18 @@ public struct WindowSnapshot: Sendable, Equatable, Codable {
         self.role = role
         self.frame = frame
         self.isMinimized = isMinimized
+        self.wasAlreadyOpen = wasAlreadyOpen
+    }
+
+    /// This observation, marked as a window emira met already open — how the launch scan announces what
+    /// it adopted (`WorldWatcher`).
+    ///
+    /// A copy rather than an argument at the mint, because the snapshot is built deep inside the identity
+    /// join (`WindowRegistry.adopt`), which knows how a window was *bound* and nothing at all about
+    /// whether emira was running when it opened. Only the watcher knows which scan is the boot scan.
+    public func metAlreadyOpen() -> WindowSnapshot {
+        WindowSnapshot(id: id, bundleId: bundleId, title: title, role: role,
+                       frame: frame, isMinimized: isMinimized, wasAlreadyOpen: true)
     }
 }
 

@@ -103,10 +103,16 @@ public final class WorldWatcher {
 
     /// Enumerate the desktop, adopt it, and start watching. `completion` runs once the boot scan's
     /// windows have been dispatched — i.e. when `Runtime.state` first describes the real desktop.
+    ///
+    /// **This is the one scan whose windows emira did not watch open**, and it says so
+    /// (`alreadyOpen`): the core keeps an adopted window's existing width instead of snapping it onto the
+    /// first preset (`WindowSnapshot.wasAlreadyOpen`, 2026-07-26). The flag is a fact about *this scan*
+    /// rather than about a window, which is why it lives here and not in `AXEnumerator` — the enumerator
+    /// runs identical code at boot and in steady state, and only the watcher knows which call is which.
     public func start(completion: @escaping @MainActor (AXEnumerator.Report) -> Void = { _ in }) {
         source.start { [weak self] observation in self?.handle(observation) }
         enumerator.enumerate { [weak self] report in
-            self?.absorb(report, attempt: 0)
+            self?.absorb(report, attempt: 0, alreadyOpen: true)
             completion(report)
         }
     }
@@ -185,7 +191,7 @@ public final class WorldWatcher {
     /// are joined against, which is precisely the skew that costs a window its identity. A request that
     /// arrives while a scan is out sets a dirty bit honoured once when it returns, so the app is always
     /// re-asked, never re-asked four times over.
-    private func scan(_ targets: [ScanTarget], attempt: Int) {
+    private func scan(_ targets: [ScanTarget], attempt: Int, alreadyOpen: Bool = false) {
         let admitted = targets.filter { target in
             guard scanning.contains(target.pid) else { return true }
             rescan.insert(target.pid)
@@ -194,16 +200,21 @@ public final class WorldWatcher {
         guard !admitted.isEmpty else { return }
         for target in admitted { scanning.insert(target.pid) }
         enumerator.enumerate(apps: admitted) { [weak self] report in
-            self?.absorb(report, attempt: attempt)
+            self?.absorb(report, attempt: attempt, alreadyOpen: alreadyOpen)
         }
     }
 
     /// Take a scan's answer into the world: watch what it covered, announce what is new, and decide
     /// whether the gaps in it are worth asking about again.
-    private func absorb(_ report: AXEnumerator.Report, attempt: Int) {
+    ///
+    /// `alreadyOpen` marks the windows this scan announces as ones emira met mid-life rather than watched
+    /// open (`start`). It is carried down the *retry* chain too: a boot window that took a second attempt
+    /// to bind was no less already open than its siblings, and losing the flag there would tile it
+    /// differently from every other window on the desktop for no reason the user could ever see.
+    private func absorb(_ report: AXEnumerator.Report, attempt: Int, alreadyOpen: Bool = false) {
         for target in report.apps {
             scanning.remove(target.pid)
-            ensureWatching(target, attempt: attempt)
+            ensureWatching(target, attempt: attempt, alreadyOpen: alreadyOpen)
         }
 
         // Watch before announcing. Dispatching `windowCreated` pumps the reducer synchronously and its
@@ -226,7 +237,7 @@ public final class WorldWatcher {
             source.watch(windows: ids, of: pid)
         }
         for snapshot in report.snapshots {
-            sink(.windowCreated(snapshot))
+            sink(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
         }
 
         // Something appeared while the scan was out. Ask again now rather than through the retry
@@ -246,13 +257,15 @@ public final class WorldWatcher {
         guard attempt + 1 < Self.maxScanAttempts else { return }
         let targets = report.apps
         scheduler.schedule(after: Self.rescanDelay) { [weak self] in
-            self?.scan(targets, attempt: attempt + 1)
+            self?.scan(targets, attempt: attempt + 1, alreadyOpen: alreadyOpen)
         }
     }
 
     /// Register an app's observer if it isn't already, retrying a failure inside the same budget as a
-    /// failed bind — the two are the same "asked too early" race wearing different clothes.
-    private func ensureWatching(_ target: ScanTarget, attempt: Int) {
+    /// failed bind — the two are the same "asked too early" race wearing different clothes. `alreadyOpen`
+    /// rides along for the same reason it does through the other retry: an app that wasn't ready to be
+    /// observed at boot still has boot's windows behind it.
+    private func ensureWatching(_ target: ScanTarget, attempt: Int, alreadyOpen: Bool = false) {
         apps[target.pid] = target
         guard !observing.contains(target.pid) else { return }
         // Optimistic, and cleared below on failure: registration crosses onto the app's lane, so
@@ -263,7 +276,7 @@ public final class WorldWatcher {
             observing.remove(target.pid)
             guard attempt + 1 < Self.maxScanAttempts, apps[target.pid] != nil else { return }
             scheduler.schedule(after: Self.rescanDelay) { [weak self] in
-                self?.scan([target], attempt: attempt + 1)
+                self?.scan([target], attempt: attempt + 1, alreadyOpen: alreadyOpen)
             }
         }
     }

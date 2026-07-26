@@ -19,10 +19,15 @@ import Foundation
 // core keeps.
 //
 // **Coordinate transform.** Columns are placed in *virtual-strip* space (infinite x, origin 0) by
-// `Strip`; a window's on-screen frame is `workingArea.minX + (stripX − scrollOffset)` — the strip
-// position pulled into the viewport. `y`/`height` come straight from the working area (columns fill
-// its height). Parked windows are already in screen space (they hug the working area's edge). All
-// top-left origin (Geometry.swift), same as everything the shell will Y-flip once at its boundary.
+// `Strip`; a window's on-screen frame is `contentArea.minX + (stripX − scrollOffset)` — the strip
+// position pulled into the viewport. `y`/`height` come straight from the content area (columns fill
+// its height). Parked windows are already in screen space (they hug the *working* area's edge — the
+// physical one, not the strip's). All top-left origin (Geometry.swift), same as everything the shell
+// will Y-flip once at its boundary.
+//
+// **Two areas, since outer gaps landed (2026-07-26).** `LayoutMetrics.workingArea` is the physical
+// extent and `contentArea` is that inset by the outer gaps — the strip's own area. Which one a given
+// query wants is never arbitrary; see the viewport note on `LayoutMetrics`.
 //
 // Scope of this slice (deferrals, documented so the gaps read as intentional):
 //  · **One strip = one workspace on one monitor.** Multiple workspaces (a collection of strips) and
@@ -67,9 +72,10 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
     /// resolved width, so cycling is stable across monitors (a ½-width column stays ½ on any display)
     /// and resolution normalizes any drift (`Presets.swift`).
     public var widthPreset: Int
-    /// An explicit width set by `grow`/`shrink`, which **supersedes** `widthPreset` until the next
-    /// `cycleWidth` clears it (`setWidthOverride` / `setWidthPreset`). `nil` — the ordinary case — means
-    /// the column is on the preset ladder.
+    /// An explicit width — set by `grow`/`shrink`, or seeded from the width a window already had when the
+    /// launch scan adopted it (`Engine.keepExistingWidth`) — which **supersedes** `widthPreset` until the
+    /// next `cycleWidth` clears it (`setWidthOverride` / `setWidthPreset`). `nil` — the ordinary case —
+    /// means the column is on the preset ladder.
     ///
     /// A `PresetSize` rather than a point count, so the unit the user typed is the unit that is stored:
     /// `grow 10%` leaves a `.proportion` that tracks the monitor exactly as a preset does, while
@@ -93,8 +99,10 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
 /// type doc). Everything here is owned elsewhere: `workingArea` derives from World's monitor set
 /// (strut-inset by the shell), the presets/gaps from the reducer's `Config`.
 public struct LayoutMetrics: Sendable, Equatable {
-    /// The monitor's working area — screen-space, top-left, already inset past the menu bar/Dock by
-    /// the shell. Columns fill its height; its width is the viewport width; parked slivers hug it.
+    /// The monitor's **physical** working area — screen-space, top-left, already inset past the menu
+    /// bar/Dock by the shell. This is the extent that actually exists: what "on screen" means, and the
+    /// edge a parked sliver hugs. The strip itself is laid out inside `contentArea`, which this is
+    /// inset by the outer gaps to get.
     public var workingArea: Rect
     /// The width presets a column cycles through (`cycleWidth`). A column's `widthPreset` indexes it.
     public var widthPresets: PresetCycle
@@ -102,6 +110,20 @@ public struct LayoutMetrics: Sendable, Equatable {
     public var columnGap: Double
     /// Gap between vertically-adjacent windows within a column (inter-window only).
     public var windowGap: Double
+    /// The margin held clear at the edges of the working area — the strip's **outer** gaps, the
+    /// counterpart to `columnGap`/`windowGap` — the third of the three, and the last to arrive
+    /// (2026-07-26).
+    ///
+    /// **An outer gap is not a strut, and the difference is the whole design.** The arithmetic is
+    /// identical — both are `Rect.inset(by:)` — so folding this into `Config.struts` is one line and it
+    /// is wrong. A strut is *forbidden*: no managed window is ever inside it, tiled or parked, which is
+    /// what lets the cover stop painting the menu-bar band (M4 part 3). An outer gap is *empty at rest
+    /// and crossed in motion*: a column scrolling in slides through it. Since the cover clips to the
+    /// strut-inset region (`Overlay.masksToBounds`), a strut-shaped outer gap would cut every layer off
+    /// at the margin's inner edge and a window would pop into being there instead of sliding through.
+    ///
+    /// So this stays its own quantity, and `workingArea` keeps meaning the physical extent.
+    public var outerGaps: EdgeInsets
     /// What each window last answered when asked to be a size (`World.corrections`) — the facts that
     /// let a column be as wide as the app *actually is* rather than as wide as the preset wished.
     ///
@@ -121,13 +143,53 @@ public struct LayoutMetrics: Sendable, Equatable {
         widthPresets: PresetCycle = .defaultWidths,
         columnGap: Double = 0,
         windowGap: Double = 0,
+        outerGaps: EdgeInsets = .zero,
         corrections: [WindowId: SizeCorrection] = [:]
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
         self.columnGap = columnGap
         self.windowGap = windowGap
+        self.outerGaps = outerGaps
         self.corrections = corrections
+    }
+
+    // MARK: The two viewports
+    //
+    // Outer gaps split the one area this type used to hold into two, because they make two questions
+    // diverge that a gapless strip answers with the same number:
+    //
+    //  · **Where does the strip live?** — `contentArea`, the *logical* viewport. A width proportion
+    //    resolves against it, column 0 starts at its left edge, columns are as tall as it, and every
+    //    scroll target (reveal / center / clamp) frames against it. "100%" means this.
+    //  · **What is on screen?** — `workingArea`, the *physical* extent. This is the tile-vs-park
+    //    decision (`Layout.visibleWindowIds`, which `Engine` reads as exactly that switch), the capture
+    //    scope, and the edge a sliver parks against.
+    //
+    // Answering the second with the logical viewport is the failure worth naming, because it looks
+    // harmless: a column whose leading edge sits in the outer-gap band would be *parked* to its 1 px
+    // sliver — the margin enforced by teleporting windows out of it, which is the clipping the whole
+    // design is avoiding. And it pops the cross-fade, which is worse than a static artefact: the
+    // presentation plane draws that column from `naturalFrames`, which never parks, so the layer shows
+    // it bleeding into the gap while the real window is at its sliver, and it vanishes the instant the
+    // cover retires.
+
+    /// The **logical** viewport: the working area inset by the outer gaps. Where the strip is laid out.
+    public var contentArea: Rect { workingArea.inset(by: outerGaps) }
+
+    /// The **physical** viewport, expressed in strip space, for a strip scrolled to `offset`.
+    ///
+    /// The conversion is one shift and no new geometry: the strip's origin sits at `contentArea.minX`,
+    /// so the physical extent is the logical viewport *outset* by the horizontal gaps — a wider viewport
+    /// parked `outerGaps.left` further left. Same shape as `sweptWindowIds` widening a viewport by the
+    /// distance travelled, and as `Strip.shoulderedColumnIndices` reaching one column past each end.
+    ///
+    /// `widenedBy` carries the sweep's travel distance, so the swept query composes with this one rather
+    /// than re-deriving the shift (they must agree, or the capture scope and the park set disagree about
+    /// the same column).
+    public func physicalViewport(at offset: Double, widenedBy extra: Double = 0)
+        -> (width: Double, offset: Double) {
+        (workingArea.width + extra, offset - outerGaps.left)
     }
 
     /// These metrics with every correction dropped — the geometry as the presets alone would have it.
@@ -439,20 +501,25 @@ public struct Layout: Sendable, Equatable, Codable {
     /// strip's one promise. So only the second direction moves geometry — the first is handled by not
     /// asking again (`Engine.alreadyAnswered`).
     ///
-    /// Capped at the working width. Two stacked windows on *different* quantization grids can chase
+    /// Capped at the **content** width. Two stacked windows on *different* quantization grids can chase
     /// each other a few points at a time — A widens the column, B answers wider still — and while that
     /// does terminate (at the grids' common multiple), the cap bounds it absolutely. It costs nothing
     /// real: a column that wide already fills the viewport, and `Strip.offsetToReveal` handles an
     /// over-wide column by showing its left edge.
+    ///
+    /// Content, not working: a proportion is a share of the *logical* viewport, so "100%" is a column
+    /// that fills the strip's area with the outer gaps still showing on either side — which is what a
+    /// user who asked for a margin means by full width.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
+        let available = metrics.contentArea.width
         let preset = (column.widthOverride
             ?? metrics.widthPresets.size(at: column.widthPreset))
-            .resolved(available: metrics.workingArea.width)
+            .resolved(available: available)
         let floors = column.windowIds.compactMap {
             metrics.corrections[$0]?.widthFloor(forQuestion: preset)
         }
         guard let widest = floors.max() else { return preset }
-        return Swift.min(Swift.max(preset, widest), metrics.workingArea.width)
+        return Swift.min(Swift.max(preset, widest), available)
     }
 
     /// A column's resolved width by id — what `cycleWidth` must animate *to*, so the presentation
@@ -473,11 +540,15 @@ public struct Layout: Sendable, Equatable, Codable {
         naturalFrames(scrollOffset: 0, metrics: metrics.uncorrected)[window]?.size
     }
 
-    /// Per-column window frames in **strip space** (x from the strip, y/height from the working area),
+    /// Per-column window frames in **strip space** (x from the strip, y/height from the *content* area),
     /// before any viewport pull or parking is applied. The shared basis for `targetFrames` (visible →
     /// pull into the viewport, off-view → park) and `naturalFrames` (always pull into the viewport).
     /// `Column`'s sizes are independent of x, so a strip-space box is valid whether the column ends up
     /// tiled, parked, or slid off-screen — only its *position* is chosen downstream. Indexed by column.
+    ///
+    /// `area` is the content area, which is where the top and bottom outer gaps enter the layout: a
+    /// column is as tall as the logical viewport, so the margin above and below falls out of the box
+    /// rather than needing arithmetic of its own.
     private func columnStripFrames(_ s: Strip, area: Rect, metrics: LayoutMetrics) -> [[Rect]] {
         columns.enumerated().map { (i, column) in
             let box = Rect(x: s.leftEdge(of: i), y: area.minY,
@@ -511,10 +582,16 @@ public struct Layout: Sendable, Equatable, Codable {
     /// (identity-rebind safety, §7). A parked window keeps its tiled *size* (parking repositions,
     /// never resizes) — the size comes from the same `Column` distribution it would have on-screen.
     public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId: Rect] {
-        let area = metrics.workingArea
+        let area = metrics.contentArea
         let s = strip(metrics: metrics)
-        let visible = Set(s.visibleColumnIndices(viewportWidth: area.width, offset: scrollOffset))
-        let lot = ParkingLot(frame: area)
+        // Visibility is the **physical** question — a column with pixels anywhere on the display is
+        // tiled, including one bleeding into the outer-gap margin. Parking it instead would enforce the
+        // margin by teleporting the window out of it (see `LayoutMetrics`' viewport note).
+        let view = metrics.physicalViewport(at: scrollOffset)
+        let visible = Set(s.visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
+        // Slivers hug the **physical** edge: a park slot inset by the outer gap would poke a window a
+        // margin's width into the screen, which is the opposite of what parking is for.
+        let lot = ParkingLot(frame: metrics.workingArea)
         let dx = area.minX - scrollOffset      // strip x → screen x for on-viewport columns
         let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
 
@@ -552,7 +629,7 @@ public struct Layout: Sendable, Equatable, Codable {
     /// cross-fade lands pixel-on-pixel exactly as a scroll's does.
     public func naturalFrames(scrollOffset: Double, metrics: LayoutMetrics,
                               widths: [ColumnId: Double] = [:]) -> [WindowId: Rect] {
-        let area = metrics.workingArea
+        let area = metrics.contentArea
         let s = strip(metrics: metrics, widths: widths)
         let dx = area.minX - scrollOffset
         let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
@@ -569,9 +646,13 @@ public struct Layout: Sendable, Equatable, Codable {
     /// The windows whose columns overlap the viewport at `scrollOffset` — the on-screen set, in
     /// layout order. What the reducer places (`targetFrames` parks the complement) and what a
     /// still-frame question — "what is on screen right now" — is answered with.
+    /// Against the **physical** viewport, so a column bleeding into the outer-gap margin counts as on
+    /// screen — this query *is* the reducer's `.setFrame` vs `.park` switch, and the margin is a place
+    /// windows may be seen in, not a place they may not be.
     public func visibleWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
-        windowIds(inColumns: strip(metrics: metrics)
-            .visibleColumnIndices(viewportWidth: metrics.workingArea.width, offset: scrollOffset))
+        let view = metrics.physicalViewport(at: scrollOffset)
+        return windowIds(inColumns: strip(metrics: metrics)
+            .visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
     }
 
     /// The windows the viewport touches at **any** offset between `from` and `to` — the *swept*
@@ -612,9 +693,11 @@ public struct Layout: Sendable, Equatable, Codable {
     /// the strip.
     public func sweptWindowIds(from: Double, to: Double, metrics: LayoutMetrics) -> [WindowId] {
         let strip = strip(metrics: metrics)
-        let swept = strip.visibleColumnIndices(
-            viewportWidth: metrics.workingArea.width + abs(to - from),
-            offset: Swift.min(from, to))
+        // Physical, like `visibleWindowIds` — and it has to be the *same* physical, which is why both
+        // go through `physicalViewport` rather than each shifting by the outer gap themselves. A scope
+        // narrower than the park set is a window on screen with no layer to draw it.
+        let view = metrics.physicalViewport(at: Swift.min(from, to), widenedBy: abs(to - from))
+        let swept = strip.visibleColumnIndices(viewportWidth: view.width, offset: view.offset)
         return windowIds(inColumns: strip.shoulderedColumnIndices(swept))
     }
 
@@ -628,12 +711,18 @@ public struct Layout: Sendable, Equatable, Codable {
     }
 
     // MARK: - Scroll targets (thin delegations to `Strip`, keyed by window)
+    //
+    // All three frame against the **logical** viewport (`contentArea.width`), the opposite choice from
+    // the visibility queries above and for the complementary reason: "reveal this column" means put it
+    // where the user can comfortably see it, which is inside the margin, not flush against the screen
+    // edge. Revealing into the physical extent would scroll a column to sit half in the gap and call it
+    // shown — the margin would only ever appear when the strip happened not to reach it.
 
     /// The minimal scroll offset that reveals the window's column, from the current `offset` — the
     /// keep-it-on-screen behavior (`Strip.offsetToReveal`). `nil` if the window isn't on the strip.
     public func scrollOffsetToReveal(window id: WindowId, from offset: Double, metrics: LayoutMetrics) -> Double? {
         guard let i = columnIndex(ofWindow: id) else { return nil }
-        return strip(metrics: metrics).offsetToReveal(i, viewportWidth: metrics.workingArea.width, from: offset)
+        return strip(metrics: metrics).offsetToReveal(i, viewportWidth: metrics.contentArea.width, from: offset)
     }
 
     /// `offset` brought inside the strip's scrollable range (`Strip.clampOffset`) — the offsets from
@@ -644,13 +733,13 @@ public struct Layout: Sendable, Equatable, Codable {
     /// the last column (an always-center policy does exactly that). The reducer
     /// applies this on the non-centering path only.
     public func clampScrollOffset(_ offset: Double, metrics: LayoutMetrics) -> Double {
-        strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.workingArea.width)
+        strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.contentArea.width)
     }
 
     /// The scroll offset that centers the window's column (`Strip.offsetToCenter`). `nil` if the
     /// window isn't on the strip. The reducer picks reveal vs. center per `centerFocusedColumn`.
     public func scrollOffsetToCenter(window id: WindowId, metrics: LayoutMetrics) -> Double? {
         guard let i = columnIndex(ofWindow: id) else { return nil }
-        return strip(metrics: metrics).offsetToCenter(i, viewportWidth: metrics.workingArea.width)
+        return strip(metrics: metrics).offsetToCenter(i, viewportWidth: metrics.contentArea.width)
     }
 }
