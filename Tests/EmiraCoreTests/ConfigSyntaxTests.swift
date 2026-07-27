@@ -367,7 +367,51 @@ import EmiraMotion
                 == "line 1: 'window-rules' must match something — "
                  + "set app-id, app-id-regex, title or title-regex")
         #expect(Self.diagnostic("[[window-rules]]\napp-id = \"com.apple.Safari\"\n")?.description
-                == "line 1: 'window-rules' must do something — set workspace")
+                == "line 1: 'window-rules' must do something — set workspace, float or width")
+    }
+
+    @Test func theOtherTwoActionsParse() throws {
+        let config = try Self.parse("""
+        [[window-rules]]
+        title-regex = 'Inspector'
+        float = true
+
+        [[window-rules]]
+        app-id = "com.apple.Safari"
+        width = 0.5
+
+        [[window-rules]]
+        app-id = "com.apple.Terminal"
+        float = false
+        width = 700
+        """)
+        #expect(config.windowRules[0] == WindowRule(titleRegex: "Inspector", float: true))
+        #expect(config.windowRules[1] == WindowRule(appId: "com.apple.Safari",
+                                                    width: .proportion(0.5)))
+        // Over 1 is points, on `width-presets`' scale — the same reader, so they cannot disagree.
+        #expect(config.windowRules[2] == WindowRule(appId: "com.apple.Terminal", float: false,
+                                                    width: .fixed(700)))
+    }
+
+    /// A floating window has no column, so a rule doing both contains a clause that provably does
+    /// nothing — the same reason an unknown key is refused rather than shrugged at. Checked per rule:
+    /// two rules that each make sense and merge into this are not a typo anyone made.
+    @Test func oneRuleCannotBothFloatAWindowAndPlaceItOnTheStrip() {
+        let both = "[[window-rules]]\napp-id = \"x\"\nfloat = true\nworkspace = \"3\"\n"
+        #expect(Self.diagnostic(both)?.description
+                == "line 1: 'window-rules' floats a window and then places it on the strip — a "
+                 + "floating window has no column, so drop 'float = true' or drop the workspace "
+                 + "and width")
+        // …but `float = false` alongside a placement is the ordinary combination.
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nfloat = false\nwidth = 0.5\n")
+                == nil)
+    }
+
+    @Test func aRuleWidthIsBoundedLikeAPreset() {
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nwidth = 0\n")?.description
+                == "line 3: 'window-rules.width' must be greater than 0")
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nwidth = \"half\"\n")?.description
+                == "line 3: 'window-rules.width' must be a number, not a string")
     }
 
     /// The diagnostic names the key as it is written in the file, not as the flattening keys it.

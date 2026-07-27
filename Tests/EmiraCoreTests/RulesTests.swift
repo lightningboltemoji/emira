@@ -72,6 +72,26 @@ import Testing
                 .workspace == nil)
     }
 
+    /// The merge is per field, so a broad rule setting one action and a narrow one setting another
+    /// compose instead of the second erasing the first — which is the whole reason it is a merge.
+    @Test func actionsFromDifferentMatchingRulesCombine() {
+        let rules = [
+            WindowRule(appIdRegex: "^com\\.apple\\.", width: .proportion(0.5)),
+            WindowRule(appId: "com.apple.Safari", workspace: name("5")),
+            WindowRule(titleRegex: "^Inspector", float: true),
+        ]
+        let safari = WindowRules.outcome(bundleId: "com.apple.Safari", title: "emira", in: rules)
+        #expect(safari == RuleOutcome(workspace: name("5"), width: .proportion(0.5)))
+
+        // Two rules, two different fields, both applied — the apple-wide width and the title's float.
+        let inspector = WindowRules.outcome(bundleId: "com.apple.Mail", title: "Inspector", in: rules)
+        #expect(inspector == RuleOutcome(float: true, width: .proportion(0.5)))
+
+        // …and a window matching only the last one carries only its field.
+        let other = WindowRules.outcome(bundleId: "com.test.app", title: "Inspector", in: rules)
+        #expect(other == RuleOutcome(float: true))
+    }
+
     /// The order is the file's, not the specificity's — putting the broad rule last really does beat
     /// the narrow one above it, which is the price of a rule that is read top to bottom.
     @Test func precedenceIsPositionalAndNotCleverAboutIt() {
@@ -219,6 +239,107 @@ import Testing
         #expect(strip.columns.count == 1)
         // 750 of a 1000-pt content area, not the ½ preset the ladder would have given it.
         #expect(strip.columns[0].widthOverride == .proportion(0.75))
+    }
+
+    // MARK: float
+
+    /// `float = true` takes a window off the strip that would otherwise have tiled — the rule's answer
+    /// outranks the role, which is the same direction `Command.float` runs.
+    @Test func floatTrueKeepsAStandardWindowOffTheStrip() {
+        let config = Self.config([WindowRule(appId: "com.test.app", float: true)])
+        let s = EngineTests.booted(config: config)
+        let (after, fx) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+
+        #expect(after.world.isFloating(WindowId(1)))
+        #expect(!after.world.participatesInStrip(WindowId(1)))
+        #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
+        #expect(fx.isEmpty)                                 // the app's to position, so we say nothing
+    }
+
+    /// …and `float = false` tiles a window macOS classed a dialog, which is the direction that needs a
+    /// tri-state: a mis-classified window would otherwise be stuck floating forever.
+    @Test func floatFalseTilesAWindowTheRoleWouldHaveFloated() {
+        let config = Self.config([WindowRule(appId: "com.test.app", float: false)])
+        let s = EngineTests.booted(config: config)
+        let (after, _) = EngineTests.run(
+            s, [.windowCreated(EngineTests.snapshot(1, bundle: "com.test.app", role: .dialog))])
+
+        #expect(!after.world.isFloating(WindowId(1)))
+        #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
+    }
+
+    /// The rule seeds the same tri-state the verb toggles, so `float` still works afterwards — a seed,
+    /// not a mode.
+    @Test func aFloatedWindowCanStillBeTiledByHand() {
+        let config = Self.config([WindowRule(appId: "com.test.app", float: true)])
+        let s = EngineTests.booted(config: config)
+        var (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
+
+        after.world.setFocus(WindowId(1))
+        (after, _) = EngineTests.run(after, [.command(.float(.off))])
+        #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
+    }
+
+    // MARK: width
+
+    /// `width` is on `width-presets`' scale, so `0.5` is half the content area — 500 pt of the 1000-pt
+    /// display these tests lay out against, rather than the ½ preset by coincidence.
+    @Test func widthSeedsTheColumnItOpens() {
+        let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.75))])
+        let s = EngineTests.booted(config: config)
+        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+
+        let column = after.workspaces[.first].columns[0]
+        #expect(column.widthOverride == .proportion(0.75))
+        #expect(after.workspaces[.first].resolvedWidth(of: column, metrics: after.metrics()!) == 750)
+    }
+
+    /// A value over 1 is points, not a fraction — the same reading `width-presets` gives it, shared
+    /// rather than restated so the two spellings of a width cannot drift apart.
+    @Test func aWidthOverOneIsPoints() {
+        let config = Self.config([WindowRule(appId: "com.test.app", width: .fixed(420))])
+        let s = EngineTests.booted(config: config)
+        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+
+        let strip = after.workspaces[.first]
+        #expect(strip.resolvedWidth(of: strip.columns[0], metrics: after.metrics()!) == 420)
+    }
+
+    /// It is a `widthOverride`, so the first `cycle-width` clears it and the column rejoins the ladder
+    /// — the rule decides where a window *starts*, here as with the workspace.
+    @Test func cycleWidthClearsTheSeededWidth() {
+        let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.75))])
+        let s = EngineTests.booted(config: config)
+        var (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+
+        (after, _) = EngineTests.run(after, [.command(.cycleWidth)])
+        #expect(after.workspaces[.first].columns[0].widthOverride == nil)
+    }
+
+    /// The two width sources meet on a boot adoption, and the explicit one wins: a rule is what the
+    /// user asked for, while the adopted width is an inference from what happened to be on screen.
+    @Test func aRuleWidthOutranksTheWidthABootWindowArrivedWith() {
+        let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.25))])
+        let s = EngineTests.booted(config: config)
+        let wide = WindowSnapshot(id: WindowId(1), bundleId: "com.test.app", title: "w",
+                                  role: .standard, frame: Rect(x: 0, y: 0, width: 900, height: 400),
+                                  wasAlreadyOpen: true)
+        let (after, _) = EngineTests.run(s, [.windowCreated(wide)])
+
+        #expect(after.workspaces[.first].columns[0].widthOverride == .proportion(0.25))
+    }
+
+    /// Both actions on one window, on a workspace that is not the focused one — the width has to
+    /// survive the move that takes it there, which is `move`'s job and not a special case here.
+    @Test func aWidthRidesAcrossToTheWorkspaceItWasAssigned() {
+        let config = Self.config([WindowRule(appId: "com.test.app", workspace: name("4"),
+                                             width: .proportion(0.25))])
+        let s = EngineTests.booted(config: config)
+        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app", alreadyOpen: true)])
+
+        #expect(after.workspaces.workspace(of: WindowId(1)) == name("4"))
+        #expect(after.workspaces[name("4")].columns[0].widthOverride == .proportion(0.25))
     }
 
     /// Two windows for the same address stack up as two columns on it, in arrival order, rather than

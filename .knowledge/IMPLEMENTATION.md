@@ -675,7 +675,25 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     - **Auto is a rung of the ladder, not a state you can only leave.** The cycle runs auto → ⅓ → ½ → ⅔ → auto, so one
       verb reaches every selection *and* gets home; the alternative is a second verb whose only job is "un-pin".
 - **Rules engine:** pure predicates over a window's metadata at **first sight** — `WindowRule` (four AND'd matchers:
-  app id and title, each exact or regex) → `RuleOutcome`. Definitions come from config; evaluation is pure.
+  app id and title, each exact or regex) → `RuleOutcome` (workspace / float / width). Definitions come from config;
+  evaluation is pure.
+  - **All three actions are seeds into somewhere the user can already reach**, which is what keeps the
+    "starting position" promise honest rather than merely stated. `workspace` is the move `move-to-workspace`
+    performs; `float` writes the same tri-state `Command.float` toggles, so the verb still works on a window a rule
+    floated; `width` is the override `grow`/`shrink` set and `cycle-width` clears, so the first press puts the column
+    back on the ladder. Nothing here is a mode — each action is the first value of something ordinary, which is why
+    none of them needed state of its own.
+    - **`float` is read *before* the tiling guard, because it decides that guard's answer** — in both directions. It
+      has to be tri-state for the same reason the verb is, and it already was, so the rule sets the stored answer and
+      the existing predicate does the rest.
+    - **A rule's `width` outranks the width a boot-adopted window arrived with.** They meet on exactly one window —
+      one emira met already open, that a rule also names — and the explicit answer wins, because `wasAlreadyOpen`
+      infers a width from whatever happened to be on screen while a rule is what the user asked for. One helper holds
+      that precedence, so both arrival paths get it from the same place.
+    - **One rule may not both float a window and place it on the strip**, since a floating window has no column and
+      the second clause provably does nothing — refused at parse time, for the reason an unknown key is. The check is
+      per rule and not on the merge: two rules that each make sense and combine into this are answered by the same
+      silence a dialog with a `workspace` already gets.
   - **A rule fires once, at first sight, and is never consulted again** (`PRINCIPLES.md` §4a). That is what makes an
     assignment a *starting position* rather than a leash, and it is the only reading that doesn't create a second
     authority: a window's workspace is **derived** from the strip holding it, so a standing rule would be a fact

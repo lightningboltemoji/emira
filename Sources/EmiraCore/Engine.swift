@@ -101,19 +101,24 @@ public enum Engine {
             // Read before focus moves: the new column opens beside whatever had focus.
             let beside = insertionAnchor(s)
             s.world.insert(snapshot)
+            // Read once, and *before* the guard below: `float` decides that guard's answer in both
+            // directions — it can take a standard window off the strip and put a dialog on it.
+            let rule = WindowRules.outcome(bundleId: snapshot.bundleId, title: snapshot.title,
+                                           in: s.config.windowRules)
+            if let float = rule.float { s.world.setFloating(snapshot.id, float) }
             // A non-tiling window (dialog/panel/sheet/float) is the app's to position.
             guard s.world.participatesInStrip(snapshot.id) else { return (s, []) }
-            // A config rule may send it to another workspace entirely, in which case it never joins the
-            // strip in view and this arrival has nothing to animate.
-            if let assigned = assignedWorkspace(s, snapshot), assigned != s.workspaces.focused {
-                let effects = arriveOnWorkspace(&s, snapshot, at: assigned)
+            // A rule may send it to another workspace entirely, in which case it never joins the strip
+            // in view and this arrival has nothing to animate.
+            if let assigned = rule.workspace, assigned != s.workspaces.focused {
+                let effects = arriveOnWorkspace(&s, snapshot, at: assigned, width: rule.width)
                 return (s, effects)
             }
             s.world.setFocus(snapshot.id)   // a new window takes focus (truth tracked always)
             guard let before else { return (s, []) }   // no display known: nothing to place
             // Bound to a local first — the same tuple-evaluation-order trap as `.command` above.
             let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before,
-                                        keepingWidth: snapshot.wasAlreadyOpen)
+                                        width: rule.width, keepingWidth: snapshot.wasAlreadyOpen)
             return (s, effects)
 
         case .windowDestroyed(let id):
@@ -990,12 +995,14 @@ public enum Engine {
     /// does not need: an arriving window has no place in the old geometry, so
     /// `StructuralSnapshot.including` gives it the frame its app opened it at.
     ///
+    /// - Parameter width: a config rule's `width` for the column this window opens.
     /// - Parameter keepingWidth: the launch scan's arrival — the column takes the width the window
     ///   already has rather than the ladder's first rung.
     /// - Parameter announcingFocus: whether to emit `.focus`. `false` when the window already holds it
     ///   (`float off`), where asking again is a redundant AX set that can make an app raise.
     private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
-                                      old: StructuralSnapshot, keepingWidth: Bool = false,
+                                      old: StructuralSnapshot, width: PresetSize? = nil,
+                                      keepingWidth: Bool = false,
                                       announcingFocus: Bool = true) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
         let announce: [Effect] = announcingFocus ? [.focus(id)] : []
@@ -1003,7 +1010,7 @@ public enum Engine {
         guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + announce }
         // Before the geometry below is read, so an adopted window travels to its place on the strip
         // rather than also resizing on the way.
-        if keepingWidth { keepExistingWidth(&s, id) }
+        seedWidth(&s, id, to: width, keepingExisting: keepingWidth)
 
         let opened = s.world.windows[id]?.frame
         let seeded = opened.map { old.including(id, at: $0) } ?? old
@@ -1012,16 +1019,20 @@ public enum Engine {
                                     animatingFrom: seeded) + announce
     }
 
-    /// The workspace a config rule sends this arrival to, or `nil` for wherever it would have gone.
-    /// Asked **once**, here, at the only moment a window is new: `Rules.swift` explains why a rule that
-    /// kept applying would be a second authority on a fact `Workspaces` already derives.
+    /// Give a just-adopted column the width it should start at. Two sources, and the explicit one
+    /// wins: a config rule is what the user asked for, while `keepingExisting` infers a width from
+    /// whatever happened to be on screen when emira launched.
     ///
-    /// Not asked on `windowDeminimized`, which is also an arrival on the strip. Restoring a window from
-    /// the Dock is a deliberate act on a window that already exists — it should land where the user is,
-    /// not be flung back to an address a rule chose for it once.
-    private static func assignedWorkspace(_ s: State, _ snapshot: WindowSnapshot) -> WorkspaceName? {
-        WindowRules.outcome(bundleId: snapshot.bundleId, title: snapshot.title,
-                            in: s.config.windowRules).workspace
+    /// Both are `widthOverride`s, so the first `cycle-width` clears either and the column rejoins the
+    /// ladder — a rule decides where a window *starts*, the same promise it makes about workspaces.
+    private static func seedWidth(_ s: inout State, _ id: WindowId, to width: PresetSize?,
+                                  keepingExisting: Bool) {
+        if let width {
+            guard let index = s.layout.columnIndex(ofWindow: id) else { return }
+            s.layout.setWidthOverride(width, ofColumn: s.layout.columns[index].id)
+        } else if keepingExisting {
+            keepExistingWidth(&s, id)
+        }
     }
 
     /// A window whose arrival a rule sends to another workspace. Deliberately *not* `arriveOnStrip`'s
@@ -1035,12 +1046,13 @@ public enum Engine {
     /// first keystroke. A window opened *now* is one the user opened, and following it there is the
     /// same thing `focusChanged` already does for a Dock click on an app living elsewhere.
     private static func arriveOnWorkspace(_ s: inout State, _ snapshot: WindowSnapshot,
-                                          at destination: WorkspaceName) -> [Effect] {
+                                          at destination: WorkspaceName,
+                                          width: PresetSize? = nil) -> [Effect] {
         // `Workspaces.reconcile` admits every newcomer to the *focused* strip, so an assignment is the
         // move `move-to-workspace` performs, from a column this window has held for one statement. It
-        // is long enough to take the width it arrived with, which `move` then carries across.
+        // is long enough to be given a width, which `move` then carries across.
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
-        if snapshot.wasAlreadyOpen { keepExistingWidth(&s, snapshot.id) }
+        seedWidth(&s, snapshot.id, to: width, keepingExisting: snapshot.wasAlreadyOpen)
         s.workspaces.move(window: snapshot.id, to: destination,
                           insertingAfter: s.workspaces[lastFocusOf: destination])
 

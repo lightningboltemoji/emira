@@ -141,11 +141,16 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
     has landed, bounded at 1.5 s. A hung app delays a quit; it never prevents one — the same trade as §4b's
     hold-timeout, on the other plane.
 - **A window can be told where to start, and only where to start.** Config rules (`[[window-rules]]`) match an
-  arriving window on its app id and title — exactly or by regex, AND'd — and give it a workspace, so Slack opens on
-  `3` instead of wherever you happen to be. What makes this a *starting position* rather than a leash is that **the
-  rule is consulted once, at first sight, and never again**: grab the window afterwards and it goes anywhere,
-  permanently. That isn't leniency, it's the only reading that keeps one authority — a window's workspace is *derived*
-  from the strip holding it (§3), and a standing rule would be a second fact about it, free to disagree.
+  arriving window on its app id and title — exactly or by regex, AND'd — and give it a workspace, a float and a width,
+  so Slack opens half-width on `3` instead of narrow and wherever you happen to be. What makes this a *starting
+  position* rather than a leash is that **the rule is consulted once, at first sight, and never again**: grab the
+  window afterwards and it goes anywhere, permanently. That isn't leniency, it's the only reading that keeps one
+  authority — a window's workspace is *derived* from the strip holding it (§3), and a standing rule would be a second
+  fact about it, free to disagree.
+  - **Every action seeds something a verb already owns**, which is what makes that promise structural rather than a
+    policy somebody has to keep. The workspace is `move-to-workspace`'s move, `float` writes the same tri-state the
+    `float` verb toggles, and `width` sets the override `cycle-width` clears — so the first press of anything hands
+    the window straight back. A rule holds no state of its own to go stale.
   - **Boot places quietly; a live arrival takes you with it.** The two are the same placement and differ only over
     focus, because they differ over who asked. The launch scan is emira sorting a desktop nobody just requested it
     sort, and being walked through six addresses before your first keystroke is precisely the thing rules were meant

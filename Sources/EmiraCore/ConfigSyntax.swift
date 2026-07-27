@@ -34,6 +34,8 @@ import EmiraMotion
 // [[window-rules]]                      # none by default; a list, so it repeats
 // app-id = "com.tinyspeck.slackmacgap"  # …or app-id-regex / title / title-regex, all AND'd
 // workspace = "3"                       # where a matching window *starts*
+// width = 0.5                           # …and how wide, on width-presets' scale
+// float = true                          # …or off the strip entirely, overriding the role
 // ```
 //
 // `[keys]` is the one **open** table: its names are chords the user invents (`KeyChord.swift`) and
@@ -237,9 +239,21 @@ extension TOMLTable {
         return set ? insets : nil
     }
 
-    /// The width cycle. **A value ≤ 1 is a fraction of the content width; a value > 1 is a point
-    /// count** — so `1.0` is a full-width column, not a one-point one. `PresetSize` models the two as
-    /// distinct cases, so nothing is lost in translation.
+    /// One size on the same scale the cycles are written in (`presetCycle`) — a rule's `width`. The
+    /// conversion is shared rather than restated so the two spellings of a width cannot drift apart.
+    fileprivate mutating func presetSize(_ key: String) throws -> PresetSize? {
+        guard let value = take(key) else { return nil }
+        return Self.presetSize(try Self.number(value, key: key, greaterThan: 0))
+    }
+
+    /// **A value ≤ 1 is a fraction of the content width; a value > 1 is a point count** — so `1.0` is a
+    /// full-width column, not a one-point one. `PresetSize` models the two as distinct cases, so
+    /// nothing is lost in translation.
+    private static func presetSize(_ number: Double) -> PresetSize {
+        number <= 1 ? .proportion(number) : .fixed(number)
+    }
+
+    /// The width cycle, each entry read on `presetSize`'s scale.
     fileprivate mutating func presetCycle(_ key: String) throws -> PresetCycle? {
         guard let value = take(key) else { return nil }
         guard case .array(let elements) = value.payload else {
@@ -251,8 +265,7 @@ extension TOMLTable {
                                              message: "must list at least one width")
         }
         let sizes = try elements.map { element -> PresetSize in
-            let size = try Self.number(element, key: key, greaterThan: 0)
-            return size <= 1 ? .proportion(size) : .fixed(size)
+            Self.presetSize(try Self.number(element, key: key, greaterThan: 0))
         }
         return PresetCycle(sizes)
     }
@@ -337,6 +350,8 @@ extension TOMLTable {
                 rule.title = try body.string("title")
                 rule.titleRegex = try body.pattern("title-regex")
                 rule.workspace = try body.workspaceName("workspace")
+                rule.float = try body.bool("float")
+                rule.width = try body.presetSize("width")
                 if let leftover = body.leftovers.first {
                     throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
                 }
@@ -349,8 +364,15 @@ extension TOMLTable {
                     message: "must match something — set app-id, app-id-regex, title or title-regex")
             }
             guard rule.hasAction else {
-                throw ConfigSyntaxError.badValue(line: element.line, key: prefix,
-                                                 message: "must do something — set workspace")
+                throw ConfigSyntaxError.badValue(
+                    line: element.line, key: prefix,
+                    message: "must do something — set workspace, float or width")
+            }
+            guard !rule.contradictsItself else {
+                throw ConfigSyntaxError.badValue(
+                    line: element.line, key: prefix,
+                    message: "floats a window and then places it on the strip — a floating window has "
+                           + "no column, so drop 'float = true' or drop the workspace and width")
             }
             return rule
         }

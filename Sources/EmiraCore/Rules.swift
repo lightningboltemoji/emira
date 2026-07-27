@@ -1,14 +1,19 @@
 import Foundation
 
 // Window rules: pure predicates over a window's metadata, deciding what happens to it *when emira first
-// meets it*. Today there is one decision — which workspace it arrives on — and the shape below is built
-// so the rest (float, an initial width) are fields rather than a redesign.
+// meets it* — which workspace it arrives on, whether it tiles at all, and how wide its column starts.
+// Each is a field on the rule and a field on the outcome; a fourth would be too.
 //
 // **A rule fires once, at first sight, and is never consulted again.** That is what makes an assignment
 // a starting position rather than a leash: a window sent to `3` on arrival can be moved anywhere
 // afterwards and nothing drags it back. It also spares us the question a standing constraint would
 // raise — a window's workspace is *derived* from the strip holding it (`Workspaces`), so a rule that
 // kept applying would be a second authority on a fact that already has one.
+//
+// All three actions are seeds into somewhere the user can already reach, which is what keeps that
+// promise honest rather than merely stated: `workspace` is `move-to-workspace`'s move, `float` writes
+// the same tri-state `Command.float` toggles, and `width` is the `widthOverride` `grow`/`shrink` set
+// and `cycle-width` clears. Nothing here is a mode; each is the first value of something ordinary.
 //
 // **Titles are matched as they read at first sight**, which is a real limitation rather than an
 // implementation gap. Plenty of apps — Electron ones especially — create a window and set its title a
@@ -40,15 +45,25 @@ public struct WindowRule: Sendable, Equatable, Codable {
 
     /// The workspace this window arrives on, instead of the focused one.
     public var workspace: WorkspaceName?
+    /// Whether this window floats instead of tiling. The same tri-state answer `Command.float` records
+    /// (`World.floating`), and it overrides the role in **both** directions: `true` floats a standard
+    /// window, `false` tiles one macOS classed a dialog. Unset follows the role, as before.
+    public var float: Bool?
+    /// The width its column starts at, in `width-presets`' units — `≤ 1` is a fraction of the content
+    /// width, `> 1` is a point count. A `widthOverride`, so the first `cycle-width` clears it and the
+    /// column rejoins the ladder; the rule decides where a window *starts*, here as everywhere else.
+    public var width: PresetSize?
 
     public init(appId: String? = nil, appIdRegex: String? = nil,
                 title: String? = nil, titleRegex: String? = nil,
-                workspace: WorkspaceName? = nil) {
+                workspace: WorkspaceName? = nil, float: Bool? = nil, width: PresetSize? = nil) {
         self.appId = appId
         self.appIdRegex = appIdRegex
         self.title = title
         self.titleRegex = titleRegex
         self.workspace = workspace
+        self.float = float
+        self.width = width
     }
 
     /// Whether this rule constrains anything at all. A rule that doesn't is a config error, not a
@@ -59,7 +74,13 @@ public struct WindowRule: Sendable, Equatable, Codable {
 
     /// Whether this rule does anything at all — the same promise `Command` makes (`IMPLEMENTATION.md`
     /// §2): a rule you can write is a rule that has an effect.
-    public var hasAction: Bool { workspace != nil }
+    public var hasAction: Bool { workspace != nil || float != nil || width != nil }
+
+    /// Whether this rule asks for a strip position for a window it also floats. A floating window is on
+    /// no strip, so the second clause provably does nothing — refused at parse time for the reason an
+    /// unknown key is. Only checks *one* rule against itself: two rules that each make sense and
+    /// combine into this are a merge, and the merge is answered by the same silence a dialog gets.
+    public var contradictsItself: Bool { float == true && (workspace != nil || width != nil) }
 
     /// Whether this rule applies to a window with this bundle id and title. Every set matcher must
     /// agree; an unset one abstains.
@@ -87,9 +108,15 @@ public struct WindowRule: Sendable, Equatable, Codable {
 public struct RuleOutcome: Sendable, Equatable {
     /// The workspace to place the window on, or `nil` for the focused one.
     public var workspace: WorkspaceName?
+    /// Whether to float it, or `nil` to let its role decide.
+    public var float: Bool?
+    /// The width its column starts at, or `nil` for the ladder's first rung.
+    public var width: PresetSize?
 
-    public init(workspace: WorkspaceName? = nil) {
+    public init(workspace: WorkspaceName? = nil, float: Bool? = nil, width: PresetSize? = nil) {
         self.workspace = workspace
+        self.float = float
+        self.width = width
     }
 }
 
@@ -104,6 +131,8 @@ public enum WindowRules {
         var outcome = RuleOutcome()
         for rule in rules where rule.matches(bundleId: bundleId, title: title) {
             if let workspace = rule.workspace { outcome.workspace = workspace }
+            if let float = rule.float { outcome.float = float }
+            if let width = rule.width { outcome.width = width }
         }
         return outcome
     }
