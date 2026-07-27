@@ -821,6 +821,30 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     missing grant and a process exiting alike; an app whose two lists disagree is the same race `unclaimed` already
     reports, and is exactly what a successor looks like a moment before it can be seen. Both skip the app entirely and
     let the retry ask again. Believing either costs a live column.
+  - **A departure with no successor is corroborated against the window list.** The succession refuses to guess, but
+    its *orphans* used to go straight to `windowDestroyed` on the strength of an app's silence — and a window snapshot
+    is seven round trips under the messaging timeout, so one failed read drops a live window out of its app's answer
+    and looks exactly like a backgrounded tab. The corroboration costs nothing: the window-list entries are already
+    read for the first join, and a window still listed **on screen** is alive whatever AX says, since a background tab
+    is ordered out and a closed window is not listed at all. Such a window is kept on the strip and marks the scan
+    incomplete, so the existing retry asks again. Three properties: **only orphans are corroborated** (a succession
+    has stronger evidence than a flag the window server may not have flipped yet, and second-guessing it would put the
+    tab fix back at the mercy of the race it was written to survive); **the guard is one-directional by construction**,
+    so the worst it can do is hold a column one retry interval too long; and it cannot separate a backgrounded tab from
+    a **minimized** window, which it never has to, because AX keeps listing minimized windows so they are rebound and
+    never reach this point.
+  - **A destroy notification waits for one scan.** `AXUIElementDestroyed` proves an *element* died; ⌘W on a tab group
+    destroys the selected tab while the group carries on under the next one, so the `WindowId` may still have
+    somewhere to go. Retiring it synchronously is a race the succession loses: the scan that would rebind it is
+    asynchronous and the registry has already let go by the time it answers. So the id enters a vanishing set and is
+    retired by whichever comes first — the scan **rebinds** it onto a successor (the column survives and the core
+    hears nothing), the scan **rules a successor out** (retired at once, including the app that answers with no
+    windows at all, which is what closing an app's *last* window looks like), or a short grace deadline fires as the
+    backstop for a scan that settles nothing. Two answers deliberately settle nothing: a scan that still **lists** the
+    window read AX before the element died, and one that may have missed an arrival has not ruled a successor out — it
+    has failed to look. Both wait for the next scan, which the existing retry chain delivers ahead of the deadline.
+    **Only the id waits**: the window is not live from the notification onward, so no frame read, focus report,
+    minimize or move about it reaches the core in the interval.
   - **Departures are announced before arrivals**, so the reducer never holds both a window leaving the strip and the
     one taking its place; and a succeeded id is re-watched *after* being un-watched, since watching is idempotent by
     `WindowId` and without the un-watch the new element would never be observed at all.

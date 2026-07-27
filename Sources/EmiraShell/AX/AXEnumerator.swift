@@ -76,6 +76,10 @@ public final class AXEnumerator {
         /// window's tab group, or closed without a destroy notification reaching us. They are gone from
         /// the strip, and the caller forgets them.
         public let departed: [WindowId]
+        /// Managed windows AX stopped listing that the window server still shows on screen. Not
+        /// departures — a live window whose attributes this scan failed to read — so they stay on the
+        /// strip and the scan asks again.
+        public let undescribed: [WindowId]
         /// The apps this scan covered. Carried so the caller can re-scan exactly what failed without
         /// asking the source a second question it may answer differently.
         public let apps: [ScanTarget]
@@ -89,8 +93,14 @@ public final class AXEnumerator {
 
         public var scannedApps: Int { apps.count }
         public var boundWindows: Int { snapshots.count + rebound.count }
-        /// Whether this scan saw something it could not account for, on either side of the join.
-        public var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 }
+        /// Whether this scan saw something it could not account for, on either side of the join — or
+        /// about a window it already manages.
+        public var isIncomplete: Bool { mayHaveMissedAnArrival || !undescribed.isEmpty }
+        /// Whether this scan could have missed a window *arriving*: one it described but could not bind,
+        /// or one the window server listed that it never described. Narrower than `isIncomplete`, which
+        /// also counts windows already managed — and those, whatever else is wrong with them, are not
+        /// candidates to stand in for anybody.
+        public var mayHaveMissedAnArrival: Bool { !unbound.isEmpty || unclaimed > 0 }
 
         /// A window AX described but that we declined to manage.
         public struct Unbound: Sendable, Equatable {
@@ -105,6 +115,9 @@ public final class AXEnumerator {
             var line = "\(boundWindows)/\(seenWindows) windows bound across \(scannedApps) apps"
             if !succeeded.isEmpty { line += "; \(succeeded.count) tab succession(s)" }
             if !departed.isEmpty { line += "; \(departed.count) no longer listed" }
+            if !undescribed.isEmpty {
+                line += "; \(undescribed.count) managed but undescribed (still on screen)"
+            }
             if !unbound.isEmpty {
                 line += "; unbound: " + unbound
                     .map { "\($0.bundleId) “\($0.title)” (\($0.reason.rawValue))" }
@@ -138,8 +151,8 @@ public final class AXEnumerator {
         guard !targets.isEmpty else {
             // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
             // that never fires would leave the daemon waiting forever.
-            completion(Report(snapshots: [], rebound: [], succeeded: [], departed: [], apps: [],
-                              seenWindows: 0, unbound: [], unclaimed: 0))
+            completion(Report(snapshots: [], rebound: [], succeeded: [], departed: [], undescribed: [],
+                              apps: [], seenWindows: 0, unbound: [], unclaimed: 0))
             return
         }
 
@@ -210,7 +223,7 @@ public final class AXEnumerator {
 
         // Applied before anything is adopted: a succeeded arrival must not also mint an id of its own.
         var succeeded: [WindowId] = []
-        var departed = orphaned
+        var leaving = orphaned
         var inherited: Set<Int> = []
         for succession in successions {
             let match = binding.matches[succession.arrived]
@@ -219,11 +232,33 @@ public final class AXEnumerator {
                                   observed: window.observed, element: window.element) else {
                 // The new number already belongs to someone: the arrival keeps its own identity below
                 // and the departure leaves, which is the same answer as having found no successor.
-                departed.append(succession.departed)
+                leaving.append(succession.departed)
                 continue
             }
             inherited.insert(succession.arrived)
             succeeded.append(succession.departed)
+        }
+
+        // Corroboration, and only where it is needed. A succession is *evidenced* — a window is standing
+        // on the departed one's rectangle — but a departure with no successor rests on the app's silence
+        // alone, and that is the one answer here nobody can take back: no second `AXWindowCreated` is
+        // coming for a window that never closed, so a wrongly retired id is a live window off the strip
+        // for good. AX's silence has a second reading. `snapshot` is seven round trips under a messaging
+        // timeout, and a busy app that fails one of them drops a window out of its own answer — which
+        // looks exactly like a backgrounded tab from here.
+        //
+        // The window server tells the two apart for free, since the list is already read: a background
+        // tab is ordered out and a closed window is not listed at all, so an entry that is *still on
+        // screen* is a live window AX declined to describe. Believe a departure only when the window
+        // server agrees there is nothing there to see. (It cannot separate a backgrounded tab from a
+        // minimized window — both are simply off screen — but AX keeps listing minimized windows, so
+        // they never reach this point.)
+        let visible = Set(entries.lazy.filter(\.isOnScreen).map(\.number))
+        var departed: [WindowId] = []
+        var undescribed: [WindowId] = []
+        for id in leaving.sorted() {
+            guard let number = registry.record(id)?.number else { continue }
+            if visible.contains(number) { undescribed.append(id) } else { departed.append(id) }
         }
 
         var snapshots: [WindowSnapshot] = []
@@ -258,7 +293,7 @@ public final class AXEnumerator {
         }
 
         return Report(snapshots: snapshots, rebound: rebound, succeeded: succeeded.sorted(),
-                      departed: departed.sorted(), apps: apps,
+                      departed: departed, undescribed: undescribed, apps: apps,
                       seenWindows: scanned.count, unbound: unbound, unclaimed: unclaimed.count)
     }
 

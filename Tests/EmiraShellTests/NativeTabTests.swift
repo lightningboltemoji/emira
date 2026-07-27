@@ -471,6 +471,50 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         #expect(report.unclaimed == 1)
     }
 
+    /// A managed window can fall out of its app's own answer without having gone anywhere: `snapshot`
+    /// is seven round trips under a messaging timeout, and a busy app can fail one of them for one
+    /// window while answering for the rest. Nothing on the AX side distinguishes that from a
+    /// backgrounded tab — but the window server does, and the list has already been read: an entry
+    /// still on screen is a live window. Retiring it instead would be unrecoverable, since no second
+    /// `AXWindowCreated` is coming for a window that never closed.
+    @Test func aWindowTheWindowServerStillShowsOnScreenIsNotADeparture() {
+        let group = Group()
+        let elsewhere = Rect(x: 900, y: 39, width: 600, height: 1100)
+
+        // A second window of the same app, adopted normally.
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one"),
+                                                   tab(2, title: "other", frame: elsewhere)]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere)]
+        let other = group.rescan().snapshots[0].id
+
+        // Now AX drops it from the answer while the window server still shows it, on screen, exactly
+        // where it has always been. (Contrast `aWindowMergedIntoAnotherGroupDepartsRatherThanSucceeding`,
+        // where the same silence comes with an entry that has gone off screen, and is believed.)
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one")]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere)]
+        let report = group.rescan()
+
+        #expect(report.departed.isEmpty)
+        #expect(report.undescribed == [other])
+        #expect(report.isIncomplete, "so the scan asks again rather than accepting the silence")
+        #expect(group.registry.record(other) != nil, "the column is still on the strip")
+    }
+
+    /// The corroboration is asked only about departures with *no* successor. A tab switch has one — a
+    /// window standing on the departed tab's rectangle — and that is the stronger evidence, so a window
+    /// server that has not yet flipped the retired tab off screen cannot veto it.
+    @Test func aSuccessionIsNotSecondGuessedByAWindowServerThatHasNotCaughtUp() {
+        let group = Group()
+
+        group.source.windowsByPid = [ghostty.pid: [tab(2, title: "tab two")]]
+        group.source.entries = [entry(1, onScreen: true), entry(2, onScreen: true)]
+        let report = group.rescan()
+
+        #expect(report.succeeded == [group.id])
+        #expect(report.undescribed.isEmpty)
+        #expect(group.registry.record(group.id)?.number == 2)
+    }
+
     /// The guard is per app, not global: one app answering badly must not freeze everyone else's
     /// reconciliation.
     @Test func oneAppsIncompleteAnswerDoesNotSuspendAnothersSuccession() {

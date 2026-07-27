@@ -405,6 +405,26 @@ Much of the "slow AX" pain is self-inflicted and controllable:
     they are the same window" would also pair an app that closes one window while opening another, and the price of
     believing that is a window inheriting a stranger's column permanently and invisibly. Uniqueness is required in
     both directions, for the reason the first-sight join requires it.
+  - **A *departure* takes a second witness, though — and a destroy notification takes a scan.** Both are the same
+    misreading: that AX's silence about a window means the window is gone. It does not.
+    - **A succession is evidenced; an orphaned departure is only silence.** When a newcomer stands on the departed
+      window's rectangle, something was *seen*. When nothing does, all we have is that the app stopped describing a
+      window — and reading a window's attributes is seven round trips under a messaging timeout, so a busy app
+      dropping one window out of its own answer looks identical to a tab going to the background. Retiring on that is
+      the one mistake here that cannot be undone: no second `AXWindowCreated` is coming for a window that never
+      closed, so the column is gone for good. The window server is a second witness already paid for — a background
+      tab is ordered out and a closed window is not listed at all, so **an entry still on screen is a live window AX
+      declined to describe**. Believe an unwitnessed departure only when the window server agrees there is nothing
+      there to see.
+    - **`AXUIElementDestroyed` proves an *element* died, not that a window left the strip.** ⌘W on a tab group
+      destroys the selected tab while the group carries on under the next one, so the id it held may still have
+      somewhere to go — and only a scan can see where. Announcing the death the moment the notification lands is
+      therefore a race the succession loses more often than it wins: the id is retired before the scan that would have
+      moved it even returns, and the group's column is torn down and rebuilt with its width, float state and workspace
+      reset. So the *id* waits for one answer — and only the id: the window is dead to everything else from the
+      notification onward, since its element certainly is. The wait ends when the scan answers, or on a short deadline
+      when the scan settles nothing, because a window manager that can be left holding a dead window by a slow app is
+      not one you can trust with the desktop.
   - A notification hands back an `AXUIElement` and nothing else — the case yabai answers with
     `_AXUIElementGetWindow`. First-sight binding answers it by keeping the *reverse* map (element → `WindowId`), which
     works because `AXUIElement` compares **structurally**: the element arriving with a notification is a different

@@ -1,7 +1,7 @@
 import EmiraCore
 import Foundation
 
-// Where a `WorldObservation` becomes an `Event`. Mostly a rename; three cases are why this file exists.
+// Where a `WorldObservation` becomes an `Event`. Mostly a rename; four cases are why this file exists.
 //
 // 1. "A window appeared" is answered by re-scanning its app, not by binding the element the notification
 //    carries: it has no window number, and the identity join is only sound when an app's windows are
@@ -14,6 +14,9 @@ import Foundation
 //    rate and AX will not say *where*, so each one costs a round trip on the same serial lane our
 //    placement writes use. At most one read per window is ever in flight; anything arriving while it is
 //    out sets a dirty bit honoured exactly once when it returns.
+// 4. A destroyed element is not always a window leaving the strip — a tab group's selected tab dies
+//    while the group carries on — so a destroy is announced only after one scan has said whether
+//    anything took its place (`vanish`). The single deferral in this file, and it is bounded.
 //
 // Everything else is bookkeeping, with one rule: nothing keyed on a pid or a `WindowId` outlives the
 // thing it is keyed on.
@@ -31,6 +34,13 @@ public final class WorldWatcher {
     /// How long to wait before re-scanning an app whose answer looked like a race — long enough for the
     /// window server and the app to move on, short enough to tile before the user notices.
     public static let rescanDelay: TimeInterval = 0.15
+
+    /// How long a destroyed window's id may wait for a scan to say whether anything took its place
+    /// (`vanish`). A backstop rather than a delay: the ordinary answer arrives when the scan does, one
+    /// lane round trip later, including the app that answers with no windows at all — which is what
+    /// closing an app's *last* window looks like. This fires only when a scan settles nothing, and its
+    /// cost when it does is one dead window on the strip for a quarter second.
+    public static let successionGrace: TimeInterval = 0.25
 
     private let source: any ObservationSource
     private let enumerator: AXEnumerator
@@ -61,6 +71,10 @@ public final class WorldWatcher {
     /// Apps that produced another `windowAppeared` while their scan was out. Re-scanned exactly once
     /// when it returns.
     private var rescan: Set<pid_t> = []
+
+    /// Windows whose element is destroyed and whose *id* has not been retired yet, because a scan may
+    /// still hand it to a successor (`vanish`). Dead for every other purpose — see `isLive`.
+    private var vanishing: Set<WindowId> = []
 
     /// Whether the watcher has been shut down (`stop()`). Once set, nothing reaches the core again.
     private var isStopped = false
@@ -129,9 +143,11 @@ public final class WorldWatcher {
             rescan.remove(pid)
             source.unwatch(app: pid)
             // Window by window: `World` has no notion of an app dying, only of windows going away.
+            // Nothing here waits on a successor — the process that would have produced one is gone.
             for id in registry.forget(app: pid) {
                 reading.remove(id)
                 moved.remove(id)
+                vanishing.remove(id)
                 emit(.windowDestroyed(id))
             }
 
@@ -141,24 +157,19 @@ public final class WorldWatcher {
             scan([target], attempt: 0)
 
         case .windowVanished(let id):
-            guard let record = registry.record(id) else { return }
-            source.unwatch(window: id, of: record.pid)
-            registry.forget(id)
-            reading.remove(id)
-            moved.remove(id)
-            emit(.windowDestroyed(id))
+            vanish(id)
 
         case .windowMoved(let id):
-            guard registry.record(id) != nil else { return }
+            guard isLive(id) else { return }
             guard !reading.contains(id) else { moved.insert(id); return }
             readFrame(of: id)
 
         case .windowMinimized(let id):
-            guard registry.record(id) != nil else { return }
+            guard isLive(id) else { return }
             emit(.windowMinimized(id))
 
         case .windowDeminimized(let id):
-            guard registry.record(id) != nil else { return }
+            guard isLive(id) else { return }
             emit(.windowDeminimized(id))
 
         case .focusMoved(let id):
@@ -167,6 +178,59 @@ public final class WorldWatcher {
         case .mouseUp:
             emit(.dragEnded)
         }
+    }
+
+    // MARK: - Retirement (the destroy that waits for one answer)
+
+    /// Whether a window is still one the core should hear about. A vanished window is not: its element
+    /// is destroyed and the only thing still open about it is where its *id* goes.
+    private func isLive(_ id: WindowId) -> Bool {
+        registry.record(id) != nil && !vanishing.contains(id)
+    }
+
+    /// Take a destroyed window off the strip — after asking, exactly once, whether anything took its
+    /// place.
+    ///
+    /// `AXUIElementDestroyed` proves an *element* died. It does not prove the *window* left, and a
+    /// native tab group is where those differ: ⌘W destroys the selected tab while the group it stood for
+    /// carries on under the next one, which AX then starts describing in its place. Only a scan can see
+    /// that (`AXEnumerator`'s second join), and the scan is asynchronous — so retiring the id here, the
+    /// moment the notification lands, is a race the succession loses more often than not: the id is
+    /// gone before the scan that would have moved it onto the successor even returns, and the group's
+    /// column is torn down and rebuilt with its width, float state and workspace reset.
+    ///
+    /// So the id waits, and *only* the id: `isLive` is false from this moment, so no frame read, focus
+    /// report or minimize notification about the window reaches the core in between. It is retired by
+    /// `absorb` when the scan answers — rebound onto a successor, or gone — and by `successionGrace` if
+    /// the scan settles nothing, which is what makes the wait terminate.
+    private func vanish(_ id: WindowId) {
+        guard let record = registry.record(id), !vanishing.contains(id) else { return }
+        // The element is dead either way, so stop reading it now rather than at retirement.
+        reading.remove(id)
+        moved.remove(id)
+        // Nobody to ask: an app we hold no scan target for cannot produce a successor.
+        guard let target = apps[record.pid] else {
+            retire(id)
+            return
+        }
+        vanishing.insert(id)
+        scan([target], attempt: 0)
+        scheduler.schedule(after: Self.successionGrace) { [weak self] in
+            guard let self, vanishing.contains(id) else { return }
+            retire(id)
+        }
+    }
+
+    /// Stop watching a window, forget it, and tell the core it is gone. The one place a `windowDestroyed`
+    /// comes from, whether the window announced its own death (`vanish`) or a scan noticed it (`absorb`).
+    private func retire(_ id: WindowId) {
+        vanishing.remove(id)
+        guard let record = registry.record(id) else { return }
+        source.unwatch(window: id, of: record.pid)
+        registry.forget(id)
+        reading.remove(id)
+        moved.remove(id)
+        emit(.windowDestroyed(id))
     }
 
     // MARK: - Scanning
@@ -226,13 +290,26 @@ public final class WorldWatcher {
 
         // Retired before anything is announced: these windows are leaving the strip, and letting a new
         // column arrive first would tile against a layout still holding the ones it replaces.
-        for id in report.departed {
-            guard let record = registry.record(id) else { continue }
-            source.unwatch(window: id, of: record.pid)
-            registry.forget(id)
-            reading.remove(id)
-            moved.remove(id)
-            emit(.windowDestroyed(id))
+        for id in report.departed { retire(id) }
+
+        // The deferred destroys (`vanish`) this scan can settle, on the same principle and so before the
+        // same arrivals. A succession gave the id somewhere to go; a departure has already retired it
+        // just above. A scan that still *listed* the window read AX before the element died and settles
+        // nothing, so that one waits for the next scan — or, failing everything, for the grace deadline.
+        // Anything else is the answer the wait was for: the app has been asked, and nothing stood in.
+        let inherited = Set(report.succeeded)
+        let stillListed = Set(report.rebound)
+        let asked = Set(report.apps.map(\.pid))
+        for id in vanishing.sorted() {
+            guard let record = registry.record(id) else { vanishing.remove(id); continue }
+            guard asked.contains(record.pid) else { continue }
+            if inherited.contains(id) { vanishing.remove(id); continue }
+            // A scan that may have missed an *arrival* has not ruled a successor out — the successor is
+            // a window the join could not place yet, which is the ordinary "asked too early" race and
+            // already has a retry behind it. Waiting for that costs a retry interval; not waiting costs
+            // the column.
+            guard !stillListed.contains(id), !report.mayHaveMissedAnArrival else { continue }
+            retire(id)
         }
 
         for snapshot in report.snapshots {
@@ -303,9 +380,9 @@ public final class WorldWatcher {
             emit(.focusChanged(id))
             return
         }
-        guard registry.record(displaced) != nil else { return }   // already known dead — free answer
+        guard isLive(displaced) else { return }   // already known dead — free answer
         source.isAlive(displaced) { [weak self] alive in
-            guard let self, alive, registry.record(displaced) != nil else { return }
+            guard let self, alive, isLive(displaced) else { return }
             emit(.focusChanged(id))
         }
     }
@@ -326,7 +403,7 @@ public final class WorldWatcher {
                 registry.noteFrame(id, frame)
                 emit(.windowFrameChanged(id, frame))
             }
-            guard moved.remove(id) != nil, registry.record(id) != nil else { return }
+            guard moved.remove(id) != nil, isLive(id) else { return }
             readFrame(of: id)
         }
     }

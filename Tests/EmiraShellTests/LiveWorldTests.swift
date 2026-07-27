@@ -577,7 +577,12 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
 
+        // The close, as the rest of the desktop sees it: the app stops describing the window and the
+        // window server stops listing it. The scan `vanish` asks is what turns that into the retirement.
+        world.windows.windowsByPid[200] = [world.windows.windowsByPid[200]![1]]
+        world.windows.entries = world.windows.entries.filter { $0.number != 2 }
         world.watcher.handle(.windowVanished(id))
 
         #expect(world.source.unwatchedWindows == [id])
@@ -586,6 +591,148 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // Unwatching needs the record's pid, so it has to happen before the registry lets go — a
         // reversed order silently leaks the registrations it was meant to remove.
         #expect(world.registry.count == 2)
+        #expect(world.registry.record(two) != nil, "and only the one window left")
+    }
+
+    // MARK: The destroy that waits for one answer
+    //
+    // A destroyed element is not always a window leaving the strip: ⌘W on a native tab group destroys
+    // the selected tab and the group carries on under the next one. Only a scan can see the successor,
+    // and it answers later than the notification — so the id waits for it. See `WorldWatcher.vanish`.
+
+    @Test func aVanishedWindowIsNotAnnouncedDeadUntilAScanHasBeenAsked() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+        world.windows.holdsAnswers = true
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.recorder.events.count == before, "nothing said while the question is out")
+        #expect(world.registry.record(id) != nil, "the id is still there to be inherited")
+        #expect(world.source.unwatchedWindows.isEmpty)
+        // Dead for every other purpose, though: the element is gone and nothing may be read off it.
+        world.watcher.handle(.windowMoved(id))
+        world.watcher.handle(.windowMinimized(id))
+        #expect(world.source.frameReads.isEmpty)
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func aScanThatFindsNoSuccessorRetiresTheIdWithoutWaitingForTheDeadline() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+        world.windows.windowsByPid[200] = [world.windows.windowsByPid[200]![1]]
+        world.windows.entries = world.windows.entries.filter { $0.number != 2 }
+
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.recorder.events.last == .windowDestroyed(id))
+        #expect(world.scheduler.pending == 1, "the deadline was set, and is now moot")
+        world.scheduler.fire()
+        let destroyed = world.recorder.events.filter { $0 == .windowDestroyed(id) }
+        #expect(destroyed.count == 1, "and firing it does not announce the same death twice")
+    }
+
+    @Test func anAppThatAnswersWithNoWindowsAtAllStillRetiresTheIdAtOnce() {
+        // Closing an app's *last* window. The enumerator refuses to read absence from that answer, so
+        // this is the case the deferral has to settle itself rather than through `report.departed`.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+        world.windows.windowsByPid[100] = []
+        world.windows.entries = world.windows.entries.filter { $0.number != 1 }
+
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.recorder.events.last == .windowDestroyed(id))
+        #expect(world.registry.record(id) == nil)
+    }
+
+    @Test func aScanThatStillListsTheWindowSettlesNothingAndTheDeadlineRetiresIt() {
+        // The scan was taken before the element died, so it describes a window that no longer exists.
+        // Believing it would leave a dead window on the strip forever; the grace deadline is the
+        // backstop that makes the wait terminate whatever the scan says.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+
+        world.watcher.handle(.windowVanished(id))       // the stub still describes window "one"
+
+        #expect(world.registry.record(id) != nil, "a stale picture is not an answer")
+        #expect(world.scheduler.delays.last == WorldWatcher.successionGrace)
+
+        world.scheduler.fire()
+
+        #expect(world.recorder.events.last == .windowDestroyed(id))
+        #expect(world.registry.record(id) == nil)
+        #expect(world.source.unwatchedWindows == [id])
+    }
+
+    @Test func aSuccessorFoundByTheScanKeepsTheIdAndTheDeadlinePassesHarmlessly() {
+        // ⌘W on a tab group's selected tab: the element is destroyed, and the tab that becomes selected
+        // is standing on the group's rectangle. The column must survive its own destroy notification.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+        let before = world.recorder.events.count
+
+        world.windows.windowsByPid[100] = [scanned(pid: 100, seed: 11,
+                                                   bundle: "com.mitchellh.ghostty",
+                                                   title: "next tab", frame: rect(0))]
+        world.windows.entries = [WindowListEntry(number: 11, pid: 100, frame: rect(0)),
+                                 WindowListEntry(number: 2, pid: 200, frame: rect(700)),
+                                 WindowListEntry(number: 3, pid: 200, frame: rect(1400))]
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.recorder.events.count == before, "the core hears nothing at all")
+        #expect(world.registry.record(id)?.number == 11, "the id moved onto the tab that took over")
+
+        world.scheduler.fire()
+
+        #expect(world.recorder.events.count == before, "and the deadline cannot retire it afterwards")
+        #expect(world.registry.record(id) != nil)
+    }
+
+    @Test func anIncompleteScanSettlesNothingAndTheRetryIsWhatFindsTheSuccessor() {
+        // The successor is described by AX but the window server has not listed it yet — the same
+        // "asked too early" race the scan already retries for. Retiring the id on that answer would
+        // throw the column away a frame before the evidence that saves it arrives.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+
+        world.windows.windowsByPid[100] = [scanned(pid: 100, seed: 11,
+                                                   bundle: "com.mitchellh.ghostty",
+                                                   title: "next tab", frame: rect(0))]
+        world.windows.entries = world.windows.entries.filter { $0.pid != 100 }
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.registry.record(id) != nil, "an unbindable arrival is not a ruled-out successor")
+
+        // The window server catches up, and the scan's own retry is what asks again — ahead of the
+        // grace deadline, which is why one is longer than the other.
+        world.windows.entries.append(WindowListEntry(number: 11, pid: 100, frame: rect(0)))
+        world.scheduler.fire()
+
+        #expect(world.registry.record(id)?.number == 11)
+        #expect(!world.recorder.events.contains(.windowDestroyed(id)))
+    }
+
+    @Test func aQuitAppRetiresItsVanishingWindowsRatherThanLeavingThemPending() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+        world.windows.holdsAnswers = true
+        world.watcher.handle(.windowVanished(id))       // still waiting on a scan
+
+        world.watcher.handle(.appTerminated(200))
+
+        let destroyed = world.recorder.events.filter { $0 == .windowDestroyed(id) }
+        #expect(destroyed.count == 1)
+        world.scheduler.fire()
+        #expect(world.recorder.events.filter { $0 == .windowDestroyed(id) }.count == 1)
     }
 
     @Test func aVanishedWindowWeNeverManagedIsSilence() {
