@@ -1,18 +1,34 @@
 <p align="center">
-
-<img width="370" height="145" alt="logo" src="https://github.com/user-attachments/assets/a105a377-e019-4f6b-a6f5-6d80fae22a34" />
-
-a scrolling window manager for macOS, inspired by <a href="https://github.com/niri-wm/niri">Niri</a> and <a href="https://github.com/nikitabobko/AeroSpace">AeroSpace</a>
+  <img width="472" height="192" alt="logo" src="https://github.com/user-attachments/assets/ebca86ed-b91e-4b7e-83ad-fabeecc47b56" />
+</p>
+<p align="center">
+  a tiling, scrolling window manager for macOS, inspired by <a href="https://github.com/niri-wm/niri">niri</a> and <a href="https://github.com/nikitabobko/AeroSpace">AeroSpace</a>
 </p>
 
-# about
+## about
 
-# what makes emira different
+_tiling_ means windows get arranged in a non-overlapping grid
 
-all macOS window managers move windows using the macOS Accessibility (AX) APIs. these APIs are notoriously inconsistent: one action will take 10ms, the next 300ms. this sabotages the **feel** of window managers built on them -- when actions inevitably get delayed, it's perceived as lag or imprecision.
+_scrolling_ means your desktop is an infinite plane you can move through
 
-i built emira to experiment with a novel approach: **a compositor overlay**. emira animations are _screenshots_ of your windows being moved around, while the _real_ windows are snapping into place underneath. this does double duty: reliable, buttery-smooth animations _and_ hidden AX API latency.
+## install
 
-# ai use
+[Homebrew](https://brew.sh) is recommended:
 
-emira was written entirely by Claude. prose that's not obviously generated (e.g. code comments) was written by me (e.g. this!).
+```bash
+brew install --cask lightningboltemoji/tap/emira
+```
+
+but there's always the [releases page](https://github.com/lightningboltemoji/emira/releases), too.
+
+## what makes emira different
+
+all macOS window managers i know of rely on the Accessibility (AX) APIs to manipulate windows. these APIs are notoriously fickle: one action takes 10ms, the next 300ms. this can sabotage the _**feel**_ of window managers, because we expect window actions to feel smooth and predictable.
+
+i built emira to experiment with a novel approach: **a compositor overlay**. emira reconstructs your desktop during animations -- _screenshots_ of windows shuffle across the screen, while the _real_ windows snap into place underneath. this makes animations reliable, buttery-smooth, _and_ hides the latency of the AX API.
+
+this approach is not without downsides, such as video freezing during motion and DRM content blurring, but i do think it shows promise.
+
+## ai use
+
+emira's code was written almost entirely by Claude. prose that presents as human-authored (such as this) was written by me.
