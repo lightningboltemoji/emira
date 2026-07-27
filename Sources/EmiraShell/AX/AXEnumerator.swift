@@ -67,6 +67,15 @@ public final class AXEnumerator {
         public let snapshots: [WindowSnapshot]
         /// Re-met: already managed, id unchanged, AX element refreshed.
         public let rebound: [WindowId]
+        /// Managed windows whose id was moved onto a *different* window because AX stopped listing the
+        /// one it held and something took its place — a native tab group selecting another tab. Already
+        /// rebound in the registry by the time the caller sees this; what the caller owes them is a
+        /// fresh window-level observer, since the element behind the id has changed.
+        public let succeeded: [WindowId]
+        /// Managed windows AX stopped listing with nothing standing in for them: merged into another
+        /// window's tab group, or closed without a destroy notification reaching us. They are gone from
+        /// the strip, and the caller forgets them.
+        public let departed: [WindowId]
         /// The apps this scan covered. Carried so the caller can re-scan exactly what failed without
         /// asking the source a second question it may answer differently.
         public let apps: [ScanTarget]
@@ -94,6 +103,8 @@ public final class AXEnumerator {
         /// One line for the log.
         public var summary: String {
             var line = "\(boundWindows)/\(seenWindows) windows bound across \(scannedApps) apps"
+            if !succeeded.isEmpty { line += "; \(succeeded.count) tab succession(s)" }
+            if !departed.isEmpty { line += "; \(departed.count) no longer listed" }
             if !unbound.isEmpty {
                 line += "; unbound: " + unbound
                     .map { "\($0.bundleId) “\($0.title)” (\($0.reason.rawValue))" }
@@ -127,8 +138,8 @@ public final class AXEnumerator {
         guard !targets.isEmpty else {
             // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
             // that never fires would leave the daemon waiting forever.
-            completion(Report(snapshots: [], rebound: [], apps: [], seenWindows: 0,
-                              unbound: [], unclaimed: 0))
+            completion(Report(snapshots: [], rebound: [], succeeded: [], departed: [], apps: [],
+                              seenWindows: 0, unbound: [], unclaimed: 0))
             return
         }
 
@@ -171,9 +182,58 @@ public final class AXEnumerator {
         let available = entries.filter { registry.id(forNumber: $0.number) == nil }
         let binding = WindowIdentity.bind(fresh.map(\.observed), to: available)
 
+        // The second join: managed windows of these apps that AX did not describe this time. Almost
+        // always a native tab going to the background, which posts nothing at all — hence a set
+        // difference rather than a notification.
+        //
+        // Two ways an app's answer is not a picture to judge absence from, and both cost a column if
+        // believed. It described *nothing* — the shape of a timeout, a missing grant and a process on
+        // its way out alike, where trusting it would take the app's whole strip down at once. Or the two
+        // sides of the join disagree about it, which is the same race `unclaimed` reports and is exactly
+        // what a successor looks like a moment before we can see it. Either way the app is skipped here
+        // and `isIncomplete` asks again. A tab group always leaves its selected tab behind, so the case
+        // this exists for never rides on a scan that came back short.
+        let matched = Set(binding.matches.map(\.number))
+        var unreliable = Set(binding.rejections.map { fresh[$0.observed].observed.pid })
+        for entry in available where entry.isOnScreen && !matched.contains(entry.number) {
+            unreliable.insert(entry.pid)
+        }
+        let answered = Set(scanned.map(\.observed.pid))
+            .intersection(apps.map(\.pid))
+            .subtracting(unreliable)
+        let listed = Set(rebound)
+        let departures = registry.records(ofApps: answered)
+            .filter { !listed.contains($0.id) }
+            .map { WindowIdentity.Departure(id: $0.id, pid: $0.pid, frame: $0.frame) }
+        let arrivals = binding.matches.map { fresh[$0.observed].observed }
+        let (successions, orphaned) = WindowIdentity.succeed(departed: departures, arrived: arrivals)
+
+        // Applied before anything is adopted: a succeeded arrival must not also mint an id of its own.
+        var succeeded: [WindowId] = []
+        var departed = orphaned
+        var inherited: Set<Int> = []
+        for succession in successions {
+            let match = binding.matches[succession.arrived]
+            let window = fresh[match.observed]
+            guard registry.rebind(succession.departed, to: match.number,
+                                  observed: window.observed, element: window.element) else {
+                // The new number already belongs to someone: the arrival keeps its own identity below
+                // and the departure leaves, which is the same answer as having found no successor.
+                departed.append(succession.departed)
+                continue
+            }
+            inherited.insert(succession.arrived)
+            succeeded.append(succession.departed)
+        }
+
         var snapshots: [WindowSnapshot] = []
         var claimed: Set<CGWindowID> = []
-        for match in binding.matches {
+        for (index, match) in binding.matches.enumerated() {
+            // An inherited arrival is bound — to an id that already exists, so it is not news.
+            guard !inherited.contains(index) else {
+                claimed.insert(match.number)
+                continue
+            }
             guard let snapshot = registry.adopt(fresh[match.observed].observed,
                                                 element: fresh[match.observed].element,
                                                 number: match.number) else { continue }
@@ -197,7 +257,8 @@ public final class AXEnumerator {
             $0.isOnScreen && scannedPids.contains($0.pid) && !claimed.contains($0.number)
         }
 
-        return Report(snapshots: snapshots, rebound: rebound, apps: apps,
+        return Report(snapshots: snapshots, rebound: rebound, succeeded: succeeded.sorted(),
+                      departed: departed.sorted(), apps: apps,
                       seenWindows: scanned.count, unbound: unbound, unclaimed: unclaimed.count)
     }
 

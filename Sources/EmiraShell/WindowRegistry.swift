@@ -6,9 +6,19 @@ import Foundation
 // AX knows the element, title, subrole and frame but not the window number; `CGWindowListCopyWindowInfo`
 // knows the number, owner pid and frame but hands out no AX element and (without Screen Recording) no
 // title. The join is the frame and is made exactly once per window; afterwards we key on the
-// `CGWindowID`, stable for the window's whole life. Parked windows get unique sliver slots partly to
-// keep frames distinct. A match must be unique or it is not a match — a mis-bind is permanent and
-// invisible, where an unmanaged window is visible and recoverable.
+// `CGWindowID`. Parked windows get unique sliver slots partly to keep frames distinct. A match must be
+// unique or it is not a match — a mis-bind is permanent and invisible, where an unmanaged window is
+// visible and recoverable.
+//
+// **A native tab group is one window, and which tab is showing is not identity** (decided 2026-07-27).
+// macOS tabs are real `NSWindow`s, but `kAXWindowsAttribute` lists only the *selected* one — so AX
+// already answers the question the way emira wants it answered. What it does not do is announce the
+// swap: selecting a never-shown tab posts `AXWindowCreated` for a window that already existed, and the
+// tab it replaces is never destroyed. Left alone that mints a column per tab and never retires one.
+// `succeed(departed:arrived:)` is the second join that closes it — a managed window AX has stopped
+// listing, paired with the window standing where it stood — and `rebind` moves the `WindowId` onto the
+// new number and element. The core is never told: it holds one window for the group, so the column, its
+// width, its workspace and its float state survive every tab switch.
 
 // MARK: - The two sides of the join
 
@@ -194,6 +204,83 @@ public enum WindowIdentity {
         return Binding(matches: matches, rejections: rejections.sorted { $0.observed < $1.observed })
     }
 
+    // MARK: Succession (the tab join)
+
+    /// A managed window AX has stopped listing.
+    public struct Departure: Sendable, Equatable {
+        public let id: WindowId
+        public let pid: pid_t
+        /// The last frame the shell recorded for it. For a tab group this is the *group's* frame:
+        /// background tabs are never placed on their own, so every member reports where the group sits.
+        public let frame: Rect
+
+        public init(id: WindowId, pid: pid_t, frame: Rect) {
+            self.id = id
+            self.pid = pid
+            self.frame = frame
+        }
+    }
+
+    /// A departure and the window that took its place.
+    public struct Succession: Sendable, Equatable {
+        public let departed: WindowId
+        /// Index into the `arrived` array — the same convention `Match.observed` uses, and for the same
+        /// reason: it keeps un-`Equatable` AX elements out of this calculation.
+        public let arrived: Int
+
+        public init(departed: WindowId, arrived: Int) {
+            self.departed = departed
+            self.arrived = arrived
+        }
+    }
+
+    /// Pair each departed window with the arriving window standing where it stood.
+    ///
+    /// The signal is the frame, exactly as in `bind`: a tab that becomes selected takes the group's
+    /// geometry, so the newcomer is sitting on the departed tab's last known rectangle. That covers all
+    /// three ways a tab group changes which window it shows — a switch, a `⌘T`, and closing the selected
+    /// tab (where the departed element is already dead and no other evidence survives it).
+    ///
+    /// Deliberately *only* the frame. "Exactly one window left and one arrived, so they must be the same
+    /// one" is tempting and wrong: an app that closes one window while opening another looks identical,
+    /// and the cost of believing it is a window inheriting a stranger's column, permanently and
+    /// invisibly. Uniqueness is required in both directions for the same reason `bind` requires it.
+    ///
+    /// - Returns: the pairings, and the departures with no successor — windows that have left the strip
+    ///   for good (merged into someone else's tab group, or closed without a destroy notification).
+    public static func succeed(departed: [Departure], arrived: [ObservedWindow],
+                               tolerance: Double = 2) -> (successions: [Succession],
+                                                          orphaned: [WindowId]) {
+        var tentative: [Int: Int] = [:]         // departure index → arrival index
+        var claimants: [Int: [Int]] = [:]       // arrival index → departure indices
+        var orphaned: [WindowId] = []
+
+        for (index, departure) in departed.enumerated() {
+            let candidates = arrived.indices.filter {
+                arrived[$0].pid == departure.pid
+                    && sameFrame(arrived[$0].frame, departure.frame, tolerance: tolerance)
+            }
+            guard candidates.count == 1 else {
+                orphaned.append(departure.id)
+                continue
+            }
+            tentative[index] = candidates[0]
+            claimants[candidates[0], default: []].append(index)
+        }
+
+        for (_, indices) in claimants where indices.count > 1 {
+            for index in indices {
+                tentative[index] = nil
+                orphaned.append(departed[index].id)
+            }
+        }
+
+        let successions = tentative
+            .map { Succession(departed: departed[$0.key].id, arrived: $0.value) }
+            .sorted { $0.departed < $1.departed }
+        return (successions, orphaned.sorted())
+    }
+
     /// Whether two rectangles describe the same window, within per-edge slack.
     private static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double) -> Bool {
         abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
@@ -214,7 +301,8 @@ public final class WindowRegistry {
     public struct Record: Sendable {
         /// The core-facing opaque id.
         public let id: WindowId
-        /// The public window number this id is bound to, for life.
+        /// The public window number this id is bound to. Stable for the window's life, and re-pointed
+        /// exactly once per tab switch (`rebind`), because a tab group's identity is the group.
         public let number: CGWindowID
         /// The owning process — the AX serial-queue key.
         public let pid: pid_t
@@ -223,13 +311,18 @@ public final class WindowRegistry {
         /// The AX element to read and write. Refreshed on re-enumeration: elements go stale while the
         /// window number does not, which is why identity keys on the number.
         var element: AXWindow
+        /// The last frame the shell saw this window at. Not truth — `World` holds that — but the
+        /// evidence `succeed(departed:arrived:)` needs about a window AX has stopped describing.
+        var frame: Rect
 
-        init(id: WindowId, number: CGWindowID, pid: pid_t, bundleId: String, element: AXWindow) {
+        init(id: WindowId, number: CGWindowID, pid: pid_t, bundleId: String, element: AXWindow,
+             frame: Rect) {
             self.id = id
             self.number = number
             self.pid = pid
             self.bundleId = bundleId
             self.element = element
+            self.frame = frame
         }
     }
 
@@ -273,14 +366,52 @@ public final class WindowRegistry {
         if let previous = records[id]?.element, previous != element { idByElement[previous] = nil }
         idByElement[element] = id
         records[id] = Record(id: id, number: number, pid: observed.pid,
-                             bundleId: observed.bundleId, element: element)
+                             bundleId: observed.bundleId, element: element, frame: observed.frame)
         return WindowSnapshot(
             id: id, bundleId: observed.bundleId, title: observed.title,
             role: observed.role, frame: observed.frame, isMinimized: observed.isMinimized)
     }
 
+    /// Move an existing id onto the window that succeeded it — the tab group selecting a different tab.
+    ///
+    /// The *only* thing in emira that re-points a binding, and the reason `Record.number` is no longer
+    /// "for life": a tab group's members are interchangeable stand-ins for one thing on the strip, so
+    /// keeping the id is what makes a tab switch invisible to the core. Everything derived from the old
+    /// window goes with it — the number the capture plane films, and the element the write path sets
+    /// frames on, which matters more than it looks: a *background* tab accepts geometry writes and
+    /// applies them to itself alone, so a stale element is placement landing on an invisible window.
+    ///
+    /// Refused, like `adopt`, when the new number already belongs to someone else — that would strand
+    /// two ids on one window.
+    @discardableResult
+    public func rebind(_ id: WindowId, to number: CGWindowID, observed: ObservedWindow,
+                       element: AXWindow) -> Bool {
+        guard let old = records[id] else { return false }
+        if let holder = idByNumber[number], holder != id { return false }
+        if let holder = idByElement[element], holder != id { return false }
+
+        idByNumber[old.number] = nil
+        idByElement[old.element] = nil
+        idByNumber[number] = id
+        idByElement[element] = id
+        records[id] = Record(id: id, number: number, pid: observed.pid,
+                             bundleId: observed.bundleId, element: element, frame: observed.frame)
+        return true
+    }
+
     /// The record behind an id, or `nil` if it is unknown or has been forgotten.
     public func record(_ id: WindowId) -> Record? { records[id] }
+
+    /// Every managed window belonging to one of `pids`, in id order.
+    public func records(ofApps pids: Set<pid_t>) -> [Record] {
+        records.values.filter { pids.contains($0.pid) }.sorted { $0.id < $1.id }
+    }
+
+    /// Record where a window has got to, so a later succession has something to match against. Cheap
+    /// and lossy on purpose: this is corroboration for the tab join, never a second copy of `World`.
+    public func noteFrame(_ id: WindowId, _ frame: Rect) {
+        records[id]?.frame = frame
+    }
 
     /// The AX element to act on for an id. `AXExecutor` goes through `record(_:)` instead (it needs the
     /// pid too, to pick the lane); this is the direct form for callers that already know the app.

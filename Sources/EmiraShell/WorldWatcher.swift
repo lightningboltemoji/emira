@@ -206,14 +206,35 @@ public final class WorldWatcher {
         // placement effects move the window we just adopted, so registering second would miss that move.
         // `rebound` is offered too — registration is idempotent, and a registration that failed the first
         // time leaves a window whose destroy notification never arrives (an empty slot on the strip).
+        // A succession kept the id and changed the element under it, so the registration the old element
+        // holds is now watching the wrong window — and `watch(windows:)` is idempotent *by id*, which
+        // would skip the new one entirely. Dropping it first makes the re-registration below land, and
+        // takes the retired tab's notifications off the observer on the way past.
+        for id in report.succeeded {
+            guard let record = registry.record(id) else { continue }
+            source.unwatch(window: id, of: record.pid)
+        }
+
         var byApp: [pid_t: [WindowId]] = [:]
-        for id in report.snapshots.map(\.id) + report.rebound {
+        for id in report.snapshots.map(\.id) + report.rebound + report.succeeded {
             guard let record = registry.record(id) else { continue }
             byApp[record.pid, default: []].append(id)
         }
         for (pid, ids) in byApp {
             source.watch(windows: ids, of: pid)
         }
+
+        // Retired before anything is announced: these windows are leaving the strip, and letting a new
+        // column arrive first would tile against a layout still holding the ones it replaces.
+        for id in report.departed {
+            guard let record = registry.record(id) else { continue }
+            source.unwatch(window: id, of: record.pid)
+            registry.forget(id)
+            reading.remove(id)
+            moved.remove(id)
+            emit(.windowDestroyed(id))
+        }
+
         for snapshot in report.snapshots {
             emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
         }
@@ -299,7 +320,12 @@ public final class WorldWatcher {
             reading.remove(id)
             // An empty read is a window that closed mid-drag. Say nothing — `windowVanished` reports it,
             // and inventing a frame for a dead window puts a lie in `World`.
-            if let frame { emit(.windowFrameChanged(id, frame)) }
+            if let frame {
+                // Kept in step so a tab succession has an up-to-date rectangle to recognise: between
+                // scans, a drag is the one thing that moves a window without our asking.
+                registry.noteFrame(id, frame)
+                emit(.windowFrameChanged(id, frame))
+            }
             guard moved.remove(id) != nil, registry.record(id) != nil else { return }
             readFrame(of: id)
         }

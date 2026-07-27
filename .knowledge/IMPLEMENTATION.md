@@ -796,6 +796,34 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       A watcher that went deaf to focus after every close would be a worse bug than the one this fixes.
   - **A scan reports what *changed*, not what it saw.** A re-scan that announced an app's other four windows would
     steal the user's focus every time a fifth opened, since the reducer gives a new window focus.
+  - **The enumerator runs a *second* join, on the same scan and against the same two lists.** `WindowIdentity.bind`
+    asks which window-list entry an AX window is; `WindowIdentity.succeed` asks which arriving window is standing
+    where a departed one stood. Both are pure, both take value types and return indices, and both refuse a match that
+    is not unique in **both** directions — a mis-pair is permanent and invisible, which is the property that governs
+    every identity decision here. This is what makes a native tab group one window on the strip
+    (`PRINCIPLES.md` §7).
+  - **`WindowRegistry.rebind` is the only thing in emira that re-points a binding**, and a record's window number is
+    no longer "for life" because of it. That is a real amendment and it buys the whole feature: keeping the `WindowId`
+    is what makes a tab switch *unobservable to the core*, so the column, its width override, its workspace and its
+    float state survive one without a single `Event`. Three things move together or the seam leaks — the number map
+    (the capture plane films by `CGWindowID`), the element map (a notification arrives carrying an element and nothing
+    else), and the record's element (the write path sets frames through it, and a *background* tab accepts geometry
+    writes and applies them to itself alone, so a stale element is placement landing on an invisible window).
+  - **`AXMainWindowChanged`, registered on the app element.** `AXWindowCreated` fires once per tab and never again,
+    and `AXFocusedWindowChanged` does not fire for a tab switch at all — measured, not assumed. This is the sole
+    notice that the window standing for a group has changed, and it costs one dictionary lookup to dismiss when it
+    names a window already managed.
+  - **A record keeps the window's frame, refreshed on every scan and every frame read.** The succession needs a
+    rectangle for a window AX has stopped describing, and the closed-tab case has nothing else left — no element, no
+    window-list entry. A drag is the one thing that moves a window between scans. Corroboration for one join, never a
+    second copy of `World`.
+  - **Absence is only read from a complete answer.** An app that described *nothing* is the shape of a timeout, a
+    missing grant and a process exiting alike; an app whose two lists disagree is the same race `unclaimed` already
+    reports, and is exactly what a successor looks like a moment before it can be seen. Both skip the app entirely and
+    let the retry ask again. Believing either costs a live column.
+  - **Departures are announced before arrivals**, so the reducer never holds both a window leaving the strip and the
+    one taking its place; and a succeeded id is re-watched *after* being un-watched, since watching is idempotent by
+    `WindowId` and without the un-watch the new element would never be observed at all.
   - **Three rules keep the join from running twice** (`PRINCIPLES.md` §7): a known element goes straight to a rebind;
     an entry already bound to a live window is not a candidate for anything; and `WindowRegistry.adopt` returns `nil`
     rather than binding an element that already carries a different number.

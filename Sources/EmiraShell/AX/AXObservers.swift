@@ -27,6 +27,7 @@ private enum AXNotification {
     static let application = [
         "AXWindowCreated",              // a window was born — which one, only a re-scan can say
         "AXFocusedWindowChanged",       // focus moved between this app's own windows
+        "AXMainWindowChanged",          // …or the app's window *set* changed under us (native tabs)
     ]
 
     /// Registered on each *window* element.
@@ -40,6 +41,7 @@ private enum AXNotification {
 
     static let windowCreated = "AXWindowCreated"
     static let focusedWindowChanged = "AXFocusedWindowChanged"
+    static let mainWindowChanged = "AXMainWindowChanged"
     static let uiElementDestroyed = "AXUIElementDestroyed"
     static let windowMoved = "AXWindowMoved"
     static let windowResized = "AXWindowResized"
@@ -264,6 +266,18 @@ public final class AXObservationSource: ObservationSource {
         switch notification {
         case AXNotification.windowCreated:
             // No id to resolve — this element has never been joined to a window number.
+            deliver?(.windowAppeared(element.ownerPid))
+
+        case AXNotification.mainWindowChanged:
+            // Selecting a tab the group has shown before posts *only* this — not `AXWindowCreated`,
+            // which fires once per tab and never again, and not `AXFocusedWindowChanged`, which a tab
+            // switch does not post at all. So this is the sole notice that the window standing for a
+            // group has changed, and it arrives naming a window AX may never have listed before.
+            //
+            // An element we already manage is an ordinary raise between an app's own windows and costs
+            // one dictionary lookup to dismiss. Anything else means the app's window set may have moved
+            // under us, and only a re-scan can say how.
+            guard registry.id(for: element) == nil else { return }
             deliver?(.windowAppeared(element.ownerPid))
 
         case AXNotification.focusedWindowChanged:

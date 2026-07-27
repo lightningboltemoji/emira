@@ -388,6 +388,23 @@ Much of the "slow AX" pain is self-inflicted and controllable:
     actor — and *the thing moving windows in between is us*, since placement writes queue on that same lane. Under a
     burst, a stale read reports window A at the frame window B has since taken, A matches B's entry **uniquely**, and
     nothing looks wrong. Re-joining a bound window can therefore only ever produce a *wrong* answer.
+  - **A native tab group is one window, and which tab is showing is not identity.** The one amendment to "bound for
+    life", and it is narrower than it sounds: macOS tabs are real `NSWindow`s, but `kAXWindowsAttribute` lists only
+    the **selected** one — so AX already answers this the way we want, and the question was never how to tell a tab
+    from a window. What AX does *not* do is announce the swap. Selecting a tab the group has not shown before posts
+    `AXWindowCreated` for a window that already existed; the tab it replaces is never destroyed, so no notification
+    retires it. Adding on creation and removing on destruction — correct for every other window on the desktop —
+    therefore mints a column per tab and retires none, which is what a blank column *is*. So the shell reconciles
+    rather than accumulates: a managed window its app no longer lists has left, and if a newcomer stands on its
+    rectangle the `WindowId` moves onto that window instead. The core is never told, and that is the point — one
+    window for the group means its column, width, workspace and float state survive a tab switch, because none of
+    them ever hears about one.
+  - **The evidence is the frame, and deliberately only the frame.** A tab that becomes selected takes the group's
+    geometry, which covers all three ways a group changes what it shows — a switch, a `⌘T`, and closing the selected
+    tab, where the element is already dead and nothing else about it survives. "One window left and one arrived, so
+    they are the same window" would also pair an app that closes one window while opening another, and the price of
+    believing that is a window inheriting a stranger's column permanently and invisibly. Uniqueness is required in
+    both directions, for the reason the first-sight join requires it.
   - A notification hands back an `AXUIElement` and nothing else — the case yabai answers with
     `_AXUIElementGetWindow`. First-sight binding answers it by keeping the *reverse* map (element → `WindowId`), which
     works because `AXUIElement` compares **structurally**: the element arriving with a notification is a different
