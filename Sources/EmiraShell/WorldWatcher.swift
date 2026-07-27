@@ -92,6 +92,9 @@ public final class WorldWatcher {
     /// when it returns.
     private var rescan: Set<pid_t> = []
 
+    /// Whether the watcher has been shut down (`stop()`). Once set, nothing reaches the core again.
+    private var isStopped = false
+
     /// The window the **system** last reported as focused — whether or not we passed it on.
     ///
     /// Not "what the core believes is focused", which is a different and larger question: this exists
@@ -126,9 +129,36 @@ public final class WorldWatcher {
         }
     }
 
+    /// Stop turning the desktop into events, permanently. The daemon's teardown calls this first
+    /// (`Teardown`), and the reason is specific rather than tidiness: shutdown places every managed
+    /// window into the quit cascade, and **our own writes are observations**. A watcher still running
+    /// would answer each one with `windowFrameChanged`, the reducer would re-place the window on the
+    /// strip it is being taken off, and the cascade and the layout would fight until the process
+    /// exited. Same feedback the daemon relies on all day, pointed the wrong way for the one moment
+    /// the strip is no longer the answer.
+    ///
+    /// A latch rather than a `start`/`stop` pair, because there is exactly one of these per process
+    /// and nothing ever wants it back (the note in `AXObservers` makes the same point about its own
+    /// lifetime). Deliberately **not** an unregistration: tearing down live `AXObserver`s and their
+    /// run-loop sources at exit buys nothing the process exiting doesn't, and the failure mode of
+    /// getting it subtly wrong is a crash on the way out. Silencing the delivery is the whole
+    /// requirement.
+    public func stop() {
+        isStopped = true
+    }
+
+    /// Hand one event to the core, unless we have stopped. Every `sink` call in this file goes through
+    /// here — the asynchronous ones especially, since a scan, a frame read or a liveness probe already
+    /// out on a lane when `stop()` lands will still come back and try to speak.
+    private func emit(_ event: Event) {
+        guard !isStopped else { return }
+        sink(event)
+    }
+
     /// Fold one observation into the core. Public because it is the whole of this type's behaviour and
     /// the tests drive it directly — the live source is the only thing that normally calls it.
     public func handle(_ observation: WorldObservation) {
+        guard !isStopped else { return }
         switch observation {
 
         case .appLaunched(let target):
@@ -149,7 +179,7 @@ public final class WorldWatcher {
             for id in registry.forget(app: pid) {
                 reading.remove(id)
                 moved.remove(id)
-                sink(.windowDestroyed(id))
+                emit(.windowDestroyed(id))
             }
 
         case .windowAppeared(let pid):
@@ -164,7 +194,7 @@ public final class WorldWatcher {
             registry.forget(id)
             reading.remove(id)
             moved.remove(id)
-            sink(.windowDestroyed(id))
+            emit(.windowDestroyed(id))
 
         case .windowMoved(let id):
             guard registry.record(id) != nil else { return }
@@ -173,17 +203,17 @@ public final class WorldWatcher {
 
         case .windowMinimized(let id):
             guard registry.record(id) != nil else { return }
-            sink(.windowMinimized(id))
+            emit(.windowMinimized(id))
 
         case .windowDeminimized(let id):
             guard registry.record(id) != nil else { return }
-            sink(.windowDeminimized(id))
+            emit(.windowDeminimized(id))
 
         case .focusMoved(let id):
             resolveFocus(id)
 
         case .mouseUp:
-            sink(.dragEnded)
+            emit(.dragEnded)
         }
     }
 
@@ -246,7 +276,7 @@ public final class WorldWatcher {
             source.watch(windows: ids, of: pid)
         }
         for snapshot in report.snapshots {
-            sink(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
+            emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
         }
 
         // Something appeared while the scan was out. Ask again now rather than through the retry
@@ -332,13 +362,13 @@ public final class WorldWatcher {
         focus = id
         // Nothing displaced (boot), or a report that changes nothing: there is no question to ask.
         guard let displaced, displaced != id else {
-            sink(.focusChanged(id))
+            emit(.focusChanged(id))
             return
         }
         guard registry.record(displaced) != nil else { return }   // already known dead — free answer
         source.isAlive(displaced) { [weak self] alive in
             guard let self, alive, registry.record(displaced) != nil else { return }
-            sink(.focusChanged(id))
+            emit(.focusChanged(id))
         }
     }
 
@@ -353,7 +383,7 @@ public final class WorldWatcher {
             // A read that came back empty is a window that stopped answering — it closed mid-drag. Say
             // nothing: `windowVanished` is what reports that, and inventing a frame change for a dead
             // window would put a lie in `World` that only the next scan could correct.
-            if let frame { sink(.windowFrameChanged(id, frame)) }
+            if let frame { emit(.windowFrameChanged(id, frame)) }
             guard moved.remove(id) != nil, registry.record(id) != nil else { return }
             readFrame(of: id)
         }

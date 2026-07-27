@@ -279,7 +279,12 @@ emira/
 │   │   │   │                        # `WorkspaceRef` resolution, and the atomic cross-strip `move`
 │   │   │   ├── Strip.swift          # infinite-axis math, viewport scroll, centering
 │   │   │   ├── Column.swift         # vertical stack, heights
-│   │   │   ├── Presets.swift        # cyclable width/height presets, inner gaps, struts
+│   │   │   ├── Presets.swift        # cyclable width/height presets, inner + outer gaps, struts
+│   │   │   ├── Cascade.swift        # the one layout that isn't the strip: the **quit cascade**.
+│   │   │   │                        # Centre ¾ of the working area, 30 pt stagger, bottom-rights
+│   │   │   │                        # aligned, step compressed rather than collapsed on a deep
+│   │   │   │                        # stack. Pure `Rect` arithmetic; the ordering policy (focused
+│   │   │   │                        # window last = frontmost) is beside it on `State`
 │   │   │   └── Park.swift           # deterministic unique corner nubs (park = target geometry)
 │   │   ├── Config.swift             # parsed config *values* (pure data; loading is in Shell)
 │   │   └── Engine.swift             # reduce(State, Event) -> (State, [Effect])
@@ -349,6 +354,11 @@ emira/
 │   │   ├── WorldWatcher.swift       # the live world's *policy*: boot scan -> adopt -> watch;
 │   │   │                            # re-scan an app when it makes a window; one bounded retry for
 │   │   │                            # the two "asked too early" races; coalesced frame reads
+│   │   ├── Teardown.swift           # the last thing that runs: place every managed window into the
+│   │   │                            # quit cascade and hold the exit until the AX sets land, bounded.
+│   │   │                            # What it owns is the *waiting*; the daemon owns the order —
+│   │   │                            # silence the event sources first, since our own writes are
+│   │   │                            # observations (`WorldWatcher.stop()`)
 │   │   ├── Scheduler.swift          # DelayScheduler — "try that again in a moment"
 │   │   ├── Permissions.swift        # AX + Screen Recording TCC checks + onboarding
 │   │   └── Logging.swift            # os_log wrapper
@@ -839,6 +849,24 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     rather than on a change, because `State` is large and comparing all of it at 120 Hz to save the observer a
     comparison is the wrong trade; **the observer diffs its own projection**, which is the file watcher's rule again —
     report a change in the *value*, not in the thing carrying it.
+- **Teardown** — the exit path. Silence every event source, place the whole desktop into the **quit cascade**
+  (`PRINCIPLES.md` §4a), wait for the AX sets to land under a 1.5 s bound, then exit. One path, reached three ways
+  (Ctrl-C, `kill`, the menu item), and one-shot — a second Ctrl-C must not cascade a cascade.
+  - **It is a layout, so it is in the core**, and that decided most of the rest: a park slot is target geometry, and
+    the same applies to a pile. `State.cascadeEffects()` emits nothing but `setFrame`/`raise`/`focus`, which is to say
+    it is an *ordinary placement* the existing executor runs and the existing acks answer. **No new `Effect`, no new
+    `Event`, no `Command`** — a quit is not a verb the user types, and adding one would put a second door on a
+    lifecycle that already has three, all reaching one function.
+  - **No cover**, and that is instant-and-correct rather than a shortcut: the cascade is the last thing that happens,
+    there is nothing left running to animate it, and a capture round trip before an exit would only delay the exit.
+  - **The stagger cannot be honoured unconditionally** — a deep enough stack drives the last windows through zero size
+    — so the step **compresses** uniformly to keep a floor, rather than clipping the list, wrapping it, or letting a
+    window collapse. Every input is total, including a screen with no room for a cascade at all.
+  - **The order is the daemon's, and it needed one thing from `WorldWatcher`: our own writes are observations.** A
+    live watcher answers each move notification by re-placing the window on the strip being dismantled, and the
+    cascade and the layout fight until the deadline. So every event source is silenced first — a latch on delivery,
+    not an unregistration of live `AXObserver`s, because tearing those down at exit buys nothing the process exiting
+    doesn't and its failure mode is a crash on the way out.
 - **Permissions** — Accessibility + Screen Recording TCC checks and a first-run onboarding flow. **Both grants are
   required to *start*; only Accessibility is required to keep *running*.** Screen Recording being non-fatal is correct
   as a response to macOS revoking the grant under a live daemon, and it must survive — killing the window manager
@@ -1037,5 +1065,5 @@ Settle these as we build, not now.
    is an M7 question.
 3. **Real signing** — Developer ID + hardened runtime + notarization, and with them a TCC grant that survives a
    rebuild. Ad-hoc is enough to run locally.
-4. **Nothing puts the desktop back on quit.** Parking is only survivable while emira is running; a user who quits is
-   left dragging windows back one at a time.
+4. **Per-monitor strips.** The layout still resolves against the first monitor; `move-to-monitor` has no second strip
+   to target, and monitor hotplug is untested.

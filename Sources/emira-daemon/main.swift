@@ -429,16 +429,41 @@ log("listening on \(socketPath) (pid \(ProcessInfo.processInfo.processIdentifier
 // same path — "stop emira" is one act, and a menu item that tore down less than a signal does would
 // be a second, worse way to stop it.
 //
-// **What this does not yet do, stated plainly: it does not unpark.** Every off-viewport column and
-// every window on the other 35 workspaces is sitting at a 1 px sliver in the corner
-// (`PRINCIPLES.md` §4a), and exiting leaves them there for the user to drag back by hand. That was
-// tolerable while stopping the daemon meant Ctrl-C in a terminal you were already debugging in; a
-// Quit menu item makes it a one-click, everyday act, and the teardown that places every managed
-// window back on screen is the next slice.
-@MainActor func shutdown() -> Never {
+// **And it unparks, as of 2026-07-26.** This used to exit on the spot, which left every off-viewport
+// column and every window on the other 35 workspaces at its 1 pt corner nub (`PRINCIPLES.md` §4a) for
+// the user to drag back by hand. Now the desktop is handed back as a **cascade**: every managed
+// window stacked in the middle of the screen, staggered 30 pt down-and-right, bottom-right corners
+// aligned (`Cascade`). Nothing is off screen, every window has a grabbable title bar, and the pile is
+// obviously a pile — which is what makes it possible to get going again without emira running.
+//
+// **The order below is the whole of it.** Silence every event source *first*: our own cascade writes
+// are `AXWindowMoved` notifications, and a live `WorldWatcher` would answer each one by re-placing
+// the window on the strip we are dismantling (`WorldWatcher.stop()`). Then place, then wait for the
+// AX sets to land — bounded, because a hung app must delay a quit and never prevent one — then exit.
+// `Teardown` owns the waiting; this owns the order.
+let teardown = Teardown(executor: truth, scheduler: DispatchScheduler())
+
+/// Whether a shutdown is already under way. A second Ctrl-C from an impatient user must not start a
+/// second cascade behind the first; `Teardown` latches too, and both are cheap.
+var isShuttingDown = false
+
+@MainActor func shutdown() {
+    guard !isShuttingDown else { return }
+    isShuttingDown = true
     log("shutting down")
+
+    watcher.stop()          // our own placements stop being events that undo themselves
+    hotkeys.stop()
+    loader.stop()
     server.stop()
-    exit(0)
+
+    teardown.run(placing: runtime.state) { report in
+        log(report.windows == 0
+            ? "no managed windows to place"
+            : "cascaded \(report.windows) window\(report.windows == 1 ? "" : "s")"
+              + (report.timedOut ? " (\(report.unlanded) did not answer)" : ""))
+        exit(0)
+    }
 }
 
 menuBar.onQuit = { shutdown() }

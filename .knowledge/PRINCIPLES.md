@@ -124,6 +124,22 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
   3 s park. This inverts the risk the off-screen model was expected to carry — the danger was never "off-screen
   windows freeze", it is that macOS won't let a window leave the screen — and it is likely why AeroSpace flashes when
   revealing a fully-hidden frozen window with no cover, while we shouldn't.
+- **Quitting hands the desktop back as a cascade.** Parking is only survivable *while emira is running*: the moment it
+  isn't, nothing else on the machine knows that a 1 pt nub in the corner is a window, and a user who quits is left
+  dragging them back one at a time. So the teardown is a placement like any other — every managed window, on every
+  workspace, stacked in the centre **three-quarters** of the screen, each one staggered 30 pt down-and-right of the
+  last and resized so all their **bottom-right corners coincide**. The Solitaire cascade, and the shape is doing work
+  rather than being nostalgic: aligned corners make the stagger an even band of title bar on every buried window,
+  which is the difference between a pile you can read and a heap. Three consequences follow from the same geometry.
+  - **Window *i+1* is strictly inside window *i*, so z-order is a decision.** Raising in cascade order is what stops a
+    big early window swallowing the ones behind it, and the window that had focus is placed **last** — smallest,
+    frontmost, whole. Between *apps* the stacking is best-effort: `AXRaise` orders a window within its own app, and
+    re-levelling against another app's is precisely what §6 says we cannot do.
+  - **Min/max sizes are not negotiated.** An app that refuses to shrink keeps the top-left corner we gave it and
+    overhangs — the corner is what the cascade is made of, so that is the right way to be wrong.
+  - **The exit waits, briefly.** AX sets answer on the target app's run loop, so the process holds until every window
+    has landed, bounded at 1.5 s. A hung app delays a quit; it never prevents one — the same trade as §4b's
+    hold-timeout, on the other plane.
 - **Externally-initiated focus is first-class.** Cmd-Tab, a Dock click, or an app activating itself can land focus on
   a parked window — the user must never be "focused" on something they can't see. We observe activation
   (`NSWorkspace`) and AX focus changes, and **snap** the viewport to reveal the newly focused window. No cover, no
