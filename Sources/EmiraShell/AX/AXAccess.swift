@@ -190,6 +190,17 @@ public struct AXWindow: @unchecked Sendable {
     /// native Spaces integration").
     public var isFullScreen: Bool { copyAttribute(element, AXKey.fullScreen) as? Bool ?? false }
 
+    /// Whether the element still refers to a window that exists.
+    ///
+    /// A destroyed element answers `kAXErrorInvalidUIElement` to *everything*, so any attribute would
+    /// do; `role` is the cheapest with an answer — one round trip where `frame` is two — and its value
+    /// is thrown away. This is the one question a *notification* cannot answer, because the whole
+    /// difficulty is that the notification saying so has not arrived yet (`WorldWatcher`'s focus probe).
+    ///
+    /// **A busy app answers `false` too**, when the read times out, so a caller must treat this as
+    /// evidence rather than proof and pick the direction whose false answer is cheap.
+    public var isAlive: Bool { role != nil }
+
     /// The window's frame in core (top-left, global) coordinates — no flip, see the file header.
     ///
     /// `nil` when either half is unreadable. Position and size are two separate attributes and two

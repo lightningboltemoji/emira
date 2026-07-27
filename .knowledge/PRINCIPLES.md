@@ -129,6 +129,13 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
   (`NSWorkspace`) and AX focus changes, and **snap** the viewport to reveal the newly focused window. No cover, no
   animation: we didn't initiate the motion, so there's no smoothness promise to keep. (An animated-reveal toggle can
   come later.)
+  - **But *external* is not the same as *intended*.** An app that loses its key window picks a replacement of its own
+    and announces it with the identical notification, and its pick is arbitrary — closing the tenth Ghostty window can
+    land focus on the first, and the strip snaps across the desktop to reveal a window nobody asked for. emira already
+    decides where focus goes when a window leaves (the surviving stackmate, else the column that slid into its place);
+    it was being outvoted by macOS's guess. The two are told apart by the one fact that separates them — **whether the
+    window the report displaced still exists** — which is readable and never observable, because the whole difficulty
+    is that the destroy notification has not arrived yet.
 
 ### 4b. The smoothness layer: a layered desktop reconstruction
 

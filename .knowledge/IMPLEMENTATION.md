@@ -672,6 +672,23 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     reading of either is "not ours" and must not become a busy loop.
   - **Move notifications are coalesced to at most one read in flight per window**, because AX emits them at the
     refresh rate during a drag and each answer queues on the *same serial lane* our placement writes use.
+  - **A focus report is not self-describing, so the watcher asks before passing it on.** `Event.focusChanged` has
+    exactly one meaning in the reducer — focus moved and we did not move it, so snap to reveal it — and macOS produces
+    the identical notification for something that is not intent at all: an app whose key window closes picks a
+    replacement and announces it. A report means "the user moved focus" if the window it **displaced** is still alive,
+    and "macOS filled a hole" if it is not. That cannot come from the notification stream, because the difficulty is
+    precisely that the notification saying so has not arrived yet: AppKit chooses a new key window *synchronously*
+    while the closing one is ordered out and destroys its element later, so the focus change normally arrives
+    **before** the destroy. So `ObservationSource` gained an `isAlive` probe — one attribute read (`role`, the
+    cheapest with an answer) on that app's own serial lane. The other notification order costs nothing at all: once
+    the departure has been handled the registry has already forgotten the window, which answers the question for free.
+    - **Both failure directions were chosen.** A busy app can time out and answer "dead" for a live window, and the
+      cost is one dropped reveal. Reading that same timeout as "the window is gone" would drop a real window off the
+      strip, which is why this asks about *focus* and never synthesises a departure from what it learns — the destroy
+      notification stays the sole authority on a window's death, exactly as a frame read already refuses to invent a
+      frame for one.
+    - **The loss is bounded at one report**, because a dropped report still updates what the next one is read against.
+      A watcher that went deaf to focus after every close would be a worse bug than the one this fixes.
   - **A scan reports what *changed*, not what it saw.** A re-scan that announced an app's other four windows would
     steal the user's focus every time a fifth opened, since the reducer gives a new window focus.
   - **Three rules keep the join from running twice** (`PRINCIPLES.md` §7): a known element goes straight to a rebind;

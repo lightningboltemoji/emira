@@ -21,7 +21,7 @@ import Foundation
 //    writes on that app's lane. The coalescing that fixes it is policy too.
 //
 // So the split is the same one this codebase makes everywhere: `ObservationSource` is the untestable
-// half (six methods, no decisions, `AXObservers.swift`), `WorldWatcher` is the decisions, and
+// half (seven methods, no decisions, `AXObservers.swift`), `WorldWatcher` is the decisions, and
 // `WorldObservation` is the wire between them — already in emira's terms, because resolving an
 // `AXUIElement` to a `WindowId` is the one thing the AX layer can do and the watcher cannot.
 
@@ -76,8 +76,8 @@ public enum WorldObservation: Sendable, Equatable {
 
 /// Everything the live world needs from macOS, and nothing more.
 ///
-/// Six methods, each of which is straight-line framework work with no decision in it. A test double
-/// answers all six from arrays, which is what leaves `WorldWatcher` — the retry budget, the coalescing,
+/// Seven methods, each of which is straight-line framework work with no decision in it. A test double
+/// answers all seven from arrays, which is what leaves `WorldWatcher` — the retry budget, the coalescing,
 /// the adoption bookkeeping, the teardown ordering — fully testable with no window server, no TCC
 /// grant, and no other processes.
 @MainActor
@@ -115,4 +115,15 @@ public protocol ObservationSource: AnyObject {
     /// window stopped answering — it closed between the notification and the read, which is a normal
     /// race and not an error.
     func readFrame(of window: WindowId, then: @escaping @MainActor (Rect?) -> Void)
+
+    /// Whether a managed window still exists, off the main actor, answering on it.
+    ///
+    /// The one question the notification stream cannot answer, because the difficulty is precisely that
+    /// the notification saying so has not arrived yet: an app that loses its key window picks a new one
+    /// and posts `AXFocusedWindowChanged` **before** the old element is destroyed, so a focus report is
+    /// not self-describing — it means "the user moved focus" or "macOS backfilled a dead window",
+    /// depending on a fact that is only readable, never observable (`WorldWatcher.resolveFocus`).
+    ///
+    /// A window the registry has already forgotten is `false` without asking anyone.
+    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void)
 }

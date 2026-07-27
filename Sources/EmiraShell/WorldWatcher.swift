@@ -92,6 +92,15 @@ public final class WorldWatcher {
     /// when it returns.
     private var rescan: Set<pid_t> = []
 
+    /// The window the **system** last reported as focused — whether or not we passed it on.
+    ///
+    /// Not "what the core believes is focused", which is a different and larger question: this exists
+    /// only to name the window a new report *displaces*, because whether that window is still alive is
+    /// what the report means (`resolveFocus`). It therefore tracks reports rather than deliveries, and
+    /// is deliberately **not** cleared when its window dies — a dead name here is exactly the cheap
+    /// evidence the next report is read against.
+    private var focus: WindowId?
+
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
                 scheduler: any DelayScheduler, sink: EventSink) {
         self.source = source
@@ -171,7 +180,7 @@ public final class WorldWatcher {
             sink(.windowDeminimized(id))
 
         case .focusMoved(let id):
-            sink(.focusChanged(id))
+            resolveFocus(id)
 
         case .mouseUp:
             sink(.dragEnded)
@@ -278,6 +287,58 @@ public final class WorldWatcher {
             scheduler.schedule(after: Self.rescanDelay) { [weak self] in
                 self?.scan([target], attempt: attempt + 1, alreadyOpen: alreadyOpen)
             }
+        }
+    }
+
+    // MARK: - Focus (the report that isn't self-describing)
+
+    /// Pass a focus report to the core — unless it is macOS backfilling the window that just died
+    /// (2026-07-26).
+    ///
+    /// **The problem.** `Event.focusChanged` has exactly one meaning in the reducer: focus moved and we
+    /// did not move it, so **snap** the viewport to reveal it (§4a — we made no motion, so we owe no
+    /// animation). That is right for a Cmd-Tab and wrong for the *other* thing that produces the same
+    /// notification: an app whose key window closes picks a replacement of its own and announces it. The
+    /// replacement is arbitrary — closing the tenth Ghostty window can land focus on the first — and the
+    /// user, who only pressed ⌘W, watched the strip snap across the desktop to reveal a window they had
+    /// not asked for. emira already has a rule for where focus goes when a window leaves
+    /// (`Engine.successor`: the surviving stackmate, else the column that slid into its place); it was
+    /// simply being outvoted by macOS's guess.
+    ///
+    /// **Why it needs a question and not just a rule.** The two notifications arrive in an order we do
+    /// not control, and AppKit's is the awkward one: a new key window is chosen *synchronously* while
+    /// the closing window is ordered out, and its element is destroyed later, so
+    /// `AXFocusedWindowChanged` normally arrives **before** `AXUIElementDestroyed`. At that instant a
+    /// report naming window 1 is indistinguishable from the user having pressed Cmd-Tab — unless we ask
+    /// the one fact that separates them, which is whether the window this report displaced still exists.
+    /// A live predecessor means the user moved focus; a dead one means macOS filled a hole.
+    ///
+    /// The registry answers for free when the destroy got here first; only the awkward order costs the
+    /// round trip, and it costs it on that app's own serial lane, which is the same price
+    /// `AXObservers.activated` has always paid to turn an app activation into a window.
+    ///
+    /// **Both failure directions are chosen, not accepted.** A busy app can time out and answer "dead"
+    /// for a window that is alive, so we drop a reveal the user wanted — recoverable in the sense that
+    /// matters, because the next focus change reveals and nothing about the strip is wrong meanwhile.
+    /// The opposite mistake — believing a timeout means the *window* is gone — would drop a real window
+    /// off the strip, which is why this asks about focus and never synthesizes a `windowVanished` from
+    /// what it learns. `windowVanished` stays the sole authority on a window's death, exactly as
+    /// `readFrame` refuses to invent a frame for one.
+    ///
+    /// The re-check when the answer lands closes the mirror race: the destroy may have arrived while we
+    /// were asking, which retires the report as surely as the probe would have.
+    private func resolveFocus(_ id: WindowId?) {
+        let displaced = focus
+        focus = id
+        // Nothing displaced (boot), or a report that changes nothing: there is no question to ask.
+        guard let displaced, displaced != id else {
+            sink(.focusChanged(id))
+            return
+        }
+        guard registry.record(displaced) != nil else { return }   // already known dead — free answer
+        source.isAlive(displaced) { [weak self] alive in
+            guard let self, alive, registry.record(displaced) != nil else { return }
+            sink(.focusChanged(id))
         }
     }
 

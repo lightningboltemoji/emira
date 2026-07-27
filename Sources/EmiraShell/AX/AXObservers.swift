@@ -290,6 +290,21 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
+    public func isAlive(_ id: WindowId, then completion: @escaping @MainActor (Bool) -> Void) {
+        // A window the registry has forgotten is one we were already told about — the answer is known
+        // and free, and asking its app would be asking about an element nobody holds any more.
+        guard let record = registry.record(id) else {
+            completion(false)
+            return
+        }
+        let element = record.element
+        client.perform(app: record.pid) { _ in
+            element.isAlive
+        } then: { alive in
+            completion(alive)
+        }
+    }
+
     // MARK: The callback's landing point
 
     /// Turn one AX notification into a `WorldObservation`. The only translation in this file, and it is

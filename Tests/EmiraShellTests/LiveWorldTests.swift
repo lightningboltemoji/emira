@@ -130,6 +130,29 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let (_, completion) = pendingReads.removeFirst()
         completion(frame)
     }
+
+    private(set) var aliveProbes: [WindowId] = []
+    /// When true, aliveness probes park in `pendingProbes` instead of answering.
+    var holdsProbes = false
+    var pendingProbes: [(WindowId, @MainActor (Bool) -> Void)] = []
+    /// Windows this source considers dead. Anything not listed is alive.
+    var dead: Set<WindowId> = []
+
+    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void) {
+        aliveProbes.append(window)
+        guard holdsProbes else {
+            then(!dead.contains(window))
+            return
+        }
+        pendingProbes.append((window, then))
+    }
+
+    /// Answer the oldest parked probe.
+    func answerProbe(_ alive: Bool) {
+        guard !pendingProbes.isEmpty else { return }
+        let (_, completion) = pendingProbes.removeFirst()
+        completion(alive)
+    }
 }
 
 /// A scheduler that never runs anything until the test says so — the whole retry chain, under the
@@ -646,6 +669,111 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(nil))
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil)])
+    }
+
+    // MARK: Focus reports macOS made up (2026-07-26)
+    //
+    // An app that loses its key window picks a replacement and announces it, and that announcement is
+    // byte-identical to the one a Cmd-Tab produces. Told apart by the only fact that separates them:
+    // whether the window the report displaced still exists. See `WorldWatcher.resolveFocus`.
+
+    @Test func theFirstFocusReportIsPassedStraightThroughWithNothingToAsk() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(id))
+
+        #expect(world.source.aliveProbes.isEmpty, "nothing was displaced, so there is no question")
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(id)])
+    }
+
+    @Test func aFocusReportDisplacingALiveWindowIsTheUserAndReaches() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(one))
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(two))       // a Cmd-Tab: window `one` is still there
+
+        #expect(world.source.aliveProbes == [one])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two)])
+    }
+
+    @Test func aFocusReportBackfillingADeadWindowIsDropped() {
+        // The reported case: ⌘W on the focused window, and the app hands focus to one of its own
+        // choosing *before* the destroy notification arrives. The core must never see this — it has its
+        // own rule for where focus goes when a window leaves, and this is what was outvoting it.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(one))
+        world.source.dead = [one]                    // closed, but `windowVanished` hasn't landed yet
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(two))
+
+        #expect(world.source.aliveProbes == [one])
+        #expect(world.recorder.events.count == before, "no focusChanged reached the core")
+    }
+
+    @Test func aReportArrivingAfterTheDestroyIsDroppedWithoutAskingAnyone() {
+        // The other notification order, and the cheap half: once `windowVanished` has been handled the
+        // registry has already forgotten the window, which answers the question for free.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(one))
+        world.watcher.handle(.windowVanished(one))
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(two))
+
+        #expect(world.source.aliveProbes.isEmpty, "the registry knew; no round trip was spent")
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func aDestroyLandingWhileTheProbeIsOutRetiresTheReport() {
+        // The mirror race: the probe answers "alive" because it was asked before the element died, and
+        // the destroy arrives while it is out. The re-check on the way back is what catches it.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(one))
+        world.source.holdsProbes = true
+
+        world.watcher.handle(.focusMoved(two))
+        world.watcher.handle(.windowVanished(one))
+        let before = world.recorder.events.count
+        world.source.answerProbe(true)               // stale: taken before the element was invalidated
+
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func onlyTheOneBackfilledReportIsLostAndFocusTracksNormallyAfterIt() {
+        // The cost is bounded at exactly one report, because the dropped one still updates what the
+        // *next* report is read against. A window manager that went deaf to focus after every close
+        // would be a worse bug than the one this fixes.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(one))
+        world.source.dead = [one]
+
+        world.watcher.handle(.focusMoved(two))        // dropped: `one` is gone
+        let before = world.recorder.events.count
+        world.watcher.handle(.focusMoved(term))       // a real Cmd-Tab a moment later
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term)],
+                "read against `two`, which is alive")
     }
 
     @Test func minimizingAWindowWeDoNotManageIsSilence() {
