@@ -674,11 +674,36 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       exactly the reason corrections do: it must reach *every* query or they disagree about how tall a window is.
     - **Auto is a rung of the ladder, not a state you can only leave.** The cycle runs auto → ⅓ → ½ → ⅔ → auto, so one
       verb reaches every selection *and* gets home; the alternative is a second verb whose only job is "un-pin".
-- **Rules engine:** pure predicates over window metadata → assign-to-workspace / float / initial-width. Definitions
-  come from config; evaluation is pure. Built-in taxonomy defaults: only `AXStandardWindow` tiles;
-  dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
-  **minimized and Cmd-H-hidden windows leave the strip** — animated out like a close, strip position remembered,
-  re-inserted on return.
+- **Rules engine:** pure predicates over a window's metadata at **first sight** — `WindowRule` (four AND'd matchers:
+  app id and title, each exact or regex) → `RuleOutcome`. Definitions come from config; evaluation is pure.
+  - **A rule fires once, at first sight, and is never consulted again** (`PRINCIPLES.md` §4a). That is what makes an
+    assignment a *starting position* rather than a leash, and it is the only reading that doesn't create a second
+    authority: a window's workspace is **derived** from the strip holding it, so a standing rule would be a fact
+    competing with the container that already owns it. A window restored from the Dock is an arrival on the strip too
+    and deliberately does *not* ask — restoring is a deliberate act on a window that already exists, and it lands
+    where the user is.
+  - **Boot is quiet; a live arrival takes you with it**, and `wasAlreadyOpen` already told the two apart. The launch
+    scan is emira sorting a desktop nobody just asked it to sort, so it places and says nothing; a window opened *now*
+    is one the user opened, and following it is what a Dock click on an app living elsewhere already does.
+  - **Matching rules apply top to bottom, later overriding earlier, field by field.** Precedence is positional and not
+    clever about it, so a broad rule can set a default that a narrower one below it refines, and the two never have to
+    agree about anything else to coexist. Written as a merge from the start, which is what lets a new action be one
+    field and two lines rather than a second pass at precedence.
+  - **An assigned arrival is not an arrival on the visible strip at all** — the window never joins the strip in view,
+    so there is no gap for columns to open around and nothing on screen that moves. It is the move
+    `move-to-workspace` already performs, from a column the window holds for one statement. Focus is set *inside* the
+    switch, never before it, for the reason the cross-workspace reveal already documents.
+  - **The grammar grew two things, and the second is not incidental.** `[[window-rules]]` needs **arrays of tables**,
+    which the subset had refused by name — fine, since the subset was always "what the config is written in, each
+    omission saying so when met", and the config now needs a list. **Literal strings** came with it because a rule
+    matches on *regular expressions*: in a `"…"` string every backslash doubles, and `"\d"` isn't an escape this
+    grammar admits at all, so it is a syntax error rather than a character class. Patterns compile at parse time (a
+    broken one is a line number, not a rule that quietly never fires) and are stored as their source text, since
+    `Config` is an `Equatable`, `Codable` value and a compiled `Regex` is neither.
+  - Built-in taxonomy defaults sit underneath all of this: only `AXStandardWindow` tiles;
+    dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
+    **minimized and Cmd-H-hidden windows leave the strip** — animated out like a close, strip position remembered,
+    re-inserted on return.
 - **The `Engine` reducer:** the reconciliation state machine — absorbs external reality (user clicks, app-launched,
   display hotplug) into the World model, decides snap-vs-transition, drives the motion session.
 

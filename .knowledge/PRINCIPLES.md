@@ -140,6 +140,17 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
   - **The exit waits, briefly.** AX sets answer on the target app's run loop, so the process holds until every window
     has landed, bounded at 1.5 s. A hung app delays a quit; it never prevents one — the same trade as §4b's
     hold-timeout, on the other plane.
+- **A window can be told where to start, and only where to start.** Config rules (`[[window-rules]]`) match an
+  arriving window on its app id and title — exactly or by regex, AND'd — and give it a workspace, so Slack opens on
+  `3` instead of wherever you happen to be. What makes this a *starting position* rather than a leash is that **the
+  rule is consulted once, at first sight, and never again**: grab the window afterwards and it goes anywhere,
+  permanently. That isn't leniency, it's the only reading that keeps one authority — a window's workspace is *derived*
+  from the strip holding it (§3), and a standing rule would be a second fact about it, free to disagree.
+  - **Boot places quietly; a live arrival takes you with it.** The two are the same placement and differ only over
+    focus, because they differ over who asked. The launch scan is emira sorting a desktop nobody just requested it
+    sort, and being walked through six addresses before your first keystroke is precisely the thing rules were meant
+    to spare you. A window opened *now* is one you opened, and going there is already what a Dock click on an app
+    living on another workspace does.
 - **Externally-initiated focus is first-class.** Cmd-Tab, a Dock click, or an app activating itself can land focus on
   a parked window — the user must never be "focused" on something they can't see. We observe activation
   (`NSWorkspace`) and AX focus changes, and **snap** the viewport to reveal the newly focused window. No cover, no

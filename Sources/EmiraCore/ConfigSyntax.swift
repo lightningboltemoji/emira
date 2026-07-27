@@ -30,12 +30,23 @@ import EmiraMotion
 // [keys]                                # empty by default
 // alt-h = "focus left"
 // cmd-alt-period = "center-column"      # punctuation is named — see `KeyChord.swift`
+//
+// [[window-rules]]                      # none by default; a list, so it repeats
+// app-id = "com.tinyspeck.slackmacgap"  # …or app-id-regex / title / title-regex, all AND'd
+// workspace = "3"                       # where a matching window *starts*
 // ```
 //
 // `[keys]` is the one **open** table: its names are chords the user invents (`KeyChord.swift`) and
 // its values are commands spelled as `CommandSyntax.swift` spells them, both validated here so a typo
 // in either is a diagnostic with a line number rather than a binding that never fires. No bindings
 // ship by default — registering a hotkey takes that chord from every other app on the machine.
+//
+// `[[window-rules]]` is the one **repeating** table, and the only place order in the file means
+// anything: matching rules apply top to bottom, later ones overriding earlier ones field by field
+// (`Rules.swift`). Regular expressions are compiled here rather than at match time, so a broken
+// pattern is a diagnostic about a line in a file the user is looking at instead of a rule that
+// quietly never fires. Write them in `'literal strings'` — a `"…"` string would need every backslash
+// doubled, and `"\d"` isn't an escape this grammar admits at all.
 //
 // `outer-gap` is spelled flat, never dotted: `layout.outer-gap.left` would parse (the grammar
 // flattens to dotted paths) but no reader looks at it, and it makes one key both a scalar and a
@@ -73,6 +84,22 @@ public enum ConfigSyntaxError: Error, Equatable, CustomStringConvertible {
         case .syntax(let line, _), .duplicateKey(let line, _),
              .unknownKey(let line, _), .badValue(let line, _, _):
             return line
+        }
+    }
+
+    /// The same complaint with its key qualified by `prefix`. One caller: an element of an array of
+    /// tables is read as a table of its own, so its keys arrive bare (`app-id`) and a diagnostic about
+    /// one has to name the table it was written under (`window-rules.app-id`).
+    func qualified(by prefix: String) -> ConfigSyntaxError {
+        switch self {
+        case .syntax:
+            return self
+        case .duplicateKey(let line, let key):
+            return .duplicateKey(line: line, key: "\(prefix).\(key)")
+        case .unknownKey(let line, let key):
+            return .unknownKey(line: line, key: "\(prefix).\(key)")
+        case .badValue(let line, let key, let message):
+            return .badValue(line: line, key: "\(prefix).\(key)", message: message)
         }
     }
 }
@@ -118,6 +145,8 @@ extension Config {
 
         table.acceptTable("keys")
         if let bindings = try table.keyBindings("keys") { config.keys = bindings }
+
+        if let rules = try table.windowRules("window-rules") { config.windowRules = rules }
 
         if let leftover = table.leftovers.first {
             throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
@@ -279,6 +308,98 @@ extension TOMLTable {
             bindings.append(KeyBinding(chord, command))
         }
         return bindings
+    }
+
+    /// The `[[window-rules]]` list, in file order — which is the order they apply in. Each element is
+    /// read as a little table of its own, with the same readers everything else uses, and anything it
+    /// leaves behind is an unknown key inside *that* rule.
+    ///
+    /// Two shapes are refused that the type system would happily hold: a rule matching nothing (it
+    /// would apply to every window on the desktop, which nobody means) and a rule doing nothing.
+    fileprivate mutating func windowRules(_ prefix: String) throws -> [WindowRule]? {
+        guard let elements = takeArray(of: prefix) else {
+            // `[window-rules]` written singly parses fine and then goes nowhere, so say which it is
+            // rather than leaving the generic unknown-key complaint to imply the key is misspelled.
+            if let stray = leftovers.first(where: { $0.key == prefix || $0.key.hasPrefix(prefix + ".") }) {
+                throw ConfigSyntaxError.badValue(
+                    line: stray.line, key: prefix,
+                    message: "is a list of rules — write each one under its own '[[\(prefix)]]'")
+            }
+            return nil
+        }
+
+        return try elements.map { element in
+            var body = element.table
+            var rule = WindowRule()
+            do {
+                rule.appId = try body.string("app-id")
+                rule.appIdRegex = try body.pattern("app-id-regex")
+                rule.title = try body.string("title")
+                rule.titleRegex = try body.pattern("title-regex")
+                rule.workspace = try body.workspaceName("workspace")
+                if let leftover = body.leftovers.first {
+                    throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
+                }
+            } catch let error as ConfigSyntaxError {
+                throw error.qualified(by: prefix)
+            }
+            guard rule.hasMatcher else {
+                throw ConfigSyntaxError.badValue(
+                    line: element.line, key: prefix,
+                    message: "must match something — set app-id, app-id-regex, title or title-regex")
+            }
+            guard rule.hasAction else {
+                throw ConfigSyntaxError.badValue(line: element.line, key: prefix,
+                                                 message: "must do something — set workspace")
+            }
+            return rule
+        }
+    }
+
+    /// A plain string value.
+    fileprivate mutating func string(_ key: String) throws -> String? {
+        guard let value = take(key) else { return nil }
+        guard case .string(let text) = value.payload else {
+            throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                             message: "must be text in quotes, not \(value.kindName)")
+        }
+        return text
+    }
+
+    /// A regular expression, **compiled here to prove it is one** and then kept as its source text —
+    /// `Config` is an `Equatable`, `Codable` value and a compiled `Regex` is neither. Matching pays the
+    /// compile again, which costs nothing at the rate windows appear.
+    fileprivate mutating func pattern(_ key: String) throws -> String? {
+        guard let value = take(key) else { return nil }
+        guard case .string(let text) = value.payload else {
+            throw ConfigSyntaxError.badValue(
+                line: value.line, key: key,
+                message: "must be a regular expression in quotes, not \(value.kindName)")
+        }
+        do {
+            _ = try Regex(text)
+        } catch {
+            // First line only: a regex parse error carries a multi-line caret diagram, and a config
+            // diagnostic is one line naming one line.
+            let complaint = String(describing: error)
+                .split(whereSeparator: \.isNewline).first.map(String.init) ?? "unreadable"
+            throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                             message: "is not a regular expression — \(complaint)")
+        }
+        return text
+    }
+
+    /// A workspace address, spelled as the single character that names it. Always quoted, never a bare
+    /// number: the domain runs `1`–`9`, `0`, `a`–`z`, so half of it isn't numeric and the tenth address
+    /// is spelled `0` — a TOML integer could carry neither fact.
+    fileprivate mutating func workspaceName(_ key: String) throws -> WorkspaceName? {
+        guard let value = take(key) else { return nil }
+        guard case .string(let text) = value.payload, let name = WorkspaceName(text) else {
+            throw ConfigSyntaxError.badValue(
+                line: value.line, key: key,
+                message: "must be a workspace name in quotes — \"1\"-\"9\", \"0\", then \"a\"-\"z\"")
+        }
+        return name
     }
 
     /// `8` rather than `8.0` in a diagnostic about an integral bound.

@@ -103,6 +103,12 @@ public enum Engine {
             s.world.insert(snapshot)
             // A non-tiling window (dialog/panel/sheet/float) is the app's to position.
             guard s.world.participatesInStrip(snapshot.id) else { return (s, []) }
+            // A config rule may send it to another workspace entirely, in which case it never joins the
+            // strip in view and this arrival has nothing to animate.
+            if let assigned = assignedWorkspace(s, snapshot), assigned != s.workspaces.focused {
+                let effects = arriveOnWorkspace(&s, snapshot, at: assigned)
+                return (s, effects)
+            }
             s.world.setFocus(snapshot.id)   // a new window takes focus (truth tracked always)
             guard let before else { return (s, []) }   // no display known: nothing to place
             // Bound to a local first — the same tuple-evaluation-order trap as `.command` above.
@@ -1004,6 +1010,45 @@ public enum Engine {
         let edit = LayoutEdit(moved: true, destroyedColumn: nil)
         return finishStructuralEdit(&s, edit, focused: id, mover: id,
                                     animatingFrom: seeded) + announce
+    }
+
+    /// The workspace a config rule sends this arrival to, or `nil` for wherever it would have gone.
+    /// Asked **once**, here, at the only moment a window is new: `Rules.swift` explains why a rule that
+    /// kept applying would be a second authority on a fact `Workspaces` already derives.
+    ///
+    /// Not asked on `windowDeminimized`, which is also an arrival on the strip. Restoring a window from
+    /// the Dock is a deliberate act on a window that already exists — it should land where the user is,
+    /// not be flung back to an address a rule chose for it once.
+    private static func assignedWorkspace(_ s: State, _ snapshot: WindowSnapshot) -> WorkspaceName? {
+        WindowRules.outcome(bundleId: snapshot.bundleId, title: snapshot.title,
+                            in: s.config.windowRules).workspace
+    }
+
+    /// A window whose arrival a rule sends to another workspace. Deliberately *not* `arriveOnStrip`'s
+    /// path: the window never joins the strip the viewport is looking at, so there is no gap for the
+    /// columns to open around and nothing on screen that moves. It goes straight to its place on a
+    /// parked strip, which is a placement like any other.
+    ///
+    /// **Focus is the one thing the two arrivals disagree about, and `wasAlreadyOpen` is the whole
+    /// rule.** The launch scan is emira sorting a desktop nobody just asked it to sort, so a boot
+    /// adoption is silent — the alternative walks the user through six workspaces on the way to their
+    /// first keystroke. A window opened *now* is one the user opened, and following it there is the
+    /// same thing `focusChanged` already does for a Dock click on an app living elsewhere.
+    private static func arriveOnWorkspace(_ s: inout State, _ snapshot: WindowSnapshot,
+                                          at destination: WorkspaceName) -> [Effect] {
+        // `Workspaces.reconcile` admits every newcomer to the *focused* strip, so an assignment is the
+        // move `move-to-workspace` performs, from a column this window has held for one statement. It
+        // is long enough to take the width it arrived with, which `move` then carries across.
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        if snapshot.wasAlreadyOpen { keepExistingWidth(&s, snapshot.id) }
+        s.workspaces.move(window: snapshot.id, to: destination,
+                          insertingAfter: s.workspaces[lastFocusOf: destination])
+
+        guard !snapshot.wasAlreadyOpen else { return emitPlacements(&s) }
+        // Focus is set *inside* the switch, never before it: `switchWorkspace` reads the current focus
+        // to record what the outgoing workspace should return to, and a window on another strip reads
+        // as nothing and wipes it.
+        return switchWorkspace(&s, to: destination, focusing: snapshot.id, animatingFrom: nil)
     }
 
     /// Seed a just-adopted column with the width its window already has, instead of the ladder's first

@@ -299,16 +299,114 @@ import EmiraMotion
     /// read as something else. A partial parser that quietly accepts what it can't represent is worse
     /// than one that refuses.
     @Test func unsupportedTOMLIsRefusedByName() {
-        #expect(Self.diagnostic("[[workspace]]\n")?.description
-                == "line 1: arrays of tables are not supported")
         #expect(Self.diagnostic("[layout]\nx = { a = 1 }\n")?.description
                 == "line 2: inline tables are not supported")
-        #expect(Self.diagnostic("[layout]\nx = 'single'\n")?.description
-                == "line 2: literal strings are not supported — use \"quotes\"")
         #expect(Self.diagnostic("[layout]\nx = [[1]]\n")?.description
                 == "line 2: nested arrays are not supported")
         #expect(Self.diagnostic("[layout]\nwidth-presets = [0.5,\n0.75]\n")?.description
                 == "line 2: unterminated array — it must open and close on one line")
+    }
+
+    /// The two the grammar *did* refuse until `[[window-rules]]` needed them, and they arrived
+    /// together for one reason: a rule matches on regular expressions, and a regex in a `"…"` string
+    /// has to double its backslashes. An unknown table is still an unknown table.
+    @Test func arraysOfTablesAndLiteralStringsAreRead() throws {
+        let table = try TOMLTable.parse("[[workspace]]\nx = 1\n[[workspace]]\nx = 2\n")
+        #expect(table.values["workspace.0.x"]?.payload == .number(1))
+        #expect(table.values["workspace.1.x"]?.payload == .number(2))
+        #expect(Self.diagnostic("[[workspace]]\n")?.description
+                == "line 1: unknown setting 'workspace.0'")
+
+        let literal = try TOMLTable.parse(#"key = 'a\d"b'"#)
+        #expect(literal.values["key"]?.payload == .string(#"a\d"b"#))
+    }
+
+    /// A `'…'` opens a string too, so the comment stripper and the `=` scanner have to see it — and a
+    /// `'` inside a `"…"` is just an apostrophe, not the start of one.
+    @Test func literalStringsAreQuotesForEveryScannerThatCares() throws {
+        let commented = try TOMLTable.parse("key = 'a # b'   # the real comment\n")
+        #expect(commented.values["key"]?.payload == .string("a # b"))
+
+        let apostrophe = try TOMLTable.parse(#"key = "it's fine""#)
+        #expect(apostrophe.values["key"]?.payload == .string("it's fine"))
+
+        #expect(Self.diagnostic("[layout]\nx = 'unterminated\n")?.description
+                == "line 2: unterminated string")
+    }
+
+    // MARK: - [[window-rules]]
+
+    @Test func rulesAreReadInFileOrderWithEveryMatcher() throws {
+        let config = try Self.parse("""
+        [[window-rules]]
+        app-id = "com.tinyspeck.slackmacgap"
+        workspace = "3"
+
+        [[window-rules]]
+        app-id-regex = '^com\\.apple\\.'
+        title-regex  = 'Huddle'
+        workspace    = "z"
+        """)
+
+        #expect(config.windowRules.count == 2)
+        #expect(config.windowRules[0]
+                == WindowRule(appId: "com.tinyspeck.slackmacgap", workspace: WorkspaceName("3")!))
+        #expect(config.windowRules[1]
+                == WindowRule(appIdRegex: #"^com\.apple\."#, titleRegex: "Huddle",
+                              workspace: WorkspaceName("z")!))
+    }
+
+    @Test func aFileWithNoRulesLeavesTheListEmpty() throws {
+        #expect(try Self.parse("[layout]\ncolumn-gap = 4\n").windowRules.isEmpty)
+    }
+
+    /// A rule matching nothing would apply to every window on the desktop and a rule doing nothing
+    /// would apply to none — neither is ever what someone meant, so neither parses.
+    @Test func aRuleMustBothMatchSomethingAndDoSomething() {
+        #expect(Self.diagnostic("[[window-rules]]\nworkspace = \"3\"\n")?.description
+                == "line 1: 'window-rules' must match something — "
+                 + "set app-id, app-id-regex, title or title-regex")
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"com.apple.Safari\"\n")?.description
+                == "line 1: 'window-rules' must do something — set workspace")
+    }
+
+    /// The diagnostic names the key as it is written in the file, not as the flattening keys it.
+    @Test func aBadKeyInsideARuleIsReportedUnderTheTableItIsWrittenIn() {
+        #expect(Self.diagnostic("[[window-rules]]\napp-di = \"x\"\nworkspace = \"3\"\n")?.description
+                == "line 2: unknown setting 'window-rules.app-di'")
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = 3\nworkspace = \"3\"\n")?.description
+                == "line 2: 'window-rules.app-id' must be text in quotes, not a number")
+    }
+
+    /// Compiled here so a broken pattern is a line in a file rather than a rule that never fires.
+    @Test func anUnreadableRegexIsRefusedWithItsLine() throws {
+        let error = try #require(Self.diagnostic("[[window-rules]]\napp-id-regex = 'com.(apple'\n"))
+        #expect(error.line == 2)
+        #expect(error.description.hasPrefix("line 2: 'window-rules.app-id-regex' "
+                                          + "is not a regular expression — "))
+    }
+
+    /// Addresses are quoted characters, never bare numbers: half the domain isn't numeric and the
+    /// tenth address is spelled `"0"`, neither of which a TOML integer could carry.
+    @Test func aWorkspaceIsNamedByItsCharacterInQuotes() throws {
+        let expected = "must be a workspace name in quotes — \"1\"-\"9\", \"0\", then \"a\"-\"z\""
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nworkspace = 3\n")?.description
+                == "line 3: 'window-rules.workspace' \(expected)")
+        #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nworkspace = \"33\"\n")?.description
+                == "line 3: 'window-rules.workspace' \(expected)")
+        // …and every address the domain has does parse, including the tenth.
+        for character in "1234567890az" {
+            let text = "[[window-rules]]\napp-id = \"x\"\nworkspace = \"\(character)\"\n"
+            #expect(try Self.parse(text).windowRules.first?.workspace == WorkspaceName(character))
+        }
+    }
+
+    /// Written with single brackets it parses as a table and then goes nowhere, so the diagnostic says
+    /// which mistake it is instead of leaving "unknown setting" to imply a misspelling.
+    @Test func aSinglyBracketedRulesTableSaysItIsAList() {
+        #expect(Self.diagnostic("[window-rules]\napp-id = \"x\"\nworkspace = \"3\"\n")?.description
+                == "line 1: 'window-rules' is a list of rules — "
+                 + "write each one under its own '[[window-rules]]'")
     }
 
     @Test func malformedLinesAreSyntaxErrors() {

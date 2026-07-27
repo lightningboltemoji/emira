@@ -4,11 +4,16 @@ import Foundation
 // TOML: the subset emira's own config is written in, and nothing else. Anything outside the grammar is
 // a diagnostic naming the line, and every value carries the line it was read on.
 //
-// Supported: `#` comments, whole-line or trailing; `[table]`/`[table.sub]` headers, keys before any
-// header sitting at the top level; `key = value` with bare (`column-gap`) or quoted (`"cmd-alt-h"`)
-// dot-separated keys; values that are `true`/`false`, a number, a `"string"`, or a single-line array of
-// those. Not implemented, each saying so when met: multi-line arrays, inline tables, arrays of tables,
-// literal/multi-line strings, dates.
+// Supported: `#` comments, whole-line or trailing; `[table]`/`[table.sub]` headers and `[[array]]`
+// headers, keys before any header sitting at the top level; `key = value` with bare (`column-gap`) or
+// quoted (`"cmd-alt-h"`) dot-separated keys; values that are `true`/`false`, a number, a `"string"` or
+// a `'literal string'`, or a single-line array of those. Not implemented, each saying so when met:
+// multi-line arrays, inline tables, multi-line strings, dates.
+//
+// The last two additions arrived together with `[[window-rules]]`, and the second is not incidental to
+// the first: a rule matches on regular expressions, and a regex written in a `"…"` string has to double
+// every backslash it contains — `"^com\\.apple\\."` — while `\d` isn't a legal escape here at all and
+// so is a *syntax error* rather than a character class. Literal strings are what that notation is for.
 
 /// One value read out of the config text, plus the line it was written on.
 struct TOMLValue: Equatable {
@@ -72,6 +77,35 @@ struct TOMLTable: Equatable {
             .sorted { ($0.value.line, $0.key) < ($1.value.line, $1.key) }
     }
 
+    /// Remove and return the elements of an array of tables (`[[window-rules]]`), in file order — each
+    /// as a table of its own keys, so the schema reads one element with the very same typed readers it
+    /// uses at the top level, and an element's unread keys are that element's leftovers. `nil` when the
+    /// document declares none.
+    ///
+    /// Elements are addressed by the index `parse` flattened them under, which is an implementation
+    /// detail of the flattening and never appears in a diagnostic: the caller re-qualifies what it
+    /// reports (`ConfigSyntaxError.qualified(by:)`).
+    mutating func takeArray(of prefix: String) -> [(line: Int, table: TOMLTable)]? {
+        let dotted = prefix + "."
+        var elements: [Int: (line: Int, table: TOMLTable)] = [:]
+
+        for path in tables.keys.filter({ $0.hasPrefix(dotted) }) {
+            guard let index = Int(path.dropFirst(dotted.count)) else { continue }
+            let line = tables.removeValue(forKey: path) ?? 0
+            elements[index] = (line, TOMLTable())
+        }
+        for path in values.keys.filter({ $0.hasPrefix(dotted) }) {
+            let rest = path.dropFirst(dotted.count)
+            guard let dot = rest.firstIndex(of: "."), let index = Int(rest[..<dot]),
+                  elements[index] != nil, let value = values.removeValue(forKey: path)
+            else { continue }
+            elements[index]?.table.values[String(rest[rest.index(after: dot)...])] = value
+        }
+
+        guard !elements.isEmpty else { return nil }
+        return elements.sorted { $0.key < $1.key }.map(\.value)
+    }
+
     /// Everything the schema never took, earliest line first — keys, then declared-but-unaccepted table
     /// headers. Sorted by line so the diagnostic points at the *first* mistake.
     var leftovers: [(key: String, line: Int)] {
@@ -86,6 +120,9 @@ struct TOMLTable: Equatable {
     static func parse(_ text: String) throws -> TOMLTable {
         var table = TOMLTable()
         var current: [String] = []
+        // How many elements each `[[array]]` header has been seen with, which is the index the next one
+        // flattens under. Local to a parse: the numbering is positional, never written down by anyone.
+        var elementCounts: [String: Int] = [:]
 
         // Split on `isNewline`, not on `"\n"`: Swift reads `"\r\n"` as one grapheme cluster, so a
         // CRLF file would split into a single line with every key on it.
@@ -96,7 +133,15 @@ struct TOMLTable: Equatable {
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
 
             if trimmed.hasPrefix("[") {
-                current = try header(trimmed, line: line)
+                let (path, isElement) = try header(trimmed, line: line)
+                if isElement {
+                    let dotted = path.joined(separator: ".")
+                    let ordinal = elementCounts[dotted, default: 0]
+                    elementCounts[dotted] = ordinal + 1
+                    current = path + [String(ordinal)]
+                } else {
+                    current = path
+                }
                 table.tables[current.joined(separator: ".")] = line
                 continue
             }
@@ -114,24 +159,33 @@ struct TOMLTable: Equatable {
         return table
     }
 
-    /// `[layout]` / `[animation.scroll]` → the path it sets subsequent keys under.
-    private static func header(_ text: Substring, line: Int) throws -> [String] {
-        if text.hasPrefix("[[") {
-            throw ConfigSyntaxError.syntax(line: line, message: "arrays of tables are not supported")
+    /// `[layout]` / `[animation.scroll]` / `[[window-rules]]` → the path it sets subsequent keys under,
+    /// and whether it opens one *element* of an array of tables rather than the table itself.
+    private static func header(_ text: Substring, line: Int) throws -> (path: [String], isElement: Bool) {
+        let isElement = text.hasPrefix("[[")
+        let closer = isElement ? "]]" : "]"
+        let opened = text.dropFirst(isElement ? 2 : 1)
+        guard let close = indexOfUnquoted("]", in: opened) else {
+            throw ConfigSyntaxError.syntax(line: line,
+                                           message: "unterminated table header — expected '\(closer)'")
         }
-        guard let close = indexOfUnquoted("]", in: text) else {
-            throw ConfigSyntaxError.syntax(line: line, message: "unterminated table header — expected ']'")
+        var after = opened[opened.index(after: close)...]
+        if isElement {
+            guard after.hasPrefix("]") else {
+                throw ConfigSyntaxError.syntax(line: line,
+                                               message: "unterminated table header — expected ']]'")
+            }
+            after = after.dropFirst()
         }
-        let after = text[text.index(after: close)...].trimmed
-        guard after.isEmpty || after.hasPrefix("#") else {
-            throw ConfigSyntaxError.syntax(line: line, message: "unexpected text after ']'")
+        let rest = after.trimmed
+        guard rest.isEmpty || rest.hasPrefix("#") else {
+            throw ConfigSyntaxError.syntax(line: line, message: "unexpected text after '\(closer)'")
         }
-        let inner = text[text.index(after: text.startIndex)..<close]
-        let path = try keyPath(inner, line: line)
+        let path = try keyPath(opened[..<close], line: line)
         guard !path.isEmpty else {
             throw ConfigSyntaxError.syntax(line: line, message: "empty table header")
         }
-        return path
+        return (path, isElement)
     }
 
     /// A dot-separated key expression — headers and key names are spelled the same way. Each segment is
@@ -208,14 +262,17 @@ struct TOMLTable: Equatable {
             }
             return TOMLValue(payload: .string(string), line: line)
         }
+        if text.hasPrefix("'") {
+            let (string, remainder) = try literalString(text, line: line)
+            guard remainder.trimmed.isEmpty else {
+                throw ConfigSyntaxError.syntax(line: line, message: "unexpected text after value")
+            }
+            return TOMLValue(payload: .string(string), line: line)
+        }
         if text == "true"  { return TOMLValue(payload: .bool(true), line: line) }
         if text == "false" { return TOMLValue(payload: .bool(false), line: line) }
         if text.hasPrefix("{") {
             throw ConfigSyntaxError.syntax(line: line, message: "inline tables are not supported")
-        }
-        if text.hasPrefix("'") {
-            throw ConfigSyntaxError.syntax(line: line,
-                                           message: "literal strings are not supported — use \"quotes\"")
         }
         // `Double(_:)` happily reads "inf", "nan" and hex floats ("0x1p3"), none of which a config file
         // should be able to say — so check the charset first and parse second.
@@ -258,6 +315,17 @@ struct TOMLTable: Equatable {
         throw ConfigSyntaxError.syntax(line: line, message: "unterminated string")
     }
 
+    /// Read a `'…'` literal string starting at `text`'s first character; returns it and whatever
+    /// follows. **No escapes at all** — that is the entire point of the notation, and what lets a regex
+    /// be written the way it is written everywhere else. It therefore cannot contain a `'`.
+    private static func literalString(_ text: Substring, line: Int) throws -> (String, Substring) {
+        let body = text.dropFirst()             // past the opening quote
+        guard let close = body.firstIndex(of: "'") else {
+            throw ConfigSyntaxError.syntax(line: line, message: "unterminated string")
+        }
+        return (String(body[..<close]), body[body.index(after: close)...])
+    }
+
     // MARK: - Quote-aware scanning
     //
     // A quoted string may contain the character being looked for: `"#" = "focus left"` is a legal
@@ -269,19 +337,23 @@ struct TOMLTable: Equatable {
         return text[..<hash]
     }
 
+    /// The first `target` outside a string of *either* kind. The open quote is remembered rather than
+    /// counted, so `"it's"` and `'say "hi"'` are each one string, and `\` escapes only inside a `"…"`.
     private static func indexOfUnquoted(_ target: Character, in text: Substring) -> Substring.Index? {
-        var inString = false
+        var quote: Character?
         var escaped = false
         var index = text.startIndex
         while index < text.endIndex {
             let character = text[index]
             if escaped {
                 escaped = false
-            } else if character == "\\" && inString {
+            } else if character == "\\" && quote == "\"" {
                 escaped = true
-            } else if character == "\"" {
-                inString.toggle()
-            } else if character == target && !inString {
+            } else if let open = quote {
+                if character == open { quote = nil }
+            } else if character == "\"" || character == "'" {
+                quote = character
+            } else if character == target {
                 return index
             }
             index = text.index(after: index)

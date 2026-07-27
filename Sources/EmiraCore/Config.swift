@@ -58,6 +58,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// source, not the reducer; what reaches the core is `Event.command`, identical to the CLI's.
     /// Empty by default: a window manager must not confiscate a keystroke nobody asked it to.
     public var keys: [KeyBinding]
+    /// The rules deciding where a window starts (`[[window-rules]]`), in file order — which is
+    /// precedence order, since later matches win (`Rules.swift`). Consulted once per window, when emira
+    /// first meets it, so editing this rearranges nothing that is already on screen.
+    public var windowRules: [WindowRule]
 
     public init(
         widthPresets: PresetCycle = .defaultWidths,
@@ -73,7 +77,8 @@ public struct Config: Sendable, Equatable, Codable {
         windowAnimation: WindowAnimation = .stretch,
         smoothTransitions: Bool = true,
         holdTimeout: Double = 1.0,
-        keys: [KeyBinding] = []
+        keys: [KeyBinding] = [],
+        windowRules: [WindowRule] = []
     ) {
         self.widthPresets = widthPresets
         self.heightPresets = heightPresets
@@ -89,5 +94,6 @@ public struct Config: Sendable, Equatable, Codable {
         self.smoothTransitions = smoothTransitions
         self.holdTimeout = holdTimeout
         self.keys = keys
+        self.windowRules = windowRules
     }
 }
