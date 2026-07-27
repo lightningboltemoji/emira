@@ -7,10 +7,12 @@ import Testing
 // address, per-workspace scroll and focus memory, and the cross-workspace focus a real desktop
 // produces whether or not we handle it.
 //
-// Everything here **snaps** — no cover is raised for a switch and none is expected in these effect
-// streams. That is `PRINCIPLES.md` §4a and a deliberate slice boundary, not a gap: the vertical
-// transition is its own slice, and the last three times this project animated something it found a
-// bug the snap had been hiding.
+// Everything here **snaps**, by configuration rather than by slice boundary since 2026-07-26: the
+// vertical transition landed and a switch now animates, so these fixtures set
+// `smoothTransitions: false` for `EngineTests.halfWidthSnap`'s reason — they are about *where windows
+// end up*, and once a switch animates the reals teleport at the cover's raise rather than in the
+// command's own batch. That is a real supported configuration (§4a: a machine with no Screen Recording
+// grant), not a test-only escape hatch. The motion is `WorkspaceMotionTests`, below.
 
 /// Ref resolution, which lives in `Workspaces` beside the ordering it depends on.
 @Suite struct WorkspaceRefTests {
@@ -81,14 +83,15 @@ import Testing
 
     /// One full-width preset on a 1000-pt display: one column *is* the viewport, so column *n* sits at
     /// strip offset `1000n` and every scroll number below is readable at a glance. Used where the test
-    /// is about *scrolling*.
-    static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]))
+    /// is about *scrolling*. Snapping — see the file header.
+    static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
+                                  smoothTransitions: false)
 
     /// Two half-width columns fill the 1000-pt viewport exactly, so a two-window workspace is entirely
     /// on screen at offset 0. Used where the test is about *tiled versus parked*, because then the
     /// whole strip changes state on a switch and the placement diff has something to say about all of
-    /// it.
-    static let twoUp = EngineTests.halfWidth
+    /// it. Snapping — see the file header.
+    static let twoUp = EngineTests.halfWidthSnap
 
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
@@ -309,7 +312,7 @@ import Testing
 
     /// Moving the last window off a workspace leaves it empty with focus off the strip, and no trap.
     @Test func emptyingTheStripLeavesFocusOffItRatherThanTrapping() {
-        var s = world(1)
+        let s = world(1)
         let (after, fx) = run(s, [.command(.moveToWorkspace(.name(name("z"))))])
         #expect(after.workspaces[.first].isEmpty)
         #expect(after.world.focusedWindow == nil)
@@ -320,7 +323,7 @@ import Testing
     /// The follow verb differs from its sibling in exactly one thing: where focus ends up. The moved
     /// window keeps it, on the destination.
     @Test func theFollowVerbSwitchesAndKeepsFocusOnTheMovedWindow() {
-        var s = world(2, config: Self.twoUp)
+        let s = world(2, config: Self.twoUp)
         let moved = s.world.focusedWindow!
         let (after, fx) = run(s, [.command(.moveToWorkspaceAndFocus(.name(name("a"))))])
 
@@ -443,7 +446,7 @@ import Testing
     /// External focus on a window of the *focused* workspace is unchanged — the plain snap-reveal it
     /// has always been. Only the cross-workspace case is new.
     @Test func externalFocusOnThisWorkspaceStillJustReveals() {
-        var s = world(3)
+        let s = world(3)
         let (after, fx) = run(s, [.focusChanged(WindowId(1))])
         #expect(after.workspaces.focused == .first)
         #expect(after.world.focusedWindow == WindowId(1))
@@ -492,49 +495,462 @@ import Testing
         #expect(run(s, [.dragEnded]).1.isEmpty)
     }
 
-    // MARK: Interaction with an in-flight transition
+    /// The externally-focused switch is the one that still **snaps**, by configuration-independent
+    /// decision rather than by fixture: §4a's rule is about who initiated the motion, and a Cmd-Tab is
+    /// not us. Asserted against a *smooth* config, so the absence of a cover means something.
+    @Test func externalCrossWorkspaceFocusSnapsEvenWithACoverAvailable() {
+        let s = WorkspaceMotionTests.settled(
+            WorkspaceMotionTests.smoothWorld(2, config: WorkspaceMotionTests.twoUp),
+            .moveToWorkspace(.name(other)))
+        let away = WindowId(2)
+        #expect(s.workspaces.workspace(of: away) == other)
+        #expect(!s.motion.isTransitioning)
 
-    /// A cover is a picture of **one** workspace, so a switch arriving mid-scroll abandons it rather
-    /// than retargeting it — the layers are bound to windows that are about to be parked wholesale.
-    @Test func aSwitchMidTransitionEndsTheCoverRatherThanRetargetingIt() {
-        var s = world(4)
-        let (scrolling, scrollFx) = Engine.reduce(s, .command(.focus(.left)))
-        s = scrolling
-        #expect(s.motion.isTransitioning, "the fixture did not open a transition")
-        // Raise the cover, so this is the hardest case: real layers up, reals teleported behind them.
-        for id in EngineTests.capturedIds(in: scrollFx) {
-            s = Engine.reduce(s, .captureReady(id)).0
-        }
-        #expect(s.motion.isCovered)
-
-        let (after, fx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
-        #expect(fx.contains { if case .endTransition = $0 { return true }; return false })
-        #expect(!after.motion.isTransitioning)
+        let (after, fx) = Engine.reduce(s, .focusChanged(away))
         #expect(after.workspaces.focused == other)
-        #expect(onScreen(after).isEmpty)                    // the strip under the cover is fully parked
-        // The cover comes down before anything is re-placed, so the shell never blits a layer for a
-        // window that has just been sent off screen.
-        let endIndex = fx.firstIndex { if case .endTransition = $0 { return true }; return false }
-        let firstPlacement = fx.firstIndex {
-            switch $0 { case .setFrame, .park: return true; default: return false }
-        }
-        #expect(endIndex! < (firstPlacement ?? Int.max))
+        #expect(!after.motion.isTransitioning, "an external focus raised a cover")
+        #expect(!EngineTests.hasEffect(fx) { if case .capture = $0 { return true }; return false })
+        #expect(tiled(in: fx) == [away])
+        #expect(parked(in: fx) == [WindowId(1)])
+    }
+}
+
+// MARK: - The vertical transition (`WORKSPACE-C.md`, 2026-07-26)
+
+/// A workspace switch in **motion**: the outgoing strip slides out and the incoming one slides in,
+/// under the §4b cover.
+///
+/// The claim every test here rests on is that a switch is a **structural edit** in exactly the sense
+/// `Engine.finishStructuralEdit` already meant — before and after are two different geometries, so what
+/// animates is each window's displacement from where it now belongs, decaying to zero. If that holds,
+/// the slice adds no animated quantity, no `Effect`, no `Event` and nothing in `EmiraShell`; the only
+/// new thing in the core is a workspace's vertical offset relative to the focused one
+/// (`Workspaces.verticalOffset`), and it is a **sign** rather than a distance.
+@Suite struct WorkspaceMotionTests {
+
+    // MARK: Fixtures
+
+    /// One screen of vertical travel. The fixture display is 1000×800 with no struts, so `H` is 800 —
+    /// the **physical** working height, which is the choice `Workspaces.verticalOffset` documents.
+    static let screen = EngineTests.displayFrame.height
+
+    /// Two half-width columns fill the viewport exactly: a two-window workspace is entirely on screen,
+    /// so a switch has both strips' worth of windows in scope and nothing incidental parked.
+    static let twoUp = EngineTests.halfWidth
+
+    /// One column *is* the viewport, so each workspace can rest at a different, legible scroll offset —
+    /// what the horizontal-cancellation test needs.
+    static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]))
+
+    static func smoothWorld(_ count: UInt64, config: Config = twoUp) -> State {
+        EngineTests.world(count, config: config)
     }
 
-    /// …and the offset the abandoned scroll was travelling *to* is what the workspace remembers, not
-    /// wherever it happened to be when the key was pressed. `closeTransition` snaps to the target, so
-    /// coming back resumes where the scroll would have come to rest.
-    @Test func anAbandonedScrollIsRememberedAtItsDestination() {
-        var s = world(4)
-        let (scrolling, scrollFx) = Engine.reduce(s, .command(.focus(.left)))
-        s = scrolling
-        let destination = s.motion.viewportOffset.target
-        #expect(destination != s.motion.viewportOffset.current, "the fixture did not scroll")
-        for id in EngineTests.capturedIds(in: scrollFx) { s = Engine.reduce(s, .captureReady(id)).0 }
+    private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
+    private let home = WorkspaceName.first
+    private let other = WorkspaceName("2")!
 
-        s = Engine.reduce(s, .command(.focusWorkspace(.name(other)))).0
-        #expect(EngineTests.approxScalar(s.workspaces[scrollOffsetOf: .first], destination))
-        s = run(s, [focusWorkspace(home)]).0
-        #expect(EngineTests.approxScalar(s.motion.viewportOffset.current, destination))
+    /// Drive a command and stop the instant the cover is up — the moment every claim below is about.
+    private func raiseCover(_ s: State, _ command: Command) -> (State, [Effect]) {
+        var (next, fx) = Engine.reduce(s, .command(command))
+        #expect(next.motion.isTransitioning, "\(command) opened no transition")
+        var raiseFx: [Effect] = []
+        for id in EngineTests.capturedIds(in: fx) {
+            let (after, out) = Engine.reduce(next, .captureReady(id))
+            next = after
+            raiseFx += out
+        }
+        fx += raiseFx
+        #expect(next.motion.isCovered, "\(command) never raised a cover")
+        return (next, fx)
+    }
+
+    /// A window's seeded displacement — where its layer starts relative to where the new geometry
+    /// puts it.
+    private func seed(_ s: State, _ id: WindowId) -> Rect? { s.motion.windowAnimator(id)?.current }
+
+    /// Run one command all the way to rest — a workspace verb now opens a transition, so the effects it
+    /// emits have to be answered or `settle` has nothing to tick towards (a `.capturing` session is
+    /// inert under `tick`).
+    static func settled(_ s: State, _ command: Command) -> State {
+        let (next, fx) = Engine.reduce(s, .command(command))
+        return EngineTests.settle(next, fx)
+    }
+
+    /// Two workspaces, two windows each, at rest and focused on `home`.
+    private func twoPopulatedWorkspaces(_ config: Config = twoUp) -> State {
+        var s = EngineTests.world(4, config: config)
+        // Send the two right-hand windows to `other`, then visit it once so it is materialized with a
+        // memory of its own, and come back.
+        for _ in 0..<2 { s = Self.settled(s, .moveToWorkspace(.name(other))) }
+        s = Self.settled(s, .focusWorkspace(.name(other)))
+        s = Self.settled(s, .focusWorkspace(.name(home)))
+        #expect(s.workspaces.focused == home)
+        #expect(s.workspaces[home].allWindowIds.count == 2)
+        #expect(s.workspaces[other].allWindowIds.count == 2)
+        #expect(!s.motion.isTransitioning)
+        return s
+    }
+
+    // MARK: The one new term
+
+    /// **A sign, not a distance.** Every unfocused workspace is exactly one screen away, whichever
+    /// address it is — which is what bounds a switch's capture scope to two screens of windows rather
+    /// than thirty-six, and what makes `1 → z` the same motion as `1 → 2`.
+    @Test func theVerticalOffsetIsASignAndNeverAMultiple() {
+        var s = Self.smoothWorld(1)
+        let metrics = s.metrics()!
+        s.workspaces.focus(name("5"))
+        #expect(s.workspaces.verticalOffset(of: name("5"), metrics: metrics) == 0)
+        for after in ["6", "9", "0", "a", "z"] {
+            #expect(s.workspaces.verticalOffset(of: name(Character(after)), metrics: metrics)
+                    == Self.screen, "\(after)")
+        }
+        for before in ["4", "1"] {
+            #expect(s.workspaces.verticalOffset(of: name(Character(before)), metrics: metrics)
+                    == -Self.screen, "\(before)")
+        }
+    }
+
+    /// It is the **physical** working height, not the content area: measured against `contentArea` a
+    /// neighbour's edge would come to rest inside the outer-gap margin, which the cover paints.
+    @Test func theTravelIsThePhysicalHeightNotTheContentArea() {
+        var s = Self.smoothWorld(1, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
+                                              outerGaps: EdgeInsets(uniform: 20)))
+        let metrics = s.metrics()!
+        #expect(metrics.contentArea.height < metrics.workingArea.height)
+        s.workspaces.focus(other)
+        #expect(s.workspaces.verticalOffset(of: home, metrics: metrics) == -metrics.workingArea.height)
+
+        // …and a window on the strip above really does clear the screen rather than stopping in the gap.
+        let frames = s.workspaces.naturalFrames(scrollOffset: 0, metrics: metrics)
+        #expect(frames[WindowId(1)]!.maxY <= metrics.workingArea.minY)
+    }
+
+    // MARK: The switch, in flight
+
+    /// **The headline.** One session, scoped to both strips, and both strips seeded with the *same*
+    /// one-screen displacement — which is what makes them travel rigidly, exactly one screen apart,
+    /// instead of two independent slides that have to be kept in step.
+    @Test func bothStripsAreSeededWithOneIdenticalScreenOfDisplacement() {
+        let s = twoPopulatedWorkspaces()
+        let (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
+
+        #expect(after.workspaces.focused == other)
+        // Two windows leaving, two arriving — and nothing else in the world to be in scope.
+        #expect(Set(after.motion.transition!.windows) == Set(after.workspaces.allWindowIds))
+
+        // `other` sorts after `home`, so the incoming strip comes up from below and both strips rise.
+        for id in after.workspaces.allWindowIds {
+            let d = seed(after, id)
+            #expect(d != nil, "\(id) was not displaced")
+            #expect(EngineTests.approx(d!, Rect(x: 0, y: Self.screen, width: 0, height: 0)),
+                    "\(id) seeded \(d!)")
+        }
+    }
+
+    /// The direction follows the lexicographic move, and it is the *only* thing that decides it: going
+    /// back down the address space, both strips fall instead of rising.
+    @Test func theDirectionFollowsTheLexicographicMove() {
+        let s = Self.settled(twoPopulatedWorkspaces(), .focusWorkspace(.name(other)))
+        #expect(s.workspaces.focused == other)
+
+        let (after, _) = raiseCover(s, .focusWorkspace(.name(home)))
+        for id in after.workspaces.allWindowIds {
+            #expect(EngineTests.approx(seed(after, id)!,
+                                       Rect(x: 0, y: -Self.screen, width: 0, height: 0)), "\(id)")
+        }
+    }
+
+    /// **The seed is purely vertical even when the two workspaces rest at different scrolls**, and that
+    /// is the ordering constraint the switch is written around: the outgoing offset is stored and the
+    /// incoming one restored *between* the two `naturalFrames` reads, so the horizontal axis cancels in
+    /// the difference. Get it wrong and the outgoing strip slides sideways as it leaves.
+    @Test func theSeedIsPurelyVerticalAcrossTwoDifferentScrollOffsets() {
+        // Scroll `home` to its right-hand column; `other` is left resting at 0.
+        let s = Self.settled(twoPopulatedWorkspaces(Self.oneColumn), .focus(.right))
+        let homeOffset = s.motion.viewportOffset.current
+        #expect(homeOffset > 0, "the fixture did not scroll")
+
+        let (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
+        #expect(after.workspaces[scrollOffsetOf: home] == homeOffset)
+        for id in after.workspaces.allWindowIds {
+            guard let d = seed(after, id) else { continue }
+            #expect(EngineTests.approxScalar(d.minX, 0), "\(id) was displaced sideways by \(d.minX)")
+            #expect(EngineTests.approxScalar(abs(d.minY), Self.screen), "\(id) moved \(d.minY)")
+        }
+    }
+
+    /// …and the outgoing strip stays put horizontally for the *whole* transition, not merely at the
+    /// seed. It is drawn at its own stored offset, so a scroll happening on the workspace arriving
+    /// cannot drag it along.
+    @Test func theOutgoingStripDoesNotSlideSidewaysAsItLeaves() {
+        let s = twoPopulatedWorkspaces(Self.oneColumn)
+        var (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
+        // Only the windows that were *on screen* when we left are in scope — with one column to a
+        // viewport that is one of the two, and the off-viewport one never had a layer to slide.
+        let leaving = after.workspaces[home].allWindowIds.filter { after.motion.layerId(for: $0) != nil }
+        #expect(!leaving.isEmpty, "nothing from the outgoing strip made it into the cover")
+
+        var seen: [WindowId: Set<Double>] = [:]
+        for _ in 0..<40 {
+            guard after.motion.isCovered else { break }
+            let (next, fx) = Engine.reduce(after, .tick(dt: 1.0 / 120))
+            after = next
+            for id in leaving {
+                guard let layer = after.motion.layerId(for: id),
+                      let frame = EngineTests.layerFrame(of: layer, in: fx) else { continue }
+                seen[id, default: []].insert((frame.minX * 100).rounded() / 100)
+            }
+        }
+        for id in leaving {
+            #expect(seen[id]?.count == 1,
+                    "\(id) took \(seen[id] ?? []) horizontal positions on its way out")
+        }
+    }
+
+    /// The switch **rides** an open cover rather than abandoning it — it is an ordinary structural
+    /// interrupt, so one session throughout and never a second. (Before the vertical transition this
+    /// cut to `endTransition`, because a cover was a picture of one workspace and its layers had
+    /// nowhere to go.)
+    @Test func aSwitchMidScrollRidesTheOpenCover() {
+        // `.left`, because the fixture comes back to `home` focused on its *rightmost* column, where
+        // `.right` is the strip's no-wrap edge and opens nothing.
+        let s = twoPopulatedWorkspaces(Self.oneColumn)
+        var (scrolling, fx) = Engine.reduce(s, .command(.focus(.left)))
+        for id in EngineTests.capturedIds(in: fx) {
+            (scrolling, _) = Engine.reduce(scrolling, .captureReady(id))
+        }
+        #expect(scrolling.motion.isCovered, "the fixture never raised a cover to interrupt")
+        let before = Set(scrolling.motion.transition!.windows)
+
+        let (after, switchFx) = Engine.reduce(scrolling, .command(.focusWorkspace(.name(other))))
+        #expect(!EngineTests.hasEffect(switchFx) { if case .endTransition = $0 { return true }; return false })
+        #expect(after.motion.isCovered, "the switch tore the cover down")
+        #expect(before.isSubset(of: Set(after.motion.transition!.windows)))
+        #expect(after.workspaces.focused == other)
+
+        // …and it settles onto the truth with nothing left in flight.
+        let (done, _) = EngineTests.drive(after)
+        #expect(!done.motion.isTransitioning)
+        #expect(done.motion.windowAnimators.isEmpty)
+        #expect(Engine.reduce(done, .dragEnded).1.isEmpty,
+                "the settled desktop still wanted re-placing")
+    }
+
+    /// A second switch mid-flight is a **nudge**, not a restart: position continuous, velocity carried,
+    /// still one session. Two presses of `next-workspace` land you two addresses along without the
+    /// layers jumping back to where the first press started them.
+    ///
+    /// **And a strip you have already left is not moved again**, which is the sign function's other
+    /// half and worth pinning: `1` is one screen above `2` and one screen above `3` alike, so the first
+    /// press's outgoing strip simply finishes the slide it was on while `2` — now the outgoing one —
+    /// takes the new screen. That is what keeps a spammed switch a two-strip motion instead of an
+    /// accelerating ribbon.
+    @Test func aSecondSwitchMidFlightIsOneSessionAndOneNudge() {
+        let s = twoPopulatedWorkspaces()
+        var (after, _) = raiseCover(s, .focusWorkspace(.next))
+        for _ in 0..<4 { (after, _) = Engine.reduce(after, .tick(dt: 1.0 / 120)) }
+
+        let arriving = after.workspaces[other].allWindowIds.first!
+        let alreadyLeft = after.workspaces[home].allWindowIds.first!
+        let midFlight = after.motion.windowAnimator(arriving)!.current
+        let settling = after.motion.windowAnimator(alreadyLeft)!.current
+        #expect(midFlight.minY < Self.screen && midFlight.minY > 0, "the fixture never got mid-flight")
+
+        let (again, _) = Engine.reduce(after, .command(.focusWorkspace(.next)))
+        #expect(again.workspaces.focused == name("3"))
+        #expect(again.motion.isCovered, "the second press opened a second session")
+        // `2` is the outgoing strip now: the nudge *adds* the new screen to what was still in flight,
+        // so the layer never jumps — one continuous motion through two addresses.
+        #expect(EngineTests.approxScalar(again.motion.windowAnimator(arriving)!.current.minY,
+                                         midFlight.minY + Self.screen))
+        // …while `1`, already one screen up and still one screen up, is left alone to finish.
+        #expect(EngineTests.approxScalar(again.motion.windowAnimator(alreadyLeft)!.current.minY,
+                                         settling.minY))
+    }
+
+    /// Switching onto an **empty** workspace still animates: the outgoing strip slides away and what is
+    /// revealed is bare desktop. Focus is left resting off the strip, exactly as it was when this
+    /// snapped.
+    @Test func switchingToAnEmptyWorkspaceStillSlidesTheOutgoingStripAway() {
+        let s = Self.smoothWorld(2)
+        let (after, _) = raiseCover(s, .focusWorkspace(.name(name("9"))))
+        #expect(after.workspaces[name("9")].isEmpty)
+        #expect(after.motion.transition!.windows.count == 2)
+        for id in [WindowId(1), WindowId(2)] {
+            #expect(EngineTests.approx(seed(after, id)!,
+                                       Rect(x: 0, y: Self.screen, width: 0, height: 0)))
+        }
+        #expect(after.layout.columnIndex(ofWindow: after.world.focusedWindow ?? WindowId(0)) == nil)
+    }
+
+    // MARK: The two move verbs
+
+    /// `move-to-workspace` without following falls out of the same table with nothing about workspaces
+    /// written into it: the moved window's "after" is one screen away, so it **flies toward its new
+    /// workspace** while the columns it left close ranks behind it — and it is the mover, so it is
+    /// drawn over them on the way.
+    @Test func movingWithoutFollowingFliesTheWindowTowardItsNewWorkspace() {
+        let s = Self.smoothWorld(2)
+        let moved = s.world.focusedWindow!
+        let (after, fx) = raiseCover(s, .moveToWorkspace(.name(other)))
+
+        #expect(after.workspaces.focused == home)
+        #expect(after.workspaces[other].allWindowIds == [moved])
+        // One screen *down*, because `other` sorts after the workspace we are still on — and the seed
+        // carries the horizontal move too, because it flies to where it will genuinely be: the
+        // destination's first column rather than the second column it is leaving.
+        let flight = seed(after, moved)!
+        #expect(EngineTests.approxScalar(flight.minY, -Self.screen))
+        #expect(flight.minX > 0, "the moved window did not travel to its new column")
+        // The survivor closes ranks — horizontally, on the strip it is still on.
+        let stayed = WindowId(1)
+        #expect(EngineTests.approxScalar(seed(after, stayed)?.minY ?? 0, 0))
+        #expect(after.motion.elevatedLayer == after.motion.layerId(for: moved))
+        #expect(EngineTests.hasEffect(fx) { if case .elevateLayer = $0 { return true }; return false })
+    }
+
+    /// The **follow** verb reads differently, and the difference is geometry rather than choreography:
+    /// the moved window is on the focused workspace both before *and* after, so its seed is purely
+    /// horizontal — it glides into its new column while everything else on both strips travels a
+    /// screen. That is what "the window came with you" looks like.
+    @Test func theFollowVerbCarriesTheMovedWindowHorizontally() {
+        let s = twoPopulatedWorkspaces()
+        let moved = s.world.focusedWindow!
+        let (after, _) = raiseCover(s, .moveToWorkspaceAndFocus(.name(other)))
+
+        #expect(after.workspaces.focused == other)
+        #expect(after.world.focusedWindow == moved)
+        #expect(EngineTests.approxScalar(seed(after, moved)?.minY ?? 0, 0),
+                "the followed window travelled vertically")
+        for id in after.workspaces.allWindowIds where id != moved {
+            #expect(EngineTests.approxScalar(abs(seed(after, id)?.minY ?? 0), Self.screen), "\(id)")
+        }
+    }
+
+    // MARK: The raise blits (§2.4)
+
+    /// **A layer starts at its capture-time frame, and for a switch that is a screen away from where it
+    /// belongs.** The incoming workspace's windows are captured at their 1 px park slivers, so the
+    /// raise must place every layer as well as create it — inside the same presentation run, before any
+    /// real window moves, or the first frame shows the whole arriving strip stacked in the corner.
+    @Test func theRaiseBlitsEveryLayerBeforeAnyRealWindowMoves() {
+        let s = twoPopulatedWorkspaces()
+        var (next, fx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
+        var raise: [Effect] = []
+        for id in EngineTests.capturedIds(in: fx) {
+            let (after, out) = Engine.reduce(next, .captureReady(id))
+            next = after
+            if !out.isEmpty { raise = out }
+        }
+        #expect(next.motion.isCovered)
+
+        // Every binding is placed…
+        let bindings = next.motion.transition!.bindings
+        for binding in bindings {
+            #expect(EngineTests.layerFrame(of: binding.layer, in: raise) != nil,
+                    "\(binding.window) was raised without being placed")
+        }
+        // …and the whole presentation run precedes the first `setFrame`/`park`, so the shell wraps it
+        // in one `CATransaction` and no real window has moved when it lands.
+        let lastBlit = raise.lastIndex { if case .setLayerFrame = $0 { return true }; return false }
+        let firstMove = raise.firstIndex {
+            switch $0 { case .setFrame, .park: return true; default: return false }
+        }
+        #expect(lastBlit != nil && firstMove != nil && lastBlit! < firstMove!)
+
+        // And the placement is the *old* geometry exactly, so the raise cannot pop: the arriving strip
+        // sits one screen below, where the eye has not seen it yet.
+        let metrics = next.metrics()!
+        for binding in bindings where next.workspaces[other].columnIndex(ofWindow: binding.window) != nil {
+            let placed = EngineTests.layerFrame(of: binding.layer, in: raise)!
+            #expect(EngineTests.approxScalar(placed.minY, metrics.contentArea.minY + Self.screen),
+                    "\(binding.window) was blitted to \(placed)")
+        }
+    }
+
+    // MARK: The residual, characterized rather than hidden (§2.5)
+
+    /// Spam `focus-workspace next` across a populated address space and report the widest hole the
+    /// cover ever showed — the same frame-stepped instrument the scroll defects were measured with
+    /// (`EngineTests.LatentWorld`).
+    ///
+    /// `gapFrames == nil` lets each press run to rest before the next one, whatever the capture latency
+    /// costs; a number presses again after exactly that many frames, settled or not.
+    private static func worstHoleWhileSwitching(presses: Int, gapFrames: Int?,
+                                                captureLatency: Int) -> Double {
+        var w = EngineTests.LatentWorld(EngineTests.world(8, config: twoUp),
+                                        captureLatency: captureLatency)
+        var worst = 0.0
+        func run(to rest: Bool, frames: Int) {
+            var step = 0
+            while step < frames || (rest && w.state.motion.isTransitioning) {
+                guard step < 5000 else { return }
+                w.step()
+                worst = max(worst, w.hole())
+                step += 1
+            }
+        }
+        // Two windows on each of "1"…"4", so every address the spam walks onto has something to draw.
+        for target in ["4", "4", "3", "3", "2", "2"] {
+            w.send(.command(.moveToWorkspace(.name(WorkspaceName(Character(target))!))))
+            run(to: true, frames: 0)
+        }
+        worst = 0                                   // the fixture's own motion is not under test
+
+        for _ in 0..<presses {
+            w.send(.command(.focusWorkspace(.next)))
+            worst = max(worst, w.hole())
+            run(to: gapFrames == nil, frames: gapFrames ?? 0)
+        }
+        run(to: true, frames: 0)
+        return worst
+    }
+
+    /// **A switch allowed to finish never shows a hole, at any capture latency.** An uninterrupted
+    /// transition raises no cover until every still is in, so the two strips it is a picture of are
+    /// always both there. This is the guarantee; the next test is its boundary.
+    @Test(arguments: [4, 8, 30, 60] as [Int])
+    func aSwitchAllowedToSettleNeverShowsAHole(captureLatency: Int) {
+        #expect(Self.worstHoleWhileSwitching(presses: 4, gapFrames: nil,
+                                             captureLatency: captureLatency) == 0)
+    }
+
+    /// **A second press that lands before the cover is up costs nothing**, because its captures simply
+    /// join the batch the raise is already waiting on. That is most of the fast-spam case: the head is
+    /// the slowest part of a transition, so the presses that arrive soonest are the ones the raise
+    /// absorbs for free.
+    @Test(arguments: [2, 4, 8, 16, 30] as [Int])
+    func aSecondPressBeforeTheRaiseJoinsTheBatchForFree(captureLatency: Int) {
+        #expect(Self.worstHoleWhileSwitching(presses: 8, gapFrames: captureLatency,
+                                             captureLatency: captureLatency) == 0)
+    }
+
+    /// **And the residual is a number rather than a hope — a bigger number than the plan expected, and
+    /// this is where it is written down.** A second `next-workspace` pressed *after* the cover is up
+    /// aims at a third workspace nothing has captured, and its stills take a round trip. What the user
+    /// sees meanwhile is a band of desktop at the screen edge the arriving strip is entering from.
+    ///
+    /// **A switch has no runway, and that is the difference from a scroll.** The shoulder buys a scroll
+    /// a whole column of travel before the newcomer's leading edge reaches the viewport. The next
+    /// workspace is *flush* with the screen edge — one screen away is exactly one screen — so its layers
+    /// begin exposing the band on the very first frame of motion. The band's thickness is therefore
+    /// simply how far the spring travels during the capture round trip, and these are the measured
+    /// numbers: **65 pt at a 2-frame batch, 195 pt at 4 (≈ the real 36 ms one), 450 pt at 8**, on an
+    /// 800 pt-tall screen, saturating at the column width once the whole layer is inside.
+    ///
+    /// It is accepted rather than closed, following `WORKSPACE-C.md` §2.5: the fix is to capture
+    /// shoulder *workspaces*, which is a whole extra screen of stills on **every** switch to cover a
+    /// press rate faster than the animation. Bounded here so a regression that made it worse would fail
+    /// loudly, and flagged in `PRINCIPLES.md` §10 as a visual call for a real desktop.
+    @Test(arguments: zip([2, 4, 8] as [Int], [70.0, 200.0, 460.0] as [Double]))
+    func aSwitchInterruptedAfterTheRaiseExposesABandBoundedByTheSpring(
+        captureLatency: Int, bound: Double
+    ) {
+        let worst = Self.worstHoleWhileSwitching(presses: 8, gapFrames: captureLatency * 3,
+                                                 captureLatency: captureLatency)
+        #expect(worst > 0, "the fixture stopped reproducing the residual it exists to bound")
+        #expect(worst <= bound, "an interrupted switch exposed \(worst) pt of desktop")
     }
 }

@@ -700,7 +700,10 @@ import EmiraMotion
     /// capture synchronously, so a hole that exists only between a `capture` and its `captureReady` is
     /// invisible to it. Here an effect resolves a fixed number of frames after it is emitted, and
     /// commands keep arriving while the answers are still out.
-    private struct LatentWorld {
+    ///
+    /// Internal rather than private since 2026-07-26: the workspace switch is measured with the same
+    /// instrument (`WorkspaceMotionTests`), and a second copy of a clock is a second clock.
+    struct LatentWorld {
         var state: State
         var frame = 0
         let captureLatency: Int
@@ -732,22 +735,35 @@ import EmiraMotion
             frame += 1
         }
 
-        /// The widest band of viewport a window wants to occupy and has no layer to be drawn with —
+        /// The thickest stripe of viewport a window wants to occupy and has no layer to be drawn with —
         /// i.e. how much wallpaper the cover is showing where a window should be. Zero unless the cover
         /// is up: before the raise the user is looking at the real desktop, which is the truth and not
         /// a hole.
+        ///
+        /// **Asked of every workspace, clipped on both axes, and reported as the exposed rectangle's
+        /// shorter side** (2026-07-26). Until the vertical transition there was only ever one strip under
+        /// a cover and every window in it spanned the viewport's full height, so the horizontal overlap
+        /// *was* the stripe's thickness. A workspace one screen up or down overlaps horizontally the
+        /// whole time it is off screen — measured that way it would read as a permanent full-width hole —
+        /// and when it does begin to show, what shows is a band at the screen's edge whose thickness is
+        /// vertical. The shorter side is the same number in both cases: how far into the screen the
+        /// exposure reaches.
         func hole() -> Double {
             guard state.motion.isCovered, let metrics = state.metrics() else { return 0 }
             let view = metrics.workingArea
-            let frames = state.layout.naturalFrames(scrollOffset: state.motion.viewportOffset.current,
-                                                    metrics: metrics,
-                                                    widths: state.motion.currentColumnWidths)
+            let frames = state.workspaces.naturalFrames(
+                scrollOffset: state.motion.viewportOffset.current,
+                metrics: metrics,
+                widths: state.motion.currentColumnWidths)
             var worst = 0.0
-            for id in state.layout.allWindowIds where state.motion.layerId(for: id) == nil {
+            for id in state.workspaces.allWindowIds where state.motion.layerId(for: id) == nil {
                 guard let natural = frames[id] else { continue }
                 // Exactly the rect `Engine.emitLayerFrames` would blit, if this window had a layer.
                 let f = natural.displaced(by: state.motion.displacement(of: id))
-                worst = max(worst, min(min(f.maxX, view.maxX) - max(f.minX, view.minX), view.width))
+                let width = min(min(f.maxX, view.maxX) - max(f.minX, view.minX), view.width)
+                let height = min(min(f.maxY, view.maxY) - max(f.minY, view.minY), view.height)
+                guard width > 0, height > 0 else { continue }
+                worst = max(worst, min(width, height))
             }
             return worst
         }

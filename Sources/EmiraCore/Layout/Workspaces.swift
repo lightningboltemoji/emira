@@ -39,6 +39,15 @@ import Foundation
 // fields nothing could write. While a workspace is focused the live authorities are
 // `Motion.viewportOffset` and `World.focusedWindow`; the record is what makes coming back *coming back*
 // rather than starting over. Per-monitor workspace sets are still M6's other half.
+//
+// **And then the set got a second axis, under the cover only (2026-07-26).** A switch stopped jumping:
+// the outgoing strip slides out and the incoming one slides in. That needed exactly one new term here —
+// `verticalOffset(of:metrics:)`, a *sign* rather than a distance — and one query built on it,
+// `naturalFrames(scrollOffset:metrics:widths:)`. Both are **presentation plane only**: `targetFrames`
+// is unchanged, because on the truth plane an off-workspace window is parked and a park is a frame like
+// any other. The animation itself is `Engine.finishStructuralEdit`'s, unaltered — a switch is a
+// structural edit in exactly the sense that function already means, so what moves is each window's
+// displacement from where it now belongs, decaying to zero.
 
 /// One materialized workspace: its strip, plus the two things it remembers about having been looked at.
 ///
@@ -388,6 +397,68 @@ public struct Workspaces: Sendable, Equatable, Codable {
             // unreachable rather than a policy.
             frames.merge(strip.parkedFrames(metrics: metrics, parkingFrom: ordinal)) { existing, _ in existing }
             ordinal += strip.allWindowIds.count
+        }
+        return frames
+    }
+
+    /// Where `name`'s strip is drawn **relative to the focused one** on the presentation plane: nothing
+    /// for the focused workspace, one screen *down* for an address that sorts after it, one screen *up*
+    /// for one that sorts before (2026-07-26).
+    ///
+    /// **A sign, not a distance, and that is the decision** — the one new geometric term the vertical
+    /// transition needed. Every unfocused workspace sits exactly one screen away, so a switch from `1`
+    /// to `z` animates the same one screen `1` → `2` does. Taken as a *distance* (rank difference ×
+    /// height) the address space would be a 36-screen-tall ribbon, a jump across it would sweep
+    /// thirty-four workspaces nobody asked to see, and the capture scope would be the whole desktop set
+    /// rather than the two strips actually involved.
+    ///
+    /// **The physical extent, not the content area.** Measured against `contentArea` a neighbour's edge
+    /// would come to rest inside the outer-gap margin instead of clearing the screen — visible, because
+    /// the cover paints that margin (an outer gap is *crossed in motion*, unlike a strut; see
+    /// `LayoutMetrics.outerGaps`). The one residual is inherited rather than introduced: `Column`'s
+    /// height water-fill lets a floored window overflow its box (`Column.resolvedHeights`, whose
+    /// answer is the scroll-within-column slice), and such a window is *already* hanging off the
+    /// bottom of the display at rest — so one screen up it can show that overflow at the top of the
+    /// screen mid-switch. Widening the travel to `max(height, tallest)` would fix it and cost the
+    /// property this whole model rests on: the two strips must move by the **same** number or they do
+    /// not stay one screen apart, and a content-dependent one is a different number per strip.
+    ///
+    /// **Presentation plane only.** `targetFrames` has no counterpart, because on the truth plane an
+    /// off-workspace window is simply *parked* — the same split `Motion.columnWidths` and
+    /// `windowAnimators` already keep. There is no vertical axis on the strip; there is one under the
+    /// cover, for the length of a transition.
+    public func verticalOffset(of name: WorkspaceName, metrics: LayoutMetrics) -> Double {
+        guard name != focused else { return 0 }
+        return name > focused ? metrics.workingArea.height : -metrics.workingArea.height
+    }
+
+    /// The **presentation-plane** frame for every window on every workspace — `Layout.naturalFrames`
+    /// across the whole set, each unfocused strip pushed one screen off by `verticalOffset(of:metrics:)`.
+    /// What the reconstruction's layers animate to, and the query a workspace switch is a difference of.
+    ///
+    /// **Each unfocused strip resolves at its own stored `scrollOffset`, not at the live animator**, and
+    /// that is the one thing here that is easy to get wrong and fails visibly. The viewport offset is the
+    /// *focused* workspace's scroll; applying it to a strip that is leaving would slide that strip
+    /// sideways as it goes, in step with a scroll happening on the workspace arriving. Frozen at its own
+    /// remembered offset, an outgoing strip travels straight up or down — which is what the eye reads as
+    /// one desktop replacing another.
+    ///
+    /// `widths` reaches every strip, deliberately: `ColumnId`s are one space across the whole set
+    /// (`ColumnAllocator`), so an in-flight resize on a workspace being switched away from keeps
+    /// animating rather than snapping to its preset as it leaves.
+    ///
+    /// Identical to `focusedStrip.naturalFrames(…)` while one workspace is materialized, which is what
+    /// makes this safe to substitute at every existing call site.
+    public func naturalFrames(scrollOffset: Double, metrics: LayoutMetrics,
+                              widths: [ColumnId: Double] = [:]) -> [WindowId: Rect] {
+        var frames = focusedStrip.naturalFrames(scrollOffset: scrollOffset, metrics: metrics,
+                                                widths: widths)
+        for name in materialized where name != focused {
+            let dy = verticalOffset(of: name, metrics: metrics)
+            for (id, frame) in self[name].naturalFrames(scrollOffset: self[scrollOffsetOf: name],
+                                                        metrics: metrics, widths: widths) {
+                frames[id] = frame.offsetBy(dx: 0, dy: dy)
+            }
         }
         return frames
     }

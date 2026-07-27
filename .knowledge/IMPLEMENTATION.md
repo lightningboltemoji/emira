@@ -548,10 +548,31 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     workspaces (reconcile, `targetFrames`, placement emission, the teleport behind a cover, and a placement
     correction, which asks whichever strip holds the window) stop using it. `visibleWindowIds` still asks the
     **focused** strip alone, which is the whole model in one line: everything else parks by construction.
-  - **A switch is `focused` moving plus a placement pass.** "Everything that is not the focused strip is parked" was
-    already what `targetFrames` meant, and a park is a frame like any other — so the verbs needed no new `Effect` and
-    nothing in `EmiraShell`. What they genuinely needed was *memory*: each strip's scroll offset and last-focused
-    window, written on the way out and read on the way in, which is still the only moment either is touched.
+  - **A switch is `focused` moving plus a placement pass, and on the presentation plane it is a structural edit.**
+    "Everything that is not the focused strip is parked" was already what `targetFrames` meant, and a park is a frame
+    like any other — so the verbs needed no new `Effect` and nothing in `EmiraShell`. What they genuinely needed was
+    *memory*: each strip's scroll offset and last-focused window, written on the way out and read on the way in.
+  - **The vertical term is a *sign*, not a distance** (`Workspaces.verticalOffset`). Every unfocused workspace sits
+    exactly one screen away, so `1 → z` animates the same one screen as `1 → 2`. Taken as a distance the address space
+    would be a 36-screen ribbon, a jump across it would sweep thirty-four workspaces nobody asked to see, and the
+    capture scope would be the whole desktop set. It also leaves a *third* workspace's offset unchanged by a switch
+    that does not involve it, which is what keeps a spammed switch a two-strip motion rather than an accelerating
+    ribbon. `H` is the **physical** working height: measured against the content area a neighbour would come to rest
+    inside the outer-gap margin, which the cover paints.
+  - **It lives in `Workspaces`, not `Layout`, and is presentation-plane only.** A single strip has no opinion about
+    workspaces and gains nothing from acquiring one, so the container that already owns the address ordering offsets
+    the strip's answer. `targetFrames` has no counterpart, because on the truth plane an off-workspace window is
+    simply parked.
+  - **The arithmetic is a two-row table and everything else falls out of it.** With the new address sorting after the
+    old, a window on the outgoing strip goes `y → y − H` and one on the incoming strip `y + H → y`, so **both seed
+    `(0, +H)`** and the two strips travel rigidly one screen apart, from a loop with nothing about workspaces written
+    into it. `move-to-workspace` needed nothing added: the moved window's "after" is a screen away, so it flies toward
+    its new workspace while the columns it left close ranks behind it. The **follow** verb reads differently for a
+    reason that is geometry rather than choreography — the moved window is on the focused workspace both before *and*
+    after, so its seed is purely horizontal: it glides into its new column while everything else travels a screen.
+  - **Each unfocused strip resolves at its own stored scroll offset.** Applied the live animator, an outgoing strip
+    would slide *sideways* as it left, in step with a scroll happening on the workspace arriving. Frozen at its own
+    remembered offset it travels straight up or down, which is what reads as one desktop replacing another.
   - **`WorkspaceRef` has five cases** — a name, plus `next`/`previous` (one address, occupied or not) and
     `nextOccupied`/`previousOccupied` (the next address *holding* a window). Both pairs clamp at the ends rather than
     wrapping, and resolving to the workspace you are on is how "nowhere to go" is spelled, so the edge rule exists
@@ -567,9 +588,25 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     nothing.
   - **Cross-workspace `focusChanged` is the path only the product produces.** Cmd-Tab, a Dock click or an app raising
     its own window can name a window on a workspace nobody is looking at, and the reveal promise is about the
-    *window*. It snap-switches, then reveals. Two orderings are load-bearing: focus is recorded **inside** the switch
-    (setting it first would make the outgoing record read `nil` and wipe the memory of the workspace being left), and
-    **no focus effect is emitted**, which makes the echo loop unrepresentable rather than merely unlikely.
+    *window*. It **snaps** — we made no motion, so we owe no animation — spelled by handing the shared path no
+    before-geometry, so there is one animate-or-snap guard rather than a second code path. Two orderings are
+    load-bearing: focus is recorded **inside** the switch (setting it first would make the outgoing record read `nil`
+    and wipe the memory of the workspace being left), and **no focus effect is emitted**, which makes the echo loop
+    unrepresentable rather than merely unlikely.
+  - **A switch mid-transition rides the open cover** rather than abandoning it, because the layers have somewhere to
+    go — one screen up or down. And the outgoing workspace remembers where its strip **was**, not where an abandoned
+    scroll was heading: remembering the target would jump it the remaining distance sideways on its way out. Nothing
+    is lost, since coming back re-reveals the remembered focus, which finishes the interrupted scroll.
+  - **The two `naturalFrames` reads are no longer taken at the same offset**, and that is the one structural change
+    the shared edit path needed. For every edit on one strip they are the same number; for a switch they *must*
+    differ, because the offset is a per-workspace quantity and switching restores the incoming strip's remembered
+    scroll in between. That store-then-restore sitting **between the two reads** is exactly what makes the horizontal
+    axis cancel and the seed purely vertical.
+  - **The scope ordering had to span workspaces.** Ordered by the focused strip's window ids, the whole departing half
+    would have been silently dropped after a switch. Ordered by the workspace set's it is identical whenever the scope
+    is confined to one strip, which is every command but these. Across two strips z-order is arbitrary anyway — they
+    are one screen apart and never overlap — which is also why a plain `focus-workspace` elevates nothing while the
+    two move verbs elevate the window that moved.
 - **Rules engine:** pure predicates over window metadata → assign-to-workspace / float / initial-width. Definitions
   come from config; evaluation is pure. Built-in taxonomy defaults: only `AXStandardWindow` tiles;
   dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
