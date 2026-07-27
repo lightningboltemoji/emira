@@ -692,8 +692,8 @@ public enum Engine {
     ///
     /// Three snaps remain, in the order they are cheapest to decide: an edit that changed nothing (an
     /// edge press stays silent), no capture capability or an empty scope (§4a — the strip still lands
-    /// exactly where the animated path would have converged), and an edit that displaced nothing the
-    /// cover could show.
+    /// exactly where the animated path would have converged), and an edit that moved neither a window
+    /// nor the viewport — nothing the cover could show.
     ///
     /// - Parameter mover: the window drawn on top, or `nil` when the edit has no such window. A
     ///   *departure* (`departFromStrip`) is the case with none: nothing passes through anything else,
@@ -757,7 +757,18 @@ public enum Engine {
 
         // An edit no window on screen can see — e.g. reordering two columns that are both parked.
         // Nothing to cover, so don't stand one up.
-        guard displaced > 0 || s.motion.isTransitioning else {
+        //
+        // **The viewport is the other way an edit is visible, and closing the strip's last column is
+        // the case where it is the only way** (2026-07-26). A departure at the end displaces nobody:
+        // every survivor keeps the strip position it had, and what changed is that the strip is now a
+        // column shorter than the offset the viewport is resting at — so `end` came back a column to
+        // the left, out of `offsetToReveal`'s clamp. Asking only about displacement therefore called
+        // the one departure that moves *everything on screen* invisible, and it snapped: closing at
+        // the left or in the middle animated, closing at the right jumped. The two quantities are
+        // independent (the displacements are measured at a fixed offset precisely so the scroll
+        // cancels out of them), so the question has to be asked of both.
+        let scrolls = !approximatelyEqualScalar(end, start)
+        guard displaced > 0 || scrolls || s.motion.isTransitioning else {
             s.motion.snapViewport(to: end)
             return emitPlacements(&s)
         }

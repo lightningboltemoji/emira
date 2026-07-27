@@ -296,6 +296,40 @@ import EmiraMotion
                 "one column is narrower than the viewport, so there is nowhere to be but the start")
     }
 
+    /// Closing the **last** column, from the far right. The reported case (2026-07-26): a close at the
+    /// left or in the middle animates, and this one snapped.
+    ///
+    /// It is the one departure that displaces nothing. Every survivor keeps the strip position it had —
+    /// only the strip got shorter — so the entire motion is the viewport's own clamp, and a guard that
+    /// asks "did anything move on the strip?" answers no while the user is about to watch every window
+    /// on screen jump right by a column.
+    @Test func closingTheLastColumnScrollsBackInMotion() {
+        var s = Self.booted(Self.half)
+        var fx: [Effect] = []
+        (s, fx) = Self.run(s, (1...6).map { .windowCreated(Self.snap($0)) })
+        (s, fx) = Self.run(s, (1..<6).map { _ in .command(.focus(.right)) })
+        s = Self.settle(s, fx)
+        #expect(!s.motion.isTransitioning, "resting at the far end of the strip")
+        let before = s.motion.viewportOffset.current
+        #expect(before > 0.5, "with the strip genuinely scrolled")
+
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(6)))
+        #expect(s.motion.isTransitioning, "closing the last column opens the signature transition")
+        #expect(s.motion.viewportOffset.target < before - 0.5,
+                "aiming back inside the strip it just shortened")
+        #expect(abs(s.motion.viewportOffset.current - before) <= 0.5,
+                "and starting from where the viewport already was — the collapse is motion, not a jump")
+
+        // It really does arrive, and exactly where the snapping configuration puts it at once.
+        let settled = Self.settle(s, fx)
+        let metrics = settled.metrics()!
+        #expect(abs(settled.motion.viewportOffset.current
+                    - settled.layout.clampScrollOffset(before, metrics: metrics)) <= 0.5)
+        #expect(settled.layout.visibleWindowIds(scrollOffset: settled.motion.viewportOffset.current,
+                                                metrics: metrics).count == 2,
+                "both surviving columns the viewport can hold are on screen")
+    }
+
     // MARK: A window adopted mid-transition is placed and covered, not dropped
 
     @Test func aWindowAdoptedDuringATransitionIsPlacedAndCaptured() {

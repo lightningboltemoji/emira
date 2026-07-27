@@ -382,6 +382,11 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       *travel* rather than appear, with every column it displaces handled by the ordinary loop.
     - **Boot animates too, deliberately**: the launch scan's adoptions coalesce into one session, and carving out an
       exception would mean a second vocabulary for "a window we found" versus "a window you made".
+    - **Whether an edit is worth a cover asks about *both* animated quantities.** Counting displacements alone is not
+      the same claim as "nothing moves": the displacements are deliberately measured at a *fixed* offset on both sides
+      of the edit so the scroll cancels out of them, which means a scroll can never show up as one. A departure at the
+      far end of the strip displaces nobody — every survivor keeps its strip position, and the only thing that changed
+      is that the strip is now a column shorter than the offset the viewport rests at.
 - **Geometry & the strip:** infinite-axis coordinates, column widths/heights, inner gaps (`column-gap`,
   `window-gap`), **outer gaps** at the edges of the working area, and **struts** (reserve the menu-bar/notch region so
   tiled windows never sit under it).
