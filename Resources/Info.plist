@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  emira.app — the bundle the daemon runs from (IMPLEMENTATION.md §5, §9 M5).
+
+  The app *is* the daemon: one process, one identity. `emira-daemon` has been an accessory
+  `NSApplication` since M2 (it needs a window server connection for the overlay and a running app for
+  `CADisplayLink`), so there is no headless build of emira to put under launchd — bundling only makes
+  permanent what the process already declares at runtime.
+
+  Two keys are load-bearing:
+
+  · `LSUIElement` — no Dock icon, no app menu. The menu bar item is the whole GUI.
+  · `CFBundleIdentifier` — TCC records the Accessibility and Screen Recording grants against the
+    code signature of what is running. A stable bundle identity is what lets the user grant once
+    instead of once per build.
+
+  Deliberately absent: TCC purpose strings. Both grants emira needs (Accessibility, Screen Recording)
+  use system-generated prompts with no `NS*UsageDescription` key to supply — unlike, say, Apple
+  Events. Adding one would be a key nothing reads.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>emira</string>
+	<key>CFBundleDisplayName</key>
+	<string>emira</string>
+	<key>CFBundleIdentifier</key>
+	<string>zip.tanner.emira</string>
+	<key>CFBundleExecutable</key>
+	<string>emira-daemon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

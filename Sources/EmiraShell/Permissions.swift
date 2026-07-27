@@ -13,17 +13,26 @@ import Foundation
 // `AXEnumerator` also means the M5 onboarding flow has one thing to call, and the enumerator stays a
 // pure "ask AX, bind, report" pipeline with no policy in it.
 //
-// **Two grants, and only one of them is fatal.** Identity binding uses `CGWindowListCopyWindowInfo`
-// (`WindowRegistry`), whose window *numbers*, owner pids and bounds are unprivileged; only
-// `kCGWindowName` needs Screen Recording, and we take titles from AX instead. So the truth plane costs
-// exactly one permission (M3's finding), and the second arrives with the feature that needs it —
-// `CaptureService`, at M4. The asymmetry runs all the way through:
+// **Two grants, and they are needed at different times.** Identity binding uses
+// `CGWindowListCopyWindowInfo` (`WindowRegistry`), whose window *numbers*, owner pids and bounds are
+// unprivileged; only `kCGWindowName` needs Screen Recording, and we take titles from AX instead. So
+// the truth plane costs exactly one permission (M3's finding), and the second arrives with the
+// feature that needs it — `CaptureService`, at M4:
 //
 //  · **Accessibility denied ⇒ emira cannot work.** Nothing enumerates, nothing moves.
 //  · **Screen Recording denied ⇒ emira works, without the cover.** The cover is made of captured
 //    pixels; with no pixels the honest thing is not to raise one, so `Config.smoothTransitions` goes
 //    false and every scroll snaps — PRINCIPLES.md §4a, which is the behaviour §4b is a *layer* on top
-//    of, not a replacement for. The daemon says so at boot and keeps running.
+//    of, not a replacement for.
+//
+// **That second line describes a *running* emira, not a starting one (2026-07-26).** Degrading
+// silently is the right answer to a grant revoked mid-session and the wrong answer to a first
+// launch: a user who installed a scrollable-tiling window manager and got a permanently snappier
+// AeroSpace, with the reason on a stderr a bundled app has nowhere to print, has been failed
+// quietly. So `emira-daemon` requires *both* grants to start (unless the config asked for §4a
+// outright) and keeps the degradation path for the revoke-while-running case, where killing the
+// daemon would strand every parked window at its 1 px sliver. Both answers live here; which one is
+// fatal is the daemon's policy, not this file's.
 //
 // The prompts themselves are M5's onboarding; what lives here is the question and its two answers.
 

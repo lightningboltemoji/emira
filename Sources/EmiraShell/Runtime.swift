@@ -64,7 +64,11 @@ public final class Runtime {
     private var head = 0
 
     /// Whether a drain is in progress. The single bit that makes the pump non-re-entrant.
-    private var isPumping = false
+    ///
+    /// Readable inside the module so a test can assert the thing invariant 4 actually promises —
+    /// that an `onStateChanged` observer is never called mid-drain — rather than assert some proxy
+    /// for it. Writable only here.
+    private(set) var isPumping = false
 
     /// Whether the frame clock is currently running, so `start`/`stop` are each called exactly once
     /// per transition rather than on every event.
@@ -98,6 +102,24 @@ public final class Runtime {
     /// no allocation per effect batch.
     public private(set) lazy var sink = EventSink { [weak self] event in self?.dispatch(event) }
 
+    /// Called once per *drain*, after the queue has emptied and the time sources are in step — never
+    /// inside a reduce, and never once per event. For shell peripherals that display state rather
+    /// than change it: today, the menu bar item's workspace indicator.
+    ///
+    /// **Once per drain, not once per event, and the difference is the whole point.** A single
+    /// command cascades — capture, cover raise, a teleport per window, a landing per window — and an
+    /// observer that saw each step would see states the user never does. Firing after the drain means
+    /// an observer only ever sees a *settled* state, which is the same guarantee §1 invariant 4 gives
+    /// `RequestRouter` for `dumpState`.
+    ///
+    /// It fires unconditionally rather than on a change, because `State` is large and comparing all
+    /// of it at 120 Hz to save an observer a comparison of its own is the wrong trade. Observers
+    /// diff their own projection; `MenuBarItem` does, and a scroll costs it nothing.
+    ///
+    /// An observer must not `dispatch` from here — that would drain again and re-notify. Nothing in
+    /// the shell needs to; this is a display seam, and events have their own door.
+    public var onStateChanged: (@MainActor (State) -> Void)?
+
     /// Feed one event to the core.
     ///
     /// If a pump is already running (i.e. we were called from inside `Executor.execute`, or from an
@@ -111,6 +133,9 @@ public final class Runtime {
         // Outside the drain — so a clock whose `start` synchronously delivers a tick re-enters
         // `dispatch` cleanly (and `clockRunning` is already updated, so it can't recurse further).
         syncTimeSources()
+        // Last, so an observer sees a state whose effects are issued *and* whose clock and deadline
+        // already match it — i.e. exactly the state the daemon is now sitting in.
+        onStateChanged?(state)
     }
 
     /// Drain the queue: reduce each event in turn and hand its effects to the executor before the next

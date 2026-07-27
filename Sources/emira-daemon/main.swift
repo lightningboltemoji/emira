@@ -47,22 +47,151 @@ signal(SIGPIPE, SIG_IGN)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
-// Checked first and fatally: with the grant missing, every AX read returns nothing *without an error*,
-// and a window manager that silently manages nothing is the worst failure there is. Now that writes
-// land too, "first" also means before anything can move.
+/// Die, having said why *somewhere the user is looking*.
+///
+/// Every fatal path here used to be a line on stderr, which was right while the only way to start
+/// emira was to run it in a terminal. Launched from `emira.app` there is no stderr anyone reads, and
+/// a bundled app that exits silently on first launch is indistinguishable from a broken download —
+/// so when we are bundled the same message is also an alert. `settings` is a System Settings pane to
+/// offer a button for, because the two fatal grants are both fixed in one.
+@MainActor func die(_ message: String, settings: String? = nil) -> Never {
+    log(message)
+    if LoginItem.isBundled {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "emira can't start"
+        alert.informativeText = message
+        if settings != nil { alert.addButton(withTitle: "open System Settings") }
+        alert.addButton(withTitle: "quit")
+        app.activate()
+        if alert.runModal() == .alertFirstButtonReturn, let settings,
+           let url = URL(string: settings) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+    exit(1)
+}
+
+// MARK: - The config file
+//
+// Read once here, then re-read on every save (`ConfigWatcher`) and on every `reload-config`
+// (`Effect.reloadConfig` → `ConfigSource.reload`). A missing file is the zero-config strip; a broken
+// one is a diagnostic and *no change at all*, because a typo must not be able to rearrange a desktop.
+//
+// **Read before the grants are checked**, which is the one thing about its position here that is a
+// decision rather than convenience: whether Screen Recording is *required* depends on whether this
+// user asked for the cover at all (`smooth-transitions`), so the file has to be parsed before the
+// question can be asked. Nothing here touches a window, so "Accessibility is checked before anything
+// can move" is still true.
+
+let loader = ConfigLoader(path: ConfigLoader.defaultPath(),
+                          watcher: ConfigWatcher(watching: ConfigLoader.defaultPath()),
+                          scheduler: DispatchScheduler())
+
+/// The config as the file spells it — before `applyEnvironment` folds in the two values a file may
+/// not decide. Kept separate because the grant check below reads the user's *intent*
+/// (`smooth-transitions`), and `applyEnvironment` is precisely where intent gets overwritten by
+/// capability.
+var parsedConfig: Config
+/// The boot diagnostic, held until there is a menu bar item to show it on. A config that is broken
+/// at launch is the case with no other trace at all: there was no previous config to keep, so the
+/// daemon runs on defaults and the desktop looks *plausible* while ignoring the file entirely.
+var bootConfigError: String?
+switch loader.load() {
+case .success(let parsed):
+    parsedConfig = parsed
+    log(FileManager.default.fileExists(atPath: loader.path)
+        ? "config: \(loader.path)"
+        : "config: \(loader.path) (not present — using defaults)")
+case .failure(let error):
+    parsedConfig = Config()
+    bootConfigError = "\(error)"
+    log("config: \(error) — using defaults")
+}
+
+// MARK: - Permissions
+//
+// **Both grants are required to start; only Accessibility is required to keep running.** That
+// asymmetry is deliberate and it is not the one this file used to carry (see below).
+//
+// Accessibility has always been fatal: with it missing, every AX read returns nothing *without an
+// error*, and a window manager that silently manages nothing is the worst failure there is. Now that
+// writes land too, "first" also means before anything can move.
+//
+// Screen Recording used to be non-fatal — capture would fail, `Config.smoothTransitions` would go
+// false, and emira would degrade to PRINCIPLES.md §4a (instant, correct placement; AeroSpace parity).
+// That is a coherent product and it is a *bad first launch*: the user installed a window manager
+// whose whole thesis is the signature scroll, and got a silent, permanently worse version of it with
+// the explanation on a stderr nobody reads. So it is now checked up front too. **This was never a
+// detection problem** — `CGPreflightScreenCaptureAccess` answers exactly this question, without
+// prompting, and has been answering it since M4.
+//
+// Two refinements keep the rule honest:
+//
+//  · **Asking for the cover is what makes the grant required.** A config that says
+//    `smooth-transitions = false` has opted into §4a on purpose, and demanding a screen-recording
+//    permission to power a feature the user turned off would be both obnoxious and a privacy smell.
+//  · **The runtime degradation path stays.** macOS can revoke this grant *under a running daemon* —
+//    observed, not theoretical (PRINCIPLES.md §10, M4 part 1), which is why
+//    `Permissions.screenRecording` is computed and never cached. Killing the window manager because
+//    a TCC prompt got dismissed would strand every parked window at its 1 px sliver. So a *running*
+//    emira still falls back to snapping; only a *starting* one refuses.
+//
+// Both are checked together so a first launch costs one relaunch rather than two.
+
+/// A grant emira won't start without, and everything needed to ask for it and to explain it.
+struct RequiredGrant {
+    let name: String
+    /// Completes "emira needs <name> …".
+    let purpose: String
+    /// The System Settings breadcrumb, for the alert text.
+    let pane: String
+    /// The deep link the alert's button opens.
+    let url: String
+}
+
+let accessibilityGrant = RequiredGrant(
+    name: "Accessibility",
+    purpose: "to see and move your windows",
+    pane: "Privacy & Security › Accessibility",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+
+let screenRecordingGrant = RequiredGrant(
+    name: "Screen Recording",
+    purpose: "to animate them smoothly",
+    pane: "Privacy & Security › Screen & System Audio Recording",
+    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+
+var missingGrants: [RequiredGrant] = []
+
 if !Permissions.accessibility.isGranted {
     Permissions.requestAccessibility()
-    log("Accessibility permission is required. Grant emira access in System Settings › "
-        + "Privacy & Security › Accessibility, then start the daemon again.")
-    exit(1)
+    missingGrants.append(accessibilityGrant)
+}
+
+if parsedConfig.smoothTransitions && !Permissions.screenRecording.isGranted {
+    Permissions.requestScreenRecording()
+    missingGrants.append(screenRecordingGrant)
+}
+
+if !missingGrants.isEmpty {
+    let needs = missingGrants.map { "\($0.name) \($0.purpose)" }.joined(separator: ", and ")
+    let panes = missingGrants.map { "  • System Settings › \($0.pane)" }.joined(separator: "\n")
+    die("emira needs \(needs).\n\n"
+        + "\(missingGrants.count == 1 ? "Grant it here" : "Grant them here"):\n\(panes)\n\n"
+        + "Then launch emira again."
+        + (missingGrants.contains { $0.name == screenRecordingGrant.name }
+           ? "\n\nTo run without the smooth scroll instead, set `smooth-transitions = false` in "
+             + "\(loader.path)."
+           : ""),
+        settings: missingGrants[0].url)
 }
 
 // MARK: - The presentation plane
 
 let screens = NSScreen.screens
 if screens.isEmpty {
-    log("no displays attached — nothing to manage")
-    exit(1)
+    die("No displays are attached — there is nothing to manage.")
 }
 let geometry = ScreenGeometry.current()
 // One overlay for now; per-monitor covers land with per-monitor strips (M6). It has to be the *same*
@@ -88,18 +217,8 @@ let axClient = AXClient()
 
 // MARK: - The capture plane
 //
-// The second TCC grant, and — unlike Accessibility — a *non-fatal* one. Without it there are no pixels
-// to build a cover from, so we don't build one: `Config.smoothTransitions` goes false and every scroll
-// snaps, which is PRINCIPLES.md §4a, the behaviour the smoothness layer sits on top of. emira still
-// tiles, still scrolls, still reveals — it just does it at once.
-
-let screenRecording = Permissions.screenRecording
-if !screenRecording.isGranted {
-    Permissions.requestScreenRecording()
-    log("Screen Recording is not granted — running without animated transitions (windows will snap). "
-        + "Grant emira access in System Settings › Privacy & Security › Screen & System Audio "
-        + "Recording, then start the daemon again for the smooth scroll.")
-}
+// The grant this needs was settled above, so there is nothing to check here any more — either it is
+// held, or the user asked for §4a and `applyEnvironment` is about to switch the cover off.
 
 let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
 let capture = CaptureService(
@@ -109,23 +228,23 @@ let capture = CaptureService(
     scheduler: DispatchScheduler())
 let reconstruction = Reconstruction(overlay: overlay, store: capture)
 
-// MARK: - The config file
+// MARK: - The config, finished
 //
-// Read once here, then re-read on every save (`ConfigWatcher`) and on every `reload-config`
-// (`Effect.reloadConfig` → `ConfigSource.reload`). A missing file is the zero-config strip; a broken
-// one is a diagnostic and *no change at all*, because a typo must not be able to rearrange a desktop.
-
-let loader = ConfigLoader(path: ConfigLoader.defaultPath(),
-                          watcher: ConfigWatcher(watching: ConfigLoader.defaultPath()),
-                          scheduler: DispatchScheduler())
+// The file was read before the grant checks (above); this is the half that needs a screen and a
+// live TCC answer.
 
 /// The two values a config file may **not** decide, folded in over whatever it did say.
 ///
 /// The struts are a fact about the hardware, and the same number has to reach the core and the
 /// overlay or the cover stops matching the strip (M4 part 3). The Screen Recording grant is a
 /// capability, not a preference: a file may ask for snaps (`smooth-transitions = false`) but it
-/// cannot grant itself pixels. Re-evaluating the grant *here*, on every reload, is also the first
-/// thing that notices macOS revoking it mid-session — §10's re-prompt is not theoretical.
+/// cannot grant itself pixels.
+///
+/// **This still guards the cover even though the grant is now checked at boot**, and that is the
+/// point of keeping it: the boot check governs *starting*, this governs *running*. Re-evaluating on
+/// every reload is what notices macOS revoking the grant mid-session — §10's re-prompt is not
+/// theoretical — and the answer then is to snap, not to die on the user with 35 workspaces' worth of
+/// windows parked at their slivers.
 func applyEnvironment(to config: Config) -> Config {
     var config = config
     config.struts = struts
@@ -133,23 +252,23 @@ func applyEnvironment(to config: Config) -> Config {
     return config
 }
 
-var config: Config
-switch loader.load() {
-case .success(let parsed):
-    config = applyEnvironment(to: parsed)
-    log(FileManager.default.fileExists(atPath: loader.path)
-        ? "config: \(loader.path)"
-        : "config: \(loader.path) (not present — using defaults)")
-case .failure(let error):
-    config = applyEnvironment(to: Config())
-    log("config: \(error) — using defaults")
-}
+var config = applyEnvironment(to: parsedConfig)
 
 // The one config value that reaches the *compositor* rather than the reducer: how a still is painted
 // into a rect that no longer matches it (`Config.windowAnimation`). Set here and again on every reload,
 // for the same reason `applyKeys` is — the core cannot carry it, because the geometry it emits is
 // identical under both settings.
 reconstruction.animation = config.windowAnimation
+
+// MARK: - The GUI
+//
+// All of it. An `NSStatusItem` showing the focused workspace's address, and a menu with the two
+// actions that need somewhere to be clicked: quit, and open-at-login. Created before the pump so a
+// config that was already broken at boot has somewhere to say so, and pointed at the pump below.
+
+let menuBar = MenuBarItem()
+menuBar.configError = bootConfigError
+menuBar.onError = { log($0) }
 
 // MARK: - The pump
 
@@ -190,6 +309,11 @@ let runtime = Runtime(
     // Real AX writes mean a landing depends on another process's run loop; this is the bound on
     // waiting for one (§3).
     hold: DispatchHoldTimer())
+
+// The menu bar item follows the pump, once per drain rather than once per event. A scroll reduces at
+// 120 Hz and changes no workspace address, so `MenuBarItem` diffs and redraws nothing (`StatusItem`).
+menuBar.workspace = runtime.state.workspaces.focused
+runtime.onStateChanged = { state in menuBar.workspace = state.workspaces.focused }
 
 // MARK: - The keyboard
 //
@@ -240,8 +364,13 @@ loader.onLoad = { result in
         runtime.dispatch(.configChanged(live))
         applyKeys(live)
         reconstruction.animation = live.windowAnimation
+        menuBar.configError = nil
     case .failure(let error):
         log("config: \(error) — keeping the previous settings")
+        // The `!`. A hot reload that fails is *silent* by design — the running config stands and the
+        // desktop does not move — so without this the user's only signal that their edit did nothing
+        // is a stderr line a bundled app has nowhere to print.
+        menuBar.configError = "\(error)"
     }
 }
 loader.start()
@@ -289,10 +418,30 @@ let server = SocketServer(path: socketPath) { request in
 do {
     try server.start()
 } catch {
-    log("cannot listen: \(error)")
-    exit(1)
+    die("emira can't open its control socket at \(socketPath): \(error). "
+        + "Another copy may already be running.")
 }
 log("listening on \(socketPath) (pid \(ProcessInfo.processInfo.processIdentifier))")
+
+// MARK: - Stopping
+//
+// One shutdown path, reached three ways: Ctrl-C, `kill`, and the menu bar's Quit. They must be the
+// same path — "stop emira" is one act, and a menu item that tore down less than a signal does would
+// be a second, worse way to stop it.
+//
+// **What this does not yet do, stated plainly: it does not unpark.** Every off-viewport column and
+// every window on the other 35 workspaces is sitting at a 1 px sliver in the corner
+// (`PRINCIPLES.md` §4a), and exiting leaves them there for the user to drag back by hand. That was
+// tolerable while stopping the daemon meant Ctrl-C in a terminal you were already debugging in; a
+// Quit menu item makes it a one-click, everyday act, and the teardown that places every managed
+// window back on screen is the next slice.
+@MainActor func shutdown() -> Never {
+    log("shutting down")
+    server.stop()
+    exit(0)
+}
+
+menuBar.onQuit = { shutdown() }
 
 // Ctrl-C / `kill` should take the socket file with them. (A crash won't get the chance — that's what
 // `SocketServer`'s stale-socket handling is for.) `SIG_IGN` first: the default disposition still fires
@@ -300,13 +449,7 @@ log("listening on \(socketPath) (pid \(ProcessInfo.processInfo.processIdentifier
 let shutdownSources: [DispatchSourceSignal] = [SIGINT, SIGTERM].map { number in
     signal(number, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-    source.setEventHandler {
-        MainActor.assumeIsolated {
-            log("shutting down")
-            server.stop()
-        }
-        exit(0)
-    }
+    source.setEventHandler { MainActor.assumeIsolated { shutdown() } }
     source.resume()
     return source
 }

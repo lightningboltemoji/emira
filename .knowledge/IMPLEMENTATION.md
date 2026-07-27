@@ -223,7 +223,9 @@ would be the translation layer §2 exists to avoid.
 ```
 emira/
 ├── Package.swift
-├── Makefile                         # build + test
+├── Makefile                         # build + test; `app` assembles dist/emira.app, `install` copies
+│                                    # it to /Applications. No CLI symlink — a Homebrew cask's
+│                                    # `binary` stanza points at the copy inside the bundle
 ├── CLAUDE.md                        # thin agent pointer at the docs below
 ├── .knowledge/
 │   ├── README.md                    # how this project remembers things
@@ -231,6 +233,10 @@ emira/
 │   ├── IMPLEMENTATION.md            # this file / how
 │   └── changes/                     # one file per change, named by epoch second
 ├── Resources/
+│   ├── Info.plist                   # LSUIElement=YES (menu-bar accessory) + a stable
+│   │                                # CFBundleIdentifier, which is what TCC records a grant
+│   │                                # against. No TCC usage strings: neither Accessibility nor
+│   │                                # Screen Recording takes one
 │   └── default-config.toml
 ├── Sources/
 │   ├── EmiraMotion/
@@ -334,6 +340,12 @@ emira/
 │   │   ├── Ipc/
 │   │   │   ├── SocketServer.swift   # unix-domain socket, JSON-lines, dispatch to Runtime
 │   │   │   └── RequestRouter.swift  # Request -> Reply: commands are writes, dumpState is a read
+│   │   ├── MenuBar/
+│   │   │   └── StatusItem.swift     # the whole GUI: an NSStatusItem showing the focused
+│   │   │                            # workspace's address, `!` when the config won't parse.
+│   │   │                            # `StatusModel` is the pure title/diagnostic policy;
+│   │   │                            # `LoginItem` wraps SMAppService; `MenuBarItem` is the
+│   │   │                            # AppKit wiring. Quit and open-at-login are the menu
 │   │   ├── WorldWatcher.swift       # the live world's *policy*: boot scan -> adopt -> watch;
 │   │   │                            # re-scan an app when it makes a window; one bounded retry for
 │   │   │                            # the two "asked too early" races; coalesced frame reads
@@ -810,13 +822,54 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     nothing is there, or if it is *a socket we own with nobody answering* (a crash leftover → unlink); a regular file,
     another user's socket, or a live daemon is refused **without deleting anything** — a second daemon must exit
     rather than steal the path.
-- **MenuBar StatusItem** — an accessory (`LSUIElement`, no Dock icon) menu-bar item. This *is* the GUI — no
-  preferences window.
-- **Permissions** — Accessibility + Screen Recording TCC checks and a first-run onboarding flow.
+- **MenuBar StatusItem** — an accessory (`LSUIElement`, no Dock icon) menu-bar item showing the focused workspace's
+  address plus two menu items, **quit** and **open at login**. This *is* the GUI — no preferences window, and no
+  `reload-config` item, because reload is automatic and a button would advertise a step nobody has to take.
+  - **`!` exists because a hot reload's failure mode is silence.** A broken file changes nothing, deliberately — the
+    desktop stays exactly as it was — which means a typo and a correct edit that happens to be a no-op are
+    indistinguishable from the outside. In a terminal the diagnostic was on stderr; a bundled app has no stderr anyone
+    reads, so the indicator takes the title and the menu carries the text. The same argument produces the **one
+    alert** on the fatal paths: an `.app` that exits silently on first launch because Accessibility isn't granted is
+    indistinguishable from a broken download.
+  - **It is a *display* seam, so `Runtime` grew an `onStateChanged` observer rather than an `Effect`.** Nothing about
+    the status item changes state, so it must not be in the effect vocabulary — the same judgement `dumpState` got. It
+    fires **once per drain**, not once per event: a single command cascades through capture → raise → teleport →
+    landings, and an observer that saw each step would see states the user never does. Firing after the drain means an
+    observer only ever sees a settled state, which is invariant 4 paying out a second time. It fires unconditionally
+    rather than on a change, because `State` is large and comparing all of it at 120 Hz to save the observer a
+    comparison is the wrong trade; **the observer diffs its own projection**, which is the file watcher's rule again —
+    report a change in the *value*, not in the thing carrying it.
+- **Permissions** — Accessibility + Screen Recording TCC checks and a first-run onboarding flow. **Both grants are
+  required to *start*; only Accessibility is required to keep *running*.** Screen Recording being non-fatal is correct
+  as a response to macOS revoking the grant under a live daemon, and it must survive — killing the window manager
+  there would strand every parked window at its 1 px nub with nothing to put them back. As a *first launch* it is a
+  quiet failure: the user installed a scrollable-tiling window manager, received a permanently snappier AeroSpace, and
+  the explanation went to a stderr a bundled app has nowhere to print. Two refinements come with the boot check:
+  **asking for the cover is what makes the grant required** (`smooth-transitions = false` waives it — demanding a
+  screen-recording permission to power a feature the user disabled is both obnoxious and a privacy smell), and **both
+  grants are checked together**, so a first launch costs one relaunch instead of two.
 
 ### Executables
-- **`emira-daemon`** — the long-running accessory app that hosts the Runtime and all subsystems.
+- **`emira-daemon`** — the long-running accessory app that hosts the Runtime and all subsystems; bundled as
+  `emira.app` (`make app`), launch-at-login via `SMAppService.mainApp`. **The app *is* the daemon** — one process,
+  one bundle identity, no launchd job. Three reasons, and the middle one is load-bearing:
+  - **There is no headless emira to separate out.** The daemon has been an accessory `NSApplication` since the overlay
+    existed — it needs a window server connection and a running app for `CADisplayLink` — so whatever went under
+    launchd would be this same GUI process, and splitting would buy two identities for one program.
+  - **TCC records a grant against the code signature of what runs.** Accessibility is fatal-if-missing and Screen
+    Recording gates the whole cover, so grant stability *is* product stability, and a stable `CFBundleIdentifier`
+    inside a bundle is what makes "grant once" possible. Corollary already visible in the build: ad-hoc signing
+    identifies the app by **cdhash**, which changes every build, so macOS re-asks on every rebuild until a Developer ID
+    signature replaces it. That is a bigger reason to sign properly than distribution is.
+  - **"Quit stops the daemon" is then free**, which is what was actually asked for. Under a `KeepAlive` agent it is the
+    opposite of free: quitting means `launchctl bootout` or the job comes straight back.
+  - The one thing given up is crash-respawn, and it is a real loss *here* specifically, since a respawn would rescue a
+    desktop full of parked windows via the boot scan. It can be added later as a bundled `SMAppService.agent(…)`
+    without changing any of the above.
 - **`emira`** — the CLI; `emira focus left`, `emira move-window right`, `emira debug` (pretty-prints the state dump).
+  **It ships inside the bundle and nothing symlinks it**, so there is exactly one copy of the wire protocol on the
+  machine — the version probe exists because skew is possible, and this makes it not happen. Putting it on `$PATH` is a
+  packaging concern, answered by a Homebrew cask's `binary` stanza pointing into the bundle.
 
 ### Config (**TOML**, matching AeroSpace)
 `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`). The **parsed values** are a pure `Config` struct in
@@ -950,7 +1003,7 @@ is fully trustworthy before a single real window moves.
 | **M2** | End-to-end pipe | daemon loop + IPC + CLI + DisplayLink + Overlay driving layers from the core | **done** |
 | **M3** | Truth plane | AXClient/enumerator/writer/observers + WindowRegistry + WorldWatcher; instant, correct tiling of **real** windows; snap-reveal on external focus; taxonomy defaults; drag-end re-tile | **done** — AeroSpace parity |
 | **M4** | The signature scroll | Capture + Reconstruction + Transition; motion under cover; the cover that grows on a retarget; the animated resize | **done** |
-| **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated | MenuBar + bundle outstanding |
+| **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated + the menu bar and the `.app` | **done — shippable here** |
 | **M6** | Full layout model | Virtual workspaces, per-monitor strips, window rules, monitor hotplug | the workspace model and its verbs are in, snapped; per-monitor strips and rules are not |
 | **M7** | Deluxe *(optional)* | Continuous trackpad gestures, live-stream layers, focus-ring overlay, overview/zoom-out | later |
 
