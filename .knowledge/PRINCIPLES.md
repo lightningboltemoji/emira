@@ -1,7 +1,7 @@
 # emira — a scrollable-tiling window manager for macOS
 
 A **Swift**-based scrollable-tiling window manager for macOS, inspired by
-**[niri](https://github.com/YaLTeR/niri)**. This document captures the project's identity and — most importantly —
+**[niri](https://github.com/niri-wm/niri)**. This document captures the project's identity and — most importantly —
 the architectural direction for the hard problem: **moving windows smoothly, without touching SIP.**
 
 ---
