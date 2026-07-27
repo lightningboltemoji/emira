@@ -19,12 +19,28 @@ else
                 -Xlinker -rpath -Xlinker $(TESTING_INTEROP)
 endif
 
+# --- Linker search-path noise -------------------------------------------------------------------
+# The same CLT-only install makes SwiftPM pass `-F $(DEVDIR)/Developer/Library/Frameworks` (and a
+# matching `-L .../Developer/usr/lib` for executable products) on every link. That subtree only
+# exists inside Xcode.app, so ld warns once per target — ~10 lines that bury real diagnostics. The
+# flags are SwiftPM's own, not ours: nothing in Package.swift can drop them, and nothing we link
+# lives there, so the paths are pure noise.
+#
+# So filter, narrowly: only `search path ... not found` lines naming that one directory, and only on
+# stderr. Every other diagnostic still passes through; `swift build` writes its progress to stdout,
+# which is left alone so it keeps its tty (in-place progress line, colors); and a redirect — as
+# opposed to a pipe — leaves the exit status intact, so a failed build still fails the target.
+# Requires bash for `>(...)`; make's default /bin/sh would not do.
+SHELL   := /bin/bash
+LD_NOISE = ld: warning: search path '$(DEVDIR)/Developer/.*' not found
+QUIET    = 2> >(grep -vE "$(LD_NOISE)" >&2)
+
 .PHONY: build test clean app install uninstall
 build:
-	swift build
+	swift build $(QUIET)
 
 test:
-	swift test $(TEST_FLAGS)
+	swift test $(TEST_FLAGS) $(QUIET)
 
 clean:
 	swift package clean
@@ -55,7 +71,7 @@ CONTENTS := $(BUNDLE)/Contents
 RELEASE  := .build/release
 
 app:
-	swift build -c release
+	swift build -c release $(QUIET)
 	rm -rf $(BUNDLE)
 	mkdir -p $(CONTENTS)/MacOS $(CONTENTS)/Resources
 	cp Resources/Info.plist $(CONTENTS)/Info.plist

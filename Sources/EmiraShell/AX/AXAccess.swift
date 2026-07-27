@@ -334,7 +334,13 @@ private func performAction(_ element: AXUIElement, _ name: String) -> Bool {
 /// Copy an attribute boxed in an `AXValue` (points, sizes) and unwrap it. The `CFGetTypeID` check is
 /// load-bearing: `AXValueGetValue` reinterprets its out-parameter according to the `type` it is told, so
 /// an app answering `AXPosition` with a string yields a garbage frame rather than `nil`.
-private func axValue<T>(_ element: AXUIElement, _ name: String, _ type: AXValueType, _ zero: T) -> T? {
+///
+/// `BitwiseCopyable` is the precondition the C call already assumes: it blits `type`-many bytes over
+/// `out` with no regard for what lives there, which is only sound for a type holding no references.
+/// Stating it lets the compiler check our callers instead of warning about the raw-pointer conversion.
+private func axValue<T: BitwiseCopyable>(
+    _ element: AXUIElement, _ name: String, _ type: AXValueType, _ zero: T
+) -> T? {
     guard let raw = copyAttribute(element, name), CFGetTypeID(raw) == AXValueGetTypeID() else {
         return nil
     }
