@@ -15,4 +15,6 @@ House rules:
   what it used to be, never when something was decided. Supersede text rather than annotating it.
 - **Every change gets a change file.** `.knowledge/changes/<epoch-second>.md`, three short sections (goal,
   implementation, observations), and the same id as a `Change:` trailer on the commit. See `.knowledge/README.md`.
+- **The name is `emira`, lowercase.** In prose, comments, the app bundle, and anything the app displays.
+  Capitalised only where it is an identifier: the `Emira*` modules and the SwiftPM package name.
 - Keep this file thin.
