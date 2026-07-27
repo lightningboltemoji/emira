@@ -3,14 +3,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The pump's own tests (IMPLEMENTATION.md §1 invariant 4, §8). `EmiraCoreTests` proves the *brain* —
-// what the reducer decides. These prove the *loop* around it: that events reduce one at a time, in
-// order, never inside one another; that each event's effects reach the executor before the next event
-// reduces; that a whole transition cascade settles in a single run-loop turn; and that the frame clock
-// runs exactly while there is motion to animate.
-//
-// Everything here is headless — `Runtime`, `Executor`, and `FrameClock` import no framework, so the
-// spine of the daemon is verified with no AppKit, AX, Core Animation, or ScreenCaptureKit in sight.
+// The pump's own tests. `EmiraCoreTests` proves what the reducer decides; these prove the loop around
+// it: events reduce one at a time, in order, never inside one another; each event's effects reach the
+// executor before the next event reduces; a whole transition cascade settles in one run-loop turn; and
+// the frame clock runs exactly while there is motion to animate. All headless — `Runtime`, `Executor`
+// and `FrameClock` import no framework.
 
 @Suite @MainActor struct RuntimeTests {
 
@@ -19,8 +16,8 @@ import EmiraCore
     /// A 1000×800 display at the origin.
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
 
-    /// One full-width preset — a column *is* the viewport, so every cross-column focus genuinely
-    /// scrolls (and therefore opens a transition). Same trick as `EngineTests.fullWidth`.
+    /// One full-width preset — a column is the viewport, so every cross-column focus genuinely scrolls
+    /// and therefore opens a transition.
     static let fullWidth = Config(widthPresets: PresetCycle([.proportion(1.0)]))
 
     /// One ½-width preset — two columns fill the viewport exactly, so a structural edit rearranges the
@@ -37,8 +34,7 @@ import EmiraCore
     static func booted(config: Config = Config(), windows: Int = 0) -> State {
         var s = State(config: config)
         (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: MonitorId(1), frame: display)]))
-        // Settled after each arrival: an arrival animates (2026-07-26), and a fixture means "here is
-        // the desktop", not "here is a desktop mid-transition".
+        // Arrivals animate, and a fixture means "here is the desktop", not "here is one mid-transition".
         for i in 0..<max(windows, 0) {
             s = settledAfter(s, .windowCreated(snapshot(UInt64(i + 1))))
         }
@@ -65,9 +61,8 @@ import EmiraCore
     // MARK: - The pump
 
     @Test func dispatchReducesAndHandsTheEffectsToTheExecutor() {
-        // §4a's configuration, so the arrival places in the same batch it reduces in — this test is
-        // about the *pump* (one event, one batch), and a cover would put the placement a round trip
-        // away for no gain here. The animated arrival has its own tests in `EmiraCoreTests`.
+        // Unsmoothed, so the arrival places in the same batch it reduces in: this test is about the
+        // pump (one event, one batch), and a cover would put the placement a round trip away.
         let executor = MockExecutor()
         let runtime = Runtime(state: Self.booted(config: Config(smoothTransitions: false)),
                               executor: executor)
@@ -94,9 +89,8 @@ import EmiraCore
         #expect(executor.batches.isEmpty)                      // an executor never sees empty work
     }
 
-    /// Invariant 4, stated as a trace: an event dispatched *from inside* `execute` must not reduce
-    /// until the in-flight event's effects are fully issued. A re-entrant pump would nest the batches
-    /// (`enter#0, enter#1, exit#1, exit#0`); a queued one serializes them.
+    /// An event dispatched from inside `execute` must not reduce until the in-flight event's effects
+    /// are issued: a re-entrant pump nests the batches, a queued one serializes them.
     @Test func dispatchDuringExecuteIsQueuedNotReentrant() {
         let executor = ScriptedExecutor()
         let runtime = Runtime(state: Self.booted(), executor: executor)
@@ -153,9 +147,8 @@ import EmiraCore
 
     // MARK: - The transition lifecycle, end to end through the pump
 
-    /// The cascade a real scroll command sets off — command → captures → cover raise → teleport →
-    /// landings — all resolves inside the *single* `dispatch` call, because a perfectly responsive
-    /// executor acks synchronously and the queue drains before returning.
+    /// The whole cascade — command → captures → cover raise → teleport → landings — resolves inside
+    /// one `dispatch`, because a perfectly responsive executor acks synchronously.
     @Test func aScrollCommandRaisesTheCoverWithinOneDispatch() {
         let executor = MockExecutor(mode: .simulate)
         let runtime = Runtime(state: Self.booted(config: Self.fullWidth, windows: 3),
@@ -176,7 +169,7 @@ import EmiraCore
     }
 
     /// The whole loop, closed: clock gated on, layers blitted every frame, transition torn down when
-    /// the spring settles, clock gated back off. This is M2's shape with the pixels still fake.
+    /// the spring settles, clock gated back off.
     @Test func aScrollRunsToCompletionAndTearsTheSessionDown() {
         let executor = MockExecutor(mode: .simulate)
         let clock = ManualFrameClock()
@@ -206,8 +199,8 @@ import EmiraCore
         let runtime = Runtime(state: Self.booted(config: Self.fullWidth, windows: 2),
                               executor: MockExecutor(mode: .simulate), clock: clock)
 
-        // Genuinely idle work — the world is already built and settled by the fixture. (An *arrival*
-        // is no longer idle: since 2026-07-26 it animates, which is what the clock is for.)
+        // Genuinely idle work — the world is already built and settled by the fixture. An arrival is
+        // not idle: it animates.
         runtime.dispatch(.dragEnded)
         runtime.dispatch(.windowFrameChanged(Self.snapshot(1).id, Rect(x: 0, y: 0, width: 10, height: 10)))
         runtime.dispatch(.dragEnded)
@@ -253,17 +246,9 @@ import EmiraCore
         #expect(hold.cancelCount == 1)
     }
 
-    /// **The regression the structural-edit slice fixes.** The deadline is re-armed on every redirect,
-    /// and what counts as a redirect used to be a change in `viewportOffset.target` — which is
-    /// invisible when the redirect is a *structural* one. Two 500-wide columns fill this viewport
-    /// exactly, so swapping them left and then back moves the viewport not one point; before the fix
-    /// the second press inherited the first press's deadline and was liable to a `holdTimeout`
-    /// mid-motion, which is precisely the "cover yanked out from under the user" failure `syncHold`
-    /// exists to prevent.
-    ///
-    /// `Motion.retargetGeneration` counts re-aims of *every* animated quantity, which is the question
-    /// actually being asked. The same latent defect existed for `cycleWidth`; the structural edits
-    /// merely made it the common path.
+    /// A redirect must re-arm the deadline even when it is structural. Two 500-wide columns fill this
+    /// viewport exactly, so swapping them left and back moves `viewportOffset.target` not one point —
+    /// hence `Motion.retargetGeneration`, which counts re-aims of every animated quantity.
     @Test func aRedirectThatDoesNotMoveTheViewportStillReArmsTheDeadline() {
         let clock = ManualFrameClock()
         let hold = ManualHoldTimer()

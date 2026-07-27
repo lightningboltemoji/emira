@@ -2,15 +2,13 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-// The quit cascade (`Cascade.swift`) — the layout that isn't the strip. Two halves, tested apart
-// because they fail differently: the arithmetic (a staggered, bottom-right-aligned stack that has to
-// stay total for any count on any screen), and the *ordering* policy that decides which window ends
-// up on top of the pile.
+// The quit cascade — the layout that isn't the strip. Two halves, tested apart because they fail
+// differently: the arithmetic (a staggered, bottom-right-aligned stack, total for any count on any
+// screen) and the ordering policy that decides which window ends up on top of the pile.
 
 @Suite struct CascadeTests {
 
-    /// An 1800×1130 working area — the ProMotion display every in-product measurement in
-    /// `PRINCIPLES.md` §10 was taken on, minus its menu bar.
+    /// An 1800×1130 working area — a ProMotion display minus its menu bar.
     static let working = Rect(x: 0, y: 39, width: 1800, height: 1130)
 
     // MARK: - The region
@@ -143,7 +141,7 @@ import Testing
 
     @Test func parkedWindowsAreRescuedToo() {
         // One full-width preset, so only the focused column is ever in view and the other three are
-        // sitting at their 1 pt nubs — the state this whole slice exists to stop handing to the user.
+        // sitting at their 1 pt nubs — the state the cascade exists to stop handing to the user.
         let state = EngineTests.world(4, config: EngineTests.fullWidth)
         let region = Cascade.region(in: state.metrics()!.workingArea)
 

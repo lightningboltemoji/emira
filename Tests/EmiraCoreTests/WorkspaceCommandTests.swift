@@ -2,17 +2,13 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-// The workspace *verbs* (`WORKSPACE-B.md`) — the slice that made the model of 2026-07-26 usable:
-// `focus-workspace`, `move-to-workspace`, `move-to-workspace-and-focus`, the five ways to name an
-// address, per-workspace scroll and focus memory, and the cross-workspace focus a real desktop
-// produces whether or not we handle it.
+// The workspace verbs: `focus-workspace`, `move-to-workspace`, `move-to-workspace-and-focus`, the five
+// ways to name an address, per-workspace scroll and focus memory, and the cross-workspace focus a real
+// desktop produces.
 //
-// Everything here **snaps**, by configuration rather than by slice boundary since 2026-07-26: the
-// vertical transition landed and a switch now animates, so these fixtures set
-// `smoothTransitions: false` for `EngineTests.halfWidthSnap`'s reason — they are about *where windows
-// end up*, and once a switch animates the reals teleport at the cover's raise rather than in the
-// command's own batch. That is a real supported configuration (§4a: a machine with no Screen Recording
-// grant), not a test-only escape hatch. The motion is `WorkspaceMotionTests`, below.
+// Everything here snaps (`smoothTransitions: false`), for `EngineTests.halfWidthSnap`'s reason: these
+// tests are about *where windows end up*, and under the animated path the reals teleport at the cover's
+// raise rather than in the command's own batch. The motion is `WorkspaceMotionTests`, below.
 
 /// Ref resolution, which lives in `Workspaces` beside the ordering it depends on.
 @Suite struct WorkspaceRefTests {
@@ -29,8 +25,7 @@ import Testing
     }
 
     /// One address at a time, materialized or not — `next` is about the *domain*, so it walks straight
-    /// through addresses nobody has ever visited. It follows the **key** order, so the number row runs
-    /// off its right end into `0` before reaching the letters.
+    /// through addresses nobody has ever visited, in key order (the number row runs into `0` first).
     @Test func nextAndPreviousStepOneAddressWhetherOrNotItExists() {
         var ws = Workspaces()                       // only the launch address materialized
         #expect(ws.resolve(.next) == name("2"))
@@ -42,9 +37,8 @@ import Testing
         #expect(ws.resolve(.next) == name("a"))     // the digit/letter seam is after "0", not before it
     }
 
-    /// **Clamps, never wraps** — the same rule `focus left|right` keeps at the strip's edges, one axis
-    /// over. Resolving to the workspace you are on is how "nowhere to go" is spelled, and the reducer
-    /// turns that into silence in one place.
+    /// Clamps, never wraps — the same rule `focus left|right` keeps at the strip's edges. Resolving to
+    /// the workspace you are on is how "nowhere to go" is spelled; the reducer turns that into silence.
     @Test func relativeMotionClampsAtBothEndsOfTheDomain() {
         var ws = Workspaces()
         #expect(ws.resolve(.previous) == .first)    // at "1" — the launch address — already
@@ -82,21 +76,19 @@ import Testing
     // MARK: Fixtures
 
     /// One full-width preset on a 1000-pt display: one column *is* the viewport, so column *n* sits at
-    /// strip offset `1000n` and every scroll number below is readable at a glance. Used where the test
-    /// is about *scrolling*. Snapping — see the file header.
+    /// strip offset `1000n` and every scroll number below is readable at a glance.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
                                   smoothTransitions: false)
 
     /// Two half-width columns fill the 1000-pt viewport exactly, so a two-window workspace is entirely
-    /// on screen at offset 0. Used where the test is about *tiled versus parked*, because then the
-    /// whole strip changes state on a switch and the placement diff has something to say about all of
-    /// it. Snapping — see the file header.
+    /// on screen at offset 0. Used where the test is about *tiled versus parked*: the whole strip then
+    /// changes state on a switch, so the placement diff has something to say about all of it.
     static let twoUp = EngineTests.halfWidthSnap
 
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
-    /// The launch address — `"1"` since the domain took the key order (2026-07-26). Named rather than
-    /// spelled, so a later change to where the daemon starts is one line here.
+    /// The launch address, `"1"`. Named rather than spelled, so a change to where the daemon starts is
+    /// one line here.
     private let home = WorkspaceName.first
     /// Somewhere else to be. Any address that is not `home`.
     private let other = WorkspaceName("2")!
@@ -137,11 +129,8 @@ import Testing
 
     /// The windows actually on screen — the focused strip's visible set, asked of the *state*.
     ///
-    /// Distinct from `tiled(in:)` on purpose, and the distinction is worth stating once. The effect
-    /// stream is a **diff**: a window already sitting at the frame it is meant to be at emits nothing,
-    /// which is exactly what keeps an idle desktop quiet, and it means a park slot that happens not to
-    /// change across a switch produces no `.park`. So "what moved" and "where things are" are two
-    /// different questions and the tests below ask whichever one they mean.
+    /// Distinct from `tiled(in:)` on purpose: the effect stream is a *diff*, so a window already at the
+    /// frame it belongs at emits nothing. "What moved" and "where things are" are different questions.
     private func onScreen(_ s: State) -> Set<WindowId> {
         Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
                                       metrics: s.metrics()!))
@@ -149,9 +138,8 @@ import Testing
 
     // MARK: focus-workspace
 
-    /// The headline: leaving parks the whole outgoing strip, arriving tiles the incoming one — and it
-    /// needed no new mechanism, because "everything that is not the focused strip is parked" is what
-    /// `Workspaces.targetFrames` already meant.
+    /// Leaving parks the whole outgoing strip, arriving tiles the incoming one — which is just what
+    /// "everything that is not the focused strip is parked" already meant.
     @Test func switchingParksTheOutgoingStripAndTilesTheIncomingOne() {
         var s = world(2, config: Self.twoUp)
         #expect(onScreen(s) == [WindowId(1), WindowId(2)])
@@ -174,9 +162,8 @@ import Testing
         #expect(parked(in: backFx).isEmpty)
     }
 
-    /// A switch to where you already are says nothing at all. This is also how `next` at `"z"` and an
-    /// occupied motion with nowhere to go come out — `Workspaces.resolve` clamps, and the reducer
-    /// turns "resolved to here" into silence in exactly one place.
+    /// A switch to where you already are says nothing at all — which is also how `next` at `"z"` and an
+    /// occupied motion with nowhere to go come out, since `Workspaces.resolve` clamps.
     @Test func switchingToTheFocusedWorkspaceIsSilent() {
         let s = world(2)
         for ref: WorkspaceRef in [.name(.first), .previous, .previousOccupied, .nextOccupied] {
@@ -186,8 +173,8 @@ import Testing
         }
     }
 
-    /// **The property Tanner asked for by name.** Scroll position survives `0 → 1 → 0`, and it is one
-    /// stored `Double` because the switch is the only thing that reads or writes it.
+    /// Scroll position survives a round trip, and it is one stored `Double` because the switch is the
+    /// only thing that reads or writes it.
     @Test func scrollPositionSurvivesARoundTrip() {
         // Four full-width columns: focus the last, which scrolls the strip to 3000.
         var s = world(4)
@@ -224,9 +211,8 @@ import Testing
         #expect(focused(in: fx) == [WindowId(2)])
     }
 
-    /// An **empty** workspace has nothing to focus, so focus is left resting off the strip — an
-    /// already-supported state, not a case wanting a rule of its own. The proof is that the very next
-    /// `focus left|right` recovers, which is `handleFocus`'s off-strip entry condition doing its job.
+    /// An empty workspace has nothing to focus, so focus is left resting off the strip — an already-
+    /// supported state, not a case wanting a rule of its own: the next `focus left|right` recovers.
     @Test func anEmptyWorkspaceLeavesFocusOffTheStripAndTheNextFocusRecovers() {
         var s = world(2)
         let (switched, fx) = run(s, [focusWorkspace(other)])
@@ -279,8 +265,8 @@ import Testing
 
     // MARK: move-to-workspace
 
-    /// It moves a **window**, not its column — `move-window`'s vocabulary — so a window with
-    /// stackmates leaves them behind, and the column it left survives.
+    /// It moves a *window*, not its column, so a window with stackmates leaves them behind and the
+    /// column it left survives.
     @Test func aMoveTakesTheWindowAndLeavesItsStackmates() {
         var s = world(2)
         // Merge both windows into one column, then send the focused one away.
@@ -296,8 +282,8 @@ import Testing
         #expect(after.workspaces.workspace(of: moved) == name("3"))
     }
 
-    /// Focus stays on this workspace and lands on the neighbour — literally the same `successor`
-    /// call a close makes.
+    /// Focus stays on this workspace and lands on the neighbour — the same `successor` call a close
+    /// makes.
     @Test func focusStaysBehindOnTheNeighbour() {
         var s = world(3)
         s = run(s, [.command(.focus(.left))]).0                        // middle column focused
@@ -336,9 +322,8 @@ import Testing
         #expect(after.workspaces[.first].allWindowIds == [WindowId(1)])
     }
 
-    /// A moved window becomes the destination's remembered focus, and the *next* window sent there
-    /// opens beside it — the same rule a freshly-opened window follows. So a run of
-    /// moves builds a group in the order it was sent instead of scattering at the far end.
+    /// A moved window becomes the destination's remembered focus, and the *next* window sent there opens
+    /// beside it — so a run of moves builds a group in send order instead of scattering at the far end.
     @Test func successiveMovesLandBesideTheOneBeforeThem() {
         var s = world(3)
         // Send 3, then 2, then 1 — each becomes the anchor the next opens beside.
@@ -385,9 +370,9 @@ import Testing
 
     // MARK: The cross-workspace focus a real desktop produces
 
-    /// Cmd-Tab, a Dock click, an app raising its own window: `focusChanged` can now name a window on a
-    /// workspace nobody is looking at. §4a's promise is about the *window* — the user must never be
-    /// focused on something they cannot see — so it snap-switches and then reveals.
+    /// Cmd-Tab, a Dock click, an app raising its own window: `focusChanged` can name a window on a
+    /// workspace nobody is looking at. The user must never be focused on something they cannot see, so
+    /// it snap-switches and then reveals.
     @Test func externalFocusOnAnotherWorkspaceSwitchesToIt() {
         var s = world(2)
         s = run(s, [moveToWorkspace(other)]).0
@@ -400,8 +385,8 @@ import Testing
         #expect(after.world.focusedWindow == away)
         #expect(tiled(in: fx) == [away])
         #expect(parked(in: fx) == [WindowId(1)])
-        // **No `.focus`**: the shell already moved focus, and asking again is a redundant AX set — and
-        // the echo we would then have to absorb.
+        // No `.focus`: the shell already moved focus, so asking again is a redundant AX set — and an
+        // echo we would have to absorb.
         #expect(focused(in: fx).isEmpty)
     }
 
@@ -417,9 +402,8 @@ import Testing
         let announced = focused(in: fx)
         #expect(announced == [WindowId(2)])
 
-        // Feed our own effect back exactly as the shell's AX observer would. **Emitting nothing is the
-        // proof**: an effect stream with no `.focus`, no `.setFrame` and no `.park` in it cannot echo
-        // again, so the sequence terminates rather than merely happening to.
+        // Feed our own effect back as the shell's AX observer would. Emitting nothing is the proof: a
+        // stream with no `.focus`, `.setFrame` or `.park` cannot echo again, so the sequence terminates.
         let (echoed, echoFx) = run(s, [.focusChanged(WindowId(2))])
         #expect(echoFx.isEmpty, "the echo re-emitted \(echoFx)")
         #expect(echoed.workspaces == s.workspaces)
@@ -457,8 +441,7 @@ import Testing
     // MARK: Placement across the whole set
 
     /// Every parked window — on *any* unfocused workspace — gets a slot no other window shares, within
-    /// the ±2 pt tolerance the first-sight identity join binds at (`PRINCIPLES.md` §7). Asserted
-    /// through the verbs, because that is how a real desktop reaches a populated workspace set.
+    /// the ±2 pt tolerance the first-sight identity join binds at.
     @Test func everyParkedWindowAcrossEveryWorkspaceGetsItsOwnSlot() {
         var s = world(6)
         // Scatter: two windows onto one other address, two onto a second, leaving two at home.
@@ -495,9 +478,9 @@ import Testing
         #expect(run(s, [.dragEnded]).1.isEmpty)
     }
 
-    /// The externally-focused switch is the one that still **snaps**, by configuration-independent
-    /// decision rather than by fixture: §4a's rule is about who initiated the motion, and a Cmd-Tab is
-    /// not us. Asserted against a *smooth* config, so the absence of a cover means something.
+    /// The externally-focused switch snaps whatever the config says: the rule is about who initiated the
+    /// motion, and a Cmd-Tab is not us. Asserted against a *smooth* config, so the absent cover means
+    /// something.
     @Test func externalCrossWorkspaceFocusSnapsEvenWithACoverAvailable() {
         let s = WorkspaceMotionTests.settled(
             WorkspaceMotionTests.smoothWorld(2, config: WorkspaceMotionTests.twoUp),
@@ -515,23 +498,22 @@ import Testing
     }
 }
 
-// MARK: - The vertical transition (`WORKSPACE-C.md`, 2026-07-26)
+// MARK: - The vertical transition
 
-/// A workspace switch in **motion**: the outgoing strip slides out and the incoming one slides in,
-/// under the §4b cover.
+/// A workspace switch in motion: the outgoing strip slides out and the incoming one slides in, under
+/// the cover.
 ///
-/// The claim every test here rests on is that a switch is a **structural edit** in exactly the sense
-/// `Engine.finishStructuralEdit` already meant — before and after are two different geometries, so what
-/// animates is each window's displacement from where it now belongs, decaying to zero. If that holds,
-/// the slice adds no animated quantity, no `Effect`, no `Event` and nothing in `EmiraShell`; the only
-/// new thing in the core is a workspace's vertical offset relative to the focused one
-/// (`Workspaces.verticalOffset`), and it is a **sign** rather than a distance.
+/// The claim every test here rests on is that a switch is a *structural edit* in exactly the sense
+/// `Engine.finishStructuralEdit` already meant — before and after are two geometries, so what animates
+/// is each window's displacement from where it now belongs, decaying to zero. The only new term is a
+/// workspace's vertical offset relative to the focused one (`Workspaces.verticalOffset`), and it is a
+/// sign rather than a distance.
 @Suite struct WorkspaceMotionTests {
 
     // MARK: Fixtures
 
-    /// One screen of vertical travel. The fixture display is 1000×800 with no struts, so `H` is 800 —
-    /// the **physical** working height, which is the choice `Workspaces.verticalOffset` documents.
+    /// One screen of vertical travel. The fixture display is 1000×800 with no struts, so this is 800 —
+    /// the *physical* working height.
     static let screen = EngineTests.displayFrame.height
 
     /// Two half-width columns fill the viewport exactly: a two-window workspace is entirely on screen,
@@ -594,9 +576,8 @@ import Testing
 
     // MARK: The one new term
 
-    /// **A sign, not a distance.** Every unfocused workspace is exactly one screen away, whichever
-    /// address it is — which is what bounds a switch's capture scope to two screens of windows rather
-    /// than thirty-six, and what makes `1 → z` the same motion as `1 → 2`.
+    /// A sign, not a distance: every unfocused workspace is exactly one screen away, which bounds a
+    /// switch's capture scope to two screens of windows and makes `1 → z` the same motion as `1 → 2`.
     @Test func theVerticalOffsetIsASignAndNeverAMultiple() {
         var s = Self.smoothWorld(1)
         let metrics = s.metrics()!
@@ -612,8 +593,8 @@ import Testing
         }
     }
 
-    /// It is the **physical** working height, not the content area: measured against `contentArea` a
-    /// neighbour's edge would come to rest inside the outer-gap margin, which the cover paints.
+    /// The *physical* working height, not the content area: measured against `contentArea` a neighbour's
+    /// edge would come to rest inside the outer-gap margin, which the cover paints.
     @Test func theTravelIsThePhysicalHeightNotTheContentArea() {
         var s = Self.smoothWorld(1, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                               outerGaps: EdgeInsets(uniform: 20)))
@@ -629,9 +610,8 @@ import Testing
 
     // MARK: The switch, in flight
 
-    /// **The headline.** One session, scoped to both strips, and both strips seeded with the *same*
-    /// one-screen displacement — which is what makes them travel rigidly, exactly one screen apart,
-    /// instead of two independent slides that have to be kept in step.
+    /// One session, scoped to both strips, and both seeded with the *same* one-screen displacement —
+    /// which is what makes them travel rigidly one screen apart rather than as two slides kept in step.
     @Test func bothStripsAreSeededWithOneIdenticalScreenOfDisplacement() {
         let s = twoPopulatedWorkspaces()
         let (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
@@ -662,10 +642,9 @@ import Testing
         }
     }
 
-    /// **The seed is purely vertical even when the two workspaces rest at different scrolls**, and that
-    /// is the ordering constraint the switch is written around: the outgoing offset is stored and the
-    /// incoming one restored *between* the two `naturalFrames` reads, so the horizontal axis cancels in
-    /// the difference. Get it wrong and the outgoing strip slides sideways as it leaves.
+    /// The seed is purely vertical even when the two workspaces rest at different scrolls, and that is
+    /// the ordering constraint the switch is written around: the outgoing offset is stored and the
+    /// incoming one restored *between* the two `naturalFrames` reads, so the horizontal axis cancels.
     @Test func theSeedIsPurelyVerticalAcrossTwoDifferentScrollOffsets() {
         // Scroll `home` to its right-hand column; `other` is left resting at 0.
         let s = Self.settled(twoPopulatedWorkspaces(Self.oneColumn), .focus(.right))
@@ -709,10 +688,8 @@ import Testing
         }
     }
 
-    /// The switch **rides** an open cover rather than abandoning it — it is an ordinary structural
-    /// interrupt, so one session throughout and never a second. (Before the vertical transition this
-    /// cut to `endTransition`, because a cover was a picture of one workspace and its layers had
-    /// nowhere to go.)
+    /// The switch rides an open cover rather than abandoning it — an ordinary structural interrupt, so
+    /// one session throughout and never a second.
     @Test func aSwitchMidScrollRidesTheOpenCover() {
         // `.left`, because the fixture comes back to `home` focused on its *rightmost* column, where
         // `.right` is the strip's no-wrap edge and opens nothing.
@@ -738,15 +715,10 @@ import Testing
                 "the settled desktop still wanted re-placing")
     }
 
-    /// A second switch mid-flight is a **nudge**, not a restart: position continuous, velocity carried,
-    /// still one session. Two presses of `next-workspace` land you two addresses along without the
-    /// layers jumping back to where the first press started them.
-    ///
-    /// **And a strip you have already left is not moved again**, which is the sign function's other
-    /// half and worth pinning: `1` is one screen above `2` and one screen above `3` alike, so the first
-    /// press's outgoing strip simply finishes the slide it was on while `2` — now the outgoing one —
-    /// takes the new screen. That is what keeps a spammed switch a two-strip motion instead of an
-    /// accelerating ribbon.
+    /// A second switch mid-flight is a nudge, not a restart: position continuous, velocity carried, still
+    /// one session. And a strip you have already left is not moved again — the sign function's other
+    /// half: `1` is one screen above `2` and above `3` alike, so the first press's outgoing strip
+    /// finishes the slide it was on. That keeps a spammed switch a two-strip motion, not a ribbon.
     @Test func aSecondSwitchMidFlightIsOneSessionAndOneNudge() {
         let s = twoPopulatedWorkspaces()
         var (after, _) = raiseCover(s, .focusWorkspace(.next))
@@ -770,9 +742,8 @@ import Testing
                                          settling.minY))
     }
 
-    /// Switching onto an **empty** workspace still animates: the outgoing strip slides away and what is
-    /// revealed is bare desktop. Focus is left resting off the strip, exactly as it was when this
-    /// snapped.
+    /// Switching onto an empty workspace still animates: the outgoing strip slides away and what is
+    /// revealed is bare desktop, with focus left resting off the strip.
     @Test func switchingToAnEmptyWorkspaceStillSlidesTheOutgoingStripAway() {
         let s = Self.smoothWorld(2)
         let (after, _) = raiseCover(s, .focusWorkspace(.name(name("9"))))
@@ -787,10 +758,9 @@ import Testing
 
     // MARK: The two move verbs
 
-    /// `move-to-workspace` without following falls out of the same table with nothing about workspaces
-    /// written into it: the moved window's "after" is one screen away, so it **flies toward its new
-    /// workspace** while the columns it left close ranks behind it — and it is the mover, so it is
-    /// drawn over them on the way.
+    /// `move-to-workspace` without following falls out of the same table: the moved window's "after" is
+    /// one screen away, so it flies toward its new workspace while the columns it left close ranks
+    /// behind it — and it is the mover, so it is drawn over them on the way.
     @Test func movingWithoutFollowingFliesTheWindowTowardItsNewWorkspace() {
         let s = Self.smoothWorld(2)
         let moved = s.world.focusedWindow!
@@ -811,10 +781,9 @@ import Testing
         #expect(EngineTests.hasEffect(fx) { if case .elevateLayer = $0 { return true }; return false })
     }
 
-    /// The **follow** verb reads differently, and the difference is geometry rather than choreography:
-    /// the moved window is on the focused workspace both before *and* after, so its seed is purely
-    /// horizontal — it glides into its new column while everything else on both strips travels a
-    /// screen. That is what "the window came with you" looks like.
+    /// The follow verb differs by geometry rather than choreography: the moved window is on the focused
+    /// workspace both before *and* after, so its seed is purely horizontal — it glides into its new
+    /// column while everything else on both strips travels a screen.
     @Test func theFollowVerbCarriesTheMovedWindowHorizontally() {
         let s = twoPopulatedWorkspaces()
         let moved = s.world.focusedWindow!
@@ -829,12 +798,12 @@ import Testing
         }
     }
 
-    // MARK: The raise blits (§2.4)
+    // MARK: The raise blits
 
-    /// **A layer starts at its capture-time frame, and for a switch that is a screen away from where it
-    /// belongs.** The incoming workspace's windows are captured at their 1 px park slivers, so the
-    /// raise must place every layer as well as create it — inside the same presentation run, before any
-    /// real window moves, or the first frame shows the whole arriving strip stacked in the corner.
+    /// A layer starts at its capture-time frame, and for a switch that is a screen away from where it
+    /// belongs: the incoming workspace's windows are captured at their 1 px park slivers. So the raise
+    /// must place every layer as well as create it, inside the same presentation run and before any real
+    /// window moves, or the first frame shows the arriving strip stacked in the corner.
     @Test func theRaiseBlitsEveryLayerBeforeAnyRealWindowMoves() {
         let s = twoPopulatedWorkspaces()
         var (next, fx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
@@ -870,11 +839,10 @@ import Testing
         }
     }
 
-    // MARK: The residual, characterized rather than hidden (§2.5)
+    // MARK: The residual, characterized rather than hidden
 
-    /// Spam `focus-workspace next` across a populated address space and report the widest hole the
-    /// cover ever showed — the same frame-stepped instrument the scroll defects were measured with
-    /// (`EngineTests.LatentWorld`).
+    /// Spam `focus-workspace next` across a populated address space and report the widest hole the cover
+    /// ever showed, using the same frame-stepped instrument as the scroll (`EngineTests.LatentWorld`).
     ///
     /// `gapFrames == nil` lets each press run to rest before the next one, whatever the capture latency
     /// costs; a number presses again after exactly that many frames, settled or not.
@@ -908,42 +876,31 @@ import Testing
         return worst
     }
 
-    /// **A switch allowed to finish never shows a hole, at any capture latency.** An uninterrupted
-    /// transition raises no cover until every still is in, so the two strips it is a picture of are
-    /// always both there. This is the guarantee; the next test is its boundary.
+    /// A switch allowed to finish never shows a hole, at any capture latency: an uninterrupted transition
+    /// raises no cover until every still is in. This is the guarantee; the next test is its boundary.
     @Test(arguments: [4, 8, 30, 60] as [Int])
     func aSwitchAllowedToSettleNeverShowsAHole(captureLatency: Int) {
         #expect(Self.worstHoleWhileSwitching(presses: 4, gapFrames: nil,
                                              captureLatency: captureLatency) == 0)
     }
 
-    /// **A second press that lands before the cover is up costs nothing**, because its captures simply
-    /// join the batch the raise is already waiting on. That is most of the fast-spam case: the head is
-    /// the slowest part of a transition, so the presses that arrive soonest are the ones the raise
-    /// absorbs for free.
+    /// A second press landing before the cover is up costs nothing — its captures join the batch the
+    /// raise is already waiting on, which is most of the fast-spam case.
     @Test(arguments: [2, 4, 8, 16, 30] as [Int])
     func aSecondPressBeforeTheRaiseJoinsTheBatchForFree(captureLatency: Int) {
         #expect(Self.worstHoleWhileSwitching(presses: 8, gapFrames: captureLatency,
                                              captureLatency: captureLatency) == 0)
     }
 
-    /// **And the residual is a number rather than a hope — a bigger number than the plan expected, and
-    /// this is where it is written down.** A second `next-workspace` pressed *after* the cover is up
-    /// aims at a third workspace nothing has captured, and its stills take a round trip. What the user
-    /// sees meanwhile is a band of desktop at the screen edge the arriving strip is entering from.
+    /// The residual, as a number. A second `next-workspace` pressed *after* the cover is up aims at a
+    /// workspace nothing has captured, and the user sees a band of desktop at the screen edge the
+    /// arriving strip enters from.
     ///
-    /// **A switch has no runway, and that is the difference from a scroll.** The shoulder buys a scroll
-    /// a whole column of travel before the newcomer's leading edge reaches the viewport. The next
-    /// workspace is *flush* with the screen edge — one screen away is exactly one screen — so its layers
-    /// begin exposing the band on the very first frame of motion. The band's thickness is therefore
-    /// simply how far the spring travels during the capture round trip, and these are the measured
-    /// numbers: **65 pt at a 2-frame batch, 195 pt at 4 (≈ the real 36 ms one), 450 pt at 8**, on an
-    /// 800 pt-tall screen, saturating at the column width once the whole layer is inside.
-    ///
-    /// It is accepted rather than closed, following `WORKSPACE-C.md` §2.5: the fix is to capture
-    /// shoulder *workspaces*, which is a whole extra screen of stills on **every** switch to cover a
-    /// press rate faster than the animation. Bounded here so a regression that made it worse would fail
-    /// loudly, and flagged in `PRINCIPLES.md` §10 as a visual call for a real desktop.
+    /// Unlike a scroll, a switch has no runway: the next workspace is *flush* with the screen edge, so
+    /// its layers expose the band on the first frame of motion, and the band is simply how far the spring
+    /// travels during the capture round trip — 65 pt at a 2-frame batch, 195 at 4 (≈ the real 36 ms one),
+    /// 450 at 8, on an 800 pt-tall screen. Accepted rather than closed (the fix is capturing shoulder
+    /// *workspaces*, an extra screen of stills on every switch); bounded here so a regression fails.
     @Test(arguments: zip([2, 4, 8] as [Int], [70.0, 200.0, 460.0] as [Double]))
     func aSwitchInterruptedAfterTheRaiseExposesABandBoundedByTheSpring(
         captureLatency: Int, bound: Double

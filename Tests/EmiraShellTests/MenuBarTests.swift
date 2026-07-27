@@ -3,14 +3,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The menu bar item's *policy*, which is all of it that has decisions in it: what the button says,
-// and how a config diagnostic is rendered into a menu. `MenuBarItem` itself is AppKit wiring — an
-// `NSStatusItem`, a menu rebuilt on open, two actions — and is exercised by launching the app, the
-// same judgement `DisplayLinkDriver` and `CarbonHotkeyBinder` get.
+// The menu bar item's policy: what the button says and how a config diagnostic is rendered into a
+// menu. `MenuBarItem` itself is AppKit wiring and is exercised by launching the app.
 //
-// `Runtime.onStateChanged` is tested here rather than in `RuntimeTests` because the menu bar item is
-// the reason it exists and the two rules it has to satisfy are about *this* observer: it sees settled
-// states only, and it sees one per drain rather than one per event in a cascade.
+// `Runtime.onStateChanged` is tested here because the menu bar item is why it exists: it sees settled
+// states only, and one per drain rather than one per event in a cascade.
 
 @Suite @MainActor struct MenuBarTests {
 
@@ -19,8 +16,8 @@ import EmiraCore
     @Test func titleIsTheFocusedWorkspacesAddress() {
         #expect(StatusModel(workspace: .first).title == "1")
         #expect(StatusModel(workspace: WorkspaceName("3")!).title == "3")
-        // Rank order is key order, so the tenth address is `0` and the eleventh is `a` — the
-        // indicator shows the character, never the rank (`WorkspaceName`).
+        // Rank order is key order, so the tenth address is `0` and the eleventh `a` — the indicator
+        // shows the character, never the rank.
         #expect(StatusModel(workspace: WorkspaceName(rank: 9)!).title == "0")
         #expect(StatusModel(workspace: .last).title == "z")
     }
@@ -72,8 +69,8 @@ import EmiraCore
         var reports: [WorkspaceName] = []
         runtime.onStateChanged = { reports.append($0.workspaces.focused) }
 
-        // One command that cascades — an arrival places, and under a cover that is capture → raise →
-        // teleport → landings, several events deep. The observer must see the settled end of it once.
+        // One event that cascades several events deep (capture → raise → teleport → landings). The
+        // observer must see the settled end of it, once.
         runtime.dispatch(.windowCreated(RuntimeTests.snapshot(1)))
         #expect(reports.count == 1)
 

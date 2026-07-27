@@ -3,13 +3,10 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The hotkey subsystem's policy — everything above the system registry. What is tested is the part
-// that has decisions in it: what a config reload does to the live bindings, what happens when the
-// system refuses a chord, and what a press turns into. The registry itself is `HotkeyBinder`, four
-// methods wide, and `CarbonHotkeyBinder` is the untestable half by construction.
-//
-// The one thing tested *about* the Carbon half is its keycode table, because its failure mode is a
-// silent transposition that no call site could catch (see `theKeycodeTableIsInjective`).
+// The hotkey subsystem's policy — everything above the system registry, which is `HotkeyBinder`, four
+// methods wide, with `CarbonHotkeyBinder` untestable by construction. What is tested: what a config
+// reload does to the live bindings, what happens when the system refuses a chord, and what a press
+// turns into — plus the Carbon keycode table, whose failure mode no call site could catch.
 
 @Suite @MainActor struct HotkeyTests {
 
@@ -87,8 +84,7 @@ import EmiraCore
 
     // MARK: - A press is a command
 
-    /// The whole point of the subsystem: a keypress produces the *same* `Event.command` the socket
-    /// produces, with no translation anywhere (IMPLEMENTATION.md §2).
+    /// A keypress produces the same `Event.command` the socket does, with no translation anywhere.
     @Test func aPressBecomesTheCommandItIsBoundTo() {
         let binder = FakeBinder()
         let (manager, recorder) = Self.manager(binder)
@@ -122,8 +118,7 @@ import EmiraCore
         #expect(Set(binder.live.values) == [Self.focusLeft.chord, Self.focusRight.chord])
     }
 
-    /// A refused chord is a normal outcome, not a failure: the other bindings still land. One app
-    /// holding `cmd-space` must not cost the user their other twenty binds.
+    /// A refused chord is a normal outcome, not a failure: the other bindings still land.
     @Test func aRefusedChordCostsOnlyItself() {
         let binder = FakeBinder()
         binder.refuses = [Self.focusRight.chord]
@@ -137,10 +132,8 @@ import EmiraCore
         binder.press(Self.cycleWidth.chord)
     }
 
-    /// **Only a chord the system actually gave us can fire.** Pressing the id the manager *offered*
-    /// for a refused chord must produce nothing — i.e. the refusal has to leave the command map alone,
-    /// not merely leave the chord unregistered. A real registry would never deliver that press, which
-    /// is exactly why the map must not be carrying an answer for it.
+    /// Only a chord the system gave us can fire: a refusal must leave the command map alone, not
+    /// merely leave the chord unregistered.
     @Test func aRefusedChordLeavesNoCommandBehind() {
         let binder = FakeBinder()
         binder.refuses = [Self.focusLeft.chord]
@@ -159,10 +152,9 @@ import EmiraCore
 
     // MARK: - Reload
 
-    /// **The filter that keeps a reload cheap.** Every config change reaches `apply`, including the
-    /// ones that only moved `column-gap` — and a chord is a global resource, so re-taking twenty of
-    /// them for a gap is churn against the rest of the system with a (brief) window where the
-    /// keystroke reaches somebody else.
+    /// Every config change reaches `apply`, including ones that only moved `column-gap`. A chord is a
+    /// global resource, so re-taking twenty of them leaves a window where the keystroke reaches
+    /// somebody else.
     @Test func anUnchangedBindingListIsANoOp() {
         let binder = FakeBinder()
         let (manager, _) = Self.manager(binder)
@@ -251,11 +243,8 @@ import EmiraCore
 
     // MARK: - The Carbon half's one testable claim
 
-    /// **The keycode table's failure mode is a transposition**, and a transposition is invisible
-    /// everywhere else: two key names sharing one code means one of them silently binds the wrong
-    /// physical key, and nothing about that is detectable at the call site. Injectivity over
-    /// `Key.allCases` catches it. (Exhaustiveness is already the compiler's job — the `switch` in
-    /// `CarbonHotkeys.swift` doesn't build with a case missing.)
+    /// The keycode table's failure mode is a transposition: two key names sharing one code means one
+    /// silently binds the wrong physical key, undetectable at the call site. Injectivity catches it.
     @Test func theKeycodeTableIsInjective() {
         var codes: [Int: Key] = [:]
         for key in Key.allCases {

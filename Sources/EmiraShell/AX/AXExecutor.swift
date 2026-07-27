@@ -1,46 +1,23 @@
 import EmiraCore
 import Foundation
 
-// The truth plane's `Executor` — the half of the §1 diagram that `CompositingExecutor` has been
-// routing to a `MockExecutor(.simulate)` since M2. Swapping this in underneath is the whole of "real
-// windows move": nothing above it changes, because the seam was always the point.
+// The truth plane's `Executor`; the framework calls live below it in `AXWriter.swift`. A batch is
+// grouped into one lane job per app — per-app order is the only order that means anything across
+// separate processes, and grouping collapses the `AXEnhancedUserInterface` toggle to once. An effect
+// naming an unknown window fails loudly rather than evaporating, and "landed" and "landed where we
+// asked" are different questions (see `report`).
 //
-// **What this file decides** (everything below it is framework calls, `AXWriter.swift`):
-//
-//  1. **A batch is grouped into one lane job per app.** The reducer emits placements in layout order —
-//     column by column, which interleaves apps — and issuing them one at a time would mean N hops onto
-//     N lanes and N `AXEnhancedUserInterface` toggles for an app with N windows on the strip. Grouping
-//     preserves per-app order (which is the only order that means anything: separate processes have
-//     separate run loops) and collapses the per-app overhead to once.
-//  2. **An effect naming a window the registry doesn't know fails immediately.** Not silently: a
-//     `setFrame` that evaporates would leave a transition waiting on a landing that can never arrive,
-//     and the cover would sit there until the hold-timeout rescued it. `axFailed` is the honest answer
-//     and the reducer already knows what to do with it.
-//  3. **"Landed" and "landed *where we asked*" are different questions**, and only the first one is a
-//     verdict. See `report`.
-//  4. **Nothing here answers for a subsystem that isn't built.** Through M3 this file acked
-//     `Effect.capture` on the spot, standing in for a `CaptureService` that didn't exist; M4 built it
-//     and the effect routes elsewhere now (`CompositingExecutor`). The truth plane is only the truth
-//     plane again.
-//
-// **Nothing here is async and nothing blocks.** `execute` hands work to lanes and returns; every answer
-// arrives later as an `Event` through the sink (`Executor.swift`, §1 invariant 3). The feedback for an
-// *unknown* window is delivered synchronously, from inside `execute` — which is fine, and deliberately
-// exercised by the tests: the `Runtime` queues it rather than reducing re-entrantly (invariant 4).
+// Nothing here is async or blocks: `execute` hands work to lanes and returns. The feedback for an unknown
+// window is delivered synchronously from inside `execute`; `Runtime` queues rather than re-reducing.
 
 /// Executes the truth-plane effects — AX geometry, focus and stacking — against real windows.
 @MainActor
 public final class AXExecutor: Executor {
 
     /// How far a window may land from its requested frame before we tell the core about it, in points.
-    ///
-    /// One point, because the drift we are *not* interested in is arithmetic: the layout engine works
-    /// in `Double`s and happily asks for `x = 740.5`, while AX stores integers. Anything beyond a point
-    /// is the app having an opinion — a minimum size, a character-cell grid, a refusal to sit under the
-    /// menu bar — and that is truth the core should hold instead of our optimistic guess.
-    ///
-    /// Deliberately looser than `Engine`'s own 0.5 pt placement tolerance, and in the direction that
-    /// keeps them consistent: drift we report is drift the reducer will also consider worth re-placing.
+    /// One point: layout works in `Double`s and asks for `x = 740.5` while AX stores integers, so smaller
+    /// drift is arithmetic. Anything beyond is the app having an opinion (a minimum size, a
+    /// character-cell grid) that the core should hold instead of our optimistic guess.
     public static let landingTolerance: Double = 1
 
     private let registry: WindowRegistry
@@ -53,17 +30,14 @@ public final class AXExecutor: Executor {
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
         var groups: [pid_t: [WindowMove]] = [:]
-        // Lane dispatch order, first-touched-first. A dictionary's order is not an order; a test that
-        // asserts "Safari's group went out before Ghostty's" is asserting something real about the
-        // batch, and a hash seed shouldn't be able to change it.
+        // Lane dispatch order, first-touched-first: a dictionary's order is not an order, and a hash
+        // seed shouldn't be able to change which app's group goes out first.
         var lanes: [pid_t] = []
 
         for effect in effects {
             switch effect {
             // Geometry: gathered now, dispatched per app below. `park` is the same *write* as
-            // `setFrame` — the distinction is the core's (what it waits on, what it captures first),
-            // not AX's — but it is carried along, because it decides what a drifted landing means
-            // (`report`, and `WindowMove.isPark`).
+            // `setFrame`, but carried along because it decides what a drifted landing means (`report`).
             case .setFrame(let id, let rect), .park(let id, let rect):
                 guard let record = registry.record(id) else {
                     feedback(.axFailed(id))
@@ -74,10 +48,9 @@ public final class AXExecutor: Executor {
                 groups[record.pid, default: []].append(
                     WindowMove(record: record, target: rect, isPark: isPark))
 
-            // Focus and stacking: issued as encountered. They commute with placement — one is keyboard
-            // and z-order, the other is geometry — so gathering the geometry and sending it afterwards
-            // reorders nothing observable. An unknown id is dropped rather than acked: there is no
-            // "focus failed" event, and inventing one would tell the core its own assumption back.
+            // Focus and stacking: issued as encountered. They commute with placement — keyboard and
+            // z-order versus geometry — so sending the geometry afterwards reorders nothing observable.
+            // An unknown id is dropped rather than acked; there is no "focus failed" event.
             case .focus(let id):
                 guard let record = registry.record(id) else { continue }
                 writer.focus(record)
@@ -86,11 +59,8 @@ public final class AXExecutor: Executor {
                 guard let record = registry.record(id) else { continue }
                 writer.raise(record)
 
-            // The other three planes. `CompositingExecutor` routes presentation effects to the
-            // `CoverSurface`, `capture` to the `CaptureStore` and `reloadConfig` to the `ConfigSource`,
-            // so none reaches here; handled exhaustively so that a new `Effect` case has to be assigned
-            // a home rather than falling into a `default`. (`capture` *was* answered here — acked on
-            // the spot — through M3, which is what M4's capture plane replaced.)
+            // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
+            // new `Effect` case must be assigned a home rather than falling through.
             case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .endTransition,
                  .reloadConfig:
                 break
@@ -105,28 +75,16 @@ public final class AXExecutor: Executor {
         }
     }
 
-    /// Turn one app's landings into events.
+    /// Turn one app's landings into events. Two facts, two events, not alternatives: `Engine` updates
+    /// `World` optimistically, so anything the app did differently is corrected here.
     ///
-    /// **Two facts, two events, and they are not alternatives.** `Engine.emitPlacements` updates the
-    /// core's `World` *optimistically* — it records the target as the window's frame the moment it asks
-    /// for the move — so anything the app does differently is a lie the core is now holding. This is
-    /// where it gets corrected:
-    ///
-    ///  · **`placementCorrected`** when a **tiled** window is somewhere other than where we asked. It
-    ///    carries the request alongside the reality, which `windowFrameChanged` cannot: an app clamping
-    ///    our set is the only drift that says something about *what the window will accept*, and it says
-    ///    it only in relation to the question. That pair is what lets the core stop building a column
-    ///    around a width the app refuses (`SizeCorrection`).
-    ///  · **`windowFrameChanged`** when a **parked** window drifted. Same truth, no lesson. A park slot
-    ///    is a 1 px sliver hugging the working area's edge, and PRINCIPLES.md §10 records a window
-    ///    refusing a resize there that it accepted the moment it scrolled back into view — so an answer
-    ///    given at a park is an answer about off-viewport geometry, not about the window. Recording it
-    ///    as a constraint would freeze a column at whatever width it happened to be parked at.
-    ///  · **`axLanded` / `axFailed`** for the *write*, not the geometry. A terminal that quantizes to
-    ///    character cells accepts every set and lands 8 pt short on every single placement; calling that
-    ///    `axFailed` would fill the transition machinery with false alarms today and get terminals
-    ///    dropped from the layout the day `axFailed` grows the retry/drop reconciliation §3 promises it.
-    ///    `axFailed` is reserved for the app saying no.
+    ///  · `placementCorrected` when a *tiled* window landed elsewhere. Carries the request alongside the
+    ///    reality, which lets the core stop building a column around a width the app refuses.
+    ///  · `windowFrameChanged` when a *parked* window drifted. Same truth, no lesson: a window can refuse
+    ///    a resize at its 1 px sliver that it accepts once scrolled back into view, and recording that as
+    ///    a constraint would freeze the column at its parked width.
+    ///  · `axLanded`/`axFailed` for the *write*, not the geometry. A terminal that quantizes to character
+    ///    cells accepts every set and lands short every time; `axFailed` means the app said no.
     ///
     /// Order matters: truth first, then the verdict. `axLanded` can close a transition and snap the
     /// viewport, and the frame it snaps against should already be the real one.

@@ -5,37 +5,23 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The capture plane's tests. ScreenCaptureKit itself is not testable and holds no decisions (that is
-// what `SurfaceCapturer` is for); what *is* testable is the policy above it, and it is the policy that
-// a transition's liveness depends on:
-//
-//  1. **Every `capture` is answered, exactly once.** The core raises the cover on the *last*
-//     `captureReady` and the real windows only teleport behind a raised cover — so a dropped ack is a
-//     command that silently does nothing, with no hold-timeout to rescue it (the hold timer starts at
-//     the raise). Most of this file is that one sentence, from every angle it can fail: a window the
-//     registry never knew, a capturer that never answers, a capturer that answers twice, a capturer
-//     that answers *after* the deadline already did.
-//  2. **The store is written before the acks.** The last ack re-enters the pump synchronously and comes
-//     straight back out as `raiseCover`, which reads the store — so "images first, then acks" is an
-//     ordering the cover's fidelity depends on, and it is asserted from inside a sink that looks.
-//
-// `WindowRegistry` is used for real rather than faked: it is a value-ish store of records and the id →
-// window-number lookup is precisely what this file wants to exercise (including its failure).
+// The capture plane's tests. ScreenCaptureKit itself is untestable and holds no decisions — that is
+// what `SurfaceCapturer` is for — so what is tested is the policy a transition's liveness rests on:
+// every `capture` is answered exactly once (the core raises the cover on the last `captureReady`, and
+// nothing rescues a dropped ack, since the hold timer starts at the raise), and the store is written
+// before the acks, because that last ack re-enters the pump and comes back out as `raiseCover`.
 
 @Suite @MainActor struct CaptureServiceTests {
 
     // MARK: - Fixtures
 
-    /// A capturer that answers when told to, so a test can put a batch "in flight".
-    ///
-    /// Completions are kept **per batch** rather than one-at-a-time, because the interesting race needs
-    /// two live at once: a batch that was superseded and then answers anyway. A capturer that forgot
-    /// the older completion could not model it, and the guard against it would look untested because it
-    /// was unreachable in the fixture rather than in the code.
+    /// A capturer that answers when told to, so a test can put a batch in flight. Completions are kept
+    /// per batch, not one at a time, because the interesting race needs two live at once: a batch that
+    /// was superseded and then answers anyway.
     @MainActor final class ManualCapturer: SurfaceCapturer {
         private(set) var requests: [[CaptureRequest]] = []
-        /// Whether each batch was asked for a base — the fact that separates a cover being *opened*
-        /// from one being *grown*, and the one a second base would silently ruin.
+        /// Whether each batch was asked for a base — what separates a cover being opened from one
+        /// being grown.
         private(set) var baseRequested: [Bool] = []
         private var completions: [@MainActor (CaptureBatch) -> Void] = []
 
@@ -133,9 +119,8 @@ import EmiraCore
         #expect(log.capturedIds == [WindowId(1), WindowId(2), WindowId(3)])
     }
 
-    /// The absence this whole file exists for: an id with no record cannot be captured — there is no
-    /// window number to ask about — but dropping it would leave the core waiting on a `captureReady`
-    /// that can never arrive, with the cover never raised and the hold timer never armed.
+    /// An id with no record has no window number to capture, but dropping it leaves the core waiting
+    /// on a `captureReady` that never arrives — cover never raised, hold timer never armed.
     @Test func aWindowTheRegistryNeverKnewIsStillAcked() {
         let (service, capturer, _, log) = Self.service([1])          // 2 is unknown
         service.capture([WindowId(1), WindowId(2)], feedback: log.sink)
@@ -147,9 +132,8 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) == nil)             // …one of them with no pixels
     }
 
-    /// The batch under test grows an already-open cover, so the deadline's outcome here is *acks* —
-    /// the cover exists and gains a hole. A head batch that times out has nothing to cover with at all
-    /// and takes the other path (`aHeadBatchWithNoBaseAsksTheCoreNotToCover`).
+    /// The batch here grows an already-open cover, so the deadline's outcome is acks. A head batch
+    /// that times out has nothing to cover with and takes the other path.
     @Test func aCapturerThatNeverAnswersIsBoundedByTheDeadline() {
         let (service, capturer, scheduler, log) = Self.service([1, 2, 3])
         service.capture([WindowId(1)], feedback: log.sink)       // opens the cover
@@ -163,9 +147,8 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) == nil)   // acked, with nothing to show for it
     }
 
-    /// The two racers for one batch — the capturer and the deadline — and whichever loses must do
-    /// nothing at all rather than the same thing twice. A second `captureReady` for a window the core
-    /// has already counted would push `pendingCaptures` negative in spirit and, worse, re-raise.
+    /// Two racers for one batch — the capturer and the deadline — and whichever loses must do nothing
+    /// rather than the same thing twice: a second `captureReady` would re-raise the cover.
     @Test func aLateAnswerAfterTheDeadlineDoesNotAckASecondTime() {
         let (service, capturer, scheduler, log) = Self.service([1, 2])
         service.capture([WindowId(1)], feedback: log.sink)
@@ -197,14 +180,9 @@ import EmiraCore
         #expect(log.capturedIds == [WindowId(1)])
     }
 
-    /// **Two batches can be live at once, and each pays its own acks (M4 part 2).**
-    ///
-    /// This test asserted the opposite until the cover learned to grow: a second batch used to
-    /// *supersede* the first, paying its acks immediately with no pixels. That was harmless only while
-    /// the reducer never issued a second batch. It does now — a retarget arriving before the cover is
-    /// up widens the scope and captures the newcomers while the first batch is still out — and
-    /// superseding it would ack the original windows with nothing and raise the cover over the
-    /// newcomers alone: every window that was already on screen, blank.
+    /// A retarget arriving before the cover is up captures the newcomers while the first batch is
+    /// still out. Superseding the first batch instead would ack its windows with no pixels and raise
+    /// the cover over the newcomers alone — every window already on screen, blank.
     @Test func twoBatchesInFlightEachPayTheirOwnAcks() {
         let (service, capturer, _, log) = Self.service([1, 2])
         service.capture([WindowId(1)], feedback: log.sink)      // batch 0 — opens the cover
@@ -220,8 +198,7 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) != nil)
     }
 
-    /// The generation guard: a batch that answers twice, or answers after its deadline already paid
-    /// it, must do **nothing** the second time rather than the same thing again.
+    /// The generation guard: a batch that answers after its deadline already paid it does nothing.
     @Test func aBatchThatAnswersAfterItWasAlreadyResolvedDoesNothing() {
         let (service, capturer, scheduler, log) = Self.service([1, 2])
         service.capture([WindowId(1)], feedback: log.sink)      // batch 0
@@ -237,9 +214,9 @@ import EmiraCore
 
     // MARK: - The cover session: one base, one lifetime
 
-    /// The base is the display captured *excluding* the batch's windows. A batch that grows a raised
-    /// cover must not take a second one: by then the first batch's windows have teleported to their end
-    /// frames, so a fresh base would carry them — frozen — behind their own sliding layers.
+    /// The base is the display captured excluding the batch's windows. A batch growing a raised cover
+    /// must not take a second one: the first batch's windows have already teleported, so a fresh base
+    /// would carry them, frozen, behind their own sliding layers.
     @Test func onlyTheBatchThatOpensACoverTakesABase() {
         let (service, capturer, _, log) = Self.service([1, 2, 3])
         service.capture([WindowId(1), WindowId(2)], feedback: log.sink)
@@ -268,9 +245,8 @@ import EmiraCore
         #expect(service.base == nil)
     }
 
-    /// A cross-fade takes 0.22 s and a command can arrive inside it. The stills the new transition has
-    /// already captured must survive the old fade's discard — which is the entire reason `discard`
-    /// takes a token instead of being a bare `discard()`.
+    /// A command can arrive inside the 0.22 s cross-fade, so the new transition's stills must survive
+    /// the old fade's discard — which is why `discard` takes a token rather than being bare.
     @Test func aStaleTokenCannotFreeTheNextCoversStills() {
         let (service, capturer, _, log) = Self.service([1, 2])
         service.capture([WindowId(1)], feedback: log.sink)
@@ -287,10 +263,9 @@ import EmiraCore
 
     // MARK: - No pixels ⇒ no cover (never a black one)
 
-    /// The failure this slice named. A head batch that resolves with no base leaves the reconstruction
-    /// with nothing to be opaque *with* — and the overlay's own fill is black, so acking would paint
-    /// the whole display black for the length of the transition. It answers `coverUnavailable` instead,
-    /// which the core turns into a snap.
+    /// A head batch that resolves with no base leaves the reconstruction nothing to be opaque with,
+    /// and the overlay's own fill is black — so it answers `coverUnavailable`, which the core turns
+    /// into a snap, rather than painting the display black for the length of the transition.
     @Test func aHeadBatchWithNoBaseAsksTheCoreNotToCover() {
         let (service, _, scheduler, log) = Self.service([1, 2])
         service.capture([WindowId(1), WindowId(2)], feedback: log.sink)
@@ -314,10 +289,9 @@ import EmiraCore
         #expect(log.capturedIds == [WindowId(2)])                // a normal transition again
     }
 
-    /// A batch can outlive the cover it was captured for: its head sibling failed, the session was
-    /// abandoned, and a whole new transition has since claimed the store. Its acks are still owed — the
-    /// core reduces them to nothing — but its images are a photograph of somebody else's desktop and
-    /// must not reach a cover that is about to be raised over the current one.
+    /// A batch can outlive the cover it was captured for: its head sibling failed and a new transition
+    /// has claimed the store. Its acks are still owed, but its images are a photograph of somebody
+    /// else's desktop and must not reach the live cover.
     @Test func aBatchOutlivingItsCoverKeepsItsPixelsToItself() {
         let (service, capturer, _, log) = Self.service([1, 2, 3])
         service.capture([WindowId(1)], feedback: log.sink)       // batch 0 — head
@@ -334,8 +308,8 @@ import EmiraCore
         #expect(log.capturedIds == [WindowId(3), WindowId(2)])   // both acks still paid
     }
 
-    /// A *growing* batch never owes a base, so an empty one from it is an ordinary missing still — a
-    /// hole where one window is, not a reason to tear the cover down under the user.
+    /// A growing batch never owes a base, so an empty one is an ordinary missing still — a hole where
+    /// one window is, not a reason to tear the cover down under the user.
     @Test func anExtendingBatchWithNoBaseIsJustAMissingStill() {
         let (service, capturer, _, log) = Self.service([1, 2])
         service.capture([WindowId(1)], feedback: log.sink)
@@ -350,9 +324,8 @@ import EmiraCore
 
     // MARK: - The read-out
 
-    /// The ~110 ms at the head of every transition that frames-per-transition structurally cannot see
-    /// (it starts counting at the raise). Reported permanently so the deadline and the spring can be
-    /// tuned against a number instead of a guess.
+    /// The head of a transition is invisible to frames-per-transition, which starts counting at the
+    /// raise, so each batch reports its own cost and misses.
     @Test func everyBatchReportsWhatItCostAndWhatItMissed() {
         let (service, capturer, scheduler, log) = Self.service([1, 2, 3])
         var reports: [CaptureReport] = []
@@ -376,8 +349,7 @@ import EmiraCore
     // MARK: - Ordering: images before acks
 
     /// The last `captureReady` re-enters the pump synchronously and comes back out as `raiseCover`,
-    /// which reads the store. Acking first would raise the cover over an empty cache — every layer
-    /// blank, on the one frame where fidelity matters most.
+    /// which reads the store. Acking first would raise the cover over an empty cache.
     @Test func theStoreIsPopulatedBeforeTheFirstAckIsDelivered() {
         let (service, capturer, _, log) = Self.service([1, 2])
         var seen: [Bool] = []
@@ -423,15 +395,10 @@ import EmiraCore
     }
 }
 
-/// Reading a window's corner radius back out of its own capture
-/// (`CapturedSurface.measuredCornerRadius`) — the measurement `WindowAnimation.crop` draws a window's
-/// silhouette from, in place of a constant that would be wrong on the next macOS.
-///
-/// Worth its own suite despite being four lines of arithmetic, because two of the details it depends
-/// on are invisible when wrong in exactly one direction: Core Graphics draws from a bottom-left origin
-/// into a top-down buffer (so measuring the *bottom* corner instead of the top would look plausible
-/// and be off by whatever the two corners disagree by), and the alpha byte's position depends on a
-/// bitmap-info flag. A synthetic image with a radius we chose is the only way to see either.
+/// Reading a window's corner radius back out of its own capture, which `WindowAnimation.crop` draws
+/// its silhouette from. Two details are invisible when wrong in one direction, hence the synthetic
+/// images: Core Graphics draws from a bottom-left origin into a top-down buffer, so measuring the
+/// bottom corner would look plausible, and the alpha byte's position depends on a bitmap-info flag.
 @Suite struct CornerRadiusTests {
 
     /// A window-shaped image: opaque rounded rect, transparent outside it — what a
@@ -455,14 +422,13 @@ import EmiraCore
     func theRadiusIsReadBackOffTheAlpha(radius: Double) {
         let image = Self.window(radius: CGFloat(radius), size: CGSize(width: 400, height: 300))
         let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
-        // Sub-quarter-pixel, at every radius — the accuracy that comes of measuring an area rather
-        // than hunting for an edge. A threshold scan down the leftmost column answers 8.6 for the
-        // radius-12 case; this is the test that would have caught that.
+        // Sub-quarter-pixel at every radius — the accuracy of measuring an area rather than hunting
+        // for an edge (a threshold scan down the leftmost column answers 8.6 for radius 12).
         #expect(measured != nil)
         #expect(abs((measured ?? -1) - radius) <= 0.25)
     }
 
-    /// The answer is in **points**, so a Retina capture of the same window measures the same radius.
+    /// The answer is in points, so a Retina capture of the same window measures the same radius.
     @Test func theRadiusIsScaleIndependent() {
         let oneX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 1)
         let twoX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 2)
@@ -470,8 +436,8 @@ import EmiraCore
         #expect(abs((CapturedSurface.measuredCornerRadius(of: twoX, scale: 2) ?? -1) - 12) <= 0.25)
     }
 
-    /// The top corner, not the bottom one — which a synthetic window with only *one* rounded corner is
-    /// the only way to catch. Rounded at the bottom and square at the top, the honest answer is 0.
+    /// Rounded at the bottom and square at the top, the honest answer is 0 — the only way to catch a
+    /// measurement that reads the wrong corner.
     @Test func itMeasuresTheTopCornerNotTheBottom() {
         let size = CGSize(width: 400, height: 300)
         let context = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8,
@@ -492,8 +458,8 @@ import EmiraCore
     /// answers `nil` rather than 0, so the caller can tell "square" from "couldn't tell".
     @Test func anOpaqueSurfaceHasNoAnswer() {
         let image = Self.window(radius: 0, size: CGSize(width: 400, height: 300))
-        // A zero radius *is* square, and is answered as 0 — the `nil` case is a capture whose first
-        // 64 points down the left edge are all transparent, which no real window produces.
+        // A zero radius is square, answered as 0. `nil` is a capture whose first 64 points down the
+        // left edge are all transparent, which no real window produces.
         #expect(CapturedSurface.measuredCornerRadius(of: image, scale: 1) == 0)
 
         let blank = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,

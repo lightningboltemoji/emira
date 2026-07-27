@@ -3,18 +3,16 @@ import Testing
 import EmiraMotion
 @testable import EmiraCore
 
-// The reducer half of the "ghost window" report (2026-07-26): three ways a window ended up on the
-// strip without its real counterpart following, or off the strip with focus stuck on it. Each of these
-// asserted the *broken* behaviour first, and each failed the moment its fix landed.
+// The reducer half of the "ghost window" report: three ways a window can end up on the strip without
+// its real counterpart following, or off the strip with focus stuck on it.
 
 @Suite struct GhostWindowTests {
 
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
     static let half = Config(widthPresets: PresetCycle([.proportion(0.5)]))
     static let full = Config(widthPresets: PresetCycle([.proportion(1.0)]))
-    /// `half`, but snapping — §4a, the supported configuration on a machine with no Screen Recording
-    /// grant. Used where the assertion is about *where the strip lands*, not how it gets there: under
-    /// the animated path the resting value is only reached once the spring settles.
+    /// `half`, but snapping — the supported configuration on a machine with no Screen Recording grant.
+    /// Used where the assertion is about *where* the strip lands, not how it gets there.
     static let halfSnap = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                  smoothTransitions: false)
 
@@ -124,8 +122,8 @@ import EmiraMotion
     // MARK: A refused write invalidates the optimistic frame it was supposed to confirm
 
     @Test func aFailedPlacementIsReIssuedRatherThanSkippedForever() {
-        // §4a's configuration: this is about the placement *diff*, so the sets want to be in the same
-        // batch as the event rather than arriving later at a cover's raise.
+        // Snapping, because this is about the placement *diff*: the sets want to be in the same batch as
+        // the event rather than arriving later at a cover's raise.
         var s = Self.booted(Self.halfSnap)
         let natural = Rect(x: 300, y: 300, width: 200, height: 200)
         var fx: [Effect] = []
@@ -166,10 +164,9 @@ import EmiraMotion
     }
 
     @Test func aNewWindowStillOpensBesideTheFocusedColumnWhenFocusWentNilFirst() {
-        // The product's actual event order, which the plain insertion test could not express: an app
-        // focuses its brand-new window *before* emira has adopted it, so the observer resolves that
-        // element to no id and `focusChanged(nil)` lands first. Anchoring on live focus alone made
-        // every ⌘N append at the far end of the strip; `World.lastStripFocus` is what survives it.
+        // The product's actual event order: an app focuses its brand-new window *before* emira has
+        // adopted it, so the observer resolves that element to no id and `focusChanged(nil)` lands first.
+        // Anchoring on live focus alone appends every ⌘N at the far end; `lastStripFocus` survives it.
         var s = Self.booted()
         (s, _) = Self.run(s, (1...3).map { .windowCreated(Self.snap($0)) })
         (s, _) = Self.run(s, [.focusChanged(WindowId(1))])
@@ -296,13 +293,10 @@ import EmiraMotion
                 "one column is narrower than the viewport, so there is nowhere to be but the start")
     }
 
-    /// Closing the **last** column, from the far right. The reported case (2026-07-26): a close at the
-    /// left or in the middle animates, and this one snapped.
-    ///
-    /// It is the one departure that displaces nothing. Every survivor keeps the strip position it had —
-    /// only the strip got shorter — so the entire motion is the viewport's own clamp, and a guard that
-    /// asks "did anything move on the strip?" answers no while the user is about to watch every window
-    /// on screen jump right by a column.
+    /// Closing the *last* column, from the far right — the one departure that displaces nothing. Every
+    /// survivor keeps the strip position it had (only the strip got shorter), so the whole motion is the
+    /// viewport's own clamp, and a guard asking "did anything move on the strip?" answers no while the
+    /// user is about to watch every window on screen jump right by a column.
     @Test func closingTheLastColumnScrollsBackInMotion() {
         var s = Self.booted(Self.half)
         var fx: [Effect] = []

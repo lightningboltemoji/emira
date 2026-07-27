@@ -2,14 +2,12 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The exhaustive output vocabulary (IMPLEMENTATION.md §1/§3). Golden `ReplayTests` and scenario
-/// tests assert against exact Effect streams, so the load-bearing properties are `Equatable`
-/// comparison and a faithful `Codable` round-trip. The pinned wire shapes guard the serialized
-/// contract that fixtures depend on.
+/// The exhaustive output vocabulary. Golden replays and scenario tests assert against exact `Effect`
+/// streams, so the load-bearing properties are `Equatable` and a faithful `Codable` round-trip.
 @Suite struct EffectTests {
 
-    /// One value of **every** case. This list *is* the exhaustiveness checklist — a new `Effect`
-    /// case that isn't added here leaves a coverage gap the next reader can spot.
+    /// One value of every case — the exhaustiveness checklist. A new `Effect` case not added here
+    /// leaves a coverage gap the next reader can spot.
     static let all: [Effect] = [
         .setFrame(WindowId(1), Rect(x: 10, y: 20, width: 300, height: 200)),
         .park(WindowId(2), Rect(x: -1, y: 500, width: 1, height: 40)),
@@ -31,8 +29,8 @@ import Testing
         }
     }
 
-    /// `setFrame` and `park` share the `(WindowId, Rect)` shape but are distinct cases — the whole
-    /// point (park carries off-viewport intent, §4a). Equatable must not conflate them.
+    /// `setFrame` and `park` share the `(WindowId, Rect)` shape but are distinct cases — park carries
+    /// off-viewport intent. `Equatable` must not conflate them.
     @Test func setFrameAndParkAreDistinctDespiteSamePayload() {
         let r = Rect(x: 0, y: 0, width: 100, height: 100)
         #expect(Effect.setFrame(WindowId(1), r) != Effect.park(WindowId(1), r))

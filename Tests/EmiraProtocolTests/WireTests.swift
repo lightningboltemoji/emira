@@ -3,10 +3,9 @@ import Testing
 import EmiraCore
 @testable import EmiraProtocol
 
-/// The framing and codec (`Wire.swift`). A stream socket has no message boundaries, so everything
-/// here is about the one guarantee that makes JSON-lines safe: **exactly one message per line, and a
-/// newline never appears inside one**. Plus the socket-path policy and the version probe, which is
-/// what turns a peer-from-another-build into a sentence instead of a decode error.
+/// The framing and codec. A stream socket has no message boundaries, so most of this protects the
+/// guarantee that makes JSON-lines safe: exactly one message per line, and a newline never inside
+/// one. Plus the socket-path policy and the version probe.
 @Suite struct WireTests {
 
     // MARK: - Framing
@@ -17,8 +16,8 @@ import EmiraCore
         #expect(line.dropLast().firstIndex(of: 0x0A) == nil, "a newline inside the frame")
     }
 
-    /// The property the whole framing rests on: a payload full of newlines still encodes to *one*
-    /// line, because JSON escapes them. A state dump is exactly such a payload.
+    /// A payload full of newlines — a state dump — still encodes to one line, because JSON escapes
+    /// them.
     @Test func newlinesInAPayloadAreEscapedNotEmitted() throws {
         let pretty = "{\n  \"windows\": [\n    1,\n    2\n  ]\n}"
         let line = try Wire.encode(Reply.state(json: pretty))
@@ -44,8 +43,8 @@ import EmiraCore
     // MARK: - Version probe
 
     @Test func probeReadsTheVersionOfAMessageItCannotDecode() throws {
-        // A hypothetical v2 envelope: the command payload has moved, so `Request` can't decode it —
-        // but the version is still legible, which is the whole point.
+        // A v2 envelope: the payload has moved, so `Request` can't decode it, but the version is
+        // still legible.
         let future = Data(#"{"client":{"pid":7},"verb":"focus left","version":2}"#.utf8)
         #expect(Wire.probeVersion(future) == 2)
         #expect(throws: WireError.self) { try Wire.decode(Request.self, from: future) }

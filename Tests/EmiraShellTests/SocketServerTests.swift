@@ -5,23 +5,11 @@ import EmiraCore
 @testable import EmiraProtocol
 @testable import EmiraShell
 
-// The IPC seam, end to end over a **real** unix-domain socket: `SocketClient` dials, `SocketServer`
-// accepts, `RequestRouter` answers, and a command actually lands in the pump. `WireTests` already
-// proved the framing in isolation; these are the tests that can only be written with a file
-// descriptor in play — the parts that break in production, not in a codec.
-//
-// Two groups, and the second is the one worth having:
-//
-//  · **The round trip** — a command reaches the `Runtime`, `emira debug` comes back as the live state,
-//    and a peer from another build gets a sentence instead of a decode error.
-//  · **The path** — `Wire.socketPath()` can resolve into world-writable `/tmp`, so the server must
-//    clear a *stale* socket, refuse a *live* one, and never delete something that isn't its own. Each
-//    of these is a filesystem-destroying bug if it's wrong, and none of them can be caught by
-//    inspection.
-//
-// Every client call goes through the `async` helpers below. That is not a style choice: the suite is
-// `@MainActor` and the server hops to the main actor to compute a reply, so a *synchronous* dial from
-// a test would deadlock — the test would be holding the thread the daemon needs.
+// The IPC seam, end to end over a real unix-domain socket: `SocketClient` dials, `SocketServer`
+// accepts, `RequestRouter` answers, a command lands in the pump. Also the path rules — the socket can
+// resolve into world-writable `/tmp`, so each is a filesystem-destroying bug if wrong. Every client
+// call goes through the `async` helpers below: the suite is `@MainActor` and the server hops to the
+// main actor to reply, so a synchronous dial from a test would deadlock on the thread it needs.
 @Suite @MainActor struct SocketServerTests {
 
     // MARK: - Fixtures
@@ -39,8 +27,7 @@ import EmiraCore
     }
 
     /// A runtime that already knows one display and three tiled windows (window 3 focused). Default
-    /// width presets, so all three fit the viewport and a `focus left` is a *snap* — no transition, no
-    /// frame clock needed to settle one.
+    /// width presets, so all three fit the viewport and a `focus left` snaps — no clock to settle.
     static func bootedRuntime() -> Runtime {
         let runtime = Runtime(executor: MockExecutor(mode: .simulate))
         runtime.dispatch(.screensChanged([MonitorInfo(id: MonitorId(1),
@@ -76,8 +63,8 @@ import EmiraCore
         return try Wire.decode(Reply.self, from: reply)
     }
 
-    /// Bind a socket and close the descriptor **without unlinking** — exactly what a crashed daemon
-    /// leaves behind: a socket file with nobody answering.
+    /// Bind a socket and close the descriptor without unlinking — what a crashed daemon leaves
+    /// behind: a socket file with nobody answering.
     static func leaveStaleSocket(at path: String) throws {
         let address = try Wire.socketAddress(for: path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -94,7 +81,7 @@ import EmiraCore
 
     // MARK: - The round trip
 
-    /// The whole point of the slice: a word typed in a terminal becomes an `Event` in the core.
+    /// A word typed in a terminal becomes an `Event` in the core.
     @Test func aCommandRoundTripsIntoThePump() async throws {
         let path = Self.temporaryPath()
         let runtime = Self.bootedRuntime()
@@ -106,13 +93,12 @@ import EmiraCore
 
         #expect(reply.outcome == .ok)
         #expect(reply.version == Wire.version)
-        // …and the command didn't just get acknowledged, it *reduced*. The reply is sent from the same
-        // main-actor turn that dispatched, so by the time the client sees `ok` the state has moved.
+        // The reply is sent from the same main-actor turn that dispatched, so by the time the client
+        // sees `ok` the state has already moved.
         #expect(runtime.state.world.focusedWindow == WindowId(2))
     }
 
-    /// `emira debug` — the introspection endpoint, and the debugging tool for every slice after this
-    /// one. The dump must be the *live* state, and it must survive the wire intact.
+    /// `emira debug` must answer with the live state, and it must survive the wire intact.
     @Test func debugAnswersWithTheLiveStateAsJSON() async throws {
         let path = Self.temporaryPath()
         let runtime = Self.bootedRuntime()
@@ -132,8 +118,8 @@ import EmiraCore
         #expect(decoded.world.windows.count == 3)
     }
 
-    /// A verb the reducer hasn't implemented yet is still *accepted* — the wire's job is delivery, not
-    /// judgement, so a command that grows behavior later needs no change at this layer.
+    /// A verb the reducer hasn't implemented is still accepted: the wire's job is delivery, not
+    /// judgement.
     @Test func aDeferredCommandIsStillAccepted() async throws {
         let path = Self.temporaryPath()
         let server = try Self.started(at: path, routing: Self.bootedRuntime())
@@ -142,8 +128,8 @@ import EmiraCore
         #expect(try await Self.send(Request(.cycleWidth), to: path).outcome == .ok)
     }
 
-    /// The graceful mismatch of IMPLEMENTATION.md §6, over a real socket this time: the daemon probes
-    /// the version *before* decoding, so a client from another build is told what happened.
+    /// The daemon probes the version before decoding, so a client from another build is told what
+    /// happened.
     @Test func aClientFromAnotherBuildIsToldSoNotDecodeFailed() async throws {
         let path = Self.temporaryPath()
         let server = try Self.started(at: path, routing: Self.bootedRuntime())
@@ -211,8 +197,7 @@ import EmiraCore
         server.stop()                                   // idempotent: a signal handler may double-call
     }
 
-    /// The crash-recovery case: a socket file with nobody behind it is *ours to remove*, and a restart
-    /// must not need manual cleanup.
+    /// A socket file with nobody behind it is ours to remove: a restart needs no manual cleanup.
     @Test func aStaleSocketIsReplaced() async throws {
         let path = Self.temporaryPath()
         try Self.leaveStaleSocket(at: path)

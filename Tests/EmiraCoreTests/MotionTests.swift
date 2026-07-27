@@ -3,11 +3,9 @@ import Testing
 import EmiraMotion
 @testable import EmiraCore
 
-/// `Motion` — the animation half of `State` (IMPLEMENTATION.md §5): the viewport-offset scroll
-/// animator, the reserved per-window independent animators, and the ephemeral transition session
-/// (§3). These tests exercise the state + its total mutators in isolation (no reducer, no macOS):
-/// the scroll scalar, the independent channel, and the full capture → cover → land → close lifecycle,
-/// including the totality (unknown-id / wrong-phase no-ops) the whole core keeps.
+/// `Motion` — the animation half of `State`: the viewport-offset scroll animator, the per-window
+/// displacement animators, and the ephemeral transition session. Exercised in isolation (no reducer,
+/// no macOS), including the unknown-id / wrong-phase no-ops the whole core keeps.
 @Suite struct MotionTests {
     static let dt = 1.0 / 120.0
 
@@ -64,9 +62,8 @@ import EmiraMotion
         #expect(m.displacement(of: WindowId(1)).minX > -200)  // and the lag is closing, independently
     }
 
-    /// The property the whole model rests on: a displacement's destination is **zero**, on every
-    /// component. Not "the window's new frame" — that stays `Layout`'s, which is what makes dropping
-    /// a settled animator a no-op rather than a decision.
+    /// A displacement's destination is zero on every component — not "the window's new frame", which
+    /// stays `Layout`'s. That is what makes dropping a settled animator a no-op rather than a decision.
     @Test func aDisplacementDecaysToZeroOnEveryComponent() {
         var m = Motion()
         m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy)
@@ -89,9 +86,8 @@ import EmiraMotion
         #expect(m.isSettled)
     }
 
-    /// The double press. A second structural edit lands mid-flight and must **add** to the live
-    /// displacement rather than replace it — replacing would teleport the layer back to where the
-    /// first press started, which is exactly what `animateColumnWidth` avoids for the same reason.
+    /// The double press. A second structural edit lands mid-flight and must *add* to the live
+    /// displacement rather than replace it, or the layer teleports back to where the first press started.
     /// Velocity is the other half: rebuilding would restart from a dead stop.
     @Test func displacingAgainMidFlightAddsToThePositionAndKeepsTheVelocity() {
         var m = Motion()
@@ -116,10 +112,9 @@ import EmiraMotion
 
     // MARK: - The retarget generation (what the shell's hold deadline keys on)
 
-    /// It counts **decisions, not frames**. Every re-aim of every animated quantity bumps it — which
-    /// is what lets `Runtime.syncHold` notice a redirect that never touches the viewport (a resize, a
-    /// structural edit) — and `advance` never does, or a live transition would re-arm its deadline on
-    /// every tick and could never time out.
+    /// It counts decisions, not frames. Every re-aim of every animated quantity bumps it, which is what
+    /// lets `Runtime.syncHold` notice a redirect that never touches the viewport; `advance` never does,
+    /// or a live transition would re-arm its deadline every tick and could never time out.
     @Test func theRetargetGenerationMovesOnEveryReAimAndNotOnAdvance() {
         var m = Motion()
         let start = m.retargetGeneration
@@ -135,13 +130,10 @@ import EmiraMotion
         #expect(m.retargetGeneration == afterAiming)   // frames are not decisions
     }
 
-    /// The cover comes down when the motion *looks* finished, not when the arithmetic is finished.
-    ///
-    /// This is a wall-clock feel guard, and it exists because nothing else caught the real thing: with
-    /// `EmiraMotion`'s unit-agnostic `1e-3` tolerance a 900-point scroll was visually over at ~350 ms
-    /// and did not report `isSettled` until ~1.1 s, so the daemon held a frozen reconstruction over
-    /// the desktop for three-quarters of a second on every scroll. Every headless test still passed —
-    /// they assert *that* a transition closes, and it did. Only the wall clock shows *when*.
+    /// The cover comes down when the motion *looks* finished, not when the arithmetic is finished. A
+    /// wall-clock feel guard: with a unit-agnostic `1e-3` tolerance a 900-point scroll is visually over
+    /// at ~350 ms but does not report `isSettled` until ~1.1 s, and every other test here would still
+    /// pass — they assert *that* a transition closes, not *when*.
     @Test func aScrollSettlesAssoonAsItLooksFinished() {
         // One column pitch on a laptop display — the everyday scroll distance.
         var m = Motion(viewportOffset: 0, params: .smooth)
@@ -162,7 +154,7 @@ import EmiraMotion
         #expect(elapsed - (lookedFinished ?? 0) < 0.1)          // …within 100 ms of looking settled
     }
 
-    // MARK: - Column widths (the strip's own geometry, M4 part 3)
+    // MARK: - Column widths (the strip's own geometry)
 
     @Test func aColumnWidthAnimatesFromTheOldPresetToTheNew() {
         var m = Motion()
@@ -203,9 +195,8 @@ import EmiraMotion
     }
 
     /// Closing drops the overrides rather than snapping them: with none left the presentation plane
-    /// resolves widths from the column's stored preset, which is where the animator was heading and
-    /// where the real window has been since the teleport. A kept animator would be a second authority
-    /// on a number `Layout` owns.
+    /// resolves widths from the column's stored preset, which is where the animator was heading anyway.
+    /// A kept animator would be a second authority on a number `Layout` owns.
     @Test func closingATransitionDropsTheWidthOverrides() {
         var m = Motion()
         m.openTransition(scope: [WindowId(1)])
@@ -227,10 +218,10 @@ import EmiraMotion
         m.removeWindowAnimator(WindowId(1))       // repeat remove → no-op
     }
 
-    /// A *consume* can merge a column away mid-resize, and `Layout` drops it — leaving an animator
-    /// keyed on an id nothing will mention again. The geometry was never at risk (`Layout.strip`
-    /// ignores an override for a column it doesn't have), but `isSettled` gates the transition's
-    /// close, so the subject here is the entry's absence and the gate it stops holding.
+    /// A *consume* can merge a column away mid-resize, leaving an animator keyed on an id nothing will
+    /// mention again. The geometry is never at risk (`Layout.strip` ignores an override for a column it
+    /// doesn't have), but `isSettled` gates the transition's close — so the subject is the entry's
+    /// absence and the gate it stops holding.
     @Test func removingAColumnWidthAnimatorIsTotalAndUngatesTheSettle() {
         var m = Motion()
         m.animateColumnWidth(ColumnId(1), from: 300, to: 600)
@@ -245,7 +236,7 @@ import EmiraMotion
         m.removeColumnWidthAnimator(ColumnId(99)) // never-installed id → no-op, no crash
     }
 
-    // MARK: - Transition lifecycle (§3): capture → cover → land → close
+    // MARK: - Transition lifecycle: capture → cover → land → close
 
     private static let scope = [WindowId(1), WindowId(2), WindowId(3)]
 
@@ -307,7 +298,7 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(1)) == nil)
     }
 
-    // MARK: - The scope that grows (M4 part 2)
+    // MARK: - The scope that grows
 
     @Test func extendingBeforeTheRaiseAddsToTheBatchTheCoverWaitsOn() {
         var m = Motion()
@@ -342,12 +333,10 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(4)) == LayerId(4))
     }
 
-    /// **A still binds as soon as it lands, whatever else is outstanding (2026-07-26).** The gate used
-    /// to be session-wide (`captureComplete`), which is correct for one extension and starves under a
-    /// stream of them: with a command arriving before the last capture answers there is always
-    /// something pending, the gate never opens again, and the cover stops growing for the rest of the
-    /// transition — a scoped window then rides it with no layer at all. Here w4's still is in while
-    /// w5's is not, and w4 must not be made to wait for it.
+    /// A still binds as soon as it lands, whatever else is outstanding. A session-wide gate starves under
+    /// a stream of extensions — something is always pending, so it never reopens and the cover stops
+    /// growing for the rest of the transition. Here w4's still is in while w5's is not, and w4 must not
+    /// be made to wait for it.
     @Test func aPendingCaptureDoesNotHoldBackALayerWhoseStillHasLanded() {
         var m = Motion()
         m.openTransition(scope: Self.scope)
@@ -475,7 +464,7 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(1)) == LayerId(3))
     }
 
-    // MARK: - Serialization (State dumps / replay, §7)
+    // MARK: - Serialization (State dumps / replay)
 
     @Test func populatedMotionRoundTripsThroughCodable() throws {
         var m = Motion(viewportOffset: 0, params: .snappy)

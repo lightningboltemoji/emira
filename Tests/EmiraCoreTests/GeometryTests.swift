@@ -2,8 +2,7 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The virtual-strip geometry primitives — top-left origin, framework-free, and the base every
-/// layout computation is written against.
+/// The virtual-strip geometry primitives — top-left origin, framework-free.
 @Suite struct GeometryTests {
 
     // MARK: Point / Size
@@ -146,8 +145,8 @@ import Testing
                 == Rect(x: 100, y: 50, width: 600, height: 400))
     }
 
-    /// The still **overflows** rather than being trimmed, and that is the correction of 2026-07-26:
-    /// trimming it to fit left the clip nothing to round, so the cut edge stayed square.
+    /// The still *overflows* rather than being trimmed — trimming it to fit would leave the compositor's
+    /// rounded clip nothing to round, so the cut edge would stay square.
     @Test func aShrunkWindowOverflowsInsteadOfBeingTrimmed() {
         // 600×400 → 300×400: the still still says 600 wide, hanging 300 pt past the right edge.
         let rect = Rect(x: 100, y: 50, width: 300, height: 400)
@@ -156,9 +155,8 @@ import Testing
         #expect(placed.maxX > rect.maxX)
     }
 
-    /// The `consume` case, and the one that caught the inverted vertical anchor in the product: the
-    /// window loses height, so the still must hang past the **bottom**. Hanging past the top would
-    /// throw away the title bar, which is what the first version did.
+    /// The `consume` case: the window loses height, so the still must hang past the *bottom*. Hanging
+    /// past the top would throw away the title bar.
     @Test func aWindowLosingHeightHangsPastTheBottomNotTheTop() {
         let rect = Rect(x: 0, y: 100, width: 900, height: 200)
         let placed = rect.anchoring(Size(width: 600, height: 400))

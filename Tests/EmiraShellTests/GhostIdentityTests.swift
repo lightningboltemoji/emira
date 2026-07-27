@@ -4,15 +4,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The identity join under a burst of window creation (2026-07-26).
-//
-// The two sides of the join are read at different instants — the AX frames on the app's serial lane,
-// the CG window list later, on the main actor, in `AXEnumerator.finish` — and the thing moving windows
-// in between is *us*. Four rapid ⌘N presses are enough: the stale read reports window A at the frame
-// window B has since taken, and nothing about that looks wrong to a frame match.
-//
-// These pin the two rules that make it unreachable: a window already bound is never re-joined, and an
-// entry already bound is never a candidate.
+// The identity join under a burst of window creation. The two sides of the join are read at different
+// instants — AX frames on the app's serial lane, the CG window list later in `AXEnumerator.finish` —
+// and the thing moving windows in between is us, so a stale read reports window A at the frame window
+// B has since taken. These pin the two rules that make that unreachable: a window already bound is
+// never re-joined, and an entry already bound is never a candidate.
 
 @Suite struct GhostIdentityTests {
 
@@ -63,11 +59,11 @@ import EmiraCore
         #expect(report?.snapshots.count == 1)
         let firstId = report!.snapshots[0].id
 
-        // emira now tiles `first`. A second ⌘N opens `second` at the default frame.
+        // emira now tiles `first`; a second ⌘N opens `second` at the default frame.
         //
-        // --- Scan 2, triggered by that second AXWindowCreated. Its AX read was queued on Ghostty's
-        // lane *before* our placement write landed, so it still reports `first` at the default frame
-        // — and it does not see `second` yet at all. The window list, read afterwards, sees both.
+        // --- Scan 2: its AX read was queued on Ghostty's lane before our placement write landed, so
+        // it still reports `first` at the default frame and does not see `second` at all. The window
+        // list, read afterwards, sees both.
         source.windows = [Self.scanned(first, title: "one", frame: Self.defaultFrame)]
         source.entries = [
             WindowListEntry(number: 1, pid: Self.ghostty.pid, frame: Self.tiledFrame, isOnScreen: true),
@@ -81,9 +77,8 @@ import EmiraCore
         #expect(registry.count == 1)
         #expect(registry.id(for: first) == firstId, "its element still resolves to its own id")
 
-        // And the real newcomer is *reported* rather than silently lost: the window server lists a
-        // window of this app that AX did not describe, which is the "asked too early" race and is what
-        // makes `WorldWatcher` ask again.
+        // The real newcomer is reported rather than silently lost: the window server lists a window of
+        // this app that AX did not describe, which is what makes `WorldWatcher` ask again.
         #expect(report?.unclaimed == 1)
         #expect(report?.isIncomplete == true, "so the scan is retried rather than accepted")
 
@@ -101,9 +96,8 @@ import EmiraCore
 
     @MainActor
     @Test func anElementIsNeverBoundToTwoWindowNumbers() {
-        // The belt to the enumerator's braces: even asked directly, the registry refuses. Binding here
-        // would move `idByElement` onto the new id, so the original window's own notifications would
-        // resolve to a window that does not exist.
+        // Even asked directly, the registry refuses: binding would move `idByElement` onto the new id,
+        // so the original window's notifications would resolve to a window that does not exist.
         let registry = WindowRegistry()
         let element = Self.element(1)
         let observed = ObservedWindow(pid: 100, bundleId: "app", title: "w", role: .standard,

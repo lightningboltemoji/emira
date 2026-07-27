@@ -4,26 +4,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The presentation plane's tests. Two things are worth proving here, and the rest of the compositor
-// deliberately isn't testable at all:
-//
-//  1. **The Y-flip** (`ScreenGeometry`) — the one place core top-left coordinates become Cocoa
-//     bottom-left ones (IMPLEMENTATION.md §7). Pure arithmetic over one number, so it's checked in
-//     both directions and off the primary display, where the sign errors live. Since M4 part 3 it also
-//     owns the *cover's local space*: the overlay is inset past the menu bar, so a layer's local origin
-//     is no longer its global one and the desktop base hangs off the cover's edges.
-//  2. **The routing and framing** (`CompositingExecutor`) — that effects reach the right plane, in the
-//     order the reducer emitted them, with every presentation run wrapped in exactly one frame and the
-//     cross-fade starting only after that frame is committed.
-//
-// (A third suite lived here through M3 part 2a: `FakeWorld`, the synthetic world the daemon booted
-// with so the cover had something to animate before AX enumeration existed. It died with M3 part 2b —
-// the real world now drives every path it demonstrated, and `RuntimeTests` already proves the
-// transition lifecycle end to end against its own fixture.)
-//
-// `Overlay`, `Reconstruction`, and `DisplayLinkDriver` need a window server and are exercised by hand
-// (see the iteration journal); they hold no decisions, which is the point of `CoverSurface` and
-// `FrameClock` being protocols.
+// The presentation plane's tests: the Y-flip (`ScreenGeometry`), where core top-left coordinates
+// become Cocoa bottom-left ones and the inset cover's local space is computed, and the routing and
+// framing (`CompositingExecutor`) — effects reaching the right plane in emission order, every
+// presentation run wrapped in exactly one frame. `Overlay`, `Reconstruction` and `DisplayLinkDriver`
+// need a window server and hold no decisions, hence `CoverSurface` and `FrameClock` being protocols.
 
 // MARK: - The Y-flip
 
@@ -60,11 +45,10 @@ import EmiraCore
         #expect(core == Rect(x: 0, y: -600, width: 1920, height: 600))
     }
 
-    // MARK: The cover's local space (M4 part 3)
+    // MARK: The cover's local space
 
-    /// Through M4 part 2 the overlay *was* the display, so `local` and `cocoa` were the same function
-    /// and no offset could be wrong. The cover is now inset past the menu bar, which makes this the
-    /// arithmetic that decides whether a window layer is drawn where the window is.
+    /// The cover is inset past the menu bar, so `local` and `cocoa` differ — this is the arithmetic
+    /// that decides whether a window layer is drawn where the window is.
     @Test func aWindowAtTheTopOfTheWorkingAreaSitsAtTheCoversTopEdge() {
         // A 1000-tall display with a 25 pt menu bar: the cover's Cocoa frame is y 0…975.
         let cover = Self.geometry.cocoa(Rect(x: 0, y: 25, width: 800, height: 975))
@@ -74,9 +58,8 @@ import EmiraCore
         #expect(top == CGRect(x: 100, y: 925, width: 200, height: 50))
     }
 
-    /// The desktop base is a capture of the **whole display**, so inside an inset cover its layer hangs
-    /// off the top by exactly the strut. Getting this wrong slides the wallpaper — and every non-moving
-    /// window painted into the base with it — by the height of the menu bar.
+    /// The desktop base is a capture of the whole display, so inside an inset cover its layer hangs off
+    /// each edge by that strut. Wrong, it slides the wallpaper by the height of the menu bar.
     @Test func theDisplayBaseOverhangsAnInsetCoverByTheStrut() {
         let display = Rect(x: 0, y: 0, width: 800, height: 1000)
         let cover = Self.geometry.cocoa(display.inset(by: EdgeInsets(top: 25, bottom: 60)))
@@ -235,8 +218,6 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .park(WindowId(1), .zero)) == .truth)
         #expect(CompositingExecutor.plane(of: .focus(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .raise(WindowId(1))) == .truth)
-        // Its own plane since M4 — it was `.truth` only because `AXExecutor` was standing in for a
-        // `CaptureService` that didn't exist yet.
         #expect(CompositingExecutor.plane(of: .capture(WindowId(1))) == .capture)
     }
 
@@ -258,9 +239,8 @@ import EmiraCore
     // MARK: Ordering
 
     @Test func theCoverIsRaisedBeforeTheRealWindowsTeleport() {
-        // The reducer's actual cover-raise batch (Engine's `captureReady` case): begin, then the
-        // teleports behind it. Nothing may reach the truth plane before the raise — that ordering *is*
-        // the zero-exposure rule.
+        // The reducer's cover-raise batch: begin, then the teleports behind it. Nothing may reach the
+        // truth plane before the raise — that ordering is the zero-exposure rule.
         let (executor, _, _, timeline, log) = Self.harness()
         executor.execute([.beginTransition(Self.bindings),
                           .setFrame(WindowId(1), Self.rect(0)),
@@ -302,8 +282,8 @@ import EmiraCore
 
     // MARK: The capture plane
 
-    /// A run of `capture`s reaches the store as **one** call, not one per window. The batch is the
-    /// unit: one shareable-content fetch, one fan-out, one set of acks (`CaptureService`).
+    /// A run of `capture`s reaches the store as one call, not one per window: the batch is the unit —
+    /// one shareable-content fetch, one fan-out, one set of acks.
     @Test func aRunOfCapturesReachesTheStoreAsASingleBatch() {
         let (executor, _, truth, store, timeline, log) = Self.fullHarness()
         executor.execute([.capture(WindowId(1)), .capture(WindowId(2)), .capture(WindowId(3))],
@@ -328,10 +308,9 @@ import EmiraCore
 
     // MARK: The cover that grows
 
-    /// `extendCover` and the `setLayerFrame`s that place the new layers are one contiguous
-    /// presentation run, so they reach the window server inside a **single** transaction. Split across
-    /// two frames, a newcomer would show for one refresh at wherever its capture was taken — which,
-    /// for a window scrolling in from off-viewport, is its 1 px park sliver.
+    /// `extendCover` and the `setLayerFrame`s placing the new layers are one contiguous presentation
+    /// run, so they reach the window server in a single transaction. Split across two frames, a
+    /// newcomer shows for one refresh where its capture was taken — its 1 px park sliver.
     @Test func growingTheCoverAndPlacingTheNewLayerAreOneFrame() {
         let (executor, _, _, timeline, log) = Self.harness()
         executor.execute([.extendCover([LayerBinding(window: WindowId(3), layer: LayerId(3))]),
@@ -357,8 +336,8 @@ import EmiraCore
         #expect(reported == 2)
     }
 
-    /// The stills are released when the cover is **down**, not when `endTransition` is reduced: they
-    /// are still on screen for the whole cross-fade, held by `CALayer.contents`.
+    /// The stills are released when the cover is down, not when `endTransition` is reduced: they are
+    /// on screen for the whole cross-fade, held by `CALayer.contents`.
     @Test func theStillsAreReleasedOnlyAfterTheCrossFadeCompletes() {
         let (executor, surface, _, store, timeline, log) = Self.fullHarness()
         surface.completesDismissal = false
@@ -367,9 +346,8 @@ import EmiraCore
 
         surface.heldCompletion?()
         #expect(store.discards == 1)
-        // `closeCover` lands with `endTransition`, before the fade: a command arriving during the
-        // 0.22 s cross-fade opens a new cover, and it must take its own base rather than inherit the
-        // desktop of the one fading out. Only the *release* waits for the fade.
+        // `closeCover` lands with `endTransition`, before the fade, so a command arriving mid-fade
+        // opens a new cover with its own base. Only the release waits for the fade.
         #expect(timeline.entries == ["beginFrame", "endFrame", "closeCover", "dismiss", "discard"])
         #expect(store.discarded.count == 1)     // …with the token this cover's close minted
     }
@@ -407,10 +385,8 @@ import EmiraCore
 
     @MainActor final class Counter { var frames: Int? }
 
-    /// A frame is a *run of blits*, not a blit — three ticks moving two layers each is three frames,
-    /// not six. This is the number that says whether the scroll was smooth, and it is the only one:
-    /// the analytic spring makes a six-frame transition and a seventy-six-frame one indistinguishable
-    /// in the state dump.
+    /// A frame is a run of blits, not a blit — three ticks moving two layers each is three frames, not
+    /// six. It is the only number that says whether the scroll was smooth.
     @Test func theFrameCounterCountsFramesNotLayers() {
         let (executor, _, _, _, log) = Self.harness()
         let counter = Counter()

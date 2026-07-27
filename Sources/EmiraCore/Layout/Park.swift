@@ -1,83 +1,27 @@
 import Foundation
 
-// Park slots — where an off-viewport column's windows go to wait (PRINCIPLES.md §4a, §7;
-// IMPLEMENTATION.md §5, `Layout/Park.swift`).
-//
-// emira emulates workspaces and off-screen stashing by parking the windows the viewport isn't
-// showing, rather than touching native Spaces (PRINCIPLES.md §3). But macOS **won't let a window
-// leave the screen** — it honors a requested position only while a sliver stays on-screen (validated
-// in `spike/strip-scroll.swift`'s `cornerPark`; PRINCIPLES.md §10). So a parked window is shoved
-// almost entirely off a *corner*, leaving a thin nub poking back in. Three properties make that nub
-// load-bearing rather than incidental:
-//
-//  · **Warm.** Occlusion is binary — any visible pixel keeps the app rendering (PRINCIPLES.md §10),
-//    so a parked column doesn't freeze and scrolls back in without a flash. The nub is what keeps
-//    it warm.
-//  · **Unique.** Every parked window gets a *distinct* frame, so first-sight identity rebinding
-//    after a daemon restart (pid+frame+title → `CGWindowID`, PRINCIPLES.md §7) is never ambiguous —
-//    parked frames would otherwise all collapse onto the same corner and collide. "Distinct" has a
-//    number attached: `WindowRegistry.bind` matches frames within ±2 pt per edge and refuses a
-//    window that has two candidates, so successive slots must differ by *more* than that tolerance.
-//    That is what `stagger` is for, and why it is 8 pt rather than 1 — the nub's height is the only
-//    thing telling two same-size parked windows of one app apart, since a right-edge park gives them
-//    all the same `minX` whatever their widths. **Both axes have to clear it**, which is what
-//    `laneStep` is for: the wrap into a new lane moves only `x`, and at one sliver it moved it by
-//    1 pt — inside the tolerance, so lane 1 row 0 and lane 0 row 0 were indistinguishable. Only a
-//    populated workspace set parks enough windows to reach a second lane at all (2026-07-26).
-//  · **Grabbable.** The nub is the window's own **top-left corner** — the title bar, the one place a
-//    window can always be dragged from — held against the working area's *right* edge. A user
-//    rescuing a parked window by hand throws the pointer at the screen's right edge (where it stops)
-//    and lands on chrome, instead of on whatever toolbar control the window's far edge happens to
-//    carry, which is what a left-edge park leaves on screen (decided 2026-07-26).
-//
-// A park slot is **just target geometry** (§4a: "computed by the layout engine like any other target
-// geometry"), so it lives in the pure core: `slot(ordinal:size:)` is a deterministic, replay-testable
-// function of a window's size and its ordinal among the parked set. Slots hug the working area's
-// **bottom-right corner**: each window is pushed off to the right so only `visibleSliver` px of its
-// left edge poke back in, and off the bottom so only `visibleChrome` px of its top do. The nub grows
-// `stagger` px taller per ordinal to keep frames distinct; past one lane's worth of rows they wrap
-// into a new lane a sliver further on-screen, staying unique and total for any ordinal.
-//
-// Dock/menu-bar avoidance (§4a) is handled upstream: `frame` is the monitor **working area** (already
-// inset past the Dock and menu bar by the shell), so the nub rests just above the Dock rather than
-// under it. The window's *body* does hang past that bottom edge — a `visibleSliver`-wide tail of it
-// crosses the Dock band on its way off the display, which is the one place a parked window is not
-// under the compositor's cover (`Compositor/Overlay.swift`). One point wide beside the Dock is the
-// price of parking a corner instead of a full-height edge.
-// Coordinates are top-left virtual-strip points (Geometry.swift).
+// Park slots — where an off-viewport column's windows, and every window on an unfocused workspace, go
+// to wait. macOS won't let a window leave the screen: it honors a requested position only while a
+// sliver stays on-screen, so a parked window is shoved almost entirely off the bottom-right corner
+// with its top-left corner — the title bar — poking back in, grabbable by hand and, since occlusion is
+// binary, still rendering. Slots are pure geometry, top-left points (Geometry.swift).
 public struct ParkingLot: Sendable, Equatable {
-    /// The monitor working area parked nubs live against — already Dock/menu-bar inset by the
-    /// shell, so hugging its edges is safe.
+    /// The monitor working area nubs live against — already Dock/menu-bar inset by the shell.
     public let frame: Rect
-    /// How many points of a parked window's **left edge** stay on-screen (the nub's width). ~1 pt is
-    /// enough for macOS to honor the position (PRINCIPLES.md §10) and to keep the window warm; the
-    /// default keeps intrusion minimal.
+    /// Points of a parked window's left edge that stay on-screen. ~1 pt is enough for macOS to honor
+    /// the position and to keep the window warm.
     public let visibleSliver: Double
-    /// How many points of a parked window's **top edge** stay on-screen (the nub's height) — the
-    /// window's title bar, so the nub is something a hand can grab. ~40 pt is a standard title bar;
-    /// the rest of the window hangs off the bottom of the display.
+    /// Points of a parked window's top edge that stay on-screen — its title bar. The rest hangs off
+    /// the bottom.
     public let visibleChrome: Double
-    /// The step by which the nub grows taller per ordinal — what makes each parked frame distinct.
-    /// Must clear `WindowRegistry`'s ±2 pt binding tolerance, or two parked windows of one app become
-    /// ambiguous at rebind and neither is managed.
+    /// How much taller the nub grows per ordinal. Must clear `WindowRegistry`'s ±2 pt binding tolerance,
+    /// or two parked windows of one app are ambiguous at rebind and neither is managed — a right-edge
+    /// park gives them all the same `minX`, so height is the only thing telling them apart.
     public let stagger: Double
-    /// How much further on-screen each new **lane** pokes — the horizontal counterpart of `stagger`,
-    /// and it exists for exactly the same reason (2026-07-26).
-    ///
-    /// This used to be `visibleSliver` itself, i.e. 1 pt, and that was a latent identity collision:
-    /// lane 1 row 0 sits at the *same* `y`, `width` and `height` as lane 0 row 0 and 1 pt away in `x`,
-    /// which is **inside** `WindowRegistry.bind`'s ±2 pt per-edge tolerance. The two are then
-    /// indistinguishable at cold-start rebind and both are refused — the very failure the stagger was
-    /// introduced to prevent, one axis over.
-    ///
-    /// Nothing could reach it before workspaces: a lane holds ~107 rows and no real *strip* parks that
-    /// many columns. A populated 36-workspace set can, because every window on every unfocused
-    /// workspace is parked and the ordinals are one run across the whole set
-    /// (`Workspaces.targetFrames`). So this is not a new hazard — it is an old one that only now has a
-    /// way to happen.
-    ///
-    /// 4 pt rather than 8: x is the axis the user actually sees (it is how far the nub intrudes), so
-    /// it stays as small as it can be while clearing the tolerance with margin.
+    /// How much further on-screen each new lane pokes — the horizontal counterpart of `stagger`, and
+    /// there for the same ±2 pt tolerance: at one sliver, lane 1 row 0 sat 1 pt from lane 0 row 0 in
+    /// `x` and identical otherwise. Kept as small as clears the tolerance, since `x` is the axis the
+    /// user sees.
     public let laneStep: Double
 
     public init(frame: Rect, visibleSliver: Double = 1, visibleChrome: Double = 40,
@@ -89,33 +33,25 @@ public struct ParkingLot: Sendable, Equatable {
         self.laneStep = laneStep
     }
 
-    /// How many staggered rows a lane holds before a new one starts: as many as fit before the nub
-    /// would be taller than the working area itself, at which point growing it further would defeat
-    /// the point of a nub. At least one, always. Wrapping trades height for width — a second lane
-    /// pokes one more point in — and height is the cheaper of the two at 1 pt wide, so a lane is
-    /// deliberately long (~107 rows on a 900 pt-tall area): real parked sets never reach it.
+    /// How many staggered rows a lane holds: as many as fit before the nub would outgrow the working
+    /// area. At least one. Deliberately long, since wrapping trades height for user-visible width.
     private var rowsPerLane: Int {
         max(Int(((frame.height - visibleChrome) / stagger).rounded(.down)) + 1, 1)
     }
 
-    /// The park frame for the `ordinal`-th parked window of size `size`: the window shoved off the
-    /// bottom-right corner so exactly `visibleSliver` px of its left edge and `visibleChrome` px of
-    /// its top edge (+ `stagger` px per ordinal) poke back in. Deterministic and **unique** per
-    /// ordinal (distinct frames for identity rebind, §7), and total for any `ordinal` (negatives snap
-    /// to 0; past one lane it wraps a sliver further in, never colliding). The returned rect keeps
-    /// `size` verbatim — parking repositions, never resizes.
+    /// The park frame for the `ordinal`-th parked window of size `size`: shoved off the bottom-right so
+    /// `visibleSliver` of its left edge and `visibleChrome` (+ `stagger` per ordinal) of its top edge
+    /// poke back in. Unique per ordinal, total for any `ordinal`. `size` is kept verbatim — parking
+    /// repositions, never resizes.
     public func slot(ordinal: Int, size: Size) -> Rect {
         let n = max(ordinal, 0)
         let rows = rowsPerLane
         let lane = n / rows
         let row = n % rows
-        // Poke `visibleSliver` px in from the right; each new lane pokes `laneStep` further, so two
-        // lanes never sit within the identity-binding tolerance of each other (still tiny, still
-        // warm). The body sits off-screen right of `frame.maxX`.
+        // Poke in from the right; the body sits off-screen right of `frame.maxX`.
         let pokeX = visibleSliver + Double(lane) * laneStep
         let x = frame.maxX - pokeX
-        // …and the top edge `visibleChrome` px up from the bottom, one stagger taller per row. The
-        // rest of the window hangs below the working area, off the bottom of the display.
+        // …and the top edge up from the bottom, one stagger taller per row; the rest hangs off-screen.
         let pokeY = visibleChrome + Double(row) * stagger
         let y = frame.maxY - pokeY
         return Rect(x: x, y: y, width: size.width, height: size.height)

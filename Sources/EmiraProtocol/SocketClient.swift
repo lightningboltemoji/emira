@@ -1,37 +1,21 @@
 import Darwin
 import Foundation
 
-// The client half of the seam: dial the daemon, write one `Request`, read one `Reply`, hang up
-// (IMPLEMENTATION.md §4, §6). `SocketServer` (EmiraShell) is the other half; the two are written
-// against the same `Wire` framing and the same version probe, in both directions.
-//
-// **Why it lives in `EmiraProtocol` and not in the `emira` executable.** The CLI is the one target in
-// the graph that cannot be unit-tested (an executable has no importable module), so anything with real
-// logic in it is untested by construction. Sockets are exactly where a protocol silently breaks —
-// partial writes, a peer that hangs up mid-reply, a timeout that never fires — so the transport
-// belongs on the testable side of that line, and `main.swift` gets to be "parse argv, call one
-// function, print the answer". It costs the CLI nothing: `EmiraProtocol` was already its dependency,
-// and this file imports nothing beyond Foundation.
-//
-// **Blocking on purpose.** `emira` is a one-shot process with no run loop and nothing else to do while
-// it waits — a blocking socket with `SO_RCVTIMEO`/`SO_SNDTIMEO` is both the simplest correct thing and
-// the fastest to launch. (The *daemon*'s side is the opposite: it must never block its main thread, so
-// `SocketServer` is fully event-driven on a private queue.)
+// The client half of the seam: dial the daemon, write one `Request`, read one `Reply`, hang up.
+// `SocketServer` (EmiraShell) is the other half, speaking the same framing and version probe.
+// Blocking on purpose — `emira` is a one-shot process with no run loop and nothing else to do while
+// it waits, so a blocking socket with `SO_RCVTIMEO`/`SO_SNDTIMEO` is the simplest correct thing.
+// The daemon's side is the opposite and must never block its main thread.
 
 /// What can go wrong dialing the daemon, as distinct from what the daemon *replies* (`ReplyError`).
-/// `CustomStringConvertible` because the CLI prints it verbatim to stderr.
 public enum SocketClientError: Error, Equatable, CustomStringConvertible {
-    /// Nothing is listening at the socket path — almost always "the daemon isn't running". The CLI
-    /// maps this, and only this, to exit code 69 (`EX_UNAVAILABLE`).
+    /// Nothing listening — the CLI maps this, and only this, to exit code 69 (`EX_UNAVAILABLE`).
     case daemonUnreachable(path: String)
-    /// The daemon accepted the connection but didn't answer within the timeout.
     case timedOut(seconds: TimeInterval)
-    /// The connection closed before a complete reply line arrived (a crashed daemon mid-request).
+    /// The connection closed before a complete reply line arrived (a daemon that crashed mid-request).
     case closedWithoutReply
-    /// The peer's reply is from another build of the protocol. The mirror of the daemon's
-    /// `ReplyError.versionMismatch`, for the case where the *reply* itself is the unreadable message.
+    /// The mirror of `ReplyError.versionMismatch`, for when the *reply* is the unreadable message.
     case versionMismatch(daemon: Int, client: Int)
-    /// A syscall failed in a way that isn't one of the above.
     case systemCall(String, code: Int32)
 
     public var description: String {
@@ -51,20 +35,12 @@ public enum SocketClientError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// The one-shot socket client. Stateless — there is no connection to hold, because there is no
-/// session: one request, one reply, then close (`Wire`).
-///
-/// Not to be confused with `Client` (`Request.swift`), which is *who* is asking; this is *how*.
+/// The one-shot socket client. Stateless: one request, one reply, then close. Not `Client`
+/// (`Request.swift`), which is *who* is asking; this is *how*.
 public enum SocketClient {
 
-    /// Send one request and return the daemon's reply.
-    ///
-    /// - Parameters:
-    ///   - request: the envelope to write.
-    ///   - path: where the daemon listens; defaults to the resolved per-user socket.
-    ///   - timeout: bound on both the write and the wait for the reply. The daemon answers
-    ///     *accepted*, not *completed* (`Reply`), so this is a liveness bound, not a work bound — a
-    ///     slow AX teleport can't push us past it.
+    /// Send one request and return the daemon's reply. `timeout` bounds both the write and the wait,
+    /// and is a liveness bound, not a work bound: the daemon answers *accepted*, not *completed*.
     public static func send(_ request: Request,
                             to path: String = Wire.socketPath(),
                             timeout: TimeInterval = 5) throws -> Reply {
@@ -72,16 +48,13 @@ public enum SocketClient {
     }
 
     /// The byte-level half of `send`: write one already-framed line, return the first complete line
-    /// that comes back. Split out because a *malformed* request is a real case the daemon has to
-    /// answer gracefully, and the typed API can't express one — this is what lets a test send the
-    /// garbage a stray `nc` (or a peer from another build) would.
+    /// back. Split out because the typed API can't express a malformed request, which a test must send.
     static func exchange(line: Data, to path: String, timeout: TimeInterval = 5) throws -> Data {
         let fd = try connect(to: path, timeout: timeout)
         defer { close(fd) }
 
         try writeAll(line, to: fd, timeout: timeout)
-        // We will never write again on this connection; telling the peer so means a daemon that reads
-        // to EOF sees a clean end of request rather than waiting on a client that has nothing to add.
+        // Half-close so a daemon reading to EOF sees a clean end of request instead of waiting on us.
         shutdown(fd, SHUT_WR)
 
         var buffer = LineBuffer()
@@ -89,7 +62,7 @@ public enum SocketClient {
         while true {
             let received = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
             if received > 0 {
-                // The first complete line is the answer; a well-behaved daemon sends nothing after it.
+                // The first complete line is the answer; nothing follows it.
                 if let line = try buffer.append(Data(chunk[0..<received])).first { return line }
                 continue
             }
@@ -100,9 +73,8 @@ public enum SocketClient {
         }
     }
 
-    /// Whether *something* is accepting connections at `path` — the "is a daemon already running
-    /// here?" probe. Used by `SocketServer` to tell a live daemon (refuse to steal its socket) from a
-    /// stale socket file left by a crash (unlink and rebind).
+    /// Whether *something* is accepting connections at `path`. `SocketServer` uses it to tell a live
+    /// daemon (refuse to steal its socket) from a socket file left by a crash (unlink and rebind).
     public static func isListening(at path: String) -> Bool {
         guard let fd = try? connect(to: path, timeout: 1) else { return false }
         close(fd)
@@ -111,7 +83,6 @@ public enum SocketClient {
 
     // MARK: - Plumbing
 
-    /// Open a connected socket, or throw the reason we couldn't.
     private static func connect(to path: String, timeout: TimeInterval) throws -> Int32 {
         let address = try Wire.socketAddress(for: path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -120,8 +91,7 @@ public enum SocketClient {
         var succeeded = false
         defer { if !succeeded { close(fd) } }
 
-        // Never let a vanished daemon kill the CLI with SIGPIPE mid-write; a failed write is an error
-        // to report, not a signal.
+        // A vanished daemon must be a failed write to report, not a SIGPIPE that kills the CLI.
         var enabled: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
         var bound = timeval(tv_sec: Int(timeout),
@@ -134,7 +104,7 @@ public enum SocketClient {
         }
         guard result == 0 else {
             let code = errno
-            // No socket file at all, or a socket file with nothing behind it: same story for a user.
+            // No socket file, or a socket file with nothing behind it: same story for a user.
             if code == ENOENT || code == ECONNREFUSED { throw SocketClientError.daemonUnreachable(path: path) }
             throw SocketClientError.systemCall("connect", code: code)
         }
@@ -156,10 +126,8 @@ public enum SocketClient {
         }
     }
 
-    /// Decode the reply — and, if it doesn't decode, check whether the reason is that it came from
-    /// another build. That check is the whole point of the version being a flat top-level `Int`
-    /// (`Wire.probeVersion`), and it has to work in *this* direction too: an old CLI meeting a new
-    /// daemon is exactly as likely as the reverse.
+    /// Decode the reply — and, if it doesn't decode, check whether it came from another build. An old
+    /// CLI meeting a new daemon is as likely as the reverse, so the probe runs in this direction too.
     static func decodeReply(_ line: Data) throws -> Reply {
         do {
             return try Wire.decode(Reply.self, from: line)

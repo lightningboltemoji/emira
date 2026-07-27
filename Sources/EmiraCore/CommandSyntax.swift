@@ -1,33 +1,12 @@
 import Foundation
 
-// The *surface syntax* of the command vocabulary — how a `Command` (IMPLEMENTATION.md §2) is spelled
-// as words, and how words are parsed back into one. `Command.swift` owns *what* emira can do; this
-// file owns *how a human writes it down*.
-//
-// **Why this lives in the pure core rather than in the CLI.** Two surfaces need the identical
-// string↔`Command` mapping, and they live in different targets:
-//
-//   · the **CLI** turns `argv` into a `Command` (`emira focus left`);
-//   · the **config file** binds keys to the same words (`alt-h = "focus left"`, M5) — and
-//     `ConfigLoader` lives in `EmiraShell`, which does not depend on the CLI.
-//
-// Putting the spelling anywhere else would fork it. Here, §2's promise holds literally: a new verb is
-// a case in `Command`, an entry in `verbs`, and a line in `words` — all in this pair of files, and
-// every surface picks it up for free.
-//
-// Two properties are load-bearing and tested:
-//
-//  · **Round-trip.** `Command.parse(c.words) == c` for every command. `words` is the canonical
-//    spelling (an exhaustive `switch`, so the compiler catches a new case), `parse` accepts it plus a
-//    couple of aliases people will type anyway (`prev`, `dump-state`).
-//  · **Coverage.** The `verbs` table can't be exhaustiveness-checked by the compiler, so a test
-//    asserts the table's verb names are exactly the set of first words `words` can produce.
-//
-// Parsing is strict and case-sensitive, like every other Unix CLI: unknown verb, missing argument,
-// bad argument and trailing junk are all distinct, printable errors rather than a shrug.
+// The surface syntax of the command vocabulary — how a `Command` is spelled as words and parsed back.
+// In the core because two surfaces in different targets need the identical mapping: the CLI
+// (`emira focus left`) and the config file (`alt-h = "focus left"`). Parsing is strict and
+// case-sensitive; unknown verb, missing/bad argument and trailing junk are distinct printable errors.
 
-/// Why a string couldn't be read as a `Command`. `CustomStringConvertible` because the message is
-/// user-facing: the CLI prints it to stderr, and the config loader will prefix it with a file/line.
+/// Why a string couldn't be read as a `Command`. The CLI prints the `description` to stderr; the config
+/// loader prefixes it with a file and line.
 public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
     /// Nothing to parse — an empty argument list.
     case noVerb
@@ -61,10 +40,8 @@ extension Command {
 
     // MARK: - Rendering (the canonical spelling)
 
-    /// This command written as argv words — the spelling `parse` accepts back unchanged.
-    ///
-    /// An exhaustive `switch` on purpose: adding a case to `Command` fails to compile here, which is
-    /// the reminder to give the new verb a spelling and a `verbs` entry.
+    /// This command written as argv words — the spelling `parse` accepts back. Exhaustive on purpose:
+    /// a new `Command` case fails to compile here until it is given a spelling and a `verbs` entry.
     public var words: [String] {
         switch self {
         case .focus(let direction):           return ["focus", direction.rawValue]
@@ -83,8 +60,7 @@ extension Command {
         case .closeWindow:                    return ["close-window"]
         case .centerColumn:                   return ["center-column"]
         case .reloadConfig:                   return ["reload-config"]
-        // Spelled `debug` because that's the promised user-facing verb (IMPLEMENTATION.md §6,
-        // "`emira debug` (pretty-prints the state dump)"); `dump-state` parses as an alias.
+        // `debug` is the user-facing spelling; `dump-state` parses as an alias.
         case .dumpState:                      return ["debug"]
         }
     }
@@ -92,13 +68,6 @@ extension Command {
     // MARK: - Parsing
 
     /// Read a `Command` from argv-style words (verb first, then its arguments).
-    ///
-    /// ```swift
-    /// try Command.parse(["focus", "left"])            // .focus(.left)
-    /// try Command.parse(["fullscreen"])               // .fullscreen(.toggle) — the useful default
-    /// try Command.parse(["move-to-workspace", "3"])   // .moveToWorkspace(.name("3"))
-    /// ```
-    ///
     /// - Throws: `CommandSyntaxError`, whose `description` is already a printable diagnostic.
     public static func parse(_ words: [String]) throws -> Command {
         guard let word = words.first, !word.isEmpty else { throw CommandSyntaxError.noVerb }
@@ -109,17 +78,15 @@ extension Command {
         return try verb.build(verb.name, Array(words.dropFirst()))
     }
 
-    /// Convenience for a whole command line as one string (a config binding's right-hand side,
-    /// `"focus left"`). Splits on runs of whitespace; quoting is deliberately not a thing, because no
-    /// argument in the vocabulary can contain a space.
+    /// Convenience for a whole command line as one string (a config binding's right-hand side). Splits
+    /// on whitespace runs; there is no quoting, because no argument in the vocabulary contains a space.
     public static func parse(line: String) throws -> Command {
         try parse(line.split(whereSeparator: \.isWhitespace).map(String.init))
     }
 
     // MARK: - Help
 
-    /// One indented line per verb — `signature` then `summary`, columns aligned. The CLI wraps this
-    /// with its own header, so the core stays free of any particular binary's name.
+    /// One indented line per verb, columns aligned. The CLI adds its own header.
     public static var usage: String {
         let width = verbs.map(\.signature.count).max() ?? 0
         return verbs.map { verb in
@@ -130,10 +97,8 @@ extension Command {
 
     // MARK: - The verb table
 
-    /// One spelling of one command: its canonical name, the aliases we also accept, the grammar of
-    /// its arguments (for `usage`), a one-line summary, and how to build the `Command`.
-    ///
-    /// `build` receives the canonical verb name so its errors read the same whichever alias was typed.
+    /// One spelling of one command: canonical name, aliases, argument grammar (for `usage`), a summary,
+    /// and how to build it. `build` gets the canonical name, so errors read the same via any alias.
     struct Verb: Sendable {
         let name: String
         let aliases: [String]
@@ -156,10 +121,8 @@ extension Command {
         func matches(_ word: String) -> Bool { word == name || aliases.contains(word) }
     }
 
-    /// Every verb, in the order `usage` prints them (roughly: focus, move, size, state, meta).
-    ///
-    /// Not `private`, because the compiler can't check this table against `Command`'s cases — a test
-    /// does, by comparing these names to the first word of every command's `words`.
+    /// Every verb, in the order `usage` prints them. Not `private`: the compiler can't check this table
+    /// against `Command`'s cases, so a test does.
     static let verbs: [Verb] = [
         Verb("focus", arguments: Grammar.direction,
              summary: "Focus the neighbouring column or window.",
@@ -228,10 +191,8 @@ extension Command {
     private enum Grammar {
         static let direction = "<left|right|up|down>"
         static let toggle = "[on|off|toggle]"
-        // The four relative motions are folded into one bracket rather than listed flat
-        // (`next|prev|next-non-empty|prev-non-empty`, 15 characters longer). `usage` pads every
-        // summary to the widest signature, and this fragment appears on the longest verb in the
-        // table — spelled flat it pushed *every* other verb's summary out past column 90.
+        // One bracket rather than listed flat: `usage` pads to the widest signature, and this fragment
+        // sits on the longest verb in the table.
         static let workspace = "<0-9|a-z|(next|prev)[-non-empty]>"
         static let monitor = "<left|right|up|down|next|prev|N>"
         static let delta = "<Npx|N%>"
@@ -270,8 +231,8 @@ extension Command {
         return direction
     }
 
-    /// `on|off|toggle`, defaulting to `.toggle` when omitted — the spelling a keybind actually wants
-    /// (`fullscreen` alone is the common case; `fullscreen off` is for scripts and rules).
+    /// `on|off|toggle`, defaulting to `.toggle` when omitted — what a keybind wants; the explicit forms
+    /// are for scripts and rules.
     private static func toggle(_ args: [String], verb: String) throws -> Toggle {
         guard let word = args.first else { return .toggle }
         try noMore(args.dropFirst(), verb: verb)
@@ -281,16 +242,8 @@ extension Command {
         return toggle
     }
 
-    /// `100px` / `100pt` / `100` / `10%` — the argument to `grow` and `shrink`.
-    ///
-    /// **A magnitude, strictly.** The verb carries the sign, so `grow -10%` is refused rather than
-    /// quietly becoming a second spelling of `shrink 10%` — one operation, one spelling. The guard also
-    /// catches everything else `Double` is happy to read: `nan`, `inf`, `1e400`, and `0` (a resize by
-    /// nothing is a typo, the same judgement `monitorRef` makes about index `0`).
-    ///
-    /// `px` and `pt` are the same suffix, and a bare number means points too. The core's unit is
-    /// **points** everywhere — CoreGraphics' unit, not device pixels — but `px` is what people reach
-    /// for, so it is accepted rather than corrected.
+    /// `100px` / `100pt` / `100` / `10%` — the argument to `grow` and `shrink`; the non-percent spellings
+    /// all mean *points*. Strictly a magnitude, which also rejects `nan`, `inf` and `0`.
     private static func sizeDelta(_ args: [String], verb: String) throws -> SizeDelta {
         let word = try only(args, verb: verb, expected: Grammar.delta)
         var digits = Substring(word)
@@ -307,17 +260,8 @@ extension Command {
         return isPercent ? .percent(value) : .points(value)
     }
 
-    /// A workspace address (`1`…`9`, `0`, `a`…`z`) or one of the four relative motions.
-    ///
-    /// **`0` names the first workspace; it used to be a syntax error** (reversed 2026-07-26). This
-    /// reader parsed a 1-based `Int` and refused `0` with the comment *"`0` is a mistake, not workspace
-    /// zero"* — which was right while workspaces were a dynamic list the user counted from one. They
-    /// are a fixed named domain now (`WorkspaceName`), `0` is its first address, and it is where focus
-    /// rests at launch. The guard is deleted knowingly rather than adapted: there is no index left to
-    /// be off by one.
-    ///
-    /// Two of the four motions take a short spelling as well (`prev`, `prev-non-empty`) because they
-    /// are what people type; the canonical spellings are the long ones, and `Command.words` emits those.
+    /// A workspace address (`1`…`9`, `0`, `a`…`z`) or one of the four relative motions. `0` is a legal
+    /// address, not an off-by-one. `prev`/`prev-non-empty` parse; the long forms are what `words` emits.
     private static func workspaceRef(_ args: [String], verb: String) throws -> WorkspaceRef {
         let word = try only(args, verb: verb, expected: Grammar.workspace)
         switch word {
@@ -351,12 +295,10 @@ extension Command {
 
 // MARK: - Reference spellings
 //
-// The inverse halves of `parse`'s argument readers. Internal, not public: they exist to spell
-// `Command.words`, which is the public surface.
+// The inverse halves of `parse`'s argument readers; they exist to spell `Command.words`.
 
 extension SizeDelta {
-    /// How this delta is written as a single word (`"100px"`, `"10%"`). Canonical: a bare `100` and
-    /// `100pt` both parse, and both come back out as `100px`.
+    /// How this delta is written as a single word. Canonical: `100` and `100pt` both re-emit as `100px`.
     var word: String {
         switch self {
         case .points(let points): return Self.number(points) + "px"
@@ -364,9 +306,7 @@ extension SizeDelta {
         }
     }
 
-    /// A number spelled the way it was typed — `100`, not `100.0`. Only whole values take the integer
-    /// path (and only in a range `Int64` can hold); everything else keeps its decimal form, which
-    /// `Double.init` reads back exactly.
+    /// A number spelled the way it was typed — `100`, not `100.0`.
     private static func number(_ value: Double) -> String {
         guard value == value.rounded(), abs(value) < 1e15 else { return String(value) }
         return String(Int64(value))
@@ -374,8 +314,7 @@ extension SizeDelta {
 }
 
 extension WorkspaceRef {
-    /// How this reference is written as a single word (`"3"`, `"a"`, `"next"`, `"prev-non-empty"`'s
-    /// canonical `"previous-non-empty"`).
+    /// How this reference is written as a single word (`"3"`, `"a"`, `"next"`, `"previous-non-empty"`).
     var word: String {
         switch self {
         case .name(let name): return name.description

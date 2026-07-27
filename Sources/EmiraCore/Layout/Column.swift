@@ -1,64 +1,33 @@
 import Foundation
 
-// A single column of the strip: the vertical stack of windows inside one column's box
-// (PRINCIPLES.md §1 — "columns hold one or more windows stacked vertically"; IMPLEMENTATION.md §5,
-// `Layout/Column.swift`).
-//
-// Where `Strip` places columns left→right on an *infinite* x-axis, a `Column` stacks its windows
-// top→bottom inside a *bounded* box — the column's on-strip frame, whose x/width come from `Strip`
-// and whose y/height are the monitor working area. The bounded axis is the essential difference, and
-// it's why a column **distributes** height where the strip never does: two windows sharing a column
-// split its height, so the interesting job here is turning per-window height
-// *intents* into concrete point heights, then stacking them.
-//
-// Height model: every window in a column is either **auto** — it shares the leftover height
-// equally with the other auto windows — or pinned to a **preset** (a `cycleHeight` selection: a
-// proportion of the column height, or a fixed point count). Pinned heights are honored first; the
-// autos divide whatever remains. The common cases fall straight out: one auto window fills
-// the column; N auto windows split it into equal Nths; pinning one to ½ leaves the rest to share the
-// other half.
-//
-// Pure and total, the same discipline as `Strip`/`Presets` (IMPLEMENTATION.md §1, invariant 3): an
-// empty column yields no frames, and an auto share that would go negative (pinned heights overflow
-// the box) clamps to zero rather than trapping. Vertical scroll *within* an over-tall column (the
-// rarer case, when pinned heights exceed the box) is a later slice — for now such heights simply
-// overflow the box's bottom, which is honest and fully determined. Coordinates are top-left
-// virtual-strip points (Geometry.swift); `frame.minY` is the column's top edge and windows stack
-// downward.
+// A single column of the strip: the vertical stack of windows inside one bounded box. Unlike `Strip`,
+// a column *distributes* height — each window is either auto, sharing the leftover height equally with
+// the other autos, or pinned to a preset (a proportion of the column height, or a fixed point count).
+// Pinned heights are honored first; those that exceed the box overflow its bottom. Coordinates are
+// top-left points (Geometry.swift): `frame.minY` is the top edge and windows stack downward.
 
 /// One window's height intent within its column — resolved to points at layout time.
 public enum WindowHeight: Sendable, Equatable, Codable {
-    /// Share the column's leftover height equally with the other auto windows — the only mode a
-    /// freshly-opened window uses until the user cycles its height.
+    /// Share the column's leftover height equally with the other auto windows. The default.
     case auto
-    /// A pinned height — a `cycleHeight` selection. Resolved against the column height at layout
-    /// time (a `.proportion`) or taken verbatim (a `.fixed` point count).
+    /// A pinned height, resolved against the column height (`.proportion`) or taken verbatim (`.fixed`).
     case preset(PresetSize)
 }
 
-/// The vertical layout of one column: its box on the strip plus the per-window height intents,
-/// turned into concrete stacked window frames. A pure toolbox over `Geometry`/`Presets` — it holds
-/// no state beyond its inputs and encodes no policy (which window is pinned to what is decided
-/// upstream, in the reducer/config).
+/// The vertical layout of one column: its box on the strip plus per-window height intents, turned into
+/// stacked window frames. No policy — which window is pinned to what is decided upstream.
 public struct Column: Sendable, Equatable {
-    /// The column's box on the strip: x/width from `Strip` (the column's left edge + its resolved
-    /// preset width), y/height the monitor working area (already strut-inset). Every window fills
-    /// the box's width and the stack runs down its height from `frame.minY`.
+    /// The column's box on the strip: x/width from `Strip`, y/height the monitor working area.
     public let frame: Rect
-    /// Per-window height intents, top→bottom. Array order *is* the vertical stacking order; index
-    /// `i` is the i-th window from the top.
+    /// Per-window height intents, top→bottom. Array order *is* the vertical stacking order.
     public let windowHeights: [WindowHeight]
-    /// The gap between vertically-adjacent windows. Inter-window only — no gap above the first or
-    /// below the last (outer margins are the working-area inset), matching `Strip`'s gap convention.
+    /// The gap between vertically-adjacent windows. Inter-window only, matching `Strip`'s convention.
     public let gap: Double
-    /// Per-window height **floors**, top→bottom, 1:1 with `windowHeights` — a window's own answer to
-    /// the height the column last offered it (`SizeCorrection`). `nil` (or a short/empty array) means
-    /// no floor, which is the ordinary case.
+    /// Per-window height floors, top→bottom, 1:1 with `windowHeights` — a window's own answer to the
+    /// height the column last offered it (`SizeCorrection`). `nil` or a short array means no floor.
     ///
-    /// A floor is a *constraint*, not an intent, which is why it is a parallel array rather than a
-    /// third `WindowHeight` case: it says nothing about how the user wants the column divided, only
-    /// about what the app will actually accept. Auto windows honor it; a pinned preset is the user's
-    /// explicit instruction and is left alone.
+    /// A separate array rather than a `WindowHeight` case because a floor is a constraint, not an
+    /// intent: autos honor it, but a pinned preset is the user's instruction and is left alone.
     public let minHeights: [Double?]
 
     public init(frame: Rect, windowHeights: [WindowHeight], gap: Double, minHeights: [Double?] = []) {
@@ -73,18 +42,11 @@ public struct Column: Sendable, Equatable {
 
     // MARK: Height distribution
 
-    /// Each window's resolved point height, top→bottom, 1:1 with `windowHeights`. Pinned presets
-    /// resolve against the column height; the space left after all pinned heights and the
-    /// inter-window gaps is split equally among the auto windows, **clamped at zero** so an
-    /// over-pinned column never yields a negative height. `[]` for an empty column.
-    ///
-    /// **Floors are water-filled.** An auto window whose `minHeights` floor exceeds its equal share
-    /// takes the floor instead and stops sharing; the space it did *not* leave behind is re-divided
-    /// among the windows still auto, which can push another one below *its* floor — so the pass
-    /// repeats to a fixpoint. It terminates in at most `count` passes because the floored set only
-    /// ever grows. Floors that cannot all fit simply overflow the box's bottom, exactly as pinned
-    /// presets already do: honest and fully determined, and the vertical scroll-within-column that
-    /// would answer it properly is the same later slice.
+    /// Each window's resolved point height, top→bottom, 1:1 with `windowHeights`. Presets resolve
+    /// against the column height; what remains after them and the gaps splits equally among the autos,
+    /// clamped at zero. Floors are water-filled: an auto whose floor exceeds its share takes the floor
+    /// and stops sharing, re-dividing the rest — a fixpoint reached in at most `count` passes, since
+    /// the floored set only grows.
     public func resolvedHeights() -> [Double] {
         guard count > 0 else { return [] }
         let totalGap = Double(count - 1) * gap
@@ -102,7 +64,7 @@ public struct Column: Sendable, Equatable {
             }
         }
 
-        // Water-fill: share what's left equally, promote anyone under their floor to it, repeat.
+        // Share what's left equally, promote anyone under their floor to it, repeat.
         while true {
             let autoCount = isAuto.filter { $0 }.count
             let share = autoCount > 0 ? max((frame.height - totalGap - fixedSum) / Double(autoCount), 0) : 0
@@ -119,16 +81,14 @@ public struct Column: Sendable, Equatable {
     }
 
     /// Window `i`'s height floor, if it has one. Total against a short or absent `minHeights`.
-    /// Deliberately not named `floor` — that shadows Foundation's, inside a file full of arithmetic.
     private func heightFloor(at i: Int) -> Double? {
         minHeights.indices.contains(i) ? minHeights[i] : nil
     }
 
     // MARK: Placement
 
-    /// Every window's frame, top→bottom: each spans the column's full width at the column's x, with
-    /// its resolved height, stacked from `frame.minY` down with `gap` between them. Lines up 1:1
-    /// with `windowHeights`; `[]` for an empty column.
+    /// Every window's frame, top→bottom: full column width, resolved height, stacked down from
+    /// `frame.minY`. 1:1 with `windowHeights`.
     public func windowFrames() -> [Rect] {
         let heights = resolvedHeights()
         var result: [Rect] = []
@@ -141,17 +101,14 @@ public struct Column: Sendable, Equatable {
         return result
     }
 
-    /// Window `i`'s frame, or `nil` if `i` is out of range — total, so a stale index (a window
-    /// removed mid-reconcile) is a normal `nil`, not a trap.
+    /// Window `i`'s frame, or `nil` if `i` is out of range — a stale index is a normal `nil`, not a trap.
     public func frame(of i: Int) -> Rect? {
         let frames = windowFrames()
         return frames.indices.contains(i) ? frames[i] : nil
     }
 
-    /// The total stacked height: `Σ resolved heights + (count − 1)·gap`. Equals `frame.height` when
-    /// at least one window is auto and unfloored (the autos absorb the slack exactly); may *exceed* it
-    /// when pinned heights or height floors overflow the box — the over-tall case whose vertical
-    /// scroll-within-column is a later slice. `0` for an empty column.
+    /// The total stacked height. Equals `frame.height` when at least one window is auto and unfloored;
+    /// may exceed it when pinned heights or floors overflow the box.
     public var contentHeight: Double {
         guard count > 0 else { return 0 }
         return resolvedHeights().reduce(0, +) + Double(count - 1) * gap

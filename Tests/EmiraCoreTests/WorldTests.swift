@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// `World` — the truth-plane half of core `State` (IMPLEMENTATION.md §5). The architecture makes this
-/// cheap to test: fold an event through a mutator, assert the record. These cover the two invariants
-/// (focus integrity, app ref-counting), the strip-participation taxonomy (§6), determinism of the
-/// derived views, and a Codable round-trip of a populated world.
+/// `World` — the truth-plane half of core `State`: fold an event through a mutator, assert the record.
+/// Covers the two invariants (focus integrity, app ref-counting), the strip-participation taxonomy,
+/// determinism of the derived views, and a `Codable` round-trip.
 @Suite struct WorldTests {
 
     // A couple of snapshot builders to keep the tests terse.
@@ -31,12 +30,10 @@ import Testing
         #expect(world.apps.count == 1)
     }
 
-    /// A window that is *already* minimized when we first meet it stays off the strip.
-    ///
-    /// This is launch enumeration's case (`AXEnumerator`, M3): unlike a window we watch appear, an
-    /// enumerated one is met mid-life and may already be in the Dock. Assuming `false` here would put
-    /// it in a column the user cannot see, and the correcting `windowMinimized` event would never
-    /// come — nothing minimized it while we were watching.
+    /// A window that is *already* minimized when we first meet it stays off the strip. This is launch
+    /// enumeration's case (`AXEnumerator`): an enumerated window is met mid-life and may already be in
+    /// the Dock, and no correcting `windowMinimized` event will ever come — nothing minimized it while
+    /// we were watching.
     @Test func aWindowEnumeratedWhileMinimizedIsRecordedAsSuchAndStaysOffTheStrip() {
         var world = World()
         world.insert(WindowSnapshot(id: WindowId(1), bundleId: "com.apple.Safari", title: "Docked",
@@ -113,7 +110,7 @@ import Testing
         #expect(world.windows.count == 1)
     }
 
-    // MARK: strip participation (the §6 taxonomy, derived)
+    // MARK: strip participation (the taxonomy, derived)
 
     @Test func onlyStandardNonMinimizedNonHiddenWindowsAreOnTheStrip() {
         var world = World()

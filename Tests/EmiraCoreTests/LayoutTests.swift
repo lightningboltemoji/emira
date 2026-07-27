@@ -2,9 +2,8 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The layout engine's first cut: the infinite-strip placement/scroll/viewport math (`Strip`) and
-/// the cyclable size presets (`PresetSize` / `PresetCycle`). Pure, fast, exhaustive — the
-/// `LayoutTests` bucket IMPLEMENTATION.md §8 calls for.
+/// The infinite-strip placement/scroll/viewport math (`Strip`) and the cyclable size presets
+/// (`PresetSize` / `PresetCycle`).
 @Suite struct StripTests {
 
     // Reused fixture: three columns of 100 / 200 / 300 pt with a 10 pt gap at the strip origin.
@@ -159,8 +158,8 @@ import Testing
     }
 }
 
-/// The vertical stack inside one column: height distribution (the auto/pinned model) and the
-/// stacked window frames. Pure, total, top-left origin — same bucket as `StripTests`.
+/// The vertical stack inside one column: the auto/pinned height distribution and the stacked window
+/// frames. Top-left origin.
 @Suite struct ColumnTests {
 
     // Reused fixture: a column box at x=100, top y=50, 400 wide, 900 tall, with a 10 pt inter-window
@@ -297,7 +296,7 @@ import Testing
     }
 }
 
-/// Deterministic, unique, staggered park slots for off-viewport windows (PRINCIPLES.md §4a, §7).
+/// Deterministic, unique, staggered park slots for off-viewport windows.
 @Suite struct ParkTests {
 
     // Reused fixture: a 1440×900 working area at the origin; 1 pt sliver of width, 40 pt of chrome,
@@ -330,8 +329,8 @@ import Testing
     }
 
     @Test func slotFramesAreUniqueAcrossManyOrdinals() {
-        // The load-bearing property (§7): no two parked windows share a frame. (`Rect` isn't
-        // Hashable — width/height are constant here, so a distinct origin means a distinct frame.)
+        // The load-bearing property: no two parked windows share a frame. (`Rect` isn't Hashable —
+        // width/height are constant here, so a distinct origin means a distinct frame.)
         let frames = (0..<300).map { lot.slot(ordinal: $0, size: size) }
         let origins = Set(frames.map { "\($0.minX),\($0.minY)" })
         #expect(origins.count == frames.count)
@@ -357,15 +356,11 @@ import Testing
         #expect(wrapped != first)
     }
 
-    /// **The wrap has to clear the identity tolerance too, and it did not** (2026-07-26). Lane 1 row 0
-    /// shares its `y`, `width` and `height` with lane 0 row 0, so `x` is the *only* edge telling them
-    /// apart — and at one `visibleSliver` it told them apart by 1 pt, inside `WindowRegistry.bind`'s
-    /// ±2 pt per-edge match. Two parked windows of one app there would both be refused at cold-start
-    /// rebind, which is exactly the failure `stagger` exists to prevent, one axis over.
-    ///
-    /// Only a *workspace set* parks enough windows to reach a second lane (~107 rows), which is why
-    /// this was latent until now and why the whole-set assertion below is the one that matters: every
-    /// pair, not just consecutive ones, must differ by more than the tolerance on at least one edge.
+    /// The wrap has to clear the identity tolerance too. Lane 1 row 0 shares its `y`, `width` and
+    /// `height` with lane 0 row 0, so `x` is the *only* edge telling them apart, and it must differ by
+    /// more than `WindowRegistry.bind`'s ±2 pt per-edge match or both windows are refused at rebind.
+    /// Hence every pair, not just consecutive ones — only a workspace set parks enough windows
+    /// (~107 rows to a lane) to reach a second lane at all.
     @Test func everyPairOfSlotsClearsTheIdentityBindingToleranceAcrossLanes() {
         let slots = (0..<250).map { lot.slot(ordinal: $0, size: size) }   // three lanes' worth
         func ambiguous(_ a: Rect, _ b: Rect) -> Bool {
@@ -398,19 +393,17 @@ import Testing
     }
 }
 
-/// The layout assembler: structure (`reconcile`, columns, width presets) and the payoff —
-/// `targetFrames` turning columns + scroll offset into concrete tiled / parked frames. Pure, total.
+/// The layout assembler: structure (`reconcile`, columns, width presets) and `targetFrames` turning
+/// columns + scroll offset into concrete tiled / parked frames.
 @Suite struct LayoutTests {
 
     // Window ids used across the assembly fixtures.
     private let w10 = WindowId(10), w20 = WindowId(20), w21 = WindowId(21)
     private let w30 = WindowId(30), w40 = WindowId(40)
 
-    // The minting mutators take a `ColumnAllocator`, which lives in `Workspaces` in the product
-    // (2026-07-26: one id space across every workspace, since `Motion.columnWidths` is keyed by a bare
-    // `ColumnId`), so a bare `Layout` is handed one. Each test that mints declares its own local
-    // `var ids = ColumnAllocator(next: 5)` — seeded past `fourColumns`' explicit ids 1–4, which is
-    // exactly what `Workspaces.init(focused:strips:)` does for an explicitly-supplied arrangement.
+    // The minting mutators take a `ColumnAllocator` (one id space across every workspace, so it lives in
+    // `Workspaces` in the product). Each test that mints declares its own `ColumnAllocator(next: 5)` —
+    // seeded past `fourColumns`' explicit ids 1–4, as `Workspaces.init(focused:strips:)` would.
 
     // Reused metrics: a 900×600 working area at the origin; each column ⅓ of the width = 300 pt;
     // no gaps (clean arithmetic). Strip of four 300-wide columns → content 1200, viewport 900.
@@ -573,11 +566,10 @@ import Testing
         #expect(right.columns.map(\.windowIds) == [[w10], [w20], [w21], [w30], [w40]])
     }
 
-    /// The bug shape this prevents: the literal implementation destroys the column and mints an
-    /// identical replacement, so the layout *compares equal by arrangement* while the `ColumnId` — the
-    /// handle `Motion.columnWidths` and the cover's animation identity key on — silently changed
-    /// underneath every animator. `Layout`'s synthesized `Equatable` covers the private allocator
-    /// watermark, so comparing the whole value catches the stray mint too.
+    /// The bug shape this prevents: destroying the column and minting an identical replacement compares
+    /// equal by arrangement while the `ColumnId` — the handle `Motion.columnWidths` and the cover's
+    /// animation identity key on — silently changed. Comparing the whole value also catches the stray
+    /// mint, since `Layout`'s `Equatable` covers the allocator watermark.
     @Test func extractingAWindowAlreadyAloneInItsColumnIsANoOp() {
         var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
@@ -632,10 +624,9 @@ import Testing
         #expect(layout.strip(metrics: m).columnWidths[0] == 600)
     }
 
-    /// **The three width intents are a stack, not three ways of writing one number.** Fullscreen shadows
-    /// an override, which shadows the ladder — and because it shadows rather than replaces, coming back
-    /// off is *exact* for whatever was underneath. That is the entire reason `fullscreen` stores no
-    /// "what it was" and needs no restore policy.
+    /// The three width intents are a stack, not three ways of writing one number: fullscreen shadows an
+    /// override, which shadows the ladder. Because it shadows rather than replaces, coming back off is
+    /// exact — which is why `fullscreen` stores no "what it was" and needs no restore policy.
     @Test func fullscreenShadowsTheWidthUnderneathAndUncoversItExactly() {
         var layout = fourColumns()
         let m = LayoutMetrics(workingArea: Rect(x: 0, y: 0, width: 900, height: 600),
@@ -672,9 +663,8 @@ import Testing
         }
     }
 
-    /// Fullscreen travels with an expelled window for the same reason the preset and the override do:
-    /// the window is on screen at that width, and an intent that failed to follow would snap it back as
-    /// a side effect of a structural edit.
+    /// Fullscreen travels with an expelled window like the preset and the override do: an intent that
+    /// failed to follow would snap the window back as a side effect of a structural edit.
     @Test func anExtractedColumnInheritsFullscreen() {
         var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
@@ -793,10 +783,9 @@ import Testing
         layout.move(window: w10, toColumn: ColumnId(2), at: 0);         check("merge alone")
     }
 
-    /// **The load-bearing one.** Every `Engine` handler reconciles at its top, so an arrangement that
-    /// `reconcile` undoes is a command that does nothing at all — and it would look perfectly correct
-    /// in isolation. `World.stripWindowIds` is id-sorted, deliberately unrelated to layout order, so
-    /// that is what we hand back.
+    /// The load-bearing one: every `Engine` handler reconciles at its top, so an arrangement `reconcile`
+    /// undoes is a command that does nothing at all — and it would look correct in isolation.
+    /// `World.stripWindowIds` is id-sorted, deliberately unrelated to layout order, so that is the input.
     @Test func aStructuralMutationSurvivesTheNextReconcile() {
         var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
@@ -874,7 +863,7 @@ import Testing
     }
 
     @Test func targetFramesParkOrdinalsAreUniqueSoParkedFramesDontCollide() {
-        // Scroll far right so several columns park; assert the parked frames are all distinct (§7).
+        // Scroll far right so several columns park; assert the parked frames are all distinct.
         let frames = fourColumns().targetFrames(scrollOffset: 900, metrics: metrics)  // viewport [900,1200)
         // Only col3 [900,1200) is visible; col0/1/2 (four windows) park.
         let parked = [frames[w10], frames[w20], frames[w21], frames[w30]].compactMap { $0 }
@@ -887,7 +876,7 @@ import Testing
         #expect(Layout().targetFrames(scrollOffset: 0, metrics: metrics).isEmpty)
     }
 
-    // MARK: naturalFrames — the un-parked, presentation-plane positions (§4b)
+    // MARK: naturalFrames — the un-parked, presentation-plane positions
 
     @Test func naturalFramesAgreeWithTiledPlacementForOnViewColumns() {
         // On-viewport columns get the identical frame from both methods (natural == tiled), so the
@@ -943,12 +932,9 @@ import Testing
     }
 
     @Test func aNarrowerAnswerNarrowsTheColumnAndTheStripClosesUp() {
-        // **Corrected 2026-07-26.** This asserted the column stayed 300 — "geometry widens and never
-        // narrows", because an under-filled column was thought to be a cosmetic gap. A column's width
-        // *is* strip extent: the shortfall is phantom desktop that scroll targets, the tile-vs-park
-        // split and the sweep all treat as content, and it is permanent because the intent is stored.
-        // So the column follows the answer down, and every column right of it closes up — derived, from
-        // the same accumulated widths that already carried the widening direction.
+        // A column's width *is* strip extent, so an under-filled column is not merely a cosmetic gap:
+        // the shortfall is phantom desktop that scroll targets, the tile-vs-park split and the sweep all
+        // treat as content. The column follows the answer down and every column right of it closes up.
         let narrow = corrected(w10, actual: Size(width: 292, height: 600))
         let frames = fourColumns().targetFrames(scrollOffset: 0, metrics: narrow)
         #expect(frames[w10] == Rect(x: 0, y: 0, width: 292, height: 600))
@@ -965,9 +951,9 @@ import Testing
                 == Rect(x: 0, y: 0, width: 300, height: 600))
     }
 
-    /// **A mixed stack keeps the intent**, and that is what makes `max` the right operator rather than
-    /// `min`. w20 refuses to be 300 wide, but its stackmate w21 has never been asked and may well fill
-    /// it — so the column holds its preset, and only a column *nobody* in it can fill gives ground.
+    /// A mixed stack keeps the intent, which is what makes `max` the right operator rather than `min`:
+    /// w20 refuses to be 300 wide, but its stackmate w21 has never been asked and may well fill it, so
+    /// only a column *nobody* in it can fill gives ground.
     @Test func aColumnWhoseOtherWindowMayStillFillItKeepsItsWidth() {
         let narrow = corrected(w20, actual: Size(width: 240, height: 300))
         #expect(fourColumns().strip(metrics: narrow).columnWidths[1] == 300)
@@ -1041,10 +1027,9 @@ import Testing
         #expect(fourColumns().visibleWindowIds(scrollOffset: 0, metrics: metrics) == [w10, w20, w21, w30])
     }
 
-    /// The transition scope, and the reason it is a *sweep* rather than "visible at the start ∪ visible
-    /// at the end". A viewport travelling further than its own width crosses columns that are on screen
-    /// at neither endpoint — and a scoped-by-endpoints transition gives those columns no captured layer,
-    /// so they slide across the cover as holes showing the wallpaper.
+    /// Why the transition scope is a *sweep* rather than "visible at the start ∪ visible at the end": a
+    /// viewport travelling further than its own width crosses columns on screen at neither endpoint, and
+    /// those would slide across the cover with no captured layer, as holes.
     ///
     /// Narrow metrics on purpose: a 300-wide viewport over four 300-wide columns, so a 0 → 900 scroll is
     /// three screens and cols 1–2 are strictly interior to it.
@@ -1067,10 +1052,9 @@ import Testing
                 == layout.sweptWindowIds(from: 0, to: 300, metrics: metrics))
     }
 
-    /// The scope is the sweep **plus a shoulder on each end** — the column a further command can pull
-    /// into view before a capture requested at that moment could possibly arrive (2026-07-26). A
-    /// zero-length sweep is therefore *not* the still-frame question; it is that question widened by
-    /// one column on either side.
+    /// The scope is the sweep plus a shoulder on each end — the column a further command can pull into
+    /// view before a capture requested at that moment could arrive. So a zero-length sweep is the
+    /// visible set widened by one column on either side, not the visible set itself.
     @Test func sweptWindowIdsCarryAShoulderPastEachEndOfTheSweep() {
         let layout = fourColumns()
         // Viewport 900 at offset 0 shows col0–col2; col3 is the shoulder past the right end.
@@ -1123,7 +1107,7 @@ import Testing
         #expect(layout.strip(metrics: m).columnWidths == [600])
     }
 
-    // MARK: in-flight widths — the presentation plane mid-resize (M4 part 3)
+    // MARK: in-flight widths — the presentation plane mid-resize
 
     /// The override exists so a `cycleWidth` can be *animated*: the strip is resolved against a width
     /// part-way between two presets. A partial map is meaningful — the columns it doesn't name keep
@@ -1138,9 +1122,8 @@ import Testing
         #expect(layout.strip(metrics: metrics).columnWidths == [300, 300, 300, 300])
     }
 
-    /// **The resize animation, in one assertion.** Growing col1 by 150 must widen *its* windows and
-    /// slide every column to its right by the same 150 — and that is not choreographed anywhere, it
-    /// falls out of `Strip.leftEdge` accumulating the same widths it always did.
+    /// The resize animation in one assertion: growing col1 by 150 widens *its* windows and slides every
+    /// column to its right by the same 150 — not choreographed, just `Strip.leftEdge` accumulating.
     @Test func anInFlightWidthGrowsItsColumnAndSlidesEveryColumnToItsRight() {
         let layout = fourColumns()
         let before = layout.naturalFrames(scrollOffset: 0, metrics: metrics)
@@ -1177,9 +1160,8 @@ import Testing
         #expect(layout.columnIndex(ofWindow: WindowId(999)) == nil)
     }
 
-    /// `Layout`'s serialized state is now **purely structural** — the allocator watermark moved to
-    /// `Workspaces` (2026-07-26), so there is nothing here but the columns. The round-trip that pins
-    /// the watermark moved with it: `WorkspaceTests.aRoundTrippedSetMintsTheSameNextColumnId`.
+    /// `Layout`'s serialized state is purely structural — the allocator watermark lives in `Workspaces`,
+    /// and `WorkspaceTests.aRoundTrippedSetMintsTheSameNextColumnId` pins it.
     @Test func layoutRoundTripsThroughCodable() throws {
         let layout = fourColumns()
         let data = try JSONEncoder().encode(layout)
@@ -1188,21 +1170,17 @@ import Testing
     }
 }
 
-/// Outer gaps (2026-07-26) — the margin the strip keeps clear at the edges of the working area, and
-/// the split it forces: `LayoutMetrics.contentArea` (the *logical* viewport the strip lives in) versus
-/// `workingArea` (the *physical* extent that decides what is on screen).
-///
-/// Nearly every test here exists to pin which of the two a given query asks, because the two agree
-/// exactly when the gaps are zero — which is to say the other 389 tests in this suite cannot tell them
-/// apart, and a wrong choice would land silently.
+/// Outer gaps — the margin the strip keeps clear at the edges of the working area, and the split it
+/// forces: `LayoutMetrics.contentArea` (the *logical* viewport the strip lives in) versus `workingArea`
+/// (the *physical* extent that decides what is on screen). Nearly every test here pins which of the two
+/// a given query asks, because they agree exactly when the gaps are zero — so a wrong choice is silent.
 @Suite struct OuterGapTests {
 
     private let w0 = WindowId(1), w1 = WindowId(2), w2 = WindowId(3), w3 = WindowId(4)
 
     /// A 1000×700 display with a uniform 40 pt margin → a 920×620 content area at (40, 40). Columns are
-    /// half the *content* width = 460, so two of them fill it exactly and the third starts precisely at
-    /// the content area's right edge — the alignment that makes the margin the only thing it can bleed
-    /// into.
+    /// half the *content* width = 460, so two fill it exactly and the third starts precisely at the
+    /// content area's right edge — the alignment that makes the margin the only thing it can bleed into.
     ///
     ///   content viewport [0, 920) in strip space · columns at strip 0 · 460 · 920 · 1380
     private func metrics(columnGap: Double = 0, windowGap: Double = 0,
@@ -1242,8 +1220,8 @@ import Testing
 
     // MARK: What "100%" means
 
-    /// A proportion is a share of the **content** width, so a full-width column fills the strip's area
-    /// and leaves the margin showing — which is what a user who asked for a margin means by full.
+    /// A proportion is a share of the *content* width, so a full-width column fills the strip's area and
+    /// leaves the margin showing — which is what a user who asked for a margin means by full.
     @Test func aProportionResolvesAgainstTheContentWidthNotTheDisplay() {
         let m = metrics()
         let full = ColumnLayout(id: ColumnId(1), windowIds: [w0], widthPreset: 0,
@@ -1254,10 +1232,9 @@ import Testing
         #expect(Layout(columns: [half]).resolvedWidth(of: half, metrics: m) == 460)
     }
 
-    /// **`fullscreen` means the same 100% everything else does.** Against the content width, so a
-    /// fullscreen column fills the strip's area with the outer margin still showing — the same number
-    /// the ladder tops out at and `grow`'s ceiling clamps to. A second definition of "full" is how the
-    /// two verbs would come to rest one outer gap apart.
+    /// `fullscreen` means the same 100% everything else does: the content width, so a fullscreen column
+    /// fills the strip's area with the outer margin still showing. A second definition of "full" is how
+    /// the two verbs would come to rest one outer gap apart.
     @Test func fullscreenIsTheContentWidthNotTheDisplayWidth() {
         let m = metrics()                            // 1000 wide, 40 pt outer gaps ⇒ 920 of content
         let column = ColumnLayout(id: ColumnId(1), windowIds: [w0], isFullscreen: true)
@@ -1276,11 +1253,10 @@ import Testing
 
     // MARK: The load-bearing split — tile vs park
 
-    /// **The test this whole design exists for.** At rest the third column's left edge sits exactly on
-    /// the content area's right edge, so it is invisible to the *logical* viewport and visible to the
-    /// *physical* one. It must be tiled, bleeding 40 pt into the margin: parking it would enforce the
-    /// margin by teleporting the window out of it, which is the clipping we're avoiding — and it would
-    /// pop the cross-fade, since `naturalFrames` never parks and would draw it there anyway.
+    /// At rest the third column's left edge sits exactly on the content area's right edge, so it is
+    /// invisible to the *logical* viewport and visible to the *physical* one. It must be tiled, bleeding
+    /// 40 pt into the margin: parking it would teleport the window out of the margin, and would pop the
+    /// cross-fade since `naturalFrames` never parks and would draw it there anyway.
     @Test func aColumnBleedingIntoTheMarginIsTiledNotParked() {
         let layout = fourColumns()
         let m = metrics()
@@ -1308,8 +1284,8 @@ import Testing
         #expect(!fourColumns().visibleWindowIds(scrollOffset: 0, metrics: m).contains(w3))
     }
 
-    /// A park nub hugs the **physical** corner. Inset by the margin it would poke a window 40 pt into
-    /// the screen on purpose, which is the opposite of what parking is for.
+    /// A park nub hugs the *physical* corner: inset by the margin it would poke a window 40 pt into the
+    /// screen on purpose, which is the opposite of what parking is for.
     @Test func parkNubsHugThePhysicalCornerNotTheContentEdge() {
         let m = metrics()
         // Scroll far right so col0 parks at ordinal 0.
@@ -1353,10 +1329,8 @@ import Testing
 
     /// After a reveal leaves a column flush with the content's right edge, its neighbour starts one
     /// `column-gap` further on while the display edge is one `outer-gap-right` further on — so a
-    /// neighbour bleeds into the margin at rest **iff `outer-gap` > `column-gap`**.
-    ///
-    /// This is why a single `gaps` number would be self-consistent: it makes the inter-column gap twice
-    /// the outer one, so the margin is always clean at rest and is only ever crossed in motion.
+    /// neighbour bleeds into the margin at rest iff `outer-gap` > `column-gap`. A config with the
+    /// inter-column gap twice the outer one therefore never bleeds except in motion.
     @Test(arguments: [0.0, 20.0, 40.0, 60.0])
     func aNeighbourBleedsAtRestExactlyWhenTheOuterGapExceedsTheColumnGap(columnGap: Double) {
         let layout = fourColumns()
@@ -1397,8 +1371,7 @@ import Testing
     // MARK: Nothing changes at zero
 
     /// The gaps are additive with the struts and default to nothing, so a zero-gap `LayoutMetrics` is
-    /// byte-identical to one that predates them — which is what lets the rest of the suite stand as
-    /// the regression guard for this change.
+    /// byte-identical to one without them — which lets the rest of the suite stand as the guard.
     @Test func zeroGapsLeaveEveryQueryUnchanged() {
         let layout = fourColumns()
         let plain = LayoutMetrics(workingArea: Rect(x: 0, y: 0, width: 1000, height: 700),

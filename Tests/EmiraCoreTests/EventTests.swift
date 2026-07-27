@@ -2,13 +2,12 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The exhaustive input vocabulary (IMPLEMENTATION.md §1/§5) and its boundary DTOs. `Event` *is* the
-/// deterministic replay log (§7), so a faithful `Codable` round-trip is the contract that matters;
-/// `Equatable` lets scenario tests assert the exact event a surface produced.
+/// The exhaustive input vocabulary and its boundary DTOs. `Event` *is* the deterministic replay log,
+/// so a faithful `Codable` round-trip is the contract that matters.
 @Suite struct EventTests {
 
-    /// One value of **every** case, including both `focusChanged` shapes and payloads that carry the
-    /// DTOs. This list is the exhaustiveness checklist for `Event`.
+    /// One value of every case, including both `focusChanged` shapes and payloads that carry the DTOs.
+    /// This list is the exhaustiveness checklist for `Event`.
     static let all: [Event] = [
         .command(.focus(.left)),
         .command(.closeWindow),
@@ -55,8 +54,7 @@ import Testing
 
     // MARK: WindowRole taxonomy
 
-    /// The §6 default: only `.standard` tiles; every other role floats. `tiles` is the pure predicate
-    /// the rules engine will read.
+    /// Only `.standard` tiles; every other role floats.
     @Test func onlyStandardRoleTiles() {
         #expect(WindowRole.standard.tiles)
         for role in WindowRole.allCases where role != .standard {

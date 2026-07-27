@@ -2,14 +2,10 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-// The chord grammar — `"cmd-alt-h"` ⇄ `KeyChord`. It is `CommandSyntaxTests` one file over, and the
-// two properties that matter are the same two:
-//
-//  · **Round-trip.** `KeyChord.parse("\(chord)") == chord` for every key there is, so the spelling the
-//    daemon reports back (and the one a `State` dump carries) is a spelling the config file accepts.
-//  · **Nothing is silently ignored.** Every way of writing a chord wrong has a distinct, printable
-//    complaint — because a binding that quietly never fires is the failure this vocabulary exists to
-//    prevent, and the user is looking at a line in an editor when it happens.
+// The chord grammar — `"cmd-alt-h"` ⇄ `KeyChord`. Two properties, as in `CommandSyntaxTests`: every
+// key round-trips through its spelling, so what the daemon reports back is what the config file
+// accepts; and nothing is silently ignored, because a binding that quietly never fires is the failure
+// this vocabulary exists to prevent.
 
 @Suite struct KeyChordTests {
 
@@ -97,9 +93,8 @@ import Testing
         #expect(Self.diagnostic("Cmd-H") == .unknownWord("Cmd"))
     }
 
-    /// **Written after the daemon refused this file's own documented example.** `cmd-alt-.` is the
-    /// guess a user makes, and "unknown key or modifier '.'" leaves them to infer the naming rule from
-    /// source. The hint costs one lookup table and turns a dead end into an instruction.
+    /// `cmd-alt-.` is the guess a user makes, and "unknown key or modifier '.'" leaves them to infer the
+    /// naming rule from source. The hint turns a dead end into an instruction.
     @Test func punctuationTypedAsItselfSaysHowToSpellIt() {
         #expect(Self.diagnostic("cmd-alt-.") == .punctuationNeedsItsName(character: ".", name: "period"))
         #expect(Self.diagnostic("alt-/") == .punctuationNeedsItsName(character: "/", name: "slash"))

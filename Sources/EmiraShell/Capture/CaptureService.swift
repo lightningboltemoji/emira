@@ -2,59 +2,29 @@ import CoreGraphics
 import Foundation
 import EmiraCore
 
-// The capture plane — the third machinery `Effect` spans, and the one that finally puts *pixels* in the
-// cover (PRINCIPLES.md §4b step 1, IMPLEMENTATION.md §5 `Capture/CaptureService.swift`). Through M3 this
-// was a lie told in one line: `AXExecutor` acked `Effect.capture` on the spot, because the
-// reconstruction was built from coloured rectangles and there was no still to wait for. Here it becomes
-// real, and with it the whole of §9's Risk B — *fidelity* — moves from the spikes into the product.
+// The capture plane: the pixels the cover is built from. ScreenCaptureKit itself is in
+// `SCKCapturer.swift`; the policy here is four rules.
 //
-// **What this file decides** (everything below it is ScreenCaptureKit, `SCKCapturer.swift`):
-//
-//  1. **Every `capture` answers, exactly once, within a deadline.** This is the load-bearing rule and
-//     it exists because of how the core waits: `beginTransition` is emitted on the *last*
-//     `captureReady`, and the real windows only teleport behind a raised cover. So a still that never
-//     arrives is not a degraded transition — it is a command that **silently does nothing**, with the
-//     hold timer unarmed (it starts at the raise) and no cover to time out. That failure mode was
-//     invisible while the ack was synchronous, and it is the first thing this file has to make
-//     impossible. A capture that fails, times out, or names a window the registry has never heard of
-//     still answers; it simply answers with no image.
-//  2. **A batch is atomic.** The stills and the base are requested together and acked together, rather
-//     than each window acking as it lands. Per-window acks would let the core count *down* to a raise
-//     the base isn't ready for — and the base is the layer that makes the cover opaque, so raising
-//     without it exposes the real desktop at the exact instant the reals start teleporting, which is
-//     the one thing §4b exists to prevent. The core gains nothing from the finer grain either: it acts
-//     only on the last ack.
-//  3. **The store is written before the acks go out.** The last `captureReady` re-enters the pump
-//     *synchronously* and comes straight back out as `beginTransition` → `raiseCover`, which reads
-//     this store. Ack first and the cover raises over an empty cache — every layer blank, on the frame
-//     where fidelity matters most.
-//  4. **Stills live exactly as long as the cover.** A window image at 2× is several megabytes and a
-//     scoped strip holds a handful; `discard()` on cross-fade keeps the resting daemon's memory flat
-//     (the M3 measurement worth not regressing). It also means a stale still can never be shown: the
-//     only images in the store are the ones this transition captured.
-//
-// **Why the deadline is short.** It is not a safety net that should ever fire — a still takes single-
-// digit milliseconds — it is the head of the transition, and the user is already waiting on it. A
-// capture slow enough to hit the deadline has already cost more than the artifact of proceeding
-// without it. See `CaptureService.deadline`.
+//  1. Every `capture` answers, exactly once, within a deadline. The core emits `beginTransition` on the
+//     *last* `captureReady`, so a still that never arrives is a command that silently does nothing with
+//     no cover raised and no hold timer to rescue it. Failure, timeout and unknown-window all answer.
+//  2. A batch is atomic — per-window acks would let the core count down to a raise the base isn't ready
+//     for, and the base is what makes the cover opaque.
+//  3. The store is written before the acks go out: the last `captureReady` re-enters the pump
+//     synchronously and comes back out as `raiseCover`, which reads this store.
+//  4. Stills live exactly as long as the cover. A window image at 2× is several megabytes.
 
 /// One window's captured surface, and the frame it was taken from.
 ///
-/// The frame travels *with* the image because it is the only honest source for where the layer starts:
-/// the core knows where the window is supposed to be, the capture knows where it actually was when the
-/// shutter opened, and a cover raised at the second one is pixel-identical while a cover raised at the
-/// first one is merely nearly right. It is core (top-left, global) space — the same space
-/// `CGWindowListCopyWindowInfo` bounds are in — so no flip happens here (`ScreenGeometry` does that,
-/// once, at the overlay).
+/// The frame travels *with* the image because the core only knows where the window was supposed to be,
+/// while the capture knows where it actually was. Core (top-left, global) space — no flip here.
 public struct CapturedSurface: Sendable {
-    /// The window's surface, captured at native backing resolution.
+    /// Captured at native backing resolution.
     public let image: CGImage
     /// Where the window was when it was captured, in core coordinates.
     public let frame: Rect
-    /// The corner radius baked into `image`, in points — `nil` when it couldn't be read off the
-    /// pixels (see `measuredCornerRadius`). Only `WindowAnimation.crop` needs it: that mode paints a
-    /// window's *extent* rather than its pixels, so it has to reproduce a silhouette the capture would
-    /// otherwise have carried for free.
+    /// The corner radius baked into `image`, in points — `nil` when the pixels couldn't say. Needed only
+    /// by `WindowAnimation.crop`, which paints a window's extent rather than its pixels.
     public let cornerRadius: Double?
 
     public init(image: CGImage, frame: Rect, cornerRadius: Double? = nil) {
@@ -63,43 +33,27 @@ public struct CapturedSurface: Sendable {
         self.cornerRadius = cornerRadius
     }
 
-    /// Read a window's corner radius **out of its own capture**, in points.
+    /// Read a window's corner radius *out of its own capture*, in points. No public API reports another
+    /// window's radius and a constant would be wrong on the next macOS, but a window capture is
+    /// transparent outside its rounded corners, so the shape is already in the pixels.
     ///
-    /// There is no public API for another window's corner radius, and a hard-coded constant is a
-    /// number that is wrong on the next macOS — so this measures instead of asking or assuming, which
-    /// is possible because the shape is already in the pixels we hold. A window capture is transparent
-    /// outside its rounded corners: the same property `WindowAnimation.stretch`'s alpha-derived shadow
-    /// has rested on since the first fidelity spike (`Reconstruction.makeLayer`).
+    /// Measures the corner's *area*, not an edge walk, and that is the whole trick: the arc is tangent to
+    /// the left edge and leaves it quadratically, so scanning a column for the first opaque pixel answers
+    /// about `r − √r` (28% short at r = 12). A quarter-disc leaves `r²(1 − π/4)` of its bounding square
+    /// uncovered and antialiasing conserves coverage — a boundary pixel's alpha *is* its covered fraction
+    /// — so the alpha deficit inverts straight to `r` whatever the rasterizer did.
     ///
-    /// The measurement is the corner's **area**, not an edge walk, and the difference is the whole
-    /// reason this works. Scanning down the leftmost column for the first opaque pixel looks exact —
-    /// the point `(0, y)` is inside the shape precisely for `y ≥ r` — and is not, because the arc is
-    /// *tangent* to the left edge there. It leaves the edge quadratically, so the boundary pixel is
-    /// already half-covered well above the tangent point and a threshold scan answers about
-    /// `r − √r`: 8.6 for a radius of 12, which is 28% short and reads as a visibly tight corner.
-    ///
-    /// Area has no such blind spot. A quarter-disc leaves `r²(1 − π/4)` of its bounding square
-    /// uncovered, and **antialiasing conserves coverage** — a boundary pixel's alpha *is* its covered
-    /// fraction — so summing the alpha deficit over a corner-sized block measures that wedge whatever
-    /// the rasterizer did to its edges, and inverting gives `r` directly. It also degrades gracefully:
-    /// a corner that isn't a perfect quarter-circle (macOS draws a continuous curve, not a circular
-    /// one) yields the circular radius enclosing the same area, which is the right answer for a
-    /// silhouette we are about to draw with `cornerRadius` anyway.
-    ///
-    /// A square-cornered window (a full-screen one, some panels) answers 0, which is also correct.
-    /// `nil` means the pixels couldn't say — an image with no usable alpha at all, or a corner too
-    /// large to have been the thing we measured. The caller supplies its own fallback rather than
-    /// being handed a fabricated number.
+    /// A square-cornered window answers 0; `nil` means the pixels couldn't say and the caller should
+    /// supply its own fallback.
     public static func measuredCornerRadius(of image: CGImage, scale: CGFloat) -> Double? {
         guard scale > 0, image.width > 0, image.height > 0 else { return nil }
-        // Comfortably past any plausible window corner, in pixels — so a wedge that fills a large
-        // fraction of the block is evidence we measured something other than a corner.
+        // Comfortably past any plausible window corner, so a wedge filling much of the block is
+        // evidence we measured something other than a corner.
         let probe = min(96 * Int(scale.rounded()), min(image.width, image.height))
         guard probe > 0 else { return nil }
 
-        // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0
-        // of each pixel is unambiguously the alpha — the one detail here that is easy to get silently
-        // wrong, and a `CGBitmapContext` has no legal alpha-only format to sidestep it with.
+        // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0 of
+        // each pixel is unambiguously the alpha. `CGBitmapContext` has no legal alpha-only format.
         let stride = probe * 4
         guard let context = CGContext(
             data: nil, width: probe, height: probe, bitsPerComponent: 8, bytesPerRow: stride,
@@ -108,10 +62,9 @@ public struct CapturedSurface: Sendable {
                 | CGBitmapInfo.byteOrder32Big.rawValue)
         else { return nil }
 
-        // Core Graphics draws from a bottom-left origin into a top-down buffer, so aligning the
-        // image's *top* with the block's top means placing its origin `probe − height` below zero.
-        // Get this backwards and the bottom-left corner is measured instead — plausible, and wrong by
-        // however much the two corners disagree.
+        // Core Graphics draws from a bottom-left origin into a top-down buffer, so aligning the image's
+        // *top* with the block's top means placing its origin `probe − height` below zero. Backwards
+        // measures the bottom-left corner instead: plausible, and wrong.
         context.draw(image, in: CGRect(x: 0, y: CGFloat(probe - image.height),
                                        width: CGFloat(image.width), height: CGFloat(image.height)))
         guard let data = context.data else { return nil }
@@ -125,18 +78,16 @@ public struct CapturedSurface: Sendable {
         }
         uncovered /= 255
 
-        // `r²(1 − π/4)` inverted. The bound rejects a block that is mostly transparent, which is not a
-        // rounded corner: a capture with no alpha information at all, or a probe that has wandered off
-        // the window entirely.
+        // `r²(1 − π/4)` inverted. The bound rejects a mostly-transparent block, which is not a rounded
+        // corner: a capture with no alpha information, or a probe that wandered off the window.
         let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
         guard radius <= Double(probe) / 2 else { return nil }
         return radius / Double(scale)
     }
 }
 
-/// One window to capture: the core's id, and the public window number the capturer keys on. The
-/// translation between them is `WindowRegistry`'s, done once here so nothing below this file knows what
-/// a `WindowId` is.
+/// One window to capture: the core's id and the public window number the capturer keys on. Translated
+/// here so nothing below this file knows what a `WindowId` is.
 public struct CaptureRequest: Sendable {
     public let id: WindowId
     public let number: CGWindowID
@@ -147,11 +98,9 @@ public struct CaptureRequest: Sendable {
     }
 }
 
-/// What one capture batch yielded. Both halves are optional-by-absence: a window whose still failed is
-/// simply missing from `surfaces`, and a base that failed is `nil`. Nothing here reports errors,
-/// because there is no decision to make from one — the policy above is the same either way.
+/// What one capture batch yielded. Optional-by-absence: a window whose still failed is missing from
+/// `surfaces`, a base that failed is `nil`. No errors, because there is no decision to make from one.
 public struct CaptureBatch: Sendable {
-    /// The stills that arrived, keyed by window.
     public let surfaces: [WindowId: CapturedSurface]
     /// The display *excluding* every requested window — the desktop the layers slide over.
     public let base: CGImage?
@@ -162,50 +111,37 @@ public struct CaptureBatch: Sendable {
     }
 }
 
-/// The untestable half: ScreenCaptureKit. Same seam as `WindowSource` and `FrameClock` — the framework
-/// call sits behind a protocol so the *policy* above it (batching, the deadline, the ack, the cache
-/// lifetime) stays headlessly testable, and the part that needs a window server and a TCC grant is one
-/// method wide.
+/// The untestable half: ScreenCaptureKit behind one method.
 ///
-/// **Contract for implementers:** `completion` is called **exactly once**, on the main actor, however
-/// the batch turns out — including when the grant is missing and nothing can be captured at all.
+/// Implementers must call `completion` exactly once, on the main actor, however the batch turns out —
+/// including when the grant is missing and nothing can be captured at all.
 ///
-/// `includeBase` is `false` for a batch that is *growing* an existing cover. The base is the display
-/// captured excluding the requested windows, so a second one taken mid-transition would bake the
-/// *first* batch's windows — by then already teleported to their end frames — into the desktop behind
-/// their own sliding layers. One base per cover, taken by the batch that raises it.
+/// `includeBase` is `false` for a batch *growing* an existing cover: a second base taken mid-transition
+/// would bake the first batch's windows, by then already teleported, into the desktop behind their own
+/// sliding layers.
 @MainActor
 public protocol SurfaceCapturer: AnyObject {
     func capture(_ requests: [CaptureRequest], includeBase: Bool,
                  then completion: @escaping @MainActor (CaptureBatch) -> Void)
 }
 
-/// Names one cover's worth of stills, so a cross-fade that finishes *after* a newer transition has
-/// already started capturing cannot free the newer one's pixels.
-///
-/// The same generation device `Overlay` uses for its raise/fade pair and `CaptureService` uses for its
-/// batches, and for the same reason: on macOS the loser of a race must do **nothing**, not the same
-/// thing twice. It is a token rather than a raw `Int` because the only correct value is the one
-/// `closeCover()` handed out.
+/// Names one cover's worth of stills, so a cross-fade finishing *after* a newer transition started
+/// capturing cannot free the newer one's pixels. A token rather than an `Int` because the only way to
+/// hold one is to have been handed it by `closeCover()`.
 public struct CoverToken: Sendable, Equatable {
-    /// Deliberately not `public`: outside the shell the only way to hold a token is to have been given
-    /// one by `closeCover()`, which is the whole guarantee.
     let generation: Int
     init(_ generation: Int) { self.generation = generation }
 }
 
-/// The reconstruction's source of pixels, as narrowly as the compositor needs it: ask for a batch, read
-/// what arrived, drop it when the cover comes down.
-///
-/// Two collaborators hold one of these and they want different halves — `CompositingExecutor` drives
-/// `capture`/`discard`, `Reconstruction` reads `surface(for:)`/`base` — but they are the same object and
-/// splitting the protocol in two would only obscure that the writes and the reads are ordered against
-/// each other (decision 3 in the file header).
+/// The reconstruction's source of pixels: ask for a batch, read what arrived, drop it when the cover
+/// comes down. `CompositingExecutor` drives `capture`/`discard` and `Reconstruction` reads
+/// `surface(for:)`/`base`; one object because those writes and reads are ordered against each other
+/// (rule 3 above).
 @MainActor
 public protocol CaptureStore: AnyObject {
-    /// Capture these windows — and, if no cover session is open, the desktop behind them — then ack
-    /// **each** window through `feedback` as `Event.captureReady`, exactly once and within a bounded
-    /// time. A batch that finds a session already open is *growing* a cover and takes no new base.
+    /// Capture these windows — and, if no cover session is open, the desktop behind them — then ack each
+    /// window through `feedback` as `Event.captureReady`, exactly once and within a bounded time. A batch
+    /// that finds a session already open is *growing* a cover and takes no new base.
     func capture(_ windows: [WindowId], feedback: EventSink)
 
     /// This cover's still for `window`, if one arrived.
@@ -214,23 +150,16 @@ public protocol CaptureStore: AnyObject {
     /// This cover's desktop base, if one arrived.
     var base: CGImage? { get }
 
-    /// The cover session is over (`Effect.endTransition`): the next `capture` starts a fresh one and
-    /// takes a fresh base. The stills stay alive — they are on screen for the whole cross-fade — until
-    /// the returned token is handed to `discard`.
+    /// The cover session is over: the next `capture` starts a fresh one and takes a fresh base. The
+    /// stills stay alive — on screen for the whole cross-fade — until the token reaches `discard`.
     func closeCover() -> CoverToken
 
-    /// Release the stills of the cover `token` named — the cross-fade is down and they can never be
-    /// shown again. Ignored if a newer cover has since claimed the store.
+    /// Release the stills of the cover `token` named. Ignored if a newer cover claimed the store.
     func discard(_ token: CoverToken)
 }
 
-/// What one batch cost and yielded — the capture plane's permanent read-out.
-///
-/// It exists because the *other* instrument cannot see this. Frames-per-transition
-/// (`CompositingExecutor.onCoverDismissed`) is counted from the **raise**, and everything measured
-/// here happens before it: a scroll that reads as 605 ms to that counter was ~715 ms to the user
-/// (`PRINCIPLES.md` §10, M4 part 1, measured with a throwaway probe). A latency nobody can see is a
-/// latency nobody tunes, so this one is reported for good.
+/// What one batch cost and yielded. Reported because the other instrument cannot see it:
+/// frames-per-transition is counted from the raise, and everything measured here precedes it.
 public struct CaptureReport: Sendable {
     /// How many windows the batch owed an ack for.
     public let windows: Int
@@ -250,17 +179,11 @@ public final class CaptureService: CaptureStore {
 
     /// How long a batch may take before we proceed without it.
     ///
-    /// 250 ms, and the number is a *user-latency* budget rather than a safety margin: this wait sits at
-    /// the head of the transition, before anything has moved or even been covered, so every millisecond
-    /// of it is a millisecond the user's keypress appears to have done nothing.
-    ///
-    /// **Chosen against evidence as of M4 part 2.** In the product a four-window batch measures
-    /// 104–140 ms end to end (~30 ms of `SCShareableContent` plus the concurrent stills), so 250 ms is
-    /// about 1.8× the observed worst case — tight, deliberately. It can afford to be tight now that
-    /// overrunning it degrades honestly: a head batch that resolves with no base answers
-    /// `Event.coverUnavailable`, and the user gets an instant, correct placement (§4a) instead of
-    /// another quarter-second of nothing followed by an animation. Before that, the same overrun
-    /// raised an empty cover — a black screen.
+    /// A user-latency budget, not a safety margin: this wait sits at the head of the transition, before
+    /// anything has moved or been covered, so every millisecond looks like a keypress doing nothing. A
+    /// four-window batch measures 104–140 ms end to end, so 250 ms is ~1.8× the observed worst case. It
+    /// can afford to be tight because overrunning degrades honestly — a head batch with no base answers
+    /// `Event.coverUnavailable` and the user gets an instant placement instead of a black screen.
     public static let defaultDeadline: TimeInterval = 0.25
 
     private let registry: WindowRegistry
@@ -271,26 +194,22 @@ public final class CaptureService: CaptureStore {
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
 
-    /// This cover's stills. Written before the acks, cleared when a new cover claims the store or when
-    /// the old one's cross-fade hands its token back.
+    /// This cover's stills. Written before the acks, cleared when a new cover claims the store or the old
+    /// one's cross-fade hands its token back.
     private var surfaces: [WindowId: CapturedSurface] = [:]
     private var baseImage: CGImage?
 
-    /// Whether a cover session is open — i.e. whether the next batch is *growing* a cover (merge into
-    /// the store, no new base) or *opening* one (clear the store, take a base). Closed by
-    /// `closeCover()` at `endTransition`, and by a `coverUnavailable` that means no cover will exist.
+    /// Whether a cover session is open: whether the next batch *grows* a cover (merge, no new base) or
+    /// *opens* one (clear the store, take a base).
     private var coverIsOpen = false
-    /// Names the current cover session. Bumped by every head batch, so a cross-fade completing after a
-    /// newer transition has already captured cannot free the newer stills.
+    /// Names the current cover session, bumped by every head batch.
     private var coverGeneration = 0
 
     /// A batch in flight: which windows still owe an ack, and where to send it.
     ///
-    /// Keyed by generation rather than held one-at-a-time, because **two can be live at once**: a
-    /// retarget that arrives before the cover is up adds windows to the scope and starts a second batch
-    /// while the first is still out. Superseding the first (what this did through M4 part 1) would ack
-    /// its windows with no pixels and raise the cover over the newcomers alone. Each batch owes its own
-    /// acks and pays them itself.
+    /// Keyed by generation because two can be live at once — a retarget arriving before the cover is up
+    /// starts a second batch while the first is still out, and superseding the first would ack its
+    /// windows with no pixels. Each batch owes its own acks and pays them itself.
     private struct Pending {
         let windows: [WindowId]
         let feedback: EventSink
@@ -301,10 +220,8 @@ public final class CaptureService: CaptureStore {
         let cover: Int
     }
     private var pending: [Int: Pending] = [:]
-    /// Bumped by every batch, so the two racers for one — the capturer answering and the deadline
-    /// firing — can each tell whether they are still the live one. The same device `Overlay` uses for
-    /// the cross-fade, and for the same reason: the loser must do nothing at all, not "the same thing
-    /// twice".
+    /// Bumped by every batch, so the two racers — the capturer answering and the deadline firing — can
+    /// each tell whether they are still the live one. The loser must do nothing at all.
     private var generation = 0
 
     public init(registry: WindowRegistry,
@@ -329,17 +246,15 @@ public final class CaptureService: CaptureStore {
     }
 
     public func discard(_ token: CoverToken) {
-        // A cross-fade takes 0.22 s and a new transition can open inside it; by the time this fires the
-        // store may already belong to that transition. Freeing it then would blank the cover it is
-        // about to raise — which is why the token exists and why this is a guard, not an assert.
+        // A cross-fade takes 0.22 s and a new transition can open inside it; by then the store may
+        // already belong to that transition, and freeing it would blank the cover it is about to raise.
         guard token.generation == coverGeneration else { return }
         clearStore()
     }
 
     public func capture(_ windows: [WindowId], feedback: EventSink) {
-        // A batch with no cover session open is *opening* one: it owns the base, and the store is its
-        // to start clean. One with a session open is growing a raised (or about-to-be-raised) cover and
-        // merges into what is already there.
+        // A batch with no cover session open is *opening* one: it owns the base and starts the store
+        // clean. One with a session open grows a raised cover and merges into what is there.
         let isHead = !coverIsOpen
         if isHead {
             coverGeneration &+= 1
@@ -352,11 +267,9 @@ public final class CaptureService: CaptureStore {
         pending[mine] = Pending(windows: windows, feedback: feedback, startedAt: Date(),
                                 isHead: isHead, cover: coverGeneration)
 
-        // An id the registry doesn't know cannot be captured (there is no window number to ask about),
-        // but it is still owed an ack — so it is dropped from the *request* and kept in the batch's
-        // ack list. It reaches the cover as a missing layer, which for the overwhelmingly likely cause
-        // — the window was destroyed between the reducer scoping it and this call — is the truthful
-        // picture.
+        // An id the registry doesn't know has no window number to ask about, but is still owed an ack —
+        // dropped from the *request*, kept in the ack list. It reaches the cover as a missing layer,
+        // which is truthful for the likely cause: destroyed between the reducer scoping it and here.
         let requests = windows.compactMap { id in
             registry.record(id).map { CaptureRequest(id: id, number: $0.number) }
         }
@@ -372,22 +285,19 @@ public final class CaptureService: CaptureStore {
     // MARK: - Resolution
 
     /// Finish the batch `generation` names: store whatever arrived, then ack every window it owes.
-    ///
-    /// Idempotent by generation, which is what makes "exactly once" true in the face of the deadline and
-    /// the capturer both firing. `batch == nil` is the deadline: ack with whatever the store already
-    /// holds — for a head batch, nothing.
+    /// Idempotent by generation, which is what makes "exactly once" true when the deadline and the
+    /// capturer both fire. `batch == nil` is the deadline: ack with whatever the store already holds.
     private func resolve(generation: Int, batch: CaptureBatch?) {
         guard let owed = pending.removeValue(forKey: generation) else { return }
 
-        // Whether this batch's cover still exists. It may not: an abandoned session (`coverUnavailable`)
-        // or a whole further transition can happen while a slow batch is out, and its stills would then
-        // be somebody else's desktop. The acks are still owed — they reduce to no-ops in a core that has
-        // moved on — but the images stop here.
+        // Whether this batch's cover still exists: a session can be abandoned, or a whole further
+        // transition can start, while a slow batch is out, and its stills would then be somebody else's
+        // desktop. The acks are still owed; the images stop here.
         let isCurrent = owed.cover == coverGeneration
 
-        // Order is the contract (decision 3): the last ack below re-enters the pump synchronously and
-        // comes back out as `raiseCover` (or `extendCover`), which reads exactly these two properties.
-        // Merged, not replaced — a growing cover keeps the stills the raise was built from.
+        // Order is the contract (rule 3): the last ack below re-enters the pump synchronously and comes
+        // back out as `raiseCover`, which reads exactly these two properties. Merged, not replaced — a
+        // growing cover keeps the stills the raise was built from.
         if let batch, isCurrent {
             surfaces.merge(batch.surfaces) { _, new in new }
             if let base = batch.base { baseImage = base }
@@ -400,9 +310,9 @@ public final class CaptureService: CaptureStore {
             timedOut: batch == nil,
             isHead: owed.isHead))
 
-        // A head batch with no base has nothing to build a cover out of, and the overlay's own fill is
-        // black — so acking here would black out the display for the length of the transition. Say so
-        // instead: the core abandons the session before anything has moved and snaps (§4a).
+        // A head batch with no base has nothing to build a cover from, and the overlay's own fill is
+        // black — acking here would black out the display for the whole transition. The core abandons
+        // the session before anything has moved, and snaps instead.
         if owed.isHead, isCurrent, baseImage == nil {
             coverIsOpen = false             // no cover will be raised; the next scroll starts fresh
             clearStore()

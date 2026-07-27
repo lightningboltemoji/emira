@@ -5,9 +5,8 @@ import Testing
 /// The workspace address space: a fixed, ordered domain of 36 names, `1`…`9`, `0`, then `a`…`z`.
 @Suite struct WorkspaceNameTests {
 
-    /// **The key order, and it is the whole of the ordering** (settled 2026-07-26). The domain is
-    /// spelled exactly as a keyboard's number row followed by its letters, so `1` is the first address
-    /// and the one focus rests on at launch, and `0` is the tenth — where the key actually sits.
+    /// The key order is the whole of the ordering: the domain is a keyboard's number row followed by its
+    /// letters, so `1` is the launch address and `0` is the tenth — where the key actually sits.
     @Test func theDomainIsExactlyThirtySixNamesInKeyOrder() {
         #expect(WorkspaceName.all.count == 36)
         #expect(WorkspaceName.all.map(\.description).joined() == "1234567890abcdefghijklmnopqrstuvwxyz")
@@ -16,10 +15,9 @@ import Testing
         #expect(WorkspaceName("0")!.rank == 9)
     }
 
-    /// **Rank order is not alphabetical order, and `0` is the single place they disagree.** Stated once
-    /// in `WorkspaceName`'s header and pinned here, because every ordered view in `Workspaces` sorts by
-    /// the *name* (`Comparable`, i.e. by rank) rather than by its spelling — so all of them get the key
-    /// order, and a view that sorted strings instead would put `0` in the wrong place silently.
+    /// Rank order is not alphabetical order, and `0` is the single place they disagree. Every ordered
+    /// view in `Workspaces` sorts by the *name* (`Comparable`, i.e. by rank) rather than by its spelling;
+    /// one that sorted strings would put `0` at the front, silently.
     @Test func rankOrderIsTheKeyOrderNotTheAlphabeticalOne() {
         let byRank = WorkspaceName.all.sorted()
         let byCharacter = WorkspaceName.all.sorted { $0.description < $1.description }
@@ -54,9 +52,8 @@ import Testing
         #expect(WorkspaceName(rank: 36) == nil)
     }
 
-    /// `next`/`previous` step one address and **clamp** at the ends — no wrap, matching
-    /// `focus left|right` at the strip's edges. Same fact, one axis over. They follow the *key* order,
-    /// so the number row runs off its right end into `0` and only then into the letters.
+    /// `next`/`previous` step one address and clamp at the ends — no wrap, matching `focus left|right`
+    /// at the strip's edges. They follow the *key* order, so the number row runs into `0` first.
     @Test func relativeMotionClampsAtBothEndsRatherThanWrapping() {
         #expect(WorkspaceName("1")!.next == WorkspaceName("2"))
         #expect(WorkspaceName("9")!.next == WorkspaceName("0"))   // the end of the number row
@@ -66,8 +63,7 @@ import Testing
         #expect(WorkspaceName.first.previous == nil)              // …and `prev` at launch is a no-op
     }
 
-    /// Encoded as the one-character string, not the rank — the same judgement `Id` makes about
-    /// encoding as the bare number, so dumps and replay logs stay legible.
+    /// Encoded as the one-character string, not the rank, so dumps and replay logs stay legible.
     @Test func namesEncodeAsTheirCharacter() throws {
         let data = try JSONEncoder().encode([WorkspaceName("0")!, WorkspaceName("a")!])
         #expect(String(decoding: data, as: UTF8.self) == #"["0","a"]"#)
@@ -94,15 +90,14 @@ import Testing
     }
 }
 
-/// The multi-strip container. Everything here is a property that is *provably inert* while there is
-/// one workspace — which is the whole reason the model landed in a slice of its own: park slots
-/// colliding, `reconcile` migrating windows between strips, and `ColumnId`s colliding across strips
-/// are all silent failures, and this is where they can be proved against nothing.
+/// The multi-strip container. Everything here is provably inert while there is one workspace: park
+/// slots colliding, `reconcile` migrating windows between strips, and `ColumnId`s colliding across
+/// strips are all silent failures, and this is where they can be proved against.
 @Suite struct WorkspacesTests {
 
     private let w1 = WindowId(1), w2 = WindowId(2), w3 = WindowId(3), w4 = WindowId(4)
-    /// `a` is the launch address, and the three are in ascending rank order — which is what every
-    /// `materialized`/`placementOrder` assertion below is written against.
+    /// The launch address plus two more, in ascending rank order — what every `materialized` /
+    /// `placementOrder` assertion below is written against.
     private let a = WorkspaceName.first, b = WorkspaceName("3")!, c = WorkspaceName("z")!
 
     /// A 900×600 working area, columns ⅓ of it = 300 pt, no gaps — the same fixture `LayoutTests`
@@ -129,7 +124,7 @@ import Testing
         #expect(ws.materialized == [.first])   // …and reading it did not materialize it
     }
 
-    /// Materialized on demand and **never dropped** — decision 0.1's "no collapsing" as a property.
+    /// Materialized on demand and never dropped: no collapsing, as a property.
     @Test func focusingMaterializesAndNothingEverUnmaterializes() {
         var ws = Workspaces()
         ws.focus(b)
@@ -142,8 +137,8 @@ import Testing
         #expect(ws.materialized == [a, b])     // emptied, still there
     }
 
-    /// Name order, which is **key** order — so `"0"` comes back after `"9"` and before the letters,
-    /// not first. Sorting the spellings instead would put it at the front, silently.
+    /// Name order, which is *key* order — `"0"` comes back after `"9"` and before the letters, not
+    /// first, which sorting the spellings would do silently.
     @Test func materializedNamesComeBackInNameOrderNotDictionaryOrder() {
         var ws = Workspaces()
         let zero = WorkspaceName("0")!, g = WorkspaceName("g")!
@@ -164,8 +159,7 @@ import Testing
 
     // MARK: reconcile — the World→Workspaces bridge
 
-    /// The single-workspace case is byte-for-byte the `Layout.reconcile` it replaced. This is the
-    /// assertion the whole slice is built around: nothing observable changed.
+    /// The single-workspace case is byte-for-byte the bare `Layout.reconcile`.
     @Test func withOneWorkspaceReconcileIsExactlyTheSingleStripCall() {
         var ws = Workspaces()
         ws.reconcile(stripWindowIds: [w1, w2, w3])
@@ -180,9 +174,8 @@ import Testing
                 == bare.targetFrames(scrollOffset: 0, metrics: metrics))
     }
 
-    /// **The dangerous one.** Left projected onto the focused strip, the first workspace switch would
-    /// see every window on every other workspace as a newcomer and drag the lot onto the focused one —
-    /// silently, in one pass, with the user's whole desktop as the result.
+    /// The dangerous one: projected onto the focused strip, the first workspace switch would see every
+    /// window on every other workspace as a newcomer and drag the lot onto the focused one.
     @Test func newcomersJoinTheFocusedStripAndOtherWorkspacesAreNotMigrated() {
         var ws = Workspaces()
         ws.reconcile(stripWindowIds: [w1, w2])       // both land on `0`
@@ -195,7 +188,7 @@ import Testing
         #expect(ws.workspace(of: w3) == b)
     }
 
-    /// Departures leave **every** strip, not just the one being looked at.
+    /// Departures leave every strip, not just the one being looked at.
     @Test func departuresAreDroppedFromEveryWorkspace() {
         var ws = Workspaces()
         ws.reconcile(stripWindowIds: [w1, w2])
@@ -225,12 +218,11 @@ import Testing
         #expect(ws.focusedStrip.allWindowIds == [w1, w3, w2])
     }
 
-    // MARK: ColumnId disjointness — §2.5's hazard
+    // MARK: ColumnId disjointness
 
-    /// **Column #1 on workspace `0` and column #1 on workspace `3` must not be the same id.**
-    /// `Motion.columnWidths` is keyed by a bare `ColumnId`, so a collision would let an in-flight
-    /// resize on one workspace re-aim a column on another, and `LayoutEdit.destroyedColumn` would
-    /// retire the wrong animator. One allocator for the whole set is what makes that unrepresentable.
+    /// Column #1 on one workspace and column #1 on another must not be the same id: `Motion.columnWidths`
+    /// is keyed by a bare `ColumnId`, so a collision would let an in-flight resize on one workspace
+    /// re-aim a column on another. One allocator for the whole set makes that unrepresentable.
     @Test func columnIdsAreDisjointAcrossWorkspaces() {
         var ws = Workspaces()
         ws.reconcile(stripWindowIds: [w1, w2])
@@ -270,11 +262,11 @@ import Testing
         #expect(ws == before)                        // not even an id consumed
     }
 
-    // MARK: Park slots across the whole set — §2.4's hazard
+    // MARK: Park slots across the whole set
 
-    /// Every window on every unfocused workspace is parked, so the ordinals have to be one run across
-    /// the set. Two windows sharing a park frame breaks the ±2 pt first-sight identity join
-    /// (`PRINCIPLES.md` §7) *and* the no-overlap invariant — both silently, one permanently.
+    /// Every window on every unfocused workspace is parked, so the ordinals have to be one run across the
+    /// set. Two windows sharing a park frame breaks the ±2 pt first-sight identity join *and* the
+    /// no-overlap invariant — both silently, one permanently.
     @Test func parkSlotsAreUniqueAcrossEveryWorkspaceWithinTheBindingTolerance() {
         var ws = Workspaces()
         // Four columns on `0` (the last is off-viewport at a 900 pt viewport), then four more each on
@@ -346,12 +338,9 @@ import Testing
         #expect(back[a].allWindowIds == [w1, w2])
     }
 
-    /// The allocator watermark is serialized state (§7 replay), and the only way to observe it is to
-    /// mint. Mutate first so it has advanced past `max(id)`, then check the original and the decoded
-    /// copy hand out the *same* next id — a round-trip that dropped it would silently re-issue one.
-    ///
-    /// (Was `LayoutTests.aRoundTrippedLayoutMintsTheSameNextColumnId`; it moved here with the
-    /// watermark it pins, 2026-07-26.)
+    /// The allocator watermark is serialized state, and the only way to observe it is to mint. Mutate
+    /// first so it has advanced past `max(id)`, then check the original and the decoded copy hand out the
+    /// *same* next id — a round-trip that dropped it would silently re-issue one.
     @Test func aRoundTrippedSetMintsTheSameNextColumnId() throws {
         var ws = Workspaces()
         ws.reconcile(stripWindowIds: [w1, w2, w3])       // mints 1, 2, 3
@@ -385,8 +374,7 @@ import Testing
     }
 }
 
-/// `State.layout` as a **projection** of `State.workspaces` — single storage, not a second authority.
-/// The property that keeps ~85 source and ~110 test references reading exactly as they did.
+/// `State.layout` as a projection of `State.workspaces` — single storage, not a second authority.
 @Suite struct StateProjectionTests {
 
     private let w1 = WindowId(1), w2 = WindowId(2)
@@ -398,8 +386,8 @@ import Testing
         #expect(s.layout.allWindowIds == [w1, w2])
     }
 
-    /// Writing through the projection writes the focused strip and nothing else — the half that makes
-    /// every existing `s.layout.moveColumn(…)`-style mutation keep working untouched.
+    /// Writing through the projection writes the focused strip and nothing else — what makes every
+    /// `s.layout.moveColumn(…)`-style mutation keep working.
     @Test func writingLayoutWritesTheFocusedStripAndOnlyThat() {
         var s = State()
         s.workspaces.reconcile(stripWindowIds: [w1, w2])
@@ -421,8 +409,7 @@ import Testing
         #expect(s.layout == layout)
     }
 
-    /// …and it seeds the allocator past the ids it was handed, so the next mint cannot collide with
-    /// them. This is the rule `Layout.init(columns:)` used to carry, now in exactly one place.
+    /// …and it seeds the allocator past the ids it was handed, so the next mint cannot collide.
     @Test func theSingleStripInitializerResumesTheAllocatorPastTheSuppliedIds() {
         let layout = Layout(columns: [ColumnLayout(id: ColumnId(7), windowIds: [w1])])
         var s = State(world: World(), layout: layout, motion: Motion(), config: Config())

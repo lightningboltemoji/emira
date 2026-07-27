@@ -4,20 +4,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The truth plane's tests. The AX round trips themselves are untestable — they need other processes,
-// a TCC grant, and a user's actual desktop — so `WindowSource` exists to make them the *only*
-// untestable thing (the same move as `FrameClock` and `CoverSurface` before it). What is left above
-// that seam is all decision, and all tested here:
-//
-//  1. **The taxonomy** (`WindowRole.init(axRole:…)`) — which windows tile. Pure string mapping.
-//  2. **The identity join** (`WindowIdentity.bind`) — which AX window is which real window. The one
-//     calculation in emira whose wrong answers are *permanent*, so its refusals matter as much as its
-//     matches and are asserted just as hard.
-//  3. **The registry** — that ids are minted once, reused on re-enumeration, and released cleanly.
-//  4. **The enumerator's orchestration** — that a fan-out over N apps completes exactly once, even
-//     when apps answer out of order, answer with nothing, or aren't there at all.
-//  5. **The AX lane discipline** — one serial queue per app, created once, and work that genuinely
-//     leaves the main thread and genuinely comes back to it.
+// The truth plane's tests. The AX round trips themselves need other processes, a TCC grant and a real
+// desktop, so `WindowSource` exists to make them the only untestable thing; everything above that
+// seam is decision, and is tested here — the tiling taxonomy, the identity join (whose wrong answers
+// are permanent, so its refusals are asserted as hard as its matches), the registry, the enumerator's
+// fan-out over N apps, and the one-serial-lane-per-app discipline.
 
 // MARK: - Fixtures
 
@@ -45,12 +36,8 @@ private func scanned(pid: pid_t = 100, bundle: String = "com.test.app", title: S
         element: windowElement(pid: pid, frame: frame))
 }
 
-/// A distinct AX element per window, seeded from its app and frame.
-///
-/// Two windows of one app previously shared `AXUIElementCreateApplication(pid)`, which real windows
-/// never do — and since 2026-07-26 the registry refuses to bind one element to two window numbers, so
-/// the shortcut stopped being harmless. Frame is a sound seed here because the identity join needs
-/// distinct frames anyway.
+/// A distinct AX element per window, seeded from its app and frame. Real windows never share an
+/// element and the registry refuses to bind one to two window numbers, so fixtures must not either.
 private func windowElement(pid: pid_t, frame: Rect) -> AXWindow {
     AXWindow(AXUIElementCreateApplication(
         pid_t(truncatingIfNeeded: Int(pid) &* 1_000_003 &+ Int(frame.minX) &* 1009 &+ Int(frame.minY))))
@@ -72,11 +59,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func anElementThatIsNotAWindowIsDeclinedRatherThanFiledUnderOther() {
-        // `kAXWindowsAttribute` does not contain only windows. Finder answers it with the **desktop**,
-        // whose role is `AXScrollArea` — observed the first time this ran against a real machine. It
-        // has to be `nil` rather than `.other`, because `.other` means "a real window emira leaves
-        // alone", and this thing would then sit in `World` forever, unbindable and reported as a
-        // failure at every scan.
+        // `kAXWindowsAttribute` does not contain only windows: Finder answers it with the desktop,
+        // whose role is `AXScrollArea`. `.other` means "a real window emira leaves alone", so filing
+        // the desktop there would leave it in `World`, unbindable, reported as a failure every scan.
         #expect(WindowRole(axRole: "AXScrollArea", axSubrole: nil, isFullScreen: false) == nil)
         #expect(WindowRole(axRole: "AXGroup", axSubrole: "AXStandardWindow", isFullScreen: false) == nil)
         // An app that won't say what it is, isn't something we can classify.
@@ -96,30 +81,26 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func sheetsAndPopoversAreClassifiedFromTheRoleBecauseTheyOftenHaveNoSubrole() {
-        // The reason the initializer takes the role at all: an attached sheet reports `AXSheet` as its
-        // role and frequently answers `AXSubrole` with nothing, so a subrole-only taxonomy would file
-        // it under "unknown" — right answer, wrong reason, and it would break the moment a sheet
-        // started reporting `AXStandardWindow`.
+        // Why the initializer takes the role at all: an attached sheet reports `AXSheet` and often
+        // answers `AXSubrole` with nothing, so a subrole-only taxonomy would be right by accident.
         #expect(WindowRole(axRole: "AXSheet", axSubrole: nil, isFullScreen: false) == .sheet)
         #expect(WindowRole(axRole: "AXPopover", axSubrole: nil, isFullScreen: false) == .popover)
     }
 
     @Test func aNativeFullScreenWindowIsExcludedDespiteLookingOrdinary() {
-        // The case that motivates the third parameter — and the very first thing a real desktop threw
-        // at this code: a Safari window in native full screen, on a macOS Space of its own, territory
-        // the charter says we don't enter (§10). It must not tile.
+        // A window in native full screen is on a macOS Space of its own, territory the charter says we
+        // don't enter, so it must not tile.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow", isFullScreen: true) == .other)
-        // Real observation, and the reason full-screen is checked *before* the subrole rather than
-        // after: full-screen Safari reports its subrole as `AXDialog` and its title as empty.
+        // Why full-screen is checked before the subrole: full-screen Safari reports its subrole as
+        // `AXDialog` and its title as empty.
         let observedInTheWild = WindowRole(axRole: "AXWindow", axSubrole: "AXDialog", isFullScreen: true)
         #expect(observedInTheWild == .other)
         #expect(observedInTheWild?.tiles == false)
     }
 
     @Test func anUnknownOrAbsentSubroleFloatsRatherThanTiles() {
-        // The safe direction: misclassifying as floating means emira leaves a window alone; the
-        // opposite means emira drags a popover into the strip. Note this is the *subrole* being
-        // unknown — the role already said "window", so there is something real here to leave alone.
+        // The safe direction: misclassifying as floating leaves a window alone; the opposite drags a
+        // popover into the strip. The role already said "window", so there is something real here.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: nil, isFullScreen: false) == .other)
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXSomethingNew", isFullScreen: false) == .other)
     }
@@ -149,9 +130,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func aWindowThatMovedBetweenTheTwoReadsIsRejectedNotGuessed() {
-        // Nearest-match — what the spikes did (`spike/strip-scroll.swift:97`) — would happily bind
-        // these, and be wrong forever. 40 pt is far outside the rounding tolerance, so it is a
-        // different window or a stale read, and either way we decline.
+        // Nearest-match would bind these and be wrong forever. 40 pt is far outside the rounding
+        // tolerance, so it is a different window or a stale read; either way we decline.
         let windows = [observed(frame: rect(0))]
         let entries = [entry(9, frame: rect(40))]
 
@@ -181,10 +161,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func aDuplicateEntryIsSeparatedByWhichOneIsActuallyOnScreen() {
-        // Observed, not hypothesised: a Safari window carries two layer-0 entries with byte-identical
-        // bounds and only one of them on screen. Owner + frame call it ambiguous; the window server's
-        // own opinion of what is visible settles it, and without this the one real window on the
-        // desktop was unmanageable.
+        // Observed: a Safari window carries two layer-0 entries with byte-identical bounds and only
+        // one of them on screen. Owner + frame call it ambiguous; the window server's own opinion of
+        // what is visible settles it.
         let windows = [observed(frame: rect(0))]
         let entries = [entry(1027, frame: rect(0), onScreen: false),
                        entry(2220, frame: rect(0), onScreen: true)]
@@ -196,8 +175,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func onScreenNarrowingOnlyBreaksTiesItCanActuallyBreak() {
-        // It is evidence, not a preference, so it is consulted only when owner and frame have already
-        // failed — and it must still decline when it doesn't separate them either.
+        // On-screen is evidence, not a preference: consulted only after owner and frame have failed,
+        // and still declining when it doesn't separate them either.
         let windows = [observed(frame: rect(0))]
         let bothLive = [entry(1, frame: rect(0), onScreen: true), entry(2, frame: rect(0), onScreen: true)]
         let neither = [entry(1, frame: rect(0), onScreen: false), entry(2, frame: rect(0), onScreen: false)]
@@ -209,8 +188,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func anUnambiguousOffScreenWindowStillBinds() {
-        // The case the narrowing must not break: a minimized window, or one on another Space, has no
-        // on-screen entry at all — and is still perfectly identifiable, because nothing competes.
+        // A minimized window, or one on another Space, has no on-screen entry at all — and is still
+        // identifiable, because nothing competes.
         let windows = [observed(frame: rect(0), minimized: true)]
         let entries = [entry(9, frame: rect(0), onScreen: false)]
 
@@ -219,10 +198,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func twoWindowsClaimingOneEntryContestItAndBothAreRejected() {
-        // The second uniqueness direction, and the one that is easy to forget: each window here sees
-        // exactly one candidate, so a per-window check passes — but they see the *same* one, because
-        // the second window's own entry is missing from the list (it closed mid-scan). Exactly one of
-        // them is entry 9 and nothing available can say which, so neither is bound.
+        // The second uniqueness direction: each window sees exactly one candidate, so a per-window
+        // check passes — but they see the same one, because the second window's entry is missing from
+        // the list. Nothing can say which is entry 9, so neither is bound.
         let windows = [observed(frame: rect(0)), observed(frame: rect(0.5))]
         let entries = [entry(9, frame: rect(0))]
 
@@ -257,8 +235,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 
 @Suite @MainActor struct WindowRegistryTests {
 
-    /// A distinct AX element per window. Real windows never share one, and since 2026-07-26 `adopt`
-    /// refuses to bind a single element to two window numbers — the ghost-column guard.
+    /// A distinct AX element per window: `adopt` refuses to bind one element to two window numbers.
     private func element(_ seed: pid_t) -> AXWindow { AXWindow(AXUIElementCreateApplication(seed)) }
 
     @Test func idsAreMintedOncePerWindowNumber() {
@@ -274,10 +251,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func reAdoptingAKnownWindowReusesItsIdAndRefreshesItsElement() {
-        // Why this matters: an AX element can go stale (an app relaunching its UI) while the window
-        // number does not — which is the entire reason identity keys on the number. A re-scan must
-        // therefore update the handle *without* minting a second id, or the strip would show the same
-        // window twice.
+        // An AX element can go stale (an app relaunching its UI) while the window number does not,
+        // which is why identity keys on the number. A re-scan must refresh the handle without minting
+        // a second id, or the strip shows the same window twice.
         let registry = WindowRegistry()
         let stale = AXWindow(AXUIElementCreateApplication(100))
         let fresh = AXWindow(AXUIElementCreateApplication(200))
@@ -301,15 +277,14 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(snapshot.title == "Apple")
         #expect(snapshot.role == .dialog)
         #expect(snapshot.frame == rect(120, 30))
-        // The field that exists for launch enumeration specifically: a window already in the Dock must
-        // arrive minimized, or the core tiles something the user cannot see.
+        // A window already in the Dock must arrive minimized, or the core tiles something the user
+        // cannot see.
         #expect(snapshot.isMinimized)
     }
 
     @Test func forgettingAWindowReleasesItsNumberSoARecycledOneIsANewWindow() {
-        // The one way first-sight binding could mis-bind: the window server *does* reuse `CGWindowID`s
-        // after a window is destroyed, so a stale number → id entry would eventually hand a dead
-        // window's identity — and its position on the strip — to an unrelated new window.
+        // The window server reuses `CGWindowID`s after a window is destroyed, so a stale number → id
+        // entry would hand a dead window's identity, and its place on the strip, to a new window.
         let registry = WindowRegistry()
         let first = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
 
@@ -335,10 +310,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func anElementResolvesBackToItsWindowId() {
-        // The reverse map is what lets an AX *notification* — which carries an element and nothing
-        // else — become an `Event` without the private `_AXUIElementGetWindow` (PRINCIPLES.md §10).
-        // It rests on `AXUIElement` comparing structurally: the element arriving with a notification
-        // is a different allocation from the one enumeration stored.
+        // The reverse map is what lets an AX notification, which carries only an element, become an
+        // `Event` without the private `_AXUIElementGetWindow`. It rests on `AXUIElement` comparing
+        // structurally: the notification's element is a different allocation from the stored one.
         let registry = WindowRegistry()
         let a = AXWindow(AXUIElementCreateApplication(100))
         let b = AXWindow(AXUIElementCreateApplication(200))
@@ -353,8 +327,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func forgettingAWindowAlsoForgetsHowToResolveItsElement() {
-        // A dead window whose element still resolved would turn every stray late notification into an
-        // `Event` about a window the core has already removed.
+        // Otherwise a stray late notification becomes an `Event` about a window the core has removed.
         let registry = WindowRegistry()
         let element = AXWindow(AXUIElementCreateApplication(100))
         let window = registry.adopt(observed(pid: 100, frame: rect(0)), element: element, number: 1)!
@@ -437,9 +410,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func aScanWithNoAppsStillCompletes() {
-        // Overwhelmingly this means the Accessibility grant is missing: every AX read answers nothing,
-        // without an error. A callback that never fires would leave the daemon waiting forever on what
-        // it thinks is an empty desktop, so the empty case is a real path, not a guard.
+        // Usually this means the Accessibility grant is missing: every AX read answers nothing,
+        // without an error. The empty case is a real path — a callback that never fires would leave
+        // the daemon waiting forever.
         let source = FakeSource()
         let enumerator = AXEnumerator(source: source, registry: WindowRegistry())
         var completions = 0
@@ -462,10 +435,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func appsAnsweringOutOfOrderCompleteTheScanExactlyOnce() {
-        // The fan-out's actual risk. Apps are independent processes on independent lanes, so the
-        // arrival order is arbitrary and the *last* answer — whichever it is — must be the one that
-        // finishes the scan. Answering the second app first is the arrangement a sequential
-        // implementation would get wrong.
+        // Apps are independent processes on independent lanes, so arrival order is arbitrary and
+        // whichever answer is last must be the one that finishes the scan.
         let (source, _, enumerator) = populated()
         source.holdsAnswers = true
         var completions = 0
@@ -487,8 +458,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func anUnidentifiableWindowIsReportedWithEnoughDetailToRecogniseIt() {
-        // "emira is not managing that window" must never be silent — this report line is the only way
-        // a user finds out, so it carries who and why.
+        // "emira is not managing that window" must never be silent: this report line is the only way a
+        // user finds out, so it carries who and why.
         let (source, registry, enumerator) = populated()
         source.entries.removeAll { $0.number == 2 }
         var report: AXEnumerator.Report?
@@ -505,10 +476,9 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func aSecondEnumerationAdoptsNothingAndAnnouncesNothing() {
-        // Re-enumeration has to be idempotent — a second scan that doubled the strip would be a
-        // spectacular bug — and, since M3 part 2b, *silent*: a re-scan is the standing response to
-        // "a window appeared in this app", so re-announcing the app's other four windows would hand
-        // focus to whichever of them sorted last, every time the user opened a fifth.
+        // Re-enumeration must be idempotent and silent: a re-scan is the standing response to "a
+        // window appeared in this app", so re-announcing the app's other windows would hand focus to
+        // whichever sorted last every time the user opened one.
         let (_, registry, enumerator) = populated()
         var first: AXEnumerator.Report?
         var second: AXEnumerator.Report?
@@ -551,9 +521,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 @Suite @MainActor struct AXClientTests {
 
     @Test func eachAppGetsExactlyOneLaneAndItIsCreatedOnce() {
-        // Serial *per app* is the whole point (PRINCIPLES.md §5): one shared queue lets a hung app
-        // stall placement everywhere, and a queue per call lets two sets into one window race — which
-        // is the clamping dance coming apart.
+        // Serial per app: one shared queue lets a hung app stall placement everywhere, and a queue per
+        // call lets two sets into one window race — the clamping dance coming apart.
         let client = AXClient()
         #expect(client.laneCount == 0)
 
@@ -588,9 +557,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 
     @Test func workLeavesTheMainThreadAndTheAnswerComesBackToIt() async {
-        // The one property of `perform` worth proving, and the only one that doesn't need another
-        // process: AX IPC must not run where the display link lives, and the result must not arrive
-        // anywhere else. The work here is trivially fast; what is asserted is *where* it ran.
+        // AX IPC must not run where the display link lives, and the result must come back to main.
+        // The work is trivially fast; what is asserted is where it ran.
         let client = AXClient()
         let (pid, ranOnMain) = await withCheckedContinuation { continuation in
             client.perform(app: 4242) { application in

@@ -3,13 +3,11 @@ import Testing
 import EmiraCore
 @testable import EmiraProtocol
 
-/// The envelope itself (`Request.swift` / `Reply.swift`): that every command survives the wire
-/// unchanged, that the three outcomes round-trip, and that a version mismatch produces the graceful,
-/// readable failure IMPLEMENTATION.md §6 promises rather than a decode error.
+/// The envelope: every command survives the wire unchanged, the three outcomes round-trip, and a
+/// version mismatch produces a readable failure rather than a decode error.
 @Suite struct EnvelopeTests {
 
-    /// Round-trip through the *real* codec (`Wire.encode` → `Wire.decode`), not a bare `JSONEncoder`,
-    /// so the framing byte is part of what's tested.
+    /// Round-trips through the real codec, not a bare `JSONEncoder`, so framing is part of the test.
     static func roundTrip<T: Codable & Equatable>(_ value: T) throws -> T {
         let line = try Wire.encode(value)
         return try Wire.decode(T.self, from: Data(line.dropLast()))
@@ -33,7 +31,7 @@ import EmiraCore
     }
 
     /// The envelope carries the vocabulary verbatim — no translation layer, so a new `Command` case
-    /// needs no change here (IMPLEMENTATION.md §2).
+    /// needs no change here.
     @Test func theWireShapeKeepsVersionFlatAndCommandVerbatim() throws {
         let line = try Wire.encode(Request(.focus(.left), client: Client(pid: 7)))
         let text = String(decoding: line.dropLast(), as: UTF8.self)
@@ -61,8 +59,8 @@ import EmiraCore
         #expect(Reply.failed(.internalError("boom")).error?.code == .internalError)
     }
 
-    /// The mismatch message has to name *both* versions — that's the difference between "reinstall
-    /// the matching build" and a user filing a bug about a decode error.
+    /// The mismatch message has to name both versions, so the user reads "reinstall the matching
+    /// build" rather than a decode error.
     @Test func theVersionMismatchMessageNamesBothVersions() {
         let error = ReplyError.versionMismatch(daemon: 1, client: 2)
         #expect(error.code == .versionMismatch)
@@ -71,8 +69,8 @@ import EmiraCore
         #expect("\(error)" == error.message)      // printable straight to stderr
     }
 
-    /// The end-to-end shape of the mismatch path: the daemon probes the version *before* decoding, so
-    /// a request it can't decode still yields a sentence naming both versions.
+    /// The daemon probes the version before decoding, so a request it can't decode still yields a
+    /// sentence naming both versions.
     @Test func aFutureClientGetsAMismatchNotADecodeError() throws {
         let futureLine = Data(#"{"client":{"pid":9},"verb":"focus left","version":2}"#.utf8)
 
@@ -96,8 +94,7 @@ import EmiraCore
     }
 }
 
-/// One of every `Command` case — the same census `CommandSyntaxTests` keeps, restated here because
-/// this target can't see into `EmiraCoreTests`.
+/// One of every `Command` case, restated here because this target can't see into `EmiraCoreTests`.
 enum CommandSamples {
     static let all: [Command] = [
         .focus(.left), .focus(.down),

@@ -4,16 +4,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The truth plane's **write** half (M3 part 2a) — `AXExecutor`, the hold-timeout the pump arms around a
-// transition, and the struts the write path made load-bearing.
-//
-// The same split as `TruthPlaneTests`: everything with a decision in it sits above a narrow protocol
-// (`WindowWriter`, three methods) and is tested against arrays, and what is left below — `AXAccess`'s
-// attribute writes, the `AXEnhancedUserInterface` suspension, `NSRunningApplication.activate()` — is
-// straight-line framework calls that need a real desktop and a real Chromium window to observe. So what
-// is *proved* here is the interesting half: how a batch is carved up between apps, what happens to an
-// effect naming a window nobody knows, and — the one that took the most thought — the difference
-// between a window that failed to move and a window that moved somewhere else.
+// The truth plane's write half — `AXExecutor`, the hold-timeout the pump arms around a transition, and
+// struts. Everything with a decision in it sits above `WindowWriter` and is tested against arrays; the
+// framework calls below it need a real desktop. So what is proved here is how a batch is carved up
+// between apps, what happens to an effect naming a window nobody knows, and the difference between a
+// window that failed to move and one that moved somewhere else.
 
 @Suite @MainActor struct WritePathTests {
 
@@ -22,18 +17,14 @@ import EmiraCore
     /// A 1000×800 display at the origin.
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
 
-    /// One full-width preset, so every cross-column focus genuinely scrolls and therefore opens a
-    /// transition (the same trick `RuntimeTests` and `EngineTests` use).
+    /// One full-width preset, so every cross-column focus genuinely scrolls and opens a transition.
     static let fullWidth = Config(widthPresets: PresetCycle([.proportion(1.0)]))
 
     static func rect(_ x: Double) -> Rect { Rect(x: x, y: 0, width: 200, height: 100) }
 
     /// Take a window into a registry and hand back its minted id. The AX element is addressed to a pid
-    /// that isn't running: nothing here ever writes through it, which is the whole point of the seam.
-    ///
-    /// Keyed on the *window number*, not the pid, so two windows of one app get two distinct elements —
-    /// which is what real ones have, and what the registry now requires (`adopt` refuses to bind one
-    /// element to two window numbers).
+    /// that isn't running — nothing here writes through it — and seeded from the window number, since
+    /// `adopt` refuses to bind one element to two window numbers.
     @discardableResult
     static func adopt(_ registry: WindowRegistry, pid: pid_t, number: CGWindowID) -> WindowId {
         registry.adopt(
@@ -44,9 +35,8 @@ import EmiraCore
         )!.id
     }
 
-    /// A state that knows one display and one tiled window per entry in `apps`, with each window
-    /// adopted into `registry` first so the core's ids and the shell's records agree — exactly the
-    /// pairing the daemon gets from `AXEnumerator`.
+    /// A state with one display and one tiled window per entry in `apps`, each adopted into `registry`
+    /// first so the core's ids and the shell's records agree, as they do after a real enumeration.
     static func boot(_ registry: WindowRegistry, apps: [pid_t]) -> State {
         var s = State(config: fullWidth)
         (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: MonitorId(1), frame: display)]))
@@ -113,9 +103,8 @@ import EmiraCore
 
     @Test("a placement for a window the registry never saw fails at once instead of vanishing")
     func anUnknownWindowFailsRatherThanVanishing() {
-        // The failure this prevents is not a lost set — it's a *hung cover*. A scoped `setFrame` that
-        // quietly evaporates leaves the transition waiting on a landing that can never arrive, and the
-        // screen stays covered until the hold-timeout rescues it a second later.
+        // The failure this prevents is a hung cover, not a lost set: a scoped `setFrame` that
+        // evaporates leaves the transition waiting on a landing that can never arrive.
         let registry = WindowRegistry()
         let known = Self.adopt(registry, pid: 100, number: 1)
         let ghost = WindowId(999)
@@ -143,7 +132,7 @@ import EmiraCore
         #expect(writer.focused.isEmpty)
         #expect(writer.raised.isEmpty)
         // No `focusChanged`, no failure: the core already recorded the focus it asked for, and the only
-        // honest correction would come from an observer watching the real system (part 2b).
+        // honest correction would come from an observer watching the real system.
         #expect(events.events.isEmpty)
     }
 
@@ -164,10 +153,9 @@ import EmiraCore
 
     @Test("a tiled window the app clamped reports the question and the answer, and still counts as landed")
     func aClampedWindowReportsRealityAndStillLands() {
-        // The case that decided the whole design: a terminal quantizing to character cells accepts
-        // every write and lands short of the request on *every* placement. Calling that `axFailed`
-        // would flood the transition machinery with false alarms today, and get terminals dropped from
-        // the layout the day `axFailed` grows the retry/drop reconciliation §3 promises it.
+        // A terminal quantizing to character cells accepts every write and lands short of the request
+        // on every placement. Calling that `axFailed` would flood the transition machinery with false
+        // alarms, and drop terminals from the layout once `axFailed` grows a retry/drop policy.
         let registry = WindowRegistry()
         let id = Self.adopt(registry, pid: 100, number: 1)
         let clamped = Rect(x: 40, y: 0, width: 188, height: 100)
@@ -178,9 +166,9 @@ import EmiraCore
         AXExecutor(registry: registry, writer: writer)
             .execute([.setFrame(id, Self.rect(40))], feedback: events.sink)
 
-        // Truth first, then the verdict: `axLanded` can close a transition and snap the viewport, and
-        // the frame it snaps against should already be the real one. The request rides along, because
-        // an answer is only evidence in relation to its question (`SizeCorrection`).
+        // Truth first, then the verdict: `axLanded` can close a transition and snap the viewport, so
+        // the frame it snaps against must already be the real one. The request rides along because an
+        // answer is only evidence in relation to its question.
         #expect(events.events == [
             .placementCorrected(id, requested: Self.rect(40), actual: clamped),
             .axLanded(id),
@@ -189,11 +177,9 @@ import EmiraCore
 
     @Test("a parked window that drifted records truth and teaches nothing")
     func aParkedWindowThatDriftedIsNotACorrection() {
-        // A park slot is a 1 px sliver hugging the working area's edge, and PRINCIPLES.md §10 records
-        // a window refusing a resize there that it accepted the moment it scrolled back into view. So
-        // the answer describes off-viewport geometry, not the window — recording it as a constraint
-        // would freeze the column at whatever width it happened to be parked at. Same write, same
-        // drift, different event: `windowFrameChanged`, which the reducer never learns from.
+        // A park slot is a 1 px sliver at the working area's edge, and a window can refuse a resize
+        // there that it accepts once it scrolls back into view. So the drift describes off-viewport
+        // geometry, not the window: `windowFrameChanged`, which the reducer never learns from.
         let registry = WindowRegistry()
         let id = Self.adopt(registry, pid: 100, number: 1)
         let refused = Rect(x: -199, y: 0, width: 260, height: 100)
@@ -281,10 +267,8 @@ import EmiraCore
 
     @Test("capture is not the truth plane's to answer")
     func captureIsNotAnsweredHere() {
-        // The inverse of the assertion this test used to make. Through M3 this file acked `capture` on
-        // the spot, standing in for a `CaptureService` that didn't exist; M4 built it, `capture` routes
-        // to it (`CompositingExecutor`), and an ack from here would now be a *second* one — a window
-        // counted twice toward a raise, on a batch whose stills aren't in yet.
+        // `capture` routes to `CaptureService` via `CompositingExecutor`, so an ack from here would be
+        // a second one — a window counted twice toward a raise, on a batch whose stills aren't in yet.
         let registry = WindowRegistry()
         let id = Self.adopt(registry, pid: 100, number: 1)
         let writer = ScriptedWriter()
@@ -394,9 +378,8 @@ import EmiraCore
 
     @Test("the hold firing closes a transition that would otherwise hang forever")
     func theHoldClosesAHungTransition() {
-        // The failure this exists for: a real AX landing depends on another process's run loop, and an
-        // app that never answers would otherwise leave the cover up over a desktop the user can no
-        // longer interact with. Reveal the truth; keep reconciling underneath (§3).
+        // A real AX landing depends on another process's run loop, so an app that never answers would
+        // leave the cover up over a desktop the user can no longer interact with.
         let registry = WindowRegistry()
         let writer = ScriptedWriter()
         writer.defersCompletion = true              // the app never answers
@@ -436,9 +419,8 @@ import EmiraCore
 
     @Test("redirecting an open transition re-arms the hold")
     func redirectingReArmsTheHold() {
-        // Without this, the signature interrupt (§4b — a second scroll mid-flight, velocity carried)
-        // inherits the *first* scroll's deadline, and a user moving briskly across four columns gets
-        // the cover yanked out from under the last one.
+        // Otherwise a second scroll mid-flight inherits the first scroll's deadline, and a user moving
+        // briskly across four columns gets the cover yanked out from under the last one.
         let hold = ManualHoldTimer()
         let clock = ManualFrameClock()
         let runtime = Runtime(state: Self.boot(WindowRegistry(), apps: [100, 200, 300]),
@@ -457,9 +439,8 @@ import EmiraCore
 
     @Test("struts are the screen minus its visible area, with the vertical edges swapped")
     func strutsSwapTheVerticalEdges() {
-        // Cocoa is bottom-left, the core is top-left, so the menu bar — which lives at Cocoa's *maxY* —
-        // is the core's `top`. Getting this backwards reserves the menu bar's height at the bottom of
-        // the strip and tiles windows under the menu bar instead: almost right, and completely wrong.
+        // Cocoa is bottom-left, the core is top-left, so the menu bar — at Cocoa's maxY — is the core's
+        // `top`. Backwards, this reserves the menu bar's height at the bottom and tiles under it.
         let insets = ScreenGeometry.struts(frame: CGRect(x: 0, y: 0, width: 1800, height: 1169),
                                            visible: CGRect(x: 0, y: 70, width: 1800, height: 1061))
         #expect(insets.top == 38)                   // 1169 − (70 + 1061), the menu bar
@@ -504,10 +485,8 @@ final class Recorder {
     lazy var sink = EventSink { [weak self] event in self?.events.append(event) }
 }
 
-/// A `WindowWriter` that answers from a script instead of a desktop.
-///
-/// `defersCompletion` is the interesting knob: real AX answers *later*, from another process's run
-/// loop, and holding the completions is how a test occupies the gap the hold-timeout exists to bound.
+/// A `WindowWriter` that answers from a script instead of a desktop. `defersCompletion` models real
+/// AX answering later, from another process's run loop — the gap the hold-timeout exists to bound.
 @MainActor
 final class ScriptedWriter: WindowWriter {
 
@@ -549,15 +528,9 @@ final class ScriptedWriter: WindowWriter {
     }
 }
 
-/// Answers `Effect.capture` instantly and forwards everything else — the part `CaptureService` plays
-/// in the daemon, played by a stub.
-///
-/// The truth-plane tests below drive whole transitions through the pump, and a transition does not
-/// raise its cover (and so never teleports a real window) until every scoped `captureReady` is in.
-/// `AXExecutor` used to supply those acks itself, as a stand-in for a capture plane that didn't exist;
-/// now that it exists, these tests have to supply the other plane themselves. An instant ack is exactly
-/// the "infinitely fast system" `MockExecutor(.simulate)` models, and it keeps these tests about what
-/// they are about: what AX was asked to do, and when the landings close the transition.
+/// Answers `Effect.capture` instantly and forwards everything else — `CaptureService`'s part, played
+/// by a stub. A transition raises no cover, and so teleports no real window, until every scoped
+/// `captureReady` is in, so tests driving whole transitions must supply the capture plane themselves.
 @MainActor
 final class InstantCaptures: Executor {
     private let inner: any Executor
@@ -610,8 +583,8 @@ final class ManualHoldTimer: HoldTimer {
         sink = nil
     }
 
-    /// Deliver the deadline. `false` when nothing was armed — which is what makes "the hold stayed
-    /// silent" assertable rather than merely unobserved.
+    /// Deliver the deadline. `false` when nothing was armed, which makes "the hold stayed silent"
+    /// assertable rather than merely unobserved.
     @discardableResult
     func fire() -> Bool {
         guard let sink else { return false }

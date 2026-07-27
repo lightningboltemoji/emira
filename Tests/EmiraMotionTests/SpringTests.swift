@@ -60,10 +60,8 @@ import Testing
         #expect(next.velocity == 0)
     }
 
-    /// The spelling a **config file** uses (`stiffness = 800`, `damping-ratio = 1.0`), so published
-    /// constants can be copied across rather than converted. It has to agree exactly with
-    /// `critical(frequency:)` at ζ = 1, because `.smooth` is defined by the latter and a user writing
-    /// those numbers must land on precisely the shipped default.
+    /// The spelling a config file uses (`stiffness`/`damping-ratio`) has to agree exactly with
+    /// `critical(frequency:)` at ζ = 1, since `.smooth` is defined by the latter.
     @Test func theStiffnessAndRatioSpellingRoundTrips() {
         let spring = SpringParams(stiffness: 800, dampingRatio: 1.0)
         #expect(abs(spring.stiffness - SpringParams.smooth.stiffness) < 1e-9)

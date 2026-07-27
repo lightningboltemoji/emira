@@ -2,41 +2,13 @@ import AppKit
 import EmiraCore
 import Foundation
 
-// **Enumeration** — how the truth plane gets its contents (IMPLEMENTATION.md §9, M3: "instant, correct
-// tiling of *real* windows"). emira keeps no layout across restarts by charter (§10), so this runs at
-// boot, meets every window mid-life, and hands the core a `windowCreated` per window exactly as if it
-// had watched each one appear. Launch is just events (`Runtime`), and this is the event source that
-// makes the world real.
+// Enumeration — how the truth plane gets its contents: at boot, and per-app in steady state, since an
+// `AXWindowCreated` notification names the app rather than a bindable window.
 //
-// **It is also how every *later* window is met (M3 part 2b).** An `AXWindowCreated` notification names
-// the app, not a bindable window — identity is a join against the public window list (`WindowRegistry`),
-// and the join is only sound when a window is compared against its *siblings*. So the response to
-// "something appeared in this app" is to enumerate that one app again, which is why `enumerate` takes an
-// app set. Two consequences shape the type:
-//
-//  · **A scan reports what *changed*, not what it saw.** `Report.snapshots` is the windows this scan
-//    took into management for the **first** time; ones we already knew are `rebound` (their AX element
-//    refreshed, their id untouched). The caller dispatches `windowCreated` for `snapshots` — and a
-//    re-scan of a five-window app must not announce five births, because `Engine` gives a new window
-//    focus, so a re-announcement would yank the user's focus onto whatever sorted last.
-//  · **Re-scanning stays idempotent**, which it already was at the registry level (`adopt` is keyed on
-//    the window number); this just makes the *report* honest about it too.
-//
-// **The shape is the same trick as `FrameClock` and `CoverSurface`.** Everything that needs a live
-// macOS — `NSWorkspace`'s process list, AX round trips, the window list — sits behind `WindowSource`,
-// three methods wide. `AXEnumerator` above it is pure orchestration: fan out over apps, gather, join,
-// adopt, report. So the parts with decisions in them (which apps are worth scanning, what happens when
-// an app answers with nothing, what happens when *no* app answers, what a window that can't be
-// identified does to the rest of the scan) are all headlessly testable, and the untestable part is
-// three methods of straight-line framework calls holding no policy at all.
-//
-// **Why the join happens after every app has answered, not per app.** Both sides of the identity join
-// are snapshots of a moving system, and the window list is the cheaper one to take late: a window that
-// moved between the AX read and the list read simply fails to bind and is reported, which is the
-// correct outcome and a visible one. Taking the list once, after the fan-out, also means one syscall
-// instead of one per app, and means every window is matched against the *same* view of the world —
-// so `.contested` (two AX windows claiming one entry) is a real signal rather than an artifact of
-// comparing two apps against two different lists.
+// A scan reports what *changed*: `snapshots` is what was taken into management for the first time,
+// `rebound` what we already knew. Re-announcing a known window would yank focus, since `Engine` focuses
+// new windows. The join runs once, after every app has answered, so every window is matched against one
+// window-list read and `.contested` is a real signal rather than an artifact of two different lists.
 
 // MARK: - The boundary
 
@@ -56,9 +28,8 @@ public struct ScanTarget: Sendable, Equatable {
 /// A window as one scan found it: the pure observation the join works on, plus the AX element the
 /// registry keeps for the write path.
 public struct ScannedWindow: Sendable {
-    /// The framework-free description — what gets matched, classified and handed to the core.
     public let observed: ObservedWindow
-    /// The live handle. Not `public`: outside this module a window is a `WindowId` and nothing else.
+    /// Not `public`: outside this module a window is a `WindowId` and nothing else.
     let element: AXWindow
 
     init(observed: ObservedWindow, element: AXWindow) {
@@ -67,18 +38,15 @@ public struct ScannedWindow: Sendable {
     }
 }
 
-/// Everything `AXEnumerator` needs from a live macOS, and nothing more.
-///
-/// Three methods, all of which a test double answers from arrays. `windows(of:then:)` is asynchronous
-/// because the real one crosses a thread and must not block the pump; the other two are cheap local
-/// reads that would gain nothing from being.
+/// Everything `AXEnumerator` needs from a live macOS. `windows(of:then:)` is asynchronous because the
+/// real one crosses a thread and must not block the pump; the other two are cheap local reads.
 @MainActor
 public protocol WindowSource {
     /// The apps worth asking about windows, right now.
     func applications() -> [ScanTarget]
     /// One app's windows, delivered on the main actor. Must call `completion` exactly once — including
-    /// when the app answers with nothing, which is the common case for an app that has no AX support
-    /// or has just quit.
+    /// when the app answers with nothing, the common case for an app with no AX support or one that
+    /// has just quit.
     func windows(of target: ScanTarget, then completion: @escaping @MainActor ([ScannedWindow]) -> Void)
     /// The public window list, for identity binding.
     func windowList() -> [WindowListEntry]
@@ -91,33 +59,26 @@ public protocol WindowSource {
 @MainActor
 public final class AXEnumerator {
 
-    /// The outcome of one enumeration — the snapshots to dispatch, plus enough detail to explain the
-    /// gap between "windows on the screen" and "windows emira manages". The daemon logs this at boot,
-    /// because a window manager quietly not managing something is the failure the user cannot debug.
+    /// The outcome of one enumeration — the snapshots to dispatch, plus enough detail to explain the gap
+    /// between "windows on the screen" and "windows emira manages".
     public struct Report: Sendable {
-        /// The windows taken into management for the **first time**, in binding order — dispatch these
-        /// as `windowCreated`, and only these (see the file header).
+        /// Taken into management for the *first time*, in binding order — dispatch these as
+        /// `windowCreated`, and only these.
         public let snapshots: [WindowSnapshot]
-        /// The windows this scan re-met: already managed, id unchanged, AX element refreshed. Reported
-        /// rather than dropped so `boundWindows` can be honest and a caller can see the difference
-        /// between "nothing appeared" and "nothing answered".
+        /// Re-met: already managed, id unchanged, AX element refreshed.
         public let rebound: [WindowId]
-        /// The apps this scan covered. Carried so the caller can watch exactly what was scanned, and
-        /// re-scan exactly what failed, without asking the source a second question it may answer
-        /// differently.
+        /// The apps this scan covered. Carried so the caller can re-scan exactly what failed without
+        /// asking the source a second question it may answer differently.
         public let apps: [ScanTarget]
         /// How many windows AX reported in total, bound or not.
         public let seenWindows: Int
         /// The windows that could not be given a stable identity, and why.
         public let unbound: [Unbound]
-        /// How many windows of the scanned apps the window server lists that AX did not describe —
-        /// a window that appeared between the two reads, or one whose AX attributes were unreadable.
-        /// Like `unbound`, a reason to ask again (`WorldWatcher`).
+        /// Windows of the scanned apps the window server lists but AX did not describe — one that
+        /// appeared between the two reads, or one with unreadable AX attributes. A reason to ask again.
         public let unclaimed: Int
 
-        /// How many apps were scanned.
         public var scannedApps: Int { apps.count }
-        /// How many windows came away with an identity, new or already held.
         public var boundWindows: Int { snapshots.count + rebound.count }
         /// Whether this scan saw something it could not account for, on either side of the join.
         public var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 }
@@ -130,9 +91,7 @@ public final class AXEnumerator {
             public let reason: WindowIdentity.Rejection.Reason
         }
 
-        /// One line for the log — at boot, and for every steady-state scan that saw something it could
-        /// not account for. A window manager quietly not managing something is the failure the user
-        /// cannot debug, and until 2026-07-26 only the boot scan ever said anything.
+        /// One line for the log.
         public var summary: String {
             var line = "\(boundWindows)/\(seenWindows) windows bound across \(scannedApps) apps"
             if !unbound.isEmpty {
@@ -161,20 +120,13 @@ public final class AXEnumerator {
     /// Scan exactly these apps and report. Returns immediately; `completion` runs on the main actor
     /// once every app has answered.
     ///
-    /// The fan-out is deliberately **not** sequential. Apps are independent processes with independent
-    /// main run loops, so scanning them one after another would make the boot cost the *sum* of the
-    /// apps' latencies (and hostage to the slowest); scanning them at once — each on its own lane
-    /// (`AXClient`) — makes it the *maximum*, bounded by the messaging timeout.
-    ///
-    /// A one-app set is the steady-state form (an `AXWindowCreated` notification, an app launching);
-    /// the whole list is the boot form. Same code, because the join must see an app's windows together
-    /// either way.
+    /// The fan-out is deliberately not sequential: apps are independent processes with independent main
+    /// run loops, so scanning at once costs the *maximum* of their latencies rather than the sum.
     public func enumerate(apps targets: [ScanTarget],
                           completion: @escaping @MainActor (Report) -> Void) {
         guard !targets.isEmpty else {
-            // No apps is a legitimate answer (a freshly booted machine, or — far more likely — the
-            // Accessibility grant is missing and nothing will ever answer). Complete anyway: a
-            // callback that never fires would leave the daemon waiting forever on an empty desktop.
+            // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
+            // that never fires would leave the daemon waiting forever.
             completion(Report(snapshots: [], rebound: [], apps: [], seenWindows: 0,
                               unbound: [], unclaimed: 0))
             return
@@ -191,18 +143,11 @@ public final class AXEnumerator {
         }
     }
 
-    /// Join, adopt, and describe. Split out so the interesting half is one straight-line function over
-    /// values.
+    /// Join, adopt, and describe.
     ///
-    /// **A window we already know is never re-joined** (2026-07-26). Identity is bound once, at first
-    /// sight, and kept for the window's life (`PRINCIPLES.md` §7) — so re-running a *frame* match for a
-    /// window that already has an id can only ever produce a wrong answer. The two sides of the join
-    /// are snapshots of a moving system taken at different instants (see the file header), and the
-    /// thing moving windows in between is *us*: a placement write queued on the same lane as the AX
-    /// read. Under a burst of window creation the stale read reports window A at the frame window B has
-    /// since taken, A matches B's list entry uniquely, and nothing about that looks wrong to the join.
-    /// Skipping known elements removes the whole failure mode rather than tightening a tolerance
-    /// against it, and it makes the "bound once, at first sight" claim literally true in the code.
+    /// A window we already know is never re-joined: the two sides of the join are read at different
+    /// instants and *we* are what moves windows in between, so under a burst of window creation a stale
+    /// read can report window A at the frame B has since taken and match B's entry uniquely.
     private func finish(_ scanned: [ScannedWindow], apps: [ScanTarget]) -> Report {
         let entries = source.windowList()
 
@@ -210,8 +155,8 @@ public final class AXEnumerator {
         var fresh: [ScannedWindow] = []
         for window in scanned {
             if let id = registry.id(for: window.element) {
-                // Re-adopting refreshes the AX element and the observed metadata against the id it
-                // already has; the number is the one already on file, so the join is not consulted.
+                // Refresh element and metadata against the id it already has; the number is on file,
+                // so the join is not consulted.
                 if let record = registry.record(id) {
                     registry.adopt(window.observed, element: window.element, number: record.number)
                 }
@@ -222,8 +167,7 @@ public final class AXEnumerator {
         }
 
         // An entry already bound to a live window is not a candidate for anything: its identity is
-        // settled. Withholding it is the second half of the same rule — it stops a stale frame from
-        // claiming a *known* window's entry as well as from claiming an unknown one's.
+        // settled. Withholding it stops a stale frame from claiming a *known* window's entry.
         let available = entries.filter { registry.id(forNumber: $0.number) == nil }
         let binding = WindowIdentity.bind(fresh.map(\.observed), to: available)
 
@@ -242,23 +186,12 @@ public final class AXEnumerator {
                                   frame: observed.frame, reason: rejection.reason)
         }
 
-        // The window server shows a window of an app we just scanned, and AX did not describe it — the
-        // mirror image of `unbound`, and the half that had no signal at all before. It is how "the
-        // notification arrived before the app would list the window" looks from this side, and it is
-        // also what a window whose AX attributes were unreadable leaves behind (`snapshot()` drops it
-        // before the join, so it never reaches `unbound` either). Both are the §2 "asked too early"
-        // race, so both now reach the same bounded retry.
-        //
-        // **Only entries the window server calls on screen count**, and that restriction is what makes
-        // this usable rather than a permanent retry loop. A real desktop shows ordinary apps carrying
-        // several layer-0 entries that are not windows and never will be — Ghostty, Safari and Finder
-        // each answer with four `1800×39` strips at the origin, plus 64×64 and 0×0 oddments — and all
-        // of them are off screen. Counting those would make every scan of those apps "incomplete"
-        // forever, i.e. three scans where one would do, which is precisely the lane pressure the
-        // coalescer upstream exists to remove. An *on-screen* entry is the case worth asking again
-        // about: it is a window the user can see, and we have no identity for it. (A window on another
-        // Space or in the Dock is off screen and therefore not chased; it is adopted when it comes
-        // back, by the notification that brings it.)
+        // The mirror image of `unbound`, feeding the same bounded retry. Only on-screen entries count:
+        // ordinary apps carry layer-0 entries that are not windows and never will be (Ghostty, Safari and
+        // Finder each answer with four off-screen `1800×39` strips at the origin, plus 64×64 and 0×0
+        // oddments), and counting those would make every scan of those apps incomplete forever. A window
+        // on another Space or in the Dock is off screen too, and is adopted by the notification that
+        // brings it back.
         let scannedPids = Set(apps.map(\.pid))
         let unclaimed = available.filter {
             $0.isOnScreen && scannedPids.contains($0.pid) && !claimed.contains($0.number)
@@ -269,8 +202,7 @@ public final class AXEnumerator {
     }
 
     /// The fan-out's accumulator. A reference type because several escaping completions append to it;
-    /// `@MainActor` because they all arrive there, which is what makes the un-synchronized mutation
-    /// safe rather than merely lucky — Swift 6 proves it.
+    /// `@MainActor` because they all arrive there, which is what makes the mutation safe.
     @MainActor
     private final class Gather {
         var windows: [ScannedWindow] = []
@@ -285,8 +217,7 @@ public final class AXEnumerator {
 // MARK: - The live source
 
 /// `WindowSource` against the real system: `NSWorkspace` for the process list, `AXClient` for the
-/// windows, `CGWindowListCopyWindowInfo` for the numbers. No decisions beyond the app filter, which is
-/// documented where it happens.
+/// windows, `CGWindowListCopyWindowInfo` for the numbers.
 @MainActor
 public final class AXWindowSource: WindowSource {
 
@@ -296,16 +227,9 @@ public final class AXWindowSource: WindowSource {
         self.client = client
     }
 
-    /// The ordinary, user-facing apps — `.regular` activation policy, still alive, not us.
-    ///
-    /// `.regular` only, on purpose: `.accessory` and `.prohibited` processes are menu-bar agents and
-    /// background helpers, and touching their AX tree costs the footprint §5 warns about for windows
-    /// the user does not tile. It is a default, not a law — an accessory app *can* open a real window,
-    /// and when that turns out to matter it becomes a config rule rather than a change here.
-    ///
-    /// Apps with no bundle identifier are skipped: the core groups windows by `bundleId` and rules
-    /// match on it (`World.swift`), so a window we cannot attribute to an app is one we cannot reason
-    /// about.
+    /// The ordinary, user-facing apps — `.regular` activation policy, still alive, not us. `.accessory`
+    /// and `.prohibited` processes are menu-bar agents and background helpers whose AX trees cost
+    /// footprint for nothing tileable. Apps with no bundle identifier are skipped: the core groups by it.
     public func applications() -> [ScanTarget] {
         let me = ProcessInfo.processInfo.processIdentifier
         return NSWorkspace.shared.runningApplications.compactMap { app in
@@ -317,11 +241,8 @@ public final class AXWindowSource: WindowSource {
         }
     }
 
-    /// Read one app's windows on its own lane. Window-level only — `AXApplication.windows()` is the
-    /// only traversal that exists (§5, no child walk).
-    ///
-    /// A window whose frame is unreadable is dropped here rather than reported unbound: without a frame
-    /// there is nothing to join *on*, and nothing to place it with either.
+    /// Read one app's windows on its own lane. A window whose frame is unreadable is dropped here
+    /// rather than reported unbound: without a frame there is nothing to join *on*.
     public func windows(of target: ScanTarget,
                         then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
         client.perform(app: target.pid) { application in

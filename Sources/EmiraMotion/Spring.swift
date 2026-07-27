@@ -1,11 +1,8 @@
 import Foundation
 
-/// Analytic damped-spring integrator.
-///
-/// One `step` advances a `(position, velocity)` system by `dt` toward `target`. We use the
-/// closed-form solution of the damped-harmonic-oscillator ODE rather than an explicit Euler step,
-/// so the result is **numerically stable for any `dt`** — a 120 Hz frame and a hitchy 40 ms frame
-/// both land on the physically-correct state, with no blow-up when a stiff spring meets a long dt.
+/// Analytic damped-spring integrator: one `step` advances a `(position, velocity)` system by `dt` toward
+/// `target`. Closed-form solution of the damped-harmonic-oscillator ODE rather than an explicit Euler
+/// step, so it is numerically stable for any `dt` — no blow-up when a stiff spring meets a long frame.
 public enum Spring {
     /// Advance one step of length `dt` toward `target`.
     /// - Returns: the new `(current, velocity)`. `dt <= 0` is a no-op.

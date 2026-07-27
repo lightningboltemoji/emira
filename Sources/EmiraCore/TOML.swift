@@ -1,40 +1,19 @@
 import Foundation
 
-// The reader half of the config file — text in, keyed values out. It is a **deliberately partial
-// TOML**: the subset emira's own config is written in, and nothing else.
+// The reader half of the config file — text in, keyed values out. A hand-rolled, deliberately partial
+// TOML: the subset emira's own config is written in, and nothing else. Anything outside the grammar is
+// a diagnostic naming the line, and every value carries the line it was read on.
 //
-// **Why hand-rolled rather than a dependency.** The package has no dependencies and this is not the
-// place to acquire the first one. The grammar we actually need is "comments, `[table]` headers, and
-// `key = value` over five scalar kinds" — a few hundred lines with error messages we control — while a
-// conforming TOML implementation carries dates, times, multi-line and literal strings, arrays of
-// tables, dotted-key merging, and integer/float distinctions we have no use for. This is the same
-// judgement `CommandSyntax.swift` made about `swift-argument-parser` (IMPLEMENTATION.md §11,
-// 2026-07-24): the surface is small, it lives in the core where it can be tested exhaustively, and
-// vendoring a parser into `emira.app` for it would be more machinery than the thing it parses.
-//
-// **We keep TOML's *spelling* on purpose.** Editors highlight it, and AeroSpace users already write
-// it — the value of the format is familiarity, which a subset keeps intact. What a subset must never
-// do is *silently* accept something it doesn't implement, so anything outside the grammar below is a
-// diagnostic naming the line, never a shrug:
-//
-//   · comments (`# …`), whole-line or trailing
-//   · `[table]` and `[table.sub]` headers; keys before any header sit at the top level
-//   · `key = value`, with bare (`column-gap`) or quoted (`"cmd-alt-h"`) keys, dot-separated
-//   · values: `true`/`false`, a number, a `"string"`, or a single-line array of those
-//
-// Not implemented, and each says so when met: multi-line arrays, inline tables (`{ … }`), arrays of
-// tables (`[[…]]`), literal/multi-line strings, dates.
-//
-// **Everything carries its line number.** A config file is written by a human in an editor, so a
-// diagnostic that can't be jumped to is half a diagnostic. Values remember where they were read, and
-// the schema layer (`ConfigSyntax.swift`) quotes that line back when a value is the wrong kind or a
-// key isn't one we know.
+// Supported: `#` comments, whole-line or trailing; `[table]`/`[table.sub]` headers, keys before any
+// header sitting at the top level; `key = value` with bare (`column-gap`) or quoted (`"cmd-alt-h"`)
+// dot-separated keys; values that are `true`/`false`, a number, a `"string"`, or a single-line array of
+// those. Not implemented, each saying so when met: multi-line arrays, inline tables, arrays of tables,
+// literal/multi-line strings, dates.
 
 /// One value read out of the config text, plus the line it was written on.
 struct TOMLValue: Equatable {
     /// The four value kinds the subset admits. Numbers are `Double` throughout — the schema decides
-    /// whether a given key wants an integral one, because `column-gap = 8` and `column-gap = 8.0`
-    /// mean the same thing to a layout engine that works in points.
+    /// whether a given key wants an integral one.
     enum Payload: Equatable {
         case bool(Bool)
         case number(Double)
@@ -57,24 +36,18 @@ struct TOMLValue: Equatable {
 }
 
 /// A parsed document, flattened to dotted paths: `[layout] column-gap = 8` reads back as
-/// `"layout.column-gap"`.
-///
-/// Flat rather than a tree because of what the schema layer does with it: it *takes* the keys it
-/// knows, one at a time, and then complains about whatever is left (`ConfigSyntax.swift`). A tree
-/// would make both halves of that walk recursive for no gain — there is exactly one schema, and it is
-/// two levels deep.
+/// `"layout.column-gap"`. Flat rather than a tree because the schema *takes* the keys it knows.
 struct TOMLTable: Equatable {
     /// Every `key = value` in the document, by dotted path.
     private(set) var values: [String: TOMLValue] = [:]
-    /// Every `[table]` header that was *declared*, by dotted path → line. Kept separately from the
-    /// values because an empty table is still a typo worth catching: `[layuot]` with nothing under it
-    /// contributes no keys at all, so leftover-key detection alone would let it pass in silence.
+    /// Every `[table]` header *declared*, by dotted path → line. Kept apart from the values because an
+    /// empty table is still a typo worth catching: `[layuot]` contributes no key to be left over.
     private(set) var tables: [String: Int] = [:]
 
     // MARK: - Consumption
     //
-    // The schema layer reads this table by *taking* the keys it knows and then asking what is left —
-    // so "unknown key" needs no second list of valid names to drift out of step with the reader.
+    // Taking the keys it knows and then asking what is left means "unknown key" needs no second list
+    // of valid names to drift out of step with the reader.
 
     /// Remove and return the value at a dotted path, or `nil` if the file didn't set it.
     mutating func take(_ path: String) -> TOMLValue? {
@@ -88,14 +61,8 @@ struct TOMLTable: Equatable {
     }
 
     /// Remove and return every key under a table, keyed by the part *after* the prefix, earliest line
-    /// first.
-    ///
-    /// **The one open table in the schema**, and it needs its own reader for exactly that reason:
-    /// everywhere else the schema knows the key names in advance and `take`s them one by one, but a
-    /// `[keys]` binding's name is a key combination the user invented, so it can only be read by
-    /// asking for the whole table. Line order is preserved because it is meaningful twice: a
-    /// diagnostic should point at the first mistake, and the daemon registers and reports bindings in
-    /// the order the file lists them.
+    /// first. For `[keys]`, the one open table, whose key names the user invents and so cannot be
+    /// `take`n one by one.
     mutating func takeAll(under prefix: String) -> [(key: String, value: TOMLValue)] {
         let dotted = prefix + "."
         let matching = values.filter { $0.key.hasPrefix(dotted) }
@@ -105,9 +72,8 @@ struct TOMLTable: Equatable {
             .sorted { ($0.value.line, $0.key) < ($1.value.line, $1.key) }
     }
 
-    /// Everything the schema never took, earliest line first — keys, then any table header that was
-    /// declared and never accepted. Sorted by line so the diagnostic points at the *first* mistake,
-    /// which is the one a human wants to fix.
+    /// Everything the schema never took, earliest line first — keys, then declared-but-unaccepted table
+    /// headers. Sorted by line so the diagnostic points at the *first* mistake.
     var leftovers: [(key: String, line: Int)] {
         let keys = values.map { (key: $0.key, line: $0.value.line) }
         let headers = tables.map { (key: $0.key, line: $0.value) }
@@ -121,10 +87,8 @@ struct TOMLTable: Equatable {
         var table = TOMLTable()
         var current: [String] = []
 
-        // Split on *newlines*, not on `"\n"`. Swift reads `"\r\n"` as a single grapheme cluster, so a
-        // file written on Windows (or pasted through it) splits on `"\n"` into **one** line — every
-        // key on it, and a diagnostic pointing at line 1 forever. `isNewline` covers CRLF, LF, CR and
-        // the Unicode separators alike.
+        // Split on `isNewline`, not on `"\n"`: Swift reads `"\r\n"` as one grapheme cluster, so a
+        // CRLF file would split into a single line with every key on it.
         for (index, rawLine) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
             let line = index + 1
             let trimmed = rawLine.trimmed
@@ -170,10 +134,9 @@ struct TOMLTable: Equatable {
         return path
     }
 
-    /// A dot-separated key expression — used for both headers and key names, since TOML spells them
-    /// the same way. Each segment is bare (`column-gap`) or quoted (`"cmd-alt-h"`); quoting exists so
-    /// a key can contain characters the bare charset refuses, which is what M5's keybinding table
-    /// (`"cmd-alt-h" = "focus left"`) is going to need.
+    /// A dot-separated key expression — headers and key names are spelled the same way. Each segment is
+    /// bare (`column-gap`) or quoted (`"cmd-alt-h"`); quoting admits characters the bare charset
+    /// (letters, digits, `-`, `_`) refuses.
     private static func keyPath(_ text: Substring, line: Int) throws -> [String] {
         var segments: [String] = []
         var rest = text.trimmed
@@ -254,8 +217,8 @@ struct TOMLTable: Equatable {
             throw ConfigSyntaxError.syntax(line: line,
                                            message: "literal strings are not supported — use \"quotes\"")
         }
-        // Number. `Double(_:)` is happy to read "inf", "nan" and hex floats ("0x1p3"), none of which a
-        // config file should be able to say — so the charset is checked first and the parse second.
+        // `Double(_:)` happily reads "inf", "nan" and hex floats ("0x1p3"), none of which a config file
+        // should be able to say — so check the charset first and parse second.
         let numeric = text.allSatisfy { $0.isNumber || "+-.eE".contains($0) }
         guard numeric, let number = Double(text), number.isFinite else {
             throw ConfigSyntaxError.syntax(line: line, message: "cannot read '\(text)' as a value")
@@ -264,8 +227,7 @@ struct TOMLTable: Equatable {
     }
 
     /// Read a `"…"` string starting at `text`'s first character; returns it and whatever follows.
-    /// Escapes: `\"`, `\\`, `\n`, `\t`, `\r`. Anything else escaped is an error rather than a
-    /// silently-swallowed backslash.
+    /// Escapes: `\"`, `\\`, `\n`, `\t`, `\r`. Anything else escaped is an error.
     private static func quotedString(_ text: Substring, line: Int) throws -> (String, Substring) {
         var result = ""
         var index = text.index(after: text.startIndex)      // past the opening quote
@@ -298,9 +260,8 @@ struct TOMLTable: Equatable {
 
     // MARK: - Quote-aware scanning
     //
-    // Every one of these exists because a quoted string may contain the character we're looking for.
-    // `"#" = "focus left"` is a legal binding line, and a comment-stripper that didn't know about
-    // quotes would turn it into nonsense at some later, much more confusing point.
+    // A quoted string may contain the character being looked for: `"#" = "focus left"` is a legal
+    // binding line, and a quote-blind comment-stripper would mangle it.
 
     /// Remove a trailing `# comment`, if the `#` is outside a string.
     private static func stripComment(_ text: Substring) -> Substring {
@@ -343,8 +304,7 @@ struct TOMLTable: Equatable {
 }
 
 extension Substring {
-    /// Leading/trailing whitespace removed — spelled once because the reader does it on every line,
-    /// every key and every value.
+    /// Leading/trailing whitespace removed.
     var trimmed: Substring {
         var slice = self
         while let first = slice.first, first.isWhitespace { slice = slice.dropFirst() }

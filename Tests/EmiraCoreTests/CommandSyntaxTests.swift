@@ -2,11 +2,10 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The surface syntax of the vocabulary (`CommandSyntax.swift`) — the spelling shared by the CLI and
-/// (at M5) the config file's keybindings. Two properties carry the file: every command **round-trips**
-/// through its canonical words, and the verb table **covers** every case (the one thing the compiler
-/// can't check here). The rest is diagnostics: each way of getting it wrong is a distinct, printable
-/// error rather than a shrug.
+/// The surface syntax of the vocabulary — the spelling shared by the CLI and the config file's
+/// keybindings. Two properties carry the file: every command round-trips through its canonical words,
+/// and the verb table covers every case (the one thing the compiler can't check here). The rest is
+/// diagnostics: each way of getting it wrong is a distinct, printable error rather than a shrug.
 @Suite struct CommandSyntaxTests {
 
     /// One of every case, including each supporting-enum shape. Kept in the same spirit as
@@ -71,7 +70,7 @@ import Testing
         #expect(Command.cycleWidth.words == ["cycle-width"])
         #expect(Command.closeWindow.words == ["close-window"])
         #expect(Command.reloadConfig.words == ["reload-config"])
-        // `emira debug` is the documented user-facing verb for `dumpState` (IMPLEMENTATION.md §6).
+        // `emira debug` is the documented user-facing verb for `dumpState`.
         #expect(Command.dumpState.words == ["debug"])
     }
 
@@ -94,7 +93,7 @@ import Testing
         #expect(try Command.parse(["float", "off"]) == .float(.off))
     }
 
-    /// The form a config binding's right-hand side arrives in (`alt-h = "focus left"`, M5).
+    /// The form a config binding's right-hand side arrives in (`alt-h = "focus left"`).
     @Test func aWholeLineParsesLikeArgv() throws {
         #expect(try Command.parse(line: "focus left") == .focus(.left))
         #expect(try Command.parse(line: "  move-to-workspace   2  ")
@@ -140,8 +139,8 @@ import Testing
 
     // MARK: - `grow` / `shrink` arguments
 
-    /// The unit is **points** throughout the core, but `px` is what people type — so `100px`, `100pt`
-    /// and a bare `100` are one value, and `100px` is the spelling it comes back out as.
+    /// The unit is points throughout the core, but `px` is what people type — so `100px`, `100pt` and a
+    /// bare `100` are one value, and `100px` is the spelling it comes back out as.
     @Test func aSizeDeltaAcceptsPointsSpelledThreeWaysAndPercent() throws {
         for spelling in ["100", "100px", "100pt"] {
             #expect(try Command.parse(["grow", spelling]) == .grow(.points(100)))
@@ -153,9 +152,9 @@ import Testing
         #expect(Command.grow(.points(12.5)).words == ["grow", "12.5px"])
     }
 
-    /// The verb carries the sign, so a delta is a magnitude. `grow -10%` is refused rather than being a
-    /// second spelling of `shrink 10%` — one operation, one spelling — and `0` is a typo like index `0`.
-    /// The same guard catches everything else `Double.init` is happy to read.
+    /// The verb carries the sign, so a delta is a magnitude: `grow -10%` is refused rather than being a
+    /// second spelling of `shrink 10%`, and `0` is a typo. The same guard catches everything else
+    /// `Double.init` is happy to read.
     @Test func aSizeDeltaMustBeAPositiveFiniteMagnitude() throws {
         for bad in ["-10%", "-100px", "0", "0%", "nan", "inf", "1e400", "px", "%", "", "10 %", "wide"] {
             #expect(throws: CommandSyntaxError.self, "accepted '\(bad)'") {
@@ -178,12 +177,9 @@ import Testing
         }
     }
 
-    /// **Workspaces went the other way, deliberately** (2026-07-26). `workspaceRef` used to parse a
-    /// 1-based `Int` and refuse `0` with "`0` is a mistake, not workspace zero", which was right while
-    /// workspaces were a dynamic list. They are a fixed 36-address domain now, spelled in *key* order —
-    /// `1` is the first address and where the daemon starts, `0` is the tenth — and every address is one
-    /// character. So there is no index left to be off by one, and a two-character or out-of-domain word
-    /// is the only way to get it wrong.
+    /// Workspaces go the other way from monitors, deliberately: they are a fixed 36-address domain in
+    /// *key* order — `1` first, `0` tenth — and every address is one character. There is no index left to
+    /// be off by one, so a two-character or out-of-domain word is the only way to get it wrong.
     @Test func aWorkspaceIsNamedByItsCharacterAndOneIsTheFirstOne() throws {
         #expect(try Command.parse(["focus-workspace", "1"]) == .focusWorkspace(.name(.first)))
         #expect(try Command.parse(["focus-workspace", "0"])

@@ -3,14 +3,12 @@ import Testing
 import EmiraMotion
 @testable import EmiraCore
 
-// The config file, in the half that has all the decisions in it: text → `Config`. Two layers get
-// tested separately because they fail differently — `TOMLTable` (the grammar: is this a line?) and
-// `Config.parse` (the schema: is this a setting, and is that a legal value for it?).
+// text → `Config`. Two layers, tested separately because they fail differently: `TOMLTable` (the
+// grammar — is this a line?) and `Config.parse` (the schema — is this a setting, and is that a legal
+// value for it?).
 //
-// The property that matters most here is the one that isn't about success: **nothing is ever
-// silently ignored**. A window manager that shrugs at `colum-gap` is a window manager the user
-// believes is broken, so every test below that ends in a thrown error is testing the product's
-// actual behaviour, not its edge cases.
+// The property that carries the file is that nothing is ever silently ignored, so every test below
+// that ends in a thrown error is testing the product's behaviour rather than an edge case.
 
 @Suite struct ConfigSyntaxTests {
 
@@ -109,10 +107,8 @@ import EmiraMotion
         #expect(config.widthPresets.presets == [.proportion(0.25), .proportion(1.0), .fixed(900)])
     }
 
-    /// The reason `Config` grew a second spring at all (iteration 21's named gap), and then a third
-    /// (the structural-edit slice): the three motions are separately tunable, they default to the
-    /// *same* spring so nothing moves until asked, and turning one leaves the other two alone. All
-    /// three default to stiffness 800 / ζ 1.0, so the defaults here are copied rather than chosen.
+    /// Scroll, resize and movement are separately tunable, they default to the *same* spring so nothing
+    /// moves until asked, and turning one leaves the other two alone.
     @Test func theThreeSpringsAreIndependentAndDefaultToTheSameOne() throws {
         #expect(Config().scrollSpring == Config().resizeSpring)
         #expect(Config().scrollSpring == Config().moveSpring)
@@ -129,9 +125,8 @@ import EmiraMotion
         #expect(moved.resizeSpring == Config().resizeSpring)
     }
 
-    /// A misspelled animation table is refused like any other unknown key — the silence rule
-    /// (M5 part 1): a window manager that ignores `[animation.movemnt]` is one the user believes is
-    /// broken.
+    /// A misspelled animation table is refused like any other unknown key: a window manager that ignores
+    /// `[animation.movemnt]` is one the user believes is broken.
     @Test func aMisspelledAnimationTableIsRefused() {
         #expect(Self.diagnostic("[animation.movemnt]\nstiffness = 1500\n")
                 == .unknownKey(line: 1, key: "animation.movemnt"))
@@ -145,8 +140,8 @@ import EmiraMotion
         #expect(abs(config.scrollSpring.dampingRatio - Config().scrollSpring.dampingRatio) < 1e-9)
     }
 
-    /// Published spring constants are copyable verbatim — the whole reason the file spells a spring
-    /// as `stiffness` + `damping-ratio` rather than as a response time.
+    /// The reason the file spells a spring as `stiffness` + `damping-ratio` rather than as a response
+    /// time: published constants in those terms are copyable verbatim.
     @Test func documentedConstantsProduceTheDefaultSpring() throws {
         let config = try Self.parse("[animation.scroll]\nstiffness = 800\ndamping-ratio = 1.0\n")
         #expect(abs(config.scrollSpring.stiffness - SpringParams.smooth.stiffness) < 1e-9)
@@ -257,15 +252,15 @@ import EmiraMotion
         #expect(config.columnGap == 8)
     }
 
-    /// A `#` inside a string is not a comment — the case that will matter the day a keybinding is
-    /// spelled `"#" = "focus left"`, and the reason every scan in the reader is quote-aware.
+    /// A `#` inside a string is not a comment — e.g. a keybinding spelled `"#" = "focus left"`, and the
+    /// reason every scan in the reader is quote-aware.
     @Test func aHashInsideAStringIsNotAComment() throws {
         let table = try TOMLTable.parse("key = \"a # b\"\n")
         #expect(table.values["key"]?.payload == .string("a # b"))
     }
 
-    /// Quoted keys parse today even though nothing in the schema uses one yet — M5 part 2's
-    /// `[keys]` table needs `"cmd-alt-h"` to be a key, and the grammar is where that belongs.
+    /// Quoted keys parse: the `[keys]` table needs `"cmd-alt-h"` to be a key, and the grammar is where
+    /// that belongs.
     @Test func quotedAndDottedKeysAreRead() throws {
         let table = try TOMLTable.parse("""
         [keys]
@@ -397,9 +392,8 @@ import EmiraMotion
         ])
     }
 
-    /// A bare TOML key is enough for almost every chord (the bare charset already admits `-`), and
-    /// quoting is there for the ones it isn't — which is why `TOML.swift` learned quoted keys before
-    /// there was anything to use them for.
+    /// A bare TOML key is enough for almost every chord (the bare charset already admits `-`); quoting is
+    /// there for the ones it isn't.
     @Test func aChordMayBeWrittenBareOrQuoted() throws {
         let config = try Self.parse("""
         [keys]
@@ -410,8 +404,8 @@ import EmiraMotion
                                              KeyChord([.command, .option], .l)])
     }
 
-    /// The right-hand side goes through `Command.parse` — the *same* function the CLI uses, which is
-    /// §2's claim made literal: `emira focus left` and `alt-h = "focus left"` cannot diverge.
+    /// The right-hand side goes through `Command.parse` — the *same* function the CLI uses, so
+    /// `emira focus left` and `alt-h = "focus left"` cannot diverge.
     @Test func aBindingSpellsACommandExactlyAsTheCLIDoes() throws {
         let config = try Self.parse("""
         [keys]
@@ -453,9 +447,8 @@ import EmiraMotion
         #expect(error?.description == "line 2: 'keys.alt-h' must be a command in quotes, not a number")
     }
 
-    /// **The check the grammar can't make.** `cmd-alt-h` and `alt-cmd-h` are two different TOML keys
-    /// and one hotkey; without this, the second would be registered over the first and silently never
-    /// fire, while the user looked at two lines that both say what they mean.
+    /// The check the grammar can't make: `cmd-alt-h` and `alt-cmd-h` are two TOML keys and one hotkey,
+    /// so without this the second registers over the first and silently never fires.
     @Test func twoSpellingsOfOneChordAreADuplicate() {
         let error = Self.diagnostic("""
         [keys]
@@ -512,8 +505,8 @@ import EmiraMotion
     }
 }
 
-/// `outer-gap` and its four per-side overrides (2026-07-26) — the one setting in the schema written as
-/// a *family* of keys rather than one, so precedence and partial specification both need pinning.
+/// `outer-gap` and its four per-side overrides — the one setting written as a *family* of keys, so
+/// precedence and partial specification both need pinning.
 @Suite struct OuterGapConfigTests {
 
     @Test func theBareKeySetsAllFourEdges() throws {
@@ -568,8 +561,7 @@ import EmiraMotion
                              message: "must be a number, not a boolean"))
     }
 
-    /// The family's names are exact. A plausible-looking sibling is a typo, and a typo is a diagnostic
-    /// — the schema's standing rule, applied to the one place where near-misses are easy to invent.
+    /// The family's names are exact: a plausible-looking sibling is a typo, and a typo is a diagnostic.
     @Test func aPlausibleNearMissIsStillAnUnknownKey() {
         #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gaps = 8\n")
                 == .unknownKey(line: 2, key: "layout.outer-gaps"))
@@ -577,9 +569,8 @@ import EmiraMotion
                 == .unknownKey(line: 2, key: "layout.outer-gap-horizontal"))
     }
 
-    /// `outer-gap.left` is the spelling this schema deliberately *doesn't* use (`ConfigSyntax.swift`).
-    /// The flat grammar would happily store it, so nothing but this test says so — it is refused as the
-    /// unknown key it is, rather than silently doing nothing.
+    /// `outer-gap.left` is the spelling this schema deliberately *doesn't* use. The flat grammar would
+    /// happily store it, so nothing but this test says so.
     @Test func theDottedSpellingIsRefusedRatherThanSilentlyIgnored() {
         #expect(ConfigSyntaxTests.diagnostic("[layout]\nouter-gap.left = 20\n")
                 == .unknownKey(line: 2, key: "layout.outer-gap.left"))
@@ -603,8 +594,8 @@ import EmiraMotion
         #expect(try ConfigSyntaxTests.parse("[animation]\nwindow = \"stretch\"\n").windowAnimation == .stretch)
     }
 
-    /// The diagnostic lists the legal words, and it lists them *off the type* — so a third
-    /// `WindowAnimation` case would be accepted and named here with nothing in the schema to update.
+    /// The diagnostic lists the legal words *off the type*, so a third `WindowAnimation` case would be
+    /// named here with nothing in the schema to update.
     @Test func anUnknownWordIsRefusedAndTheLegalOnesNamed() {
         #expect(ConfigSyntaxTests.diagnostic("[animation]\nwindow = \"fill\"\n")
                 == .badValue(line: 2, key: "animation.window",
@@ -617,9 +608,8 @@ import EmiraMotion
                              message: "must be a word in quotes, not a boolean"))
     }
 
-    /// It is a key of `[animation]`, not a table of its own — `[animation.window]` is the spelling of
-    /// a spring, and the springs are the three that exist. Refused at the **header**, on the line the
-    /// user wrote it, rather than at the key underneath it.
+    /// It is a key of `[animation]`, not a table of its own — `[animation.window]` is the spelling of a
+    /// spring. Refused at the header, on the line the user wrote it, not at the key underneath.
     @Test func theWindowAnimationIsNotATable() {
         #expect(ConfigSyntaxTests.diagnostic("[animation.window]\nstiffness = 800\n")
                 == .unknownKey(line: 1, key: "animation.window"))

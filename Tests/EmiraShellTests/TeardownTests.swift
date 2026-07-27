@@ -3,10 +3,9 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// `Teardown` — the last thing that runs. What it owns is the **waiting**: AX writes answer later, so
-// the exit has to be held until they land, and held for a bounded time so a beachballed app delays a
-// quit rather than preventing one. Both halves are testable precisely because the deadline is a
-// `DelayScheduler` seam and the writes are an `Executor` one — no AX, no wall clock, no sleeping.
+// `Teardown` owns the waiting: AX writes answer later, so the exit is held until they land, and held
+// for a bounded time so a beachballed app delays a quit rather than preventing one. Both halves are
+// testable because the deadline is a `DelayScheduler` seam and the writes an `Executor` one.
 
 @Suite @MainActor struct TeardownTests {
 

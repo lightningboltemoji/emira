@@ -3,18 +3,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The shell's half of the config file — the part that needs a disk. The parse itself is tested in
-// `EmiraCoreTests/ConfigSyntaxTests`; what is tested here is *policy*, and all three of its rules are
-// about what happens when the file isn't what we hoped:
-//
-//  · a **missing** file is the zero-config strip, not an error;
-//  · a **broken** file changes nothing and says why, rather than falling back to defaults and
-//    silently rearranging a desktop;
-//  · a **saved** file reloads once, however many filesystem events the editor produced.
-//
-// Real temp files, because a temp directory is a perfectly good fixture (the same judgement
-// `SocketServerTests` makes about real sockets). The one thing that *is* faked is the change source:
-// a kernel event has no place in a unit test, which is why `FileWatcher` is a protocol.
+// The shell's half of the config file — the part that needs a disk; the parse itself is tested in
+// `EmiraCoreTests`. The policy: a missing file is the zero-config strip, not an error; a broken file
+// changes nothing and says why; a saved file reloads once however many filesystem events the editor
+// produced. Real temp files, because a temp directory is a perfectly good fixture. The change source
+// is faked — a kernel event has no place in a unit test, which is why `FileWatcher` is a protocol.
 
 @Suite @MainActor struct ConfigLoaderTests {
 
@@ -90,8 +83,7 @@ import EmiraCore
 
     // MARK: - Reading
 
-    /// emira must run before it is configured. The first launch of a window manager is not the moment
-    /// to demand a file the user hasn't written.
+    /// emira must run before it is configured.
     @Test func aMissingFileIsTheDefaultConfigAndNotAnError() throws {
         let scratch = Scratch()
         let result = Self.loader(scratch).load()
@@ -104,9 +96,8 @@ import EmiraCore
         #expect(try Self.loader(scratch).load().get().columnGap == 14)
     }
 
-    /// The diagnostic is `path:line: message` — the shape an editor's error parser and a human both
-    /// already know how to read. The core's own wording opens with "line N: " because it has no idea
-    /// what file it is reading; here we do, so the line moves into the prefix.
+    /// The diagnostic is `path:line: message`, the shape an editor's error parser reads. The core's
+    /// own wording opens with "line N: " since it doesn't know the file; here the line moves up front.
     @Test func aBrokenFileReportsThePathAndTheLine() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 8\ncolum-gap = 4\n")
@@ -146,8 +137,8 @@ import EmiraCore
         #expect(reports.configs.map(\.columnGap) == [3, 9])
     }
 
-    /// The rule that keeps a typo from rearranging a desktop: a failed reload reports an error and
-    /// **no config at all**, so the daemon has nothing to dispatch and the running settings stand.
+    /// A failed reload reports an error and no config at all, so the daemon has nothing to dispatch
+    /// and the running settings stand.
     @Test func aBrokenReloadReportsNoConfigSoTheRunningOneStands() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 3\n")
@@ -164,9 +155,8 @@ import EmiraCore
 
     // MARK: - Watching
 
-    /// One save is several filesystem events (a temp file appears, then a rename over the target).
-    /// Acting on each would re-place every window several times over, so a burst collapses into one
-    /// read — and that read sees the file's *final* state.
+    /// One save is several filesystem events (a temp file, then a rename over the target), so a burst
+    /// collapses into one read of the file's final state rather than re-placing every window twice.
     @Test func aBurstOfFilesystemEventsIsOneReload() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 1\n")
@@ -208,8 +198,7 @@ import EmiraCore
         #expect(reports.configs.map(\.columnGap) == [1, 2])
     }
 
-    /// Deleting the config file is a legitimate way to go back to the defaults, and it must not read
-    /// as an error — it is the missing-file rule arriving through the watcher.
+    /// Deleting the config file is the missing-file rule arriving through the watcher, not an error.
     @Test func deletingTheFileReloadsTheDefaults() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 5\n")
@@ -227,10 +216,9 @@ import EmiraCore
         #expect(reports.configs == [Config()])
     }
 
-    /// Watching a *directory* is the only way to see an atomic save, and the price is that unrelated
-    /// activity in that directory wakes us too — observed in a hand smoke with the config under
-    /// `$TMPDIR`, where a reload fired every few seconds with nobody editing anything. The filter is
-    /// the parsed value, not the file: the file changing is a guess, the config changing is a fact.
+    /// Watching a directory is the only way to see an atomic save, and the price is that unrelated
+    /// activity in it wakes us too. So the filter is the parsed value, not the file: the file
+    /// changing is a guess, the config changing is a fact.
     @Test func aFilesystemEventThatChangedNothingIsNotReported() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 5\n")
@@ -296,8 +284,8 @@ import EmiraCore
 
     // MARK: - The effect that reaches it
 
-    /// `Effect.reloadConfig` is routed to the config plane, not to AX and not to the compositor —
-    /// the property that lets a keybinding (M5 part 2) reload the file without touching the socket.
+    /// `Effect.reloadConfig` is routed to the config plane, not to AX and not to the compositor, so a
+    /// keybinding can reload the file without touching the socket.
     @Test func theReloadEffectReachesTheConfigSourceAndNothingElse() {
         final class CountingSource: ConfigSource {
             private(set) var reloads = 0

@@ -3,12 +3,9 @@ import Testing
 import EmiraMotion
 @testable import EmiraCore
 
-// The reducer scenarios (IMPLEMENTATION.md §8) — the whole point of the functional-core design is
-// that the brain is verified here, with no AX / Core Animation / ScreenCaptureKit anywhere. Each test
-// drives a scripted `Event` stream through `Engine.reduce` and asserts the resulting `State` and the
-// emitted `Effect` stream. This slice covers the snap/idle reducer: truth-plane folding, instant
-// correct placement, and focus/reveal by snapping (the M3-parity brain). The animated transition
-// session and its interrupt/retarget scenarios land with the next slice.
+// The reducer scenarios (IMPLEMENTATION.md §8). Each test drives a scripted `Event` stream through
+// `Engine.reduce` and asserts the resulting `State` and emitted `Effect` stream — no AX, Core
+// Animation or ScreenCaptureKit anywhere.
 
 @Suite struct EngineTests {
 
@@ -21,12 +18,8 @@ import EmiraMotion
     /// fill a 1000-wide viewport exactly, so a third column is unambiguously off-view.
     static let halfWidth = Config(widthPresets: PresetCycle([.proportion(0.5)]))
 
-    /// `halfWidth`, but snapping. The structural-arithmetic tests are about *where windows end up*,
-    /// not how they get there — and once a structural edit animates, the reals teleport at the cover's
-    /// raise rather than in the command's own batch, so asserting placements in that batch is asking
-    /// the wrong question. `smoothTransitions = false` is a real supported configuration (§4a: a
-    /// machine with no Screen Recording grant), not a test-only escape hatch, and the motion paths get
-    /// their own tests below.
+    /// `halfWidth`, but snapping — for tests about *where* windows end up, not how they get there:
+    /// under the animated path the reals teleport at the cover's raise, not in the command's own batch.
     static let halfWidthSnap = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                       smoothTransitions: false)
 
@@ -50,11 +43,8 @@ import EmiraMotion
     }
 
     /// Drive a state to rest: answer every capture, land every AX set, and tick until the animators
-    /// settle. What a real daemon does over ~300 ms, with no clock in it.
-    ///
-    /// Needed since 2026-07-26, when **arrival** started animating: building a world out of
-    /// `windowCreated`s now opens a transition, so a test that wants "a placed world" has to close it
-    /// the way the daemon does rather than assume placement was instant.
+    /// settle. What a real daemon does over ~300 ms, with no clock in it. An arrival animates, so a
+    /// test wanting "a placed world" has to close the transition rather than assume instant placement.
     static func settle(_ start: State, _ effects: [Effect] = []) -> State {
         var s = start
         var queue = effects
@@ -100,11 +90,9 @@ import EmiraMotion
             let (next, fx) = Engine.reduce(s, e)
             s = next
             effects += fx
-            // **World setup is not the thing under test.** Since 2026-07-26 an arrival animates, so a
-            // `windowCreated` that *opened* a transition is driven to rest here — otherwise every test
-            // that builds a world out of them would be asserting against a half-raised cover. An
-            // arrival that joined a transition the test already had in flight is deliberately left
-            // alone, which is the case `aRetargetSweepsInANewWindow…` and friends are about.
+            // World setup is not the thing under test: a `windowCreated` that *opened* a transition is
+            // driven to rest here, or every test that builds a world would assert against a half-raised
+            // cover. An arrival joining a transition already in flight is deliberately left alone.
             if wasIdle, isArrival(e), s.motion.isTransitioning { s = settle(s, fx) }
         }
         return (s, effects)
@@ -157,9 +145,8 @@ import EmiraMotion
         + Direction.allCases.map { Command.consumeOrExpel($0) }
 
     /// Drive an open transition to close: deliver every scoped `captureReady` (raises the cover and
-    /// teleports the reals), land every awaited real, then tick until the animators settle and the
-    /// session tears down. Bounded so a non-converging spring fails loudly instead of hanging. Returns
-    /// the final state and the full concatenated effect stream. Idempotent from any mid-transition point.
+    /// teleports the reals), land every awaited real, then tick until the session tears down. Bounded
+    /// so a non-converging spring fails loudly instead of hanging; idempotent from any point mid-flight.
     static func drive(_ start: State) -> (State, [Effect]) {
         var s = start
         var fx: [Effect] = []
@@ -175,12 +162,11 @@ import EmiraMotion
         return (s, fx)
     }
 
-    // MARK: - Instant correct placement (the §4a floor)
+    // MARK: - Instant correct placement
 
     @Test func newStandardWindowIsFocusedAndPlaced() {
-        // §4a's floor, so §4a's configuration: no capture capability ⇒ no cover, and the window is
-        // placed in the same batch. (With a cover available the same arrival animates — see
-        // `GhostWindowTests`.)
+        // No capture capability ⇒ no cover, so the window is placed in the same batch. (With a cover
+        // available the same arrival animates — see `GhostWindowTests`.)
         let snap = Config(smoothTransitions: false)
         let (s, fx) = Engine.reduce(Self.booted(config: snap), .windowCreated(Self.snapshot(1)))
         // One column, one window, focused, placed to a ⅓-width tile at the working-area origin.
@@ -236,13 +222,13 @@ import EmiraMotion
         #expect(s.world.windows[WindowId(1)]?.frame == drifted) // but the drift is recorded
     }
 
-    // MARK: - The desktop emira meets at boot (2026-07-26)
+    // MARK: - The desktop emira meets at boot
     //
-    // emira keeps no layout across restarts (§10), so the widths on screen when the launch scan runs are
-    // the only record of the user's arrangement there is. An adopted window keeps the width it already
-    // has; a window opened afterwards is the app's default and belongs on the ladder.
+    // emira keeps no layout across restarts, so the widths on screen when the launch scan runs are the
+    // only record of the user's arrangement. An adopted window keeps the width it already has; a window
+    // opened afterwards is the app's default and belongs on the ladder.
 
-    /// The whole of it: a window emira met already open is tiled at its own width, not at ⅓.
+    /// A window emira met already open is tiled at its own width, not at ⅓.
     @Test func aWindowAdoptedAtBootKeepsTheWidthItAlreadyHad() {
         let snap = Config(smoothTransitions: false)
         let adopted = Self.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500),
@@ -258,9 +244,9 @@ import EmiraMotion
         #expect(Self.approx(placed!, Rect(x: 0, y: 0, width: 640, height: 800)))
     }
 
-    /// The one correction we do make. Wider than the viewport is not a state the strip reaches on its
-    /// own — neither the ladder nor `grow`'s ceiling goes past 100% — so an adopted window is brought to
-    /// the edge of it rather than greeting the user with its right edge cut off.
+    /// The one correction we do make: wider than the viewport is not a state the strip reaches on its
+    /// own, so an adopted window is brought to the edge of it rather than greeting the user with its
+    /// right edge cut off.
     @Test func anAdoptedWindowWiderThanTheScreenIsClampedToOneHundredPercent() {
         let snap = Config(smoothTransitions: false)
         let huge = Self.snapshot(1, frame: Rect(x: -200, y: 0, width: 1400, height: 900),
@@ -296,8 +282,8 @@ import EmiraMotion
         #expect(s.layout.columns[0].widthOverride == nil)
     }
 
-    /// The seed costs the user nothing to undo, because it is a `widthOverride` and nothing new:
-    /// `cycle-width` clears it and resumes the ladder exactly as it does after a `grow`.
+    /// The seed is an ordinary `widthOverride`: `cycle-width` clears it and resumes the ladder exactly
+    /// as it does after a `grow`.
     @Test func cycleWidthClearsAnAdoptedWidthLikeAnyOtherOverride() {
         let config = Config(smoothTransitions: false)                    // ⅓ / ½ / ⅔
         let adopted = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 640, height: 500),
@@ -310,7 +296,7 @@ import EmiraMotion
         #expect(Self.width(s) == 500)
     }
 
-    /// Total against a window with no width to keep — the preset answers, as it did before.
+    /// Total against a window with no width to keep — the preset answers.
     @Test func anAdoptedWindowWithNoWidthFallsBackToThePreset() {
         let snap = Config(smoothTransitions: false)
         let empty = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 0, height: 0), wasAlreadyOpen: true)
@@ -344,9 +330,8 @@ import EmiraMotion
         #expect(s.motion.viewportOffset.target == 1000)         // aimed left one viewport
         #expect(s.motion.viewportOffset.current == 2000)        // hasn't moved yet (no ticks)
         // Scope = {w2, w3} swept, plus w1 as the left shoulder — the column one further `focus left`
-        // would pull in, captured now because a capture requested then would arrive too late
-        // (`Layout.sweptWindowIds`). A capture each, and *no* real teleport yet (nothing is exposed
-        // before the cover is up).
+        // would pull in, captured now because a capture requested then would arrive too late. No real
+        // teleport yet: nothing is exposed before the cover is up.
         #expect(Set(Self.capturedIds(in: fx)) == Set([WindowId(1), WindowId(2), WindowId(3)]))
         #expect(!Self.hasEffect(fx) { if case .setFrame = $0 { return true }; return false })
         #expect(!Self.hasEffect(fx) { if case .beginTransition = $0 { return true }; return false })
@@ -385,7 +370,7 @@ import EmiraMotion
     }
 
     @Test func verticalFocusMovesWithinColumnWithoutScrolling() {
-        // Build a two-window column by hand (consume/expel isn't in this slice), then focus down.
+        // Build a two-window column by hand, then focus down.
         let world = { () -> World in
             var w = World()
             w.setMonitors([MonitorInfo(id: MonitorId(1), frame: Self.displayFrame)])
@@ -442,7 +427,7 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, -250))
     }
 
-    // MARK: - External focus (snap-reveal, §4a)
+    // MARK: - External focus (snap-reveal)
 
     @Test func externalFocusRevealsWithoutEmittingFocus() {
         // A window that scrolled off-view regains focus via Cmd-Tab — we snap to it, but don't
@@ -543,13 +528,10 @@ import EmiraMotion
     }
 
     @Test func transitionFeedbackEventsAreInertWhenIdle() {
-        // With no session open (steady state), every transition-feedback event acks nothing and leaves
-        // the state untouched — the totality guarantee for a stray ack that outlives its transition.
-        //
-        // `axFailed` is the one exception, and it is not about the transition: it says the frame the
-        // core optimistically recorded never happened, which is true with or without a session open
-        // (`World.unverified`, 2026-07-26). It still emits nothing — re-placing from here would be a
-        // busy loop against a hung app — so what it changes is only what the *next* placement asks.
+        // With no session open, every transition-feedback event acks nothing and leaves the state
+        // untouched — totality for a stray ack that outlives its transition. `axFailed` is the exception:
+        // it records that an optimistic frame never happened (`World.unverified`), changing only what the
+        // *next* placement asks. It still emits nothing; re-placing here would busy-loop a hung app.
         let (s0, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
         for event: Event in [.tick(dt: 0.016), .axLanded(WindowId(1)),
                              .captureReady(WindowId(1)), .crossfadeDone, .holdTimeout] {
@@ -563,7 +545,7 @@ import EmiraMotion
         #expect(failed.world.unverified == [WindowId(1)])
     }
 
-    // MARK: - The animated transition session (§3/§4b)
+    // MARK: - The animated transition session
 
     @Test func transitionLifecycleRaisesCoverTeleportsAndCrossFades() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
@@ -599,11 +581,9 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, 1000))
     }
 
-    /// The degradation path for a machine with no Screen Recording grant (`Config.smoothTransitions`).
-    /// The cover is made of captured pixels; with none to be had, animating an empty one is strictly
-    /// worse than not covering at all, so the same scroll that opens a session above becomes the plain
-    /// snap-place of §4a. What must survive is the *placement*: the window still ends up exactly where
-    /// the smooth path would have put it, and the viewport rests at the same offset.
+    /// The degradation path for a machine with no Screen Recording grant (`Config.smoothTransitions`):
+    /// with no pixels to cover with, the scroll becomes a plain snap-place. What must survive is the
+    /// *placement* — the window ends up exactly where the smooth path would have put it.
     @Test func withoutSmoothTransitionsAScrollSnapsAndCapturesNothing() {
         var config = Self.fullWidth
         config.smoothTransitions = false
@@ -643,8 +623,7 @@ import EmiraMotion
     }
 
     @Test func interruptRetargetsInFlightScrollWithoutOpeningASecondSession() {
-        // The scenario the whole core-owns-the-clock design exists for (§8). Settle focused on w2 at
-        // offset 1000 first (full-width, three windows).
+        // Settle focused on w2 at offset 1000 first (full-width, three windows).
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -688,21 +667,17 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, 1000))
     }
 
-    // MARK: - The cover has no holes, at any command rate (2026-07-26)
+    // MARK: - The cover has no holes, at any command rate
 
-    /// ⅓ columns with the gaps a real config carries — the geometry both hole defects below were
-    /// measured on. The gap is not incidental: minimal-reveal scrolling leaves the next column exactly
-    /// one `columnGap` past the destination the session is already aiming at, which is what makes it
-    /// enter the viewport almost immediately after a retarget rather than comfortably later.
+    /// ⅓ columns with the gaps a real config carries. The gap is load-bearing: minimal-reveal scrolling
+    /// leaves the next column exactly one `columnGap` past the destination already being aimed at, so it
+    /// enters the viewport almost immediately after a retarget rather than comfortably later.
     static let spamConfig = Config(columnGap: 8, windowGap: 8)
 
-    /// A frame-stepped world with **latency** — the one thing `drive` cannot model. `drive` acks every
-    /// capture synchronously, so a hole that exists only between a `capture` and its `captureReady` is
-    /// invisible to it. Here an effect resolves a fixed number of frames after it is emitted, and
-    /// commands keep arriving while the answers are still out.
-    ///
-    /// Internal rather than private since 2026-07-26: the workspace switch is measured with the same
-    /// instrument (`WorkspaceMotionTests`), and a second copy of a clock is a second clock.
+    /// A frame-stepped world with latency — the one thing `drive` cannot model, since it acks every
+    /// capture synchronously and so cannot see a hole that exists only between a `capture` and its
+    /// `captureReady`. Here effects resolve a fixed number of frames later while commands keep arriving.
+    /// Shared with `WorkspaceMotionTests`: a second copy of a clock is a second clock.
     struct LatentWorld {
         var state: State
         var frame = 0
@@ -737,17 +712,12 @@ import EmiraMotion
 
         /// The thickest stripe of viewport a window wants to occupy and has no layer to be drawn with —
         /// i.e. how much wallpaper the cover is showing where a window should be. Zero unless the cover
-        /// is up: before the raise the user is looking at the real desktop, which is the truth and not
-        /// a hole.
+        /// is up: before the raise the user is looking at the real desktop, which is not a hole.
         ///
-        /// **Asked of every workspace, clipped on both axes, and reported as the exposed rectangle's
-        /// shorter side** (2026-07-26). Until the vertical transition there was only ever one strip under
-        /// a cover and every window in it spanned the viewport's full height, so the horizontal overlap
-        /// *was* the stripe's thickness. A workspace one screen up or down overlaps horizontally the
-        /// whole time it is off screen — measured that way it would read as a permanent full-width hole —
-        /// and when it does begin to show, what shows is a band at the screen's edge whose thickness is
-        /// vertical. The shorter side is the same number in both cases: how far into the screen the
-        /// exposure reaches.
+        /// Asked of every workspace, clipped on both axes, and reported as the exposed rectangle's
+        /// *shorter* side — a workspace one screen up or down overlaps horizontally the whole time it is
+        /// off screen, so a horizontal-only measure would read as a permanent full-width hole. The
+        /// shorter side is how far into the screen the exposure actually reaches.
         func hole() -> Double {
             guard state.motion.isCovered, let metrics = state.metrics() else { return 0 }
             let view = metrics.workingArea
@@ -795,31 +765,16 @@ import EmiraMotion
         return worst
     }
 
-    /// **The invariant the whole scoping story exists to hold:** while the cover is up, every window
-    /// the layers would draw inside the viewport has a layer to be drawn with. One that doesn't is a
-    /// window-shaped patch of wallpaper sliding across the cover — the artifact M4 part 1 photographed
-    /// and M4 part 2 closed for an *uninterrupted* transition, which is why it only ever showed when
-    /// commands were spammed.
+    /// The invariant the whole scoping story exists to hold: while the cover is up, every window the
+    /// layers would draw inside the viewport has a layer to be drawn with. One that doesn't is a
+    /// window-shaped patch of wallpaper sliding across the cover.
     ///
-    /// Two independent latency defects broke it, and neither is reachable from a harness that acks
-    /// instantly:
-    ///
-    ///  · **The late extension.** A retarget widens the scope correctly, but the stills it asks for
-    ///    arrive after the layers have already crossed into the territory they cover. Fixed by
-    ///    capturing a **shoulder** past each end of the sweep (`Layout.sweptWindowIds`), so the column
-    ///    a further command can reach is already on the cover. Measured before: 130–140 pt of hole.
-    ///  · **The starved extension.** Under a *stream* of interrupts there is always a capture
-    ///    outstanding, so a session-wide `captureComplete` gate never opens again and the cover stops
-    ///    growing at all. Fixed by asking the question per window
-    ///    (`TransitionSession.unboundWindows`). Measured before: 600 pt — an entire column.
-    ///
-    /// The press rates bracket reality: 4 frames ≈ 33 ms is faster than a key repeat, 40 ≈ 333 ms is a
-    /// full settle. The capture latencies bracket the measured extension batch (36 ms ≈ 4 frames) at
-    /// 1× and 2×.
-    ///
-    /// **What is *not* claimed.** No fixed lookahead can be an absolute guarantee — a user can always
-    /// press faster than pixels can be fetched — so the residual is characterized rather than hidden,
-    /// by `theShoulderBuysAtLeastOneCommandIntervalOfRunway` below.
+    /// Two mechanisms hold it, and neither is reachable from a harness that acks instantly: a *shoulder*
+    /// captured past each end of the sweep (`Layout.sweptWindowIds`), so a retarget's stills are already
+    /// in; and a per-window capture gate (`TransitionSession.unboundWindows`), so a stream of interrupts
+    /// cannot starve the cover's growth. The press rates bracket reality — 4 frames ≈ 33 ms is faster
+    /// than a key repeat, 40 ≈ 333 ms is a full settle. No fixed lookahead is an absolute guarantee; the
+    /// residual is characterized by `theShoulderBuysAtLeastOneCommandIntervalOfRunway` below.
     @Test(arguments: [4, 6, 10, 20, 40] as [Int], [4, 8] as [Int])
     func theCoverNeverShowsAHoleHoweverFastTheCommandsArrive(gapFrames: Int, captureLatency: Int) {
         for (command, settle) in Self.spammableCommands {
@@ -829,20 +784,12 @@ import EmiraMotion
         }
     }
 
-    /// **The shape of the residual, pinned.** A shoulder is one column of lookahead, so what it buys is
-    /// bounded — and the bound is worth knowing rather than discovering. It divides the vocabulary in
-    /// two, for a reason that is about *what the command does to the strip*:
-    ///
-    ///  · A **scroll** or a **resize** moves the viewport over a strip whose column order is fixed, so
-    ///    the shoulder is the column that will arrive next, by construction. Holes are unreachable at
-    ///    any capture latency — swept to 500 ms in development, which is past the capture plane's own
-    ///    250 ms deadline, i.e. past the point where the batch stops being a race and starts being a
-    ///    timeout.
-    ///  · A **structural edit** re-orders the strip *and* scrolls it, so a column reaches the viewport
-    ///    edge earlier in the travel than a plain scroll would bring it. The runway is then about one
-    ///    command interval — measured as tolerating a capture of `interval + 1` frames, i.e. this test
-    ///    asserts the honest floor. Against the real 36 ms batch that is ~2× headroom even at a press
-    ///    rate faster than key repeat, and it degrades into a *narrower* hole rather than a cliff.
+    /// The shape of the residual, pinned. A shoulder is one column of lookahead, so what it buys is
+    /// bounded. A *scroll* or *resize* moves the viewport over a strip whose column order is fixed, so
+    /// the shoulder is the column that will arrive next by construction, and holes are unreachable at any
+    /// capture latency. A *structural edit* re-orders the strip as well as scrolling it, bringing a
+    /// column to the viewport edge earlier; the runway is then about one command interval, which is the
+    /// honest floor this asserts, and it degrades into a narrower hole rather than a cliff.
     @Test(arguments: [6, 10, 15, 20, 30] as [Int])
     func theShoulderBuysAtLeastOneCommandIntervalOfRunway(gapFrames: Int) {
         for (command, settle) in Self.spammableCommands {
@@ -863,14 +810,11 @@ import EmiraMotion
         (.centerColumn, .focus(.right)),
     ]
 
-    // MARK: - The cover that grows (M4 part 2)
+    // MARK: - The cover that grows
 
-    /// **The hole, closed.** A session's scope is fixed when it opens, but an interrupting command
-    /// retargets the scroll — and the new destination sweeps windows the original scope never named.
-    /// Through M4 part 1 those windows slid into the viewport with *no layer at all*, and what showed
-    /// through was the base: wallpaper where a window should be (`PRINCIPLES.md` §10). Now the retarget
-    /// widens the scope, captures the newcomer, and the cover grows to include it — mid-flight, without
-    /// re-raising anything.
+    /// A session's scope is fixed when it opens, but an interrupting command retargets the scroll and the
+    /// new destination sweeps windows the original scope never named. The retarget widens the scope,
+    /// captures the newcomer, and grows the cover mid-flight without re-raising anything.
     @Test func aRetargetSweepsInANewWindowCapturesItAndGrowsTheCover() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
@@ -941,7 +885,7 @@ import EmiraMotion
 
     /// No pixels ⇒ no cover, never a black one. A head capture batch that comes back without a desktop
     /// base answers `coverUnavailable`, and the session is abandoned *before* anything has moved — the
-    /// user gets §4a's instant, correct placement instead of a blacked-out display.
+    /// user gets instant, correct placement instead of a blacked-out display.
     @Test func coverUnavailableAbandonsTheSessionAndSnaps() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
@@ -959,8 +903,7 @@ import EmiraMotion
     }
 
     /// Totality: the same event with a *raised* cover must not drop it — a cover that is up can only be
-    /// taken down by the cross-fade. (It cannot happen — an extension batch owes no base — but the
-    /// reducer is total over every event in every state by contract.)
+    /// taken down by the cross-fade. It cannot happen in practice; the reducer is total regardless.
     @Test func coverUnavailableNeverDropsARaisedCover() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
@@ -974,13 +917,11 @@ import EmiraMotion
         #expect(afx.isEmpty)
     }
 
-    // MARK: - The animated resize (M4 part 3, §4d)
+    // MARK: - The animated resize
 
-    /// **`cycleWidth`, end to end.** The first command whose motion is not a scroll: the strip's own
-    /// geometry changes, so the viewport-offset scalar cannot express it and the column's *resolved
-    /// width* goes under its own spring. Note what does **not** happen — the viewport never moves — and
-    /// that a transition opens anyway. That is the difference from `scrollReveal`, where start == end
-    /// means there is nothing to animate.
+    /// `cycleWidth`, end to end. The strip's own geometry changes, so the viewport-offset scalar cannot
+    /// express it and the column's *resolved width* goes under its own spring — a transition opens even
+    /// though the viewport never moves.
     ///
     /// Two ⅓-width columns on a 1000-wide display: 333⅓ each. Cycling col1 to ½ makes it 500 wide.
     @Test func cycleWidthOpensATransitionEvenThoughTheViewportNeverMoves() {
@@ -1003,8 +944,8 @@ import EmiraMotion
         #expect(s.motion.columnWidth(column)?.target == 500)
         #expect(!s.motion.isSettled)                               // …and it holds the cover up
 
-        // Raise: the *real* window is resized to its final width at once, behind the cover (§4d — only
-        // the owning app can produce resized pixels, so there is nothing to animate on the truth plane).
+        // Raise: the *real* window is resized to its final width at once, behind the cover — only the
+        // owning app can produce resized pixels, so there is nothing to animate on the truth plane.
         var fx: [Effect] = []
         for w in s.motion.transition?.windows ?? [] {
             let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; fx += f
@@ -1014,7 +955,7 @@ import EmiraMotion
         #expect(Self.placement(of: WindowId(1), in: fx) == nil)    // untouched: left of the resize
         #expect(s.motion.transition?.awaitingLanding == Set([WindowId(2)]))
 
-        // …while the *layer* grows across frames — the scaled still §4d cross-fades over the reflow.
+        // …while the *layer* grows across frames — the scaled still cross-fades over the reflow.
         let layer = try! #require(s.motion.transition?.layerId(for: WindowId(2)))
         var mid: [Effect] = []
         for _ in 0..<5 { let (n, f) = Engine.reduce(s, .tick(dt: 1.0 / 120)); s = n; mid += f }
@@ -1060,15 +1001,13 @@ import EmiraMotion
         #expect(pushed.width == 1000.0 / 3.0)                      // …at its own, unchanged width
     }
 
-    /// **Why the scope is a union of two geometries.** A column can be on screen *before* the resize and
-    /// swept by nothing *after* it — a growing neighbour pushes it off the right edge. Scoping on the new
-    /// geometry alone would give it no captured layer, and it would slide out of view as a hole showing
-    /// the wallpaper: M4 part 1's finding, arriving by a different route.
+    /// Why the scope is a union of two geometries: a column can be on screen *before* the resize and
+    /// swept by nothing *after* it, because a growing neighbour pushes it off the right edge. Scoping on
+    /// the new geometry alone would leave it sliding out of view with no layer, i.e. a hole.
     ///
     /// ¼/full presets on a 1000-wide display. Four 250-wide columns all on screen at offset 0; cycling
-    /// col1 to full (1000) makes it fill the viewport by itself and evicts cols 2 **and** 3 — two
-    /// columns, deliberately, so that one of them lands outside the shoulder the sweep already carries
-    /// (`Layout.sweptWindowIds`) and the two-geometry union is the only thing that can account for it.
+    /// col1 to full evicts cols 2 *and* 3 — two, deliberately, so one lands outside the shoulder the
+    /// sweep already carries and only the two-geometry union can account for it.
     @Test func aResizeScopesTheColumnItPushesOffTheScreen() {
         let config = Config(widthPresets: PresetCycle([.proportion(0.25), .proportion(1.0)]))
         var (s, _) = Self.run(Self.booted(config: config), [
@@ -1129,9 +1068,8 @@ import EmiraMotion
         #expect(done.motion.currentColumnWidths.isEmpty)
     }
 
-    /// §4a for a machine with no Screen Recording grant: the resize still happens, at once. What must
-    /// survive the degradation is the *placement* — the column ends up exactly the width the animated
-    /// path would have converged on.
+    /// With no Screen Recording grant the resize still happens, at once: the column ends up exactly the
+    /// width the animated path would have converged on.
     @Test func withoutSmoothTransitionsAResizeHappensAtOnce() {
         var config = Config()
         config.smoothTransitions = false
@@ -1150,8 +1088,7 @@ import EmiraMotion
     // MARK: - The continuous resize (`grow` / `shrink`)
 
     /// A snapping world with one preset, so a column's width is only ever what `grow`/`shrink` made it.
-    /// Snapping because these tests are about *what width the column ends up*, not how it gets there —
-    /// the motion is `cycleWidth`'s, already covered above.
+    /// Snapping because these tests are about *what* width results, not how it gets there.
     static func oneThirdSnap() -> State {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
                             smoothTransitions: false)
@@ -1164,9 +1101,8 @@ import EmiraMotion
         s.layout.resolvedWidth(of: s.layout.columns[index], metrics: s.metrics()!)
     }
 
-    /// `grow` is `cycleWidth`'s motion with a different arithmetic in front of it: the same second
-    /// animated quantity, the same transition opened over a viewport that never moves, the same real
-    /// window resized to its final width behind the cover.
+    /// `grow` is `cycleWidth`'s motion with different arithmetic in front of it: the same width spring,
+    /// the same transition over a viewport that never moves.
     @Test func growAnimatesTheColumnWidthExactlyAsACycleDoes() {
         var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
         let column = s.layout.columns[0].id
@@ -1187,10 +1123,9 @@ import EmiraMotion
         #expect(done.motion.currentColumnWidths.isEmpty)        // the override is dropped, not kept
     }
 
-    /// **A percentage is of the working area, not of the current width** (2026-07-26). The consequence
-    /// is the reason: steps are uniform however wide the column already is, and the two verbs are exact
-    /// inverses. Under the compounding reading each step here would differ and the round trip would
-    /// land 1% short of where it began.
+    /// A percentage is of the working area, not of the current width — so steps are uniform however wide
+    /// the column already is and the two verbs are exact inverses. Under the compounding reading the
+    /// round trip would land 1% short of where it began.
     @Test func aPercentageIsOfTheWorkingAreaSoTheStepsAreUniformAndTheVerbsInvert() {
         var s = Self.oneThirdSnap()                             // 1000-wide working area ⇒ 10% = 100 pt
         let start = Self.width(s)
@@ -1252,7 +1187,7 @@ import EmiraMotion
         #expect(Self.width(grown) == Engine.minimumColumnWidth + 50)
     }
 
-    /// **The clamp can stop a resize; it may never reverse one.** A config that deliberately asks for
+    /// The clamp can stop a resize; it may never reverse one. A config that deliberately asks for
     /// columns wider than the screen (`width-presets = [1.5]`) is honored by `Presets`, so a `grow` that
     /// clamped to the working width would answer "wider, please" with a sudden 500 pt *shrink*.
     @Test func aClampNeverMovesAColumnTheWayItWasNotAsked() {
@@ -1267,12 +1202,9 @@ import EmiraMotion
         #expect(Self.width(s) == 1400)                           // …while the other way still moves
     }
 
-    /// **A failed shrink stops at the app's own floor, and converges there.** The user's "known minimum
-    /// dimensions": we never learn a minimum (2026-07-26 — there is no public attribute for one), we
-    /// only remember what the app answered to the question we asked. Taking each delta from the
-    /// *resolved* width rather than the stored intent is what makes that a fixed point instead of a dead
-    /// zone — by the second press the question repeats, the recorded answer applies, and the command
-    /// goes quiet.
+    /// A failed shrink stops at the app's own floor and converges there. There is no public attribute for
+    /// a minimum, so all we have is what the app answered to the question we asked; taking each delta
+    /// from the *resolved* width rather than the stored intent makes that a fixed point, not a dead zone.
     @Test func aRefusedShrinkSettlesAtTheAppsFloorAndGrowStillMovesAtOnce() {
         var s = Self.oneThirdSnap()                              // 333⅓
         /// The app under test: it will not go below 300 pt wide.
@@ -1283,12 +1215,9 @@ import EmiraMotion
             (s, _) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: landed))
         }
 
-        // **Every press asks** (corrected 2026-07-26). This used to assert that the third press was
-        // *silent* — 300 − 100 re-derives a question already on file, so there was nothing to ask. That
-        // was right about the arithmetic and wrong about the world: an app's limits are usually a
-        // property of what it is currently showing, so the refusal is a cache of one answer and not a
-        // standing fact. A resize verb therefore retires it and genuinely re-asks; the column springs
-        // out and back each time, which is a real attempt rather than feedback staged to look like one.
+        // Every press asks. An app's limits are usually a property of what it is currently showing, so a
+        // refusal is a cache of one answer rather than a standing fact: a resize verb retires it and
+        // genuinely re-asks, and the column springs out and back each time.
         for press in 1...3 {
             let (next, fx) = Engine.reduce(s, .command(.shrink(.points(100))))
             s = next
@@ -1302,11 +1231,9 @@ import EmiraMotion
         #expect(Self.width(s) == 400)
     }
 
-    /// **Why it re-asks instead of bouncing, and the case that decides it.** A window's limits are
-    /// usually a property of what it is currently *showing* — change tabs and the same app will accept a
-    /// width it just refused. Nothing reports that and nothing can, so the record is a cache of one
-    /// answer rather than a standing fact about the window. Here the limit lifts between presses and the
-    /// very next `grow` succeeds, with nothing having told emira anything changed.
+    /// Why it re-asks instead of bouncing: change tabs and the same app will accept a width it just
+    /// refused, and nothing reports that. Here the limit lifts between presses and the very next `grow`
+    /// succeeds, with nothing having told emira anything changed.
     @Test func aWindowWhoseLimitLiftsGrowsOnTheNextPress() {
         var s = Self.oneThirdSnap()
         var limit = 500.0
@@ -1378,19 +1305,10 @@ import EmiraMotion
     }
 
 
-    /// **The reported sequence, in full** (2026-07-26). A window that will not grow, at the right-hand
-    /// end of a strip: `grow`, `focus` away and back, `grow`, `shrink`, `grow`, `grow`. What was
-    /// observed was phantom desktop tacked onto the side after every `grow` — surviving until the next
-    /// command, which snapped it away with no animation.
-    ///
-    /// The column was never the problem: it collapsed back to 333⅓ each time, correctly. The **viewport**
-    /// did not. Every scroll target derives from the same column widths a correction changes, so a
-    /// session that keeps the destination it was given is travelling to a place computed for a strip
-    /// that no longer exists — measured here at **316 against a strip whose end is 16**, i.e. 300 pt of
-    /// bare desktop. Two animated quantities over one geometry, and only one of them was being corrected.
-    ///
-    /// The invariant this pins is the general one, not the six steps: **after any command settles, the
-    /// viewport is inside the strip it describes.**
+    /// After any command settles, the viewport is inside the strip it describes. Every scroll target
+    /// derives from the same column widths a correction changes, so a session that keeps the destination
+    /// it was given travels to a place computed for a strip that no longer exists — which the user sees
+    /// as phantom desktop tacked onto the side after a refused `grow`.
     @Test func aRefusedResizeNeverLeavesTheViewportPastTheStripsEnd() {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]), columnGap: 8)
         var (s, _) = Self.run(Self.booted(config: config), [
@@ -1432,9 +1350,8 @@ import EmiraMotion
 
     // MARK: - Fullscreen (the strip's, not the system's)
 
-    /// **The whole feature, as it was asked for:** a column at 40% goes to 100% and comes back to 40%.
-    /// Exactly 40% — because `isFullscreen` shadows the width intent instead of replacing it, so there
-    /// is nothing stored to restore and nothing to round.
+    /// A column at 40% goes to 100% and comes back to exactly 40% — `isFullscreen` shadows the width
+    /// intent instead of replacing it, so there is nothing stored to restore and nothing to round.
     @Test func fullscreenTogglesBetweenTheColumnsOwnWidthAndTheFullStripWidth() {
         var s = Self.oneThirdSnap()                              // 1000-wide content area
         (s, _) = Engine.reduce(s, .command(.grow(.points(400.0 - Self.third))))
@@ -1449,9 +1366,8 @@ import EmiraMotion
         #expect(Self.approxScalar(Self.width(s), 400))           // back exactly, not near it
     }
 
-    /// The same round trip from a **ladder rung**, which is the case a saved point count would have to
-    /// get right and this one doesn't have to think about: the preset is never touched, so a config
-    /// reload or a display change under a fullscreen column still uncovers the right width.
+    /// The same round trip from a ladder rung: the preset is never touched, so a config reload or a
+    /// display change under a fullscreen column still uncovers the right width.
     @Test func fullscreenUncoversALadderRungEvenAfterThePresetsChange() {
         let config = Config(smoothTransitions: false)             // ⅓ / ½ / ⅔ of 1000
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
@@ -1472,9 +1388,8 @@ import EmiraMotion
         #expect(Self.width(s) == 750)                             // index 1, now ¾
     }
 
-    /// `fullscreen` is `cycleWidth`'s motion with a different intent in front of it — the same second
-    /// animated quantity, the same transition over a viewport that need not move, the same real window
-    /// teleported to its final width behind the cover. Nothing downstream learned a new concept.
+    /// `fullscreen` is `cycleWidth`'s motion with a different intent in front of it — the same width
+    /// spring, the same transition over a viewport that need not move.
     @Test func fullscreenAnimatesTheColumnWidthExactlyAsACycleDoes() {
         var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
         let column = s.layout.columns[0].id
@@ -1493,14 +1408,12 @@ import EmiraMotion
         #expect(done.motion.currentColumnWidths.isEmpty)
     }
 
-    /// **The strip is still the strip.** Nothing is hidden and no Space is created: the neighbouring
-    /// column is simply pushed out of the viewport and parks at its sliver, exactly as it would for a
-    /// `grow` to the ceiling — and scrolls back in when fullscreen comes off.
+    /// Nothing is hidden and no Space is created: the neighbouring column is pushed out of the viewport
+    /// and parks at its sliver, then scrolls back in when fullscreen comes off.
     ///
-    /// With a `columnGap`, deliberately: gapless, the revealed column's left edge lands exactly on the
-    /// departing one's right edge and which side of "visible" that falls on is decided by the last bit
-    /// of a `Double` (`Strip.visibleColumnIndices` is a strict overlap, and ⅓ of 1000 doesn't round).
-    /// That degeneracy is not what this test is about, and no real config has it.
+    /// The `columnGap` is deliberate — gapless, the revealed column's left edge lands exactly on the
+    /// departing one's right edge, and which side of "visible" that falls on comes down to the last bit
+    /// of a `Double`.
     @Test func fullscreenPushesTheNeighbouringColumnOffTheViewportAndBack() {
         let config = Config(columnGap: 8, smoothTransitions: false)
         var s = Self.run(Self.booted(config: config), [
@@ -1518,9 +1431,9 @@ import EmiraMotion
         #expect(Self.approxScalar(Self.width(back, 1), Self.third))
     }
 
-    /// An explicit width verb clears fullscreen, and the press that clears it is **continuous**: the
-    /// delta comes off the *resolved* width, which while fullscreen is the full width. Without the
-    /// clear, `shrink` here would write a number nothing can show — a dead knob.
+    /// An explicit width verb clears fullscreen, and the press that clears it is continuous: the delta
+    /// comes off the *resolved* width, which while fullscreen is the full width. Without the clear,
+    /// `shrink` here would write a number nothing can show — a dead knob.
     @Test func anExplicitWidthVerbClearsFullscreenAndActsAtOnce() {
         var s = Self.oneThirdSnap()
         (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
@@ -1571,19 +1484,10 @@ import EmiraMotion
         }
     }
 
-    /// **A window that refuses to *grow* must stop being asked, exactly as one that refuses to shrink
-    /// does.** Reported from use (2026-07-26): fullscreen System Settings — which is 723 pt wide and
-    /// will not be anything else — and it stretches, snaps back, and then **stretches and snaps back
-    /// again on every subsequent `focus left`/`right`**.
-    ///
-    /// The record was never the problem: `SizeCorrection` is symmetric and had `{wanted: full, actual:
-    /// 723}` on file throughout. What was asymmetric is who *consumes* it. A refused **shrink** answers
-    /// wider, so `Layout.resolvedWidth` widens the column and the target simply becomes the answer —
-    /// geometry quiets it, robustly. A refused **grow** answers narrower, geometry deliberately does not
-    /// follow (an under-filled column is a cosmetic gap), so quieting it rested entirely on
-    /// `isAlreadyPlaced` — which requires the **position** to match too. A scroll moves the window, so
-    /// the diff legitimately re-emits, and the rect it re-emitted carried the *aspirational* width. We
-    /// knew the answer and asked the question anyway, once per scroll, forever.
+    /// A window that refuses to *grow* must stop being asked, exactly as one that refuses to shrink does.
+    /// A refused shrink answers wider, so `Layout.resolvedWidth` widens the column and the target becomes
+    /// the answer; a refused grow answers narrower and geometry deliberately does not follow, so nothing
+    /// but this quiets the re-ask a scroll would otherwise trigger, once per scroll, forever.
     @Test func aWindowThatRefusedToGrowIsNotAskedAgainOnEveryScroll() {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
                             columnGap: 8, smoothTransitions: false)
@@ -1615,14 +1519,10 @@ import EmiraMotion
         }
     }
 
-    /// **The half the user actually watches, and the reason the fix belongs in the width and not at the
-    /// write.** The real window never grew — what stretched was the *cover's layer*, and the "snap
-    /// back" was the cross-fade retiring it over a window that had always been 400.
-    ///
-    /// Because the refusal now reaches the column's resolved width, and that width is already an
-    /// animated quantity, the layer **springs back** rather than being clamped: it expands toward 1000,
-    /// the answer lands, and it settles onto 400 continuously. That collapse is the feedback — "it said
-    /// no" — and the continuity is what distinguishes it from the one-frame jump a clamp produces.
+    /// The half the user watches. The refusal reaches the column's resolved width, which is already an
+    /// animated quantity, so the layer *springs back* rather than being clamped: it expands toward 1000,
+    /// the answer lands, and it settles onto 400 continuously. The continuity is the point — a clamp
+    /// would show up as a one-frame jump.
     @Test func aRefusedGrowSpringsTheLayerBackInsteadOfJumping() throws {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]), columnGap: 8)
         var (s, _) = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))])
@@ -1660,10 +1560,9 @@ import EmiraMotion
         }
         // It collapses to what the window is…
         #expect(Self.approxScalar(widths.last!, 400))
-        // …and gets there continuously, which is the property that separates this fix from the patch
-        // it replaced. The layer peaks near 739 and settles on 400; a clamp shows up as a single
-        // frame-to-frame step of ~340 pt, a spring at 120 fps as ~29. The bound sits between them with
-        // room on both sides rather than hugging the measurement.
+        // …and gets there continuously: the layer peaks near 739 and settles on 400, so a clamp would
+        // show a single frame-to-frame step of ~340 pt where a spring at 120 fps shows ~29. The bound
+        // sits between them with room on both sides.
         let biggestStep = zip(widths, widths.dropFirst()).map { abs($1 - $0) }.max() ?? 0
         #expect(biggestStep < 100, "layer jumped \(biggestStep) pt in one frame")
     }
@@ -1719,10 +1618,9 @@ import EmiraMotion
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
         #expect(s.motion.isCovered)
 
-        // w3's *real* window is parked (a nub in the bottom-right corner); its reconstruction *layer*
-        // rides the natural, un-parked position (sliding off the *right* edge). The two disagree by
-        // design — that's what makes a scrolled-off window glide off-screen instead of jumping to a
-        // sliver. Assert every layer frame equals the natural frame, and w3's layer ≠ its parked real.
+        // w3's *real* window is parked (a corner nub); its layer rides the natural, un-parked position,
+        // sliding off the right edge. The two disagree by design — that is what makes a scrolled-off
+        // window glide off-screen instead of jumping to a sliver.
         let realW3 = s.world.windows[WindowId(3)]!.frame
         let (t, tfx) = Engine.reduce(s, .tick(dt: 1.0 / 120))
         let metrics = t.metrics()!
@@ -1745,7 +1643,7 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
         #expect(s.motion.isCovered)
-        // Never land the reals — the ~1 s hold-timeout closes the cover regardless (§3).
+        // Never land the reals — the ~1 s hold-timeout closes the cover regardless.
         let (done, fx) = Engine.reduce(s, .holdTimeout)
         #expect(done.motion.isTransitioning == false)
         #expect(fx == [.endTransition])
@@ -1773,7 +1671,7 @@ import EmiraMotion
     }
 
     @Test func midTransitionStateRoundTripsThroughCodable() throws {
-        // A live session (cover raised, mid-animation) must serialize — replay + `emira debug` (§7).
+        // A live session (cover raised, mid-animation) must serialize — replay and `emira debug`.
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -1800,9 +1698,8 @@ import EmiraMotion
     }
 
     @Test func aClampedTiledLandingWidensItsColumnAndPushesTheNeighbourAlong() {
-        // The case the whole slice exists for. w1's app refuses 333⅓ and takes 500; without a record
-        // of that, `Layout` keeps col1 at 333⅓ and the two real windows *overlap* by 167 pt — the one
-        // thing the strip promises never happens.
+        // w1's app refuses 333⅓ and takes 500; without a record of that, `Layout` keeps col1 at 333⅓ and
+        // the two real windows *overlap* by 167 pt — the one thing the strip promises never happens.
         var s = Self.twoColumns()
         let asked = Rect(x: 0, y: 0, width: Self.third, height: 800)
         let got = Rect(x: 0, y: 0, width: 500, height: 800)
@@ -1824,9 +1721,8 @@ import EmiraMotion
     }
 
     @Test func aCorrectedWindowIsNeverAskedTheSameQuestionAgain() {
-        // The convergence claim, as a test: one round of writes, then silence. Before this record
-        // existed, `World.frame` held the clamped rect while the target held the preset, so the diff
-        // never matched and *every* subsequent placement re-issued the same doomed set, forever.
+        // The convergence claim: one round of writes, then silence. Without the record the diff never
+        // matches and every subsequent placement re-issues the same doomed set, forever.
         var s = Self.twoColumns()
         (s, _) = Engine.reduce(s, .placementCorrected(
             WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 800),
@@ -1837,11 +1733,9 @@ import EmiraMotion
     }
 
     @Test func aNarrowerAnswerNarrowsTheColumnToWhatTheWindowCanBe() {
-        // **Corrected 2026-07-26.** This asserted the opposite — the column kept its preset and
-        // quiescence was the placement diff's job — on the grounds that an under-filled column is "a
-        // gap, which is cosmetic". It is not: a column's width is strip extent, so the shortfall is
-        // desktop that scroll targets, tile-vs-park and the sweep all treat as content. The column now
-        // follows the answer down, and quiescence comes free because the target *is* what the window is.
+        // An under-filled column is not merely cosmetic: a column's width is strip extent, so the
+        // shortfall is desktop that scroll targets, tile-vs-park and the sweep all treat as content.
+        // The column follows the answer down, and quiescence comes free — the target *is* the window.
         var s = Self.twoColumns()
         let narrow = Rect(x: 0, y: 0, width: Self.third - 8, height: 800)
         let (next, _) = Engine.reduce(s, .placementCorrected(
@@ -1855,10 +1749,9 @@ import EmiraMotion
         #expect(Self.placement(of: WindowId(1), in: again) == nil)     // and goes quiet
     }
 
-    /// **The recursion guard** — a narrower answer teaches only when it answered the *question*.
-    /// Because the column now follows an answer down, the next request is the answer rather than the
-    /// question; an app that always returns a little less would otherwise walk the column toward
-    /// nothing, one placement at a time. At most one narrowing per question.
+    /// The recursion guard: a narrower answer teaches only when it answered the *question*. Otherwise an
+    /// app that always returns a little less would walk the column toward nothing, one placement at a
+    /// time. At most one narrowing per question.
     @Test func anAppThatAlwaysReturnsLessCannotWalkTheColumnDown() {
         var s = Self.twoColumns()
         let question = Self.third
@@ -2003,13 +1896,12 @@ import EmiraMotion
         #expect(s.layout.resolvedWidth(ofColumn: s.layout.columns[0].id, metrics: s.metrics()!) == 500)
     }
 
-    // MARK: - Structural edits (move-window / consume-or-expel — the strip rearranged)
+    // MARK: - Structural edits (move-window / consume-or-expel)
     //
     // `halfWidth`/`halfWidthSnap` throughout: two 500-wide columns fill the 1000-wide viewport exactly,
     // so nothing parks and nothing scrolls, and every frame is clean arithmetic on (0|500, 0, 500, 800)
-    // — or, for a two-window column, its 400-tall halves. The tests that assert *where a window lands*
-    // use the snapping fixture, because under the animated path the reals teleport at the cover's raise
-    // rather than in the command's own batch; the motion itself is the subject of the section after.
+    // — or, for a two-window column, its 400-tall halves. Tests that assert *where a window lands* use
+    // the snapping fixture; the motion itself is the subject of the section after.
 
     /// Two windows side by side; `w2` is focused and alone in its column, so a sideways move takes the
     /// whole column with it. Focus is already on the window that moved, so no `.focus` is owed.
@@ -2211,10 +2103,9 @@ import EmiraMotion
         #expect(n == s)
     }
 
-    /// The strip has an **origin, not an edge**, and the two verbs disagree about it on purpose: a
-    /// *consume* with no neighbour is a no-op because there is nothing to merge into, while an *expel*
-    /// at the same place still creates its column — index 0 is an ordinary position on an unbounded
-    /// axis, and every other column simply shifts right.
+    /// The strip has an origin, not an edge, and the two verbs disagree about it on purpose: a *consume*
+    /// with no neighbour is a no-op, while an *expel* at the same place still creates its column —
+    /// index 0 is an ordinary position on an unbounded axis and every other column shifts right.
     @Test func expellingAtTheStripOriginStillCreatesTheColumn() {
         var (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2245,10 +2136,9 @@ import EmiraMotion
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
         ])
-        // Against the whole workspace set rather than the focused strip alone (2026-07-26), which is
-        // strictly stronger: `Workspaces`' equality covers the shared `ColumnAllocator`, so a handler
-        // that minted a `ColumnId` on its way to doing nothing is now caught here too — the property
-        // `Layout.extract`'s guard-before-mint exists to keep.
+        // Against the whole workspace set rather than the focused strip alone: `Workspaces`' equality
+        // covers the shared `ColumnAllocator`, so a handler that minted a `ColumnId` on its way to doing
+        // nothing is caught here too.
         var reconciled = s.workspaces
         reconciled.reconcile(stripWindowIds: s.world.stripWindowIds)
         for command in Self.structuralCommands {
@@ -2271,11 +2161,10 @@ import EmiraMotion
         }
     }
 
-    /// **The inverse of what this file pinned before the animated slice.** Every structural command
-    /// that actually rearranges the strip now opens a transition and captures its scope, and does so
-    /// under `halfWidth` — where two columns fill the viewport exactly and the reveal offset does not
-    /// move at all. That is the case `scrollReveal` would snap on (`end ≈ start`) and the one a
-    /// structural edit most needs animated: a swap in full view is *entirely* structural motion.
+    /// Every structural command that rearranges the strip opens a transition and captures its scope —
+    /// here under `halfWidth`, where the reveal offset does not move at all. That is the case
+    /// `scrollReveal` would snap on, and the one a structural edit most needs animated: a swap in full
+    /// view is *entirely* structural motion.
     @Test func aStructuralEditOpensATransitionEvenWhenTheViewportNeverMoves() {
         let (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2294,9 +2183,9 @@ import EmiraMotion
         }
     }
 
-    /// The §4a floor, and the reason the placement tests above can keep asserting what they assert: a
-    /// machine with no Screen Recording grant rearranges instantly and correctly, with no cover, no
-    /// captures and no displacement animators — across every one of the twelve command cases.
+    /// The reason the placement tests above can keep asserting what they assert: with no Screen
+    /// Recording grant the strip rearranges instantly, with no cover, no captures and no displacement
+    /// animators — across all twelve command cases.
     @Test func withoutSmoothTransitionsAStructuralEditSnaps() {
         let (s, _) = Self.run(Self.booted(config: Self.halfWidthSnap), [
             .windowCreated(Self.snapshot(1)),
@@ -2311,14 +2200,11 @@ import EmiraMotion
         }
     }
 
-    /// **The property everything else rests on.** The very first frame under the cover must reproduce
-    /// the layout the user was looking at — `natural(after) + displacement(0) == natural(before)` on
-    /// every window, exactly. If it doesn't, the raise pops: the shell gives each layer its
-    /// *capture-time* frame and emits no blit until the next tick, so a first frame that disagrees is
-    /// a visible jump at the moment the cover goes up.
-    ///
-    /// A consume is the edit to prove it with, because it changes heights as well as positions — so
-    /// this also pins that the displacement carries a **size**, not just a translation.
+    /// The first frame under the cover must reproduce the layout the user was looking at —
+    /// `natural(after) + displacement(0) == natural(before)` on every window, exactly, or the raise pops
+    /// (the shell gives each layer its capture-time frame and emits no blit until the next tick).
+    /// A consume proves it, because it changes heights as well as positions: the displacement carries a
+    /// size, not just a translation.
     @Test func theFirstFrameOfAStructuralEditReproducesTheOldLayoutExactly() {
         var (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2347,11 +2233,9 @@ import EmiraMotion
         }
     }
 
-    /// The swap, and the thing the user actually asked for: the two columns cross, and the window the
-    /// command moved is drawn **over** the one it trades places with. Z-order is binding order at the
-    /// raise, so the mover being last in `windows` is not enough on its own — the core says it out
-    /// loud, because after an `extendCover` the shell's stacking is create-order and nothing else can
-    /// put it back on top.
+    /// The two columns cross, and the window the command moved is drawn *over* the one it trades places
+    /// with. Z-order is binding order at the raise, so the core states the elevation explicitly: after an
+    /// `extendCover` the shell's stacking is create-order and nothing else can put the mover back on top.
     @Test func aSwapDrawsTheMovedWindowOverTheOneItTradesPlacesWith() {
         var (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2377,14 +2261,12 @@ import EmiraMotion
         #expect(firstTruth.map { elevateIndex < $0 } ?? true)
     }
 
-    /// **Growing the cover buries the mover, so the elevation has to be re-stated.** `extendCover`
-    /// appends its layers on top — the shell's stacking is create-order and it has no `insertSublayer`
-    /// — so a window that merely scrolled into scope would end up drawn over the window the user is
-    /// moving. The re-elevation rides in the same contiguous presentation run as the addition, i.e.
-    /// the same `CATransaction`, so the wrong order is never composited even once.
+    /// Growing the cover buries the mover, so the elevation is re-stated: `extendCover` appends its
+    /// layers on top (create-order stacking, no `insertSublayer`), and the re-elevation rides in the same
+    /// presentation run as the addition, so the wrong order is never composited even once.
     ///
-    /// Five columns rather than three, so the strip is long enough that a scroll can still reach past
-    /// the shoulder the sweep already carries and produce a genuine newcomer to be buried by.
+    /// Five columns rather than three, so a scroll can reach past the shoulder the sweep already carries
+    /// and produce a genuine newcomer.
     @Test func growingTheCoverReElevatesTheMoverOverTheNewcomer() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2450,7 +2332,7 @@ import EmiraMotion
         #expect(frame.height < 800 && frame.height > 400)               // genuinely mid-contraction
     }
 
-    /// A structural edit mid-scroll adds **only** the structural delta: the offset keeps travelling on
+    /// A structural edit mid-scroll adds *only* the structural delta: the offset keeps travelling on
     /// its own spring and the displacement decays on its, and the emitted frame is their sum. Three
     /// orthogonal quantities is the claim; this is the test of it.
     @Test func aStructuralEditMidScrollComposesWithTheRunningOffset() {
@@ -2503,8 +2385,7 @@ import EmiraMotion
         #expect(s.motion.windowAnimator(WindowId(3))?.x.velocity != 0)   // and kept its speed
     }
 
-    /// The movement spring is a knob of its own, and it is the one a structural edit uses — mirrors
-    /// `aResizeUsesTheResizeSpring`.
+    /// The movement spring is its own knob, and it is the one a structural edit uses.
     @Test func aStructuralEditUsesTheMovementSpring() {
         var config = Self.halfWidth
         config.moveSpring = .snappy
@@ -2571,10 +2452,9 @@ import EmiraMotion
         }
     }
 
-    /// A *consume* can merge a column away while its width is still in flight. `Layout` drops the
-    /// column; the animator keyed on its id would otherwise survive until the session closed, holding
-    /// the settle gate for a motion nobody can see. The subject here is that entry's absence — without
-    /// the retirement the transition still closes, because an orphan settles on its own.
+    /// A *consume* can merge a column away while its width is still in flight, and the animator keyed on
+    /// its id would otherwise hold the settle gate for a motion nobody can see. The subject is that
+    /// entry's absence — without the retirement the transition still closes, since an orphan settles.
     @Test func aConsumeThatDestroysAColumnRetiresItsWidthAnimator() {
         var (s, _) = Self.run(Self.booted(), [
             .windowCreated(Self.snapshot(1)),
@@ -2596,14 +2476,12 @@ import EmiraMotion
         #expect(done.layout.columns.count == 1)
     }
 
-    /// `reveal` is transition-safe but cannot know the *structure* changed, and a raised cover holds
-    /// real windows teleported into a layout that no longer exists. So an edit under a cover re-places
-    /// the reals rather than snapping — and joins the running session instead of opening a second one.
+    /// A raised cover holds real windows teleported into a layout that no longer exists, so an edit under
+    /// one re-places the reals rather than snapping, and joins the running session.
     ///
-    /// A *consume* is the edit to test it with. A column swap under `fullWidth` would emit nothing, and
-    /// rightly so: the focused column sits flush at the viewport's left edge before and after, so the
-    /// diff says no real window needs to move. Merging two columns genuinely relocates all three —
-    /// `w1` from its park sliver into the top half, `w2` down into the bottom half.
+    /// A *consume* is the edit to test it with: a column swap under `fullWidth` would rightly emit
+    /// nothing (the focused column is flush left before and after), while merging two columns genuinely
+    /// relocates all three.
     @Test func aStructuralEditMidTransitionRidesTheOpenSessionAndRePlacesTheReals() {
         var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
             .windowCreated(Self.snapshot(1)),
@@ -2618,12 +2496,9 @@ import EmiraMotion
         #expect(n.layout.columns.map(\.windowIds) == [[WindowId(1), WindowId(2)], [WindowId(3)]])
         #expect(n.motion.isCovered)                    // one session throughout, never a second
         #expect(!Self.hasEffect(fx) { if case .beginTransition = $0 { return true }; return false })
-        // …and the invariant that matters holds: every window the edit puts on screen is in the
-        // cover's scope. The edit relocates `w1` from its park sliver into the top half of a column
-        // that is now on screen, and a window sliding into view with no captured layer is the hole
-        // that showed wallpaper in M4 part 1. Riding `driveTransition` is what closed it — whether a
-        // given window arrives via this widening or via the shoulder the original sweep already
-        // carried (`Layout.sweptWindowIds`) is an implementation detail of *when* it was captured.
+        // …and the invariant that matters holds: every window the edit puts on screen is in the cover's
+        // scope. `w1` moves from its park sliver into a column now on screen, and a window sliding into
+        // view with no captured layer is a wallpaper hole.
         let scoped = Set(n.motion.transition?.windows ?? [])
         #expect(scoped.contains(WindowId(1)))
         #expect(scoped.isSuperset(of: n.layout.visibleWindowIds(
@@ -2639,7 +2514,7 @@ import EmiraMotion
         #expect(dfx.contains(.endTransition))
     }
 
-    // MARK: - The config file reaching the running daemon (M5 part 1)
+    // MARK: - The config file reaching the running daemon
 
     /// The observable effect of editing the file: the strip is re-resolved against the new metrics
     /// and every window re-placed, with no window having moved and no command having been given.
@@ -2657,7 +2532,7 @@ import EmiraMotion
         #expect(Self.approx(Self.placement(of: WindowId(2), in: fx) ?? .zero,
                             Rect(x: 290, y: 0, width: 250, height: 800)))
         // The first column's target didn't change, so it isn't re-sent: a reload re-places only what
-        // the new geometry actually moved, and touching an app over AX is never free (§5).
+        // the new geometry actually moved, and touching an app over AX is never free.
         #expect(Self.placement(of: WindowId(1), in: fx) == nil)
         #expect(Self.approx(next.world.windows[WindowId(1)]?.frame ?? .zero,
                             Rect(x: 0, y: 0, width: 250, height: 800)))
@@ -2714,7 +2589,7 @@ import EmiraMotion
         #expect(s.motion.columnWidth(column)?.params.stiffness == 123)
     }
 
-    // MARK: - Replay / serialization (§7)
+    // MARK: - Replay / serialization
 
     @Test func stateRoundTripsThroughCodable() throws {
         let (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
@@ -2728,7 +2603,7 @@ import EmiraMotion
     }
 
     @Test func replayingAnEventLogReproducesStateExactly() {
-        // The deterministic-replay payoff (§7): the same event log through a fresh Engine → same state.
+        // The deterministic-replay payoff: the same event log through a fresh Engine → same state.
         let events: [Event] = [
             .screensChanged([MonitorInfo(id: MonitorId(1), frame: Self.displayFrame)]),
             .windowCreated(Self.snapshot(1)),
@@ -2736,7 +2611,7 @@ import EmiraMotion
             .command(.focus(.left)),
             .windowCreated(Self.snapshot(3)),
             // Structural edits mint `ColumnId`s, so replay only reproduces if the allocator watermark
-            // is state rather than a fresh count — which is exactly what §7 promises.
+            // is state rather than a fresh count.
             .command(.consumeOrExpel(.left)),
             .command(.moveWindow(.right)),
             .windowDestroyed(WindowId(2)),
@@ -2749,10 +2624,9 @@ import EmiraMotion
     }
 }
 
-/// Outer gaps at the reducer (2026-07-26). `Layout` owns the geometry and `OuterGapTests` owns its
-/// arithmetic; what belongs here is the one consequence only `Engine` can show — that a column bleeding
-/// into the margin is placed with `.setFrame`, not `.park`. That switch is the reason the layout's
-/// visibility query is asked of the physical extent, and it is a fact about effects, not about rects.
+/// Outer gaps at the reducer. `Layout` owns the geometry; what belongs here is the one consequence only
+/// `Engine` can show — a column bleeding into the margin is placed with `.setFrame`, not `.park`, which
+/// is why the layout's visibility query is asked of the physical extent.
 @Suite struct OuterGapEngineTests {
 
     /// Four ½-width columns on a 1000 pt display with a 50 pt margin: the content area is 900 wide, so
@@ -2763,14 +2637,10 @@ import EmiraMotion
                                        outerGaps: EdgeInsets(uniform: 50),
                                        smoothTransitions: false)
 
-    /// The placement effects for a settled four-column world scrolled to its origin.
-    ///
-    /// Two things this has to do that a plain `world(4)` doesn't. **Focus the first window**, because a
-    /// world built by creating windows leaves focus on the newest and the viewport scrolled to it, and
-    /// the margin is only interesting at a known offset. **Perturb every frame first**, because
-    /// `emitPlacements` skips windows already where they belong — a settled world re-asserts *nothing*,
-    /// so asking it for effects would answer with an empty batch that trivially satisfies any claim
-    /// about what is in it.
+    /// The placement effects for a settled four-column world scrolled to its origin. Focuses the first
+    /// window, because creating windows leaves focus on the newest and the margin is only interesting at
+    /// a known offset; and perturbs every frame first, because `emitPlacements` skips windows already
+    /// where they belong, so a settled world would answer with a trivially-satisfying empty batch.
     private static func placements() -> (placed: [WindowId: Rect], parked: [WindowId], display: Rect) {
         var s = EngineTests.settle(EngineTests.world(4, config: config))
         (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))

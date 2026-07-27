@@ -1,187 +1,107 @@
 import Foundation
 
-// The exhaustive *input* vocabulary — everything that can reach the reducer
-// (IMPLEMENTATION.md §1 diagram, §5). `reduce(State, Event) -> (State, [Effect])` is **total** over
-// this enum: a command, a display tick, an app-launched notification, a vanished window, a timed-out
-// AX set — all are just `Event`s, so a hung app or a disappearing window is a normal state
-// transition, not a crash (§1 invariant 3).
-//
-// The design payoff (§7): because the core is a pure function of `Event`, logging every inbound
-// `Event` and replaying the log through a fresh `Engine` reproduces any state exactly — bug repro
-// from a user session, golden regression fixtures, offline debugging with zero macOS involved. So
-// `Event` is **`Codable`** (it *is* the replay log) and **`Equatable`** (scenario tests assert the
-// exact event a surface produced).
-//
-// `Event` grows as milestones land (trackpad gestures at M7); this is the M1–M5 set — commands, the
-// frame clock, truth-plane observations, config reloads, effect feedback, and display hotplug.
-// Deferred cases are noted at the bottom so the next session knows they're intentional gaps, not
-// omissions.
+// The exhaustive input vocabulary — everything that can reach the reducer, which is total over this
+// enum, so a hung app or a vanished window is a normal transition rather than a crash. The log of
+// inbound events *is* the replay log, which is why this is `Codable`.
 
-/// One input to the reducer. Grouped by source: commands & the clock, truth-plane observations,
-/// effect feedback, and display hotplug.
+/// One input to the reducer, grouped below by source.
 public enum Event: Sendable, Equatable, Codable {
 
     // MARK: Commands & the frame clock
 
-    /// A command from any surface — CLI, hotkey, or config binding — all of which build the same
-    /// `Command` (§2) and hand it to the core identically.
+    /// A command from any surface — CLI, hotkey, or config binding.
     case command(Command)
 
-    /// A display-link frame. The core advances every animator by `dt` seconds and emits
-    /// `setLayerFrame` intents (it owns animation time — PRINCIPLES.md §7). Emitted **only while a
-    /// transition session is open**; idle steady state produces no ticks.
+    /// A display-link frame; every animator advances by `dt` seconds. Only emitted mid-transition.
     case tick(dt: Double)
 
     // MARK: Truth-plane observations (AX + `NSWorkspace`) — reality folded into `World`
 
-    /// A new manageable window appeared. The shell's `WindowRegistry` has already minted its
-    /// `WindowId` and bound it to a `CGWindowID` at first sight (§7); the `WindowSnapshot` carries
-    /// the metadata the rules engine and initial placement need.
+    /// A new manageable window appeared, its `WindowId` already minted and bound to a `CGWindowID`.
     case windowCreated(WindowSnapshot)
 
     /// A window went away (closed, or its app quit). The core removes it from the strip and re-tiles.
     case windowDestroyed(WindowId)
 
-    /// A window's frame changed **externally** — most often the user dragging or resizing it. The
-    /// core notes the drift; a tiled window re-asserts its layout on `dragEnded`.
-    ///
-    /// Also carries a *parked* landing that drifted. A park is a near-off-screen position, and an app's
-    /// answer there is not an answer about the window (PRINCIPLES.md §10: a window at its 1 px sliver
-    /// refused a resize it accepted the moment it scrolled back into view), so a park records truth and
-    /// teaches nothing. A drifted **tiled** landing is `placementCorrected` instead.
+    /// A window's frame changed externally — most often a user drag or resize; a tiled window re-asserts
+    /// its layout on `dragEnded`. A drifted *tiled* landing is `placementCorrected` instead.
     case windowFrameChanged(WindowId, Rect)
 
-    /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers both our own
-    /// focus commands *and* externally-initiated focus (Cmd-Tab, a Dock click, an app self-activating
-    /// — the shell's observation source collapses `NSWorkspace` activation into this same event). When the
-    /// focused window isn't in the viewport the core **snaps** to reveal it (PRINCIPLES.md §4a) — we
-    /// made no motion, so we owe no animation.
+    /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
+    /// commands *and* external ones — Cmd-Tab, a Dock click. The core snaps rather than animates to
+    /// reveal it: we made no motion, so we owe no animation.
     case focusChanged(WindowId?)
 
-    /// A window was minimized. Per the 2026-07-23 decision it **leaves the strip** — animated out
-    /// like a close, its strip position remembered for re-insertion.
+    /// A window was minimized: it leaves the strip, animated out like a close, its position remembered.
     case windowMinimized(WindowId)
 
     /// A minimized window was restored — re-inserted at its remembered strip position.
     case windowDeminimized(WindowId)
 
-    /// A global mouse-up fired (observed via the AX grant). Marks the end of a possible drag: a tiled
-    /// window that drifted from its target re-tiles on release. Parameterless — the core already
-    /// knows which window drifted from prior `windowFrameChanged` events.
+    /// A global mouse-up: the end of a possible drag, on which a drifted tiled window re-tiles.
     case dragEnded
 
     // MARK: Configuration
 
-    /// The config file was (re-)read and parsed successfully — the shell's `ConfigLoader` answering
-    /// either the user saving the file or an `Effect.reloadConfig`. The core adopts the values and
-    /// **re-lays-out in place**: new gaps, presets and struts resolve to new frames, and the scroll
-    /// spring is re-seeded so the next transition uses the new feel.
-    ///
-    /// Only *successful* parses reach the core. A file with a syntax error produces a diagnostic in
-    /// the daemon's log and no event at all, because the alternative — half a config, or a silent
-    /// fall back to defaults — would rearrange the user's desktop as a side effect of a typo.
+    /// The config file parsed successfully; the core adopts the values and re-lays out in place. Only
+    /// successful parses reach the core — a syntax error logs a diagnostic and emits nothing.
     case configChanged(Config)
 
     // MARK: Display hotplug
 
-    /// The set of displays changed (connect, disconnect, resolution/arrangement change). Carries the
-    /// full current monitor set in enumeration order (so `MonitorRef.index`/`.next` resolve
-    /// consistently); the core reconciles per-monitor strips against it.
+    /// The set of displays changed. Carries the full monitor set in enumeration order, so
+    /// `MonitorRef.index`/`.next` resolve consistently.
     case screensChanged([MonitorInfo])
 
-    // MARK: Effect feedback — every effect's result is just another event (§1 invariant 3)
+    // MARK: Effect feedback — every effect's result is just another event
 
-    /// A `setFrame`/`park` completed: the real window has arrived at its AX target. The scoped,
-    /// bounded wait on these is what closes a transition (§3).
+    /// A `setFrame`/`park` landed at its AX target. The bounded wait on these is what closes a transition.
     case axLanded(WindowId)
 
-    /// A **tiled** `setFrame` landed at a size other than the one it asked for — the app had an
-    /// opinion (a minimum size, a character-cell grid) and imposed it. Distinct from
-    /// `windowFrameChanged` because the two are different facts: that one means "reality drifted,
-    /// cause unknown", and only *this* one is evidence about what the window will accept, because only
-    /// this one knows the question. `requested` is what we set; `actual` is where it ended up.
-    ///
-    /// The core records the truth either way and, when the request is still the one the layout would
-    /// send, remembers the answer (`World.corrections`) so the column can be made the width the app
-    /// insists on instead of overlapping its neighbour — and so we stop asking a question we have the
-    /// answer to. A *refused* write is `axFailed`, not this: here the write happened.
+    /// A *tiled* `setFrame` landed at a size other than the one asked for — the app imposed a minimum
+    /// size or a character-cell grid. Unlike `windowFrameChanged`, this one knows the question, so it is
+    /// evidence: the core records it in `World.corrections` and widens the column instead of overlapping
+    /// its neighbour.
     case placementCorrected(WindowId, requested: Rect, actual: Rect)
 
-    /// A `setFrame`/`park` was refused or timed out — the *app* said no. The core reconciles (retry,
-    /// or drop the window from layout) — a normal transition, not an exception. A window that accepted
-    /// the set and landed elsewhere is `windowFrameChanged` + `axLanded` instead, not this (see
-    /// `Effect.setFrame`); this case is reserved for the write not happening at all.
+    /// A `setFrame`/`park` was refused or timed out — the write did not happen at all.
     case axFailed(WindowId)
 
-    /// A `capture(win)` produced a still (now in the shell's image cache). When every window a
-    /// transition needs has reported ready, the core opens the cover (`beginTransition`) — or, if the
-    /// cover is already up and these stills are an extension's, grows it (`extendCover`).
+    /// A `capture(win)` produced a still. Once every window a transition needs has reported ready, the
+    /// core raises the cover (`beginTransition`) or grows an already-raised one (`extendCover`).
     case captureReady(WindowId)
 
-    /// The capture plane could not produce a cover at all — the batch that owed the *desktop base*
-    /// came back without one (the grant lapsed mid-session, ScreenCaptureKit failed, or the deadline
-    /// fired). Arrives **instead of** that batch's `captureReady` acks, so the core never counts down
-    /// to a raise it has no pixels for.
-    ///
-    /// This case exists because the alternative is not a degraded cover, it is a **black screen**: the
-    /// base is what makes the reconstruction opaque, and an overlay raised without one shows its own
-    /// backing fill over the whole display for the length of the transition. The honest response is no
-    /// cover — abandon the session before a single real window has moved and snap (§4a), which is
-    /// exactly the degradation a machine with no Screen Recording grant already gets.
+    /// The capture plane could not produce a cover at all. Arrives *instead of* that batch's
+    /// `captureReady` acks, so the core never counts down to a raise it has no pixels for.
     case coverUnavailable
 
     /// The `endTransition` cross-fade finished; the cover is down and steady state resumes.
     case crossfadeDone
 
-    /// The transition hold-timeout (~1 s, §3) fired: close the session regardless — reveal the truth
-    /// and keep reconciling any AX set that hasn't landed. A frozen cover is worse than a visibly
-    /// hung app. Itself just an event, scheduled by the shell when the transition opened.
+    /// The transition hold-timeout fired: close the session regardless, and keep reconciling.
     case holdTimeout
 }
 
-/// The first-sight observation of a window — the metadata the shell hands the core when a window
-/// appears (`Event.windowCreated`). Deliberately **not** the core's internal window model (that's
-/// `World`, next iteration): it's the boundary payload the rules engine (§6) evaluates and initial
-/// placement reads.
-///
-/// Note what it *doesn't* carry: no `AXUIElement`, no `CGImage`, no pid. Identity is the core-minted
-/// `WindowId` (the shell keeps the private pid/`AXUIElement`/`CGWindowID` binding to itself, §7);
-/// app identity for rules is the stable `bundleId`, not the ephemeral pid.
+/// The first-sight observation of a window — the boundary payload the shell hands the core, not the
+/// core's internal window model (that's `World`). Carries no `AXUIElement`, no `CGImage`, no pid.
 public struct WindowSnapshot: Sendable, Equatable, Codable {
     /// The core-minted id, already bound to a `CGWindowID` by the shell's `WindowRegistry`.
     public let id: WindowId
-    /// The owning app's bundle identifier (e.g. `"com.google.Chrome"`) — the stable key window rules
-    /// match on. Stable across launches, unlike a pid.
+    /// The owning app's bundle identifier — the stable key window rules match on, unlike a pid.
     public let bundleId: String
-    /// The window title at first sight. Rules may match it, but it's **unstable** (apps rewrite it),
-    /// so it is never used for identity after binding (§7).
+    /// The title at first sight. Rules may match it, but it is unstable and never used for identity.
     public let title: String
-    /// The window's role in the tiling taxonomy (§6). Only `.standard` tiles.
+    /// The window's role in the tiling taxonomy. Only `.standard` tiles.
     public let role: WindowRole
-    /// The window's frame at first sight, in top-left virtual-strip coordinates (Y already flipped by
-    /// the shell). Used for identity binding at a moment of uniqueness and for initial placement.
+    /// The frame at first sight, in top-left virtual-strip coordinates (Y already flipped by the
+    /// shell). Used for identity binding at a moment of uniqueness and for initial placement.
     public let frame: Rect
-    /// Whether the window is *already* minimized when we first see it.
-    ///
-    /// Almost always `false` — a window we watch appear is on screen. It matters for the one case
-    /// that isn't a birth: **launch enumeration** (`AXEnumerator`, M3), which meets every window
-    /// mid-life, some of them in the Dock. Recording that faithfully is the difference between the
-    /// core knowing a window exists but is off the strip (2026-07-23: minimize *leaves* the strip) and
-    /// the core trying to tile something the user can't see. Defaulted, so every "a window was born"
-    /// call site stays a four-argument one.
+    /// Whether the window was *already* minimized when first seen — only possible for the launch scan.
     public let isMinimized: Bool
 
-    /// Whether emira met this window **already open** rather than watching it appear — true for exactly
-    /// the launch scan's adoptions (`WorldWatcher.start`), false for every window born under a running
-    /// daemon.
-    ///
-    /// The second fact here that only launch enumeration can supply, and it is `isMinimized`'s reason
-    /// again: a scan meets a desktop the user has already arranged. emira keeps no layout across restarts
-    /// (PRINCIPLES.md §10), so the widths on screen at boot are the *only* record of that arrangement
-    /// there is — which is why the core seeds an adopted window's column with the width it already has
-    /// instead of the first rung of the preset ladder (`Engine.keepExistingWidth`, 2026-07-26). A window
-    /// that opens later has no such history: its width is its app's default, and the ladder is where it
-    /// belongs.
+    /// Whether emira met this window already open rather than watching it appear — true for exactly the
+    /// launch scan's adoptions. No layout survives a restart, so an adopted window's column is seeded
+    /// with the width it already has.
     public let wasAlreadyOpen: Bool
 
     public init(
@@ -197,24 +117,15 @@ public struct WindowSnapshot: Sendable, Equatable, Codable {
         self.wasAlreadyOpen = wasAlreadyOpen
     }
 
-    /// This observation, marked as a window emira met already open — how the launch scan announces what
-    /// it adopted (`WorldWatcher`).
-    ///
-    /// A copy rather than an argument at the mint, because the snapshot is built deep inside the identity
-    /// join (`WindowRegistry.adopt`), which knows how a window was *bound* and nothing at all about
-    /// whether emira was running when it opened. Only the watcher knows which scan is the boot scan.
+    /// This observation, marked as a window emira met already open.
     public func metAlreadyOpen() -> WindowSnapshot {
         WindowSnapshot(id: id, bundleId: bundleId, title: title, role: role,
                        frame: frame, isMinimized: isMinimized, wasAlreadyOpen: true)
     }
 }
 
-/// A window's role in the tiling taxonomy (IMPLEMENTATION.md §6, built-in defaults). The shell maps
-/// the AX subrole (`kAXSubroleAttribute`) into one of these at its boundary, so the pure rules engine
-/// classifies against a clean enum rather than stringly-typed AX constants.
-///
-/// The taxonomy is simple by charter: **only `.standard` tiles**; everything else floats. A window
-/// rule in config can still override this per app/title.
+/// A window's role in the tiling taxonomy — the shell maps the AX subrole into one of these at its
+/// boundary. Only `.standard` tiles; everything else floats, subject to per-app/title config rules.
 public enum WindowRole: String, Sendable, Codable, CaseIterable, Equatable {
     /// `AXStandardWindow` — an ordinary document/app window. The only role that joins the strip.
     case standard
@@ -229,20 +140,16 @@ public enum WindowRole: String, Sendable, Codable, CaseIterable, Equatable {
     /// Anything else — floats by default.
     case other
 
-    /// Whether a window of this role joins the tiled strip. Pure predicate the rules engine reads;
-    /// `true` for `.standard` only, per the §6 defaults.
+    /// Whether a window of this role joins the tiled strip.
     public var tiles: Bool { self == .standard }
 }
 
-/// A display in the current hardware set (`Event.screensChanged`). The boundary payload for
-/// per-monitor strips (§6, M6): the core keys a strip per `MonitorId` and lays it out inside `frame`.
-/// Backing scale, color space, and other fidelity concerns stay shell-side (the reconstruction, §6) —
-/// core geometry is scale-independent points.
+/// A display in the current hardware set — the core keys a strip per `MonitorId` and lays it out
+/// inside `frame`. Backing scale and colour space stay shell-side.
 public struct MonitorInfo: Sendable, Equatable, Codable {
     /// The shell-minted display id (from display enumeration).
     public let id: MonitorId
-    /// The display's full bounds in top-left virtual-strip coordinates. Struts (menu bar/notch) are
-    /// applied by the layout engine, not baked in here.
+    /// The display's full bounds in top-left coordinates. Struts are applied by the layout engine.
     public let frame: Rect
 
     public init(id: MonitorId, frame: Rect) {
@@ -251,10 +158,3 @@ public struct MonitorInfo: Sendable, Equatable, Codable {
     }
 }
 
-// MARK: - Deferred cases (intentional gaps, land with their milestone)
-//
-//  · trackpad gesture events   — continuous scroll opens the same transition session driven by the
-//                                finger instead of a spring (§4c, M7).
-//  · app-level hide/unhide     — Cmd-H hides *all* of an app's windows at once; modeling it cleanly
-//                                needs `World`'s app grouping (next iteration). Window-level
-//                                `windowMinimized`/`Deminimized` are here; app hide follows.

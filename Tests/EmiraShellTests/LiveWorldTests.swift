@@ -4,23 +4,11 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// `WorldWatcher`'s tests — the policy that turns a live desktop into `Event`s. Everything that needs a
-// window server, a TCC grant and other people's processes sits behind `ObservationSource` and
-// `WindowSource`, so what is exercised here is precisely the part with decisions in it:
-//
-//  1. **Adoption** — a scan's windows are announced *once*, and a re-scan of a known app announces
-//     nothing. The failure this prevents is not a duplicate: `Engine` gives a new window focus, so a
-//     re-announcement steals the user's focus every time any window of that app opens.
-//  2. **The two "asked too early" races** — a window the window server has not listed yet, and an app
-//     that is not ready to be observed. Both retried, both bounded, and the bound is asserted because
-//     the alternative reading of either failure is "not ours", which must not become a busy loop.
-//  3. **Coalescing** — a drag emits `AXWindowMoved` at the refresh rate and AX will not say *where*, so
-//     answering every one is a poll that queues on the same lane our placement writes use.
-//  4. **Teardown ordering** — nothing keyed on a pid or a `WindowId` outlives the thing it is keyed on:
-//     the registry, the observer registrations, and the pending-read bookkeeping all let go together.
-//
-// The event stream is asserted against an `EventSink`, which is what the daemon really wires up — so
-// these tests say what the *core* would be told, not merely what the watcher computed.
+// `WorldWatcher`'s tests — the policy that turns a live desktop into `Event`s. The window server, the
+// TCC grant and other people's processes all sit behind `ObservationSource` and `WindowSource`, both
+// stubbed here, so what is exercised is the part with decisions in it: adoption, the two "asked too
+// early" retries, move coalescing, and teardown ordering. The event stream is asserted against the
+// `EventSink` the daemon really wires up, so these say what the core would be told.
 
 // MARK: - Fixtures
 
@@ -28,8 +16,8 @@ private func rect(_ x: Double, _ y: Double = 0, w: Double = 600, h: Double = 400
     Rect(x: x, y: y, width: w, height: h)
 }
 
-/// A distinct AX element per window. Distinctness matters: the registry's reverse map is keyed on
-/// element equality, so fixtures that shared one element would let a lookup bug pass.
+/// A distinct AX element per window: the registry's reverse map is keyed on element equality, so
+/// fixtures sharing one element would let a lookup bug pass.
 private func element(_ seed: pid_t) -> AXWindow {
     AXWindow(AXUIElementCreateApplication(seed))
 }
@@ -55,9 +43,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     private(set) var scanCounts: [pid_t: Int] = [:]
 
     /// When true, `windows(of:then:)` parks its completion instead of answering, so a test can hold a
-    /// scan open and drive a *second* request into it. Without this every scan in the suite completed
-    /// before `handle(.windowAppeared(_:))` returned, and two overlapping scans of one app — the
-    /// condition the ghost-window bug lived in — were unreachable (2026-07-26).
+    /// scan open and drive a second request into it — the only way to reach two overlapping scans of
+    /// one app.
     var holdsAnswers = false
     var pending: [(pid_t, @MainActor ([ScannedWindow]) -> Void)] = []
 
@@ -155,8 +142,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-/// A scheduler that never runs anything until the test says so — the whole retry chain, under the
-/// test's thumb, with no wall clock in it.
+/// A scheduler that never runs anything until the test says so — the retry chain with no wall clock.
 @MainActor private final class ManualScheduler: DelayScheduler {
     private(set) var delays: [TimeInterval] = []
     private var work: [@MainActor () -> Void] = []
@@ -186,8 +172,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
 // MARK: - The world under test
 
-/// The fixture, named `LiveWorld` rather than `World` so it can't be mistaken for — or shadow —
-/// `EmiraCore.World`, which is the thing all of this is ultimately keeping true.
+/// The fixture, named `LiveWorld` rather than `World` so it can't shadow `EmiraCore.World`.
 @MainActor private struct LiveWorld {
     let source: StubObservationSource
     let windows: StubWindowSource
@@ -233,13 +218,12 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - Scans that overlap (the burst, 2026-07-26)
+// MARK: - Scans that overlap
 //
 // Four rapid ⌘N presses produce four `windowAppeared` notifications for one app. Answering each with
-// its own full re-scan puts four × (seven AX round trips per window) onto that app's *single serial
-// lane* — the same lane our placement writes queue on — so each scan's answer is joined against a
-// window list read progressively later than the frames it contains. That skew is what costs a window
-// its identity, so the fix is upstream of the join: ask once, and ask again afterwards.
+// its own full re-scan floods that app's single serial AX lane, so each answer is joined against a
+// window list read later than the frames it contains — and that skew costs a window its identity.
+// Hence: ask once, and ask again afterwards.
 
 @Suite @MainActor struct WorldWatcherBurstTests {
 
@@ -270,8 +254,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.scheduler.fire()   // drain anything the boot scan scheduled
 
         // A new Ghostty window exists as far as the window server is concerned, but the app has not
-        // described it over AX yet — the "asked too early" race, from the side that had no signal
-        // before. It leaves no `unbound` entry, so only `unclaimed` can notice it.
+        // described it over AX yet. It leaves no `unbound` entry, so only `unclaimed` can notice it.
         world.windows.entries.append(
             WindowListEntry(number: 9, pid: 100, frame: rect(2100), isOnScreen: true))
         world.watcher.handle(.windowAppeared(100))
@@ -288,9 +271,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aKnownWindowIsReOfferedForWatchingSoAFailedRegistrationGetsAnotherChance() {
-        // `watch(windows:of:)` is idempotent, so re-offering costs nothing when the first attempt
-        // worked — and is the only second chance when it didn't. A window-level registration that
-        // failed silently means no destroy notification, i.e. a column that outlives its window.
+        // `watch(windows:of:)` is idempotent, so re-offering is free when the first attempt worked and
+        // the only second chance when it didn't: a silently failed registration means no destroy
+        // notification, i.e. a column that outlives its window.
         let world = LiveWorld()
         world.watcher.start()
         let term = world.id(titled: "term")
@@ -315,8 +298,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.source.started)
         #expect(world.created.map(\.title) == ["term", "one", "two"])
         #expect(world.source.watchedApps.sorted() == [100, 200])
-        // Window-level notifications are registered per app, because AX delivers destroyed/moved/
-        // resized/miniaturized only for registrations made against the *window* element.
+        // AX delivers destroyed/moved/resized/miniaturized only for registrations made against the
+        // window element, so they are registered per app.
         let byApp = Dictionary(uniqueKeysWithValues: world.source.watchedWindows.map { ($0.0, $0.1) })
         #expect(byApp[100]?.count == 1)
         #expect(byApp[200]?.count == 2)
@@ -324,10 +307,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aWindowIsWatchedBeforeItIsAnnounced() {
-        // Announcing pumps the reducer synchronously, and its placement effects move the window we
-        // just adopted. Registering second would leave that window observed only from its *next* move
-        // onward — a window emira has moved but is not yet watching is a window whose next real drag
-        // it can miss entirely.
+        // Announcing pumps the reducer synchronously and its placement effects move the window just
+        // adopted, so registering second would leave that window unwatched through its own placement
+        // and miss the drag after it.
         let world = LiveWorld()
         let probe = OrderProbe()
         let source = world.source
@@ -347,9 +329,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aWindowAppearingInAKnownAppAnnouncesOnlyTheNewOne() {
-        // The focus-theft guard, end to end: `AXWindowCreated` names the *app*, so the response is a
-        // re-scan — and a re-scan that announced all three of TextEdit's windows would leave focus on
-        // whichever sorted last rather than on the window that just opened.
+        // The focus-theft guard: `AXWindowCreated` names the app, so the response is a re-scan, and
+        // announcing all three of TextEdit's windows would leave focus on whichever sorted last
+        // rather than on the one that just opened.
         let world = LiveWorld()
         world.watcher.start()
         let beforeCount = world.recorder.events.count
@@ -368,9 +350,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func theBootScanSaysItsWindowsWereAlreadyOpenAndALaterScanDoesNot() {
-        // The one scan whose windows emira did not watch open (2026-07-26). The core keeps an adopted
-        // window's existing width instead of snapping it onto the narrowest preset, so the difference
-        // between "the desktop I found" and "a window that just opened" has to survive the trip.
+        // The core keeps an adopted window's existing width instead of snapping it onto the narrowest
+        // preset, so "the desktop I found" versus "a window that just opened" has to survive the trip.
         let world = LiveWorld()
         world.watcher.start()
         #expect(world.created.map(\.wasAlreadyOpen) == [true, true, true])
@@ -386,8 +367,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aWindowAppearingInAnAppWeDoNotTrackIsSilence() {
-        // An accessory process, or an app that quit between the notification and here. There is
-        // nothing to scan and nothing to say.
+        // An accessory process, or an app that quit between the notification and here.
         let world = LiveWorld()
         world.watcher.start()
         let before = world.recorder.events.count
@@ -398,8 +378,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aLaunchedAppIsBothWatchedAndScanned() {
-        // Two halves answering different questions: `watch` is how we hear about the app's *future*
-        // windows; the scan finds the ones a relaunched app came back with already open.
+        // `watch` is how we hear about the app's future windows; the scan finds the ones a relaunched
+        // app came back with already open.
         let world = LiveWorld()
         world.watcher.start()
         world.windows.windowsByPid[300] = [
@@ -420,8 +400,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func aWindowTheWindowListDoesNotKnowYetIsRetriedRatherThanLost() {
         // AX announces a window before `CGWindowListCopyWindowInfo` lists it, so the join answers
-        // `.noCandidate`. Without a retry that window is never managed — a sticky, invisible failure
-        // of exactly the kind first-sight binding is supposed to avoid.
+        // `.noCandidate`. Without a retry that window is never managed.
         let world = LiveWorld()
         world.windows.entries.removeAll { $0.number == 3 }   // "two" is not listed yet
 
@@ -438,9 +417,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aBootWindowThatNeededTheRetryIsStillAWindowWeFoundAlreadyOpen() {
-        // The flag rides the retry chain. A window that took a second attempt to bind was no less
-        // already open than its siblings, and losing it there would tile that one window differently
-        // from the rest of the desktop for no reason the user could ever see.
+        // The `wasAlreadyOpen` flag has to ride the retry chain; losing it there would tile that one
+        // window differently from the rest of the desktop.
         let world = LiveWorld()
         world.windows.entries.removeAll { $0.number == 3 }   // "two" is not listed yet
 
@@ -491,8 +469,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func anAppThatIsNotReadyToBeObservedIsRetriedRatherThanGoingDeaf() {
         // A just-launched app answers AX with `.cannotComplete`. Shrugging at that means never hearing
-        // about any window that app ever opens — the same permanent blindness as a failed bind, which
-        // is why they share one retry budget.
+        // about any window it opens, so it shares the retry budget with a failed bind.
         let world = LiveWorld()
         world.source.watchSucceeds = false
 
@@ -524,10 +501,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 @Suite @MainActor struct WorldWatcherFrameTests {
 
     @Test func aMoveStormCollapsesToOneReadInFlightAndOneMoreAfterIt() {
-        // A drag emits `AXWindowMoved` at the refresh rate and AX never says *where*. Answering each
-        // one queues a round trip on the app's serial lane — the same lane the drag-end re-tile has to
-        // use, so the snap-back would land a backlog late. One in flight, one dirty bit, and the user
-        // gets the frame at the end of the burst, which is the only one that matters.
+        // A drag emits `AXWindowMoved` at the refresh rate and AX never says where, so answering each
+        // one queues a round trip on the same serial lane the drag-end re-tile needs. One read in
+        // flight plus one dirty bit yields the frame at the end of the burst, the only one that matters.
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "term"))
@@ -548,8 +524,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aReadThatComesBackEmptyIsNotReportedAsAFrameChange() {
-        // The window closed mid-drag. Inventing a frame for it would put a lie in `World` that only
-        // the next scan could correct; `windowVanished` is what reports this.
+        // The window closed mid-drag. Inventing a frame would put a lie in `World` that only the next
+        // scan could correct; `windowVanished` is what reports this.
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "term"))
@@ -660,8 +636,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func focusLandingOnAnUnmanagedWindowIsPassedThroughRatherThanSwallowed() {
         // `nil` is a real answer: the user clicked into a window we declined to bind. Swallowing it
-        // would leave `World.focusedWindow` pointing at whatever we last knew — a window the user is
-        // no longer typing into, which is the state §4a exists to prevent.
+        // leaves `World.focusedWindow` naming a window the user is no longer typing into.
         let world = LiveWorld()
         world.watcher.start()
         let before = world.recorder.events.count
@@ -671,11 +646,11 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil)])
     }
 
-    // MARK: Focus reports macOS made up (2026-07-26)
+    // MARK: Focus reports macOS made up
     //
-    // An app that loses its key window picks a replacement and announces it, and that announcement is
-    // byte-identical to the one a Cmd-Tab produces. Told apart by the only fact that separates them:
-    // whether the window the report displaced still exists. See `WorldWatcher.resolveFocus`.
+    // An app that loses its key window picks a replacement and announces it, byte-identical to what a
+    // Cmd-Tab produces. Told apart by the only fact that separates them: whether the window the report
+    // displaced still exists. See `WorldWatcher.resolveFocus`.
 
     @Test func theFirstFocusReportIsPassedStraightThroughWithNothingToAsk() {
         let world = LiveWorld()
@@ -704,9 +679,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aFocusReportBackfillingADeadWindowIsDropped() {
-        // The reported case: ⌘W on the focused window, and the app hands focus to one of its own
-        // choosing *before* the destroy notification arrives. The core must never see this — it has its
-        // own rule for where focus goes when a window leaves, and this is what was outvoting it.
+        // ⌘W on the focused window, and the app hands focus to one of its own choosing before the
+        // destroy notification arrives. The core has its own rule for where focus goes when a window
+        // leaves, so it must never see this.
         let world = LiveWorld()
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))
@@ -722,8 +697,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aReportArrivingAfterTheDestroyIsDroppedWithoutAskingAnyone() {
-        // The other notification order, and the cheap half: once `windowVanished` has been handled the
-        // registry has already forgotten the window, which answers the question for free.
+        // The other notification order: `windowVanished` first, so the registry has already forgotten
+        // the window and answers the question for free.
         let world = LiveWorld()
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))
@@ -739,8 +714,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aDestroyLandingWhileTheProbeIsOutRetiresTheReport() {
-        // The mirror race: the probe answers "alive" because it was asked before the element died, and
-        // the destroy arrives while it is out. The re-check on the way back is what catches it.
+        // The probe answers "alive" because it was asked before the element died, and the destroy
+        // arrives while it is out. The re-check on the way back is what catches it.
         let world = LiveWorld()
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))
@@ -758,8 +733,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func onlyTheOneBackfilledReportIsLostAndFocusTracksNormallyAfterIt() {
         // The cost is bounded at exactly one report, because the dropped one still updates what the
-        // *next* report is read against. A window manager that went deaf to focus after every close
-        // would be a worse bug than the one this fixes.
+        // next report is read against — focus must not go deaf after every close.
         let world = LiveWorld()
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))

@@ -2,46 +2,26 @@ import CoreGraphics
 import EmiraCore
 import Foundation
 
-// **Window identity — the shell's single hardest job, and the one the charter constrains most.**
-//
-// The core addresses windows by an opaque `WindowId` it never interprets (`Ids.swift`). Something has
-// to decide that *this* `AXUIElement` and *that* window on screen are the same window, and to keep
-// deciding it correctly for as long as the daemon runs. yabai answers this with the private
-// `_AXUIElementGetWindow`, which returns a `CGWindowID` straight out of an AX element. We have
-// chartered ourselves out of that (PRINCIPLES.md §10: "no private AX SPI … window identity via
-// first-sight binding → public `CGWindowID`"), so we reconstruct the same association from two public
-// lists that overlap:
-//
-//  · **AX** knows the element, the title, the subrole, and the frame — but not the window number.
-//  · **`CGWindowListCopyWindowInfo`** knows the window number, the owner pid, and the frame — but
-//    hands out no AX element and (without Screen Recording) no title.
-//
-// **The join is the frame, and it is made exactly once per window.** Two windows of the same app
-// occupying the same rectangle to the point is not a thing macOS produces; even emira's own parked
-// windows are given *unique* sliver slots specifically so this stays true (PRINCIPLES.md §4a). After
-// the join we key on the `CGWindowID` forever — it is stable for the window's whole life, immune to
-// the title churn and frame collisions that would break a match made later. That is the whole of §7's
-// "bound once, at first sight."
-//
-// **A match must be unique or it is not a match.** The spikes matched by *nearest* position
-// (`spike/strip-scroll.swift:97`) because they only needed *a* window to play with, and nearest always
-// answers. Here a wrong answer is permanent — emira would move one window whenever the user asked for
-// another, forever — so `WindowIdentity` requires exactly one candidate within tolerance and rejects
-// anything else. A rejected window is simply not managed, which is a visible, recoverable failure; a
-// mis-bound window is an invisible, permanent one.
+// Window identity, reconstructed from two public lists rather than the private `_AXUIElementGetWindow`:
+// AX knows the element, title, subrole and frame but not the window number; `CGWindowListCopyWindowInfo`
+// knows the number, owner pid and frame but hands out no AX element and (without Screen Recording) no
+// title. The join is the frame and is made exactly once per window; afterwards we key on the
+// `CGWindowID`, stable for the window's whole life. Parked windows get unique sliver slots partly to
+// keep frames distinct. A match must be unique or it is not a match — a mis-bind is permanent and
+// invisible, where an unmanaged window is visible and recoverable.
 
 // MARK: - The two sides of the join
 
-/// A window as the Accessibility API describes it, with the AX element factored out — the pure value
-/// the identity join and the taxonomy work on, and the reason both are testable with no macOS running.
+/// A window as the Accessibility API describes it, with the AX element factored out — the pure value the
+/// identity join and the taxonomy work on.
 public struct ObservedWindow: Sendable, Equatable {
-    /// The owning process. Shell-side only: the core keys apps by `bundleId` (`World.swift`).
+    /// The owning process. Shell-side only: the core keys apps by `bundleId`.
     public let pid: pid_t
     /// The owning app's bundle identifier — the core's app-grouping key and what rules match on.
     public let bundleId: String
-    /// The title at first sight. Recorded and displayed; never used for identity (§7).
+    /// The title at first sight. Recorded and displayed; never used for identity.
     public let title: String
-    /// The tiling role, already classified from the AX role/subrole (`WindowRole.init(axRole:…)`).
+    /// The tiling role, already classified from the AX role/subrole.
     public let role: WindowRole
     /// The frame in core (top-left, global) coordinates. AX reports this space natively — no flip.
     public let frame: Rect
@@ -61,17 +41,16 @@ public struct ObservedWindow: Sendable, Equatable {
 
 /// One entry from the public window list — the `CGWindowID` authority side of the join.
 public struct WindowListEntry: Sendable, Equatable {
-    /// The public, stable window number (`kCGWindowNumber`). The same integer ScreenCaptureKit calls
-    /// `SCWindow.windowID`, which is what lets M4's capture reuse these bindings unchanged.
+    /// The public, stable window number (`kCGWindowNumber`) — the same integer as `SCWindow.windowID`,
+    /// so the capture plane reuses these bindings unchanged.
     public let number: CGWindowID
     /// The owning process, used to narrow the join before frames are compared.
     public let pid: pid_t
     /// The window's bounds in core (top-left, global) coordinates — the same space AX reports.
     public let frame: Rect
-    /// Whether the window server currently considers this window on screen (`kCGWindowIsOnscreen`).
-    ///
-    /// The third piece of evidence, and the one that unsticks a real duplicate: an app can carry two
-    /// layer-0 entries with byte-identical bounds, of which only one is live. See `WindowIdentity.bind`.
+    /// Whether the window server considers this window on screen (`kCGWindowIsOnscreen`). A third piece
+    /// of evidence: an app can carry two layer-0 entries with byte-identical bounds, only one of them
+    /// live.
     public let isOnScreen: Bool
 
     public init(number: CGWindowID, pid: pid_t, frame: Rect, isOnScreen: Bool = true) {
@@ -83,14 +62,10 @@ public struct WindowListEntry: Sendable, Equatable {
 
     /// The current window list, ordinary application windows only.
     ///
-    /// `.optionAll` rather than `.optionOnScreenOnly` because a **minimized** window still needs an
-    /// identity — it is truth the core records even though it sits off the strip (2026-07-23) — and it
-    /// is by definition not on screen. `.excludeDesktopElements` plus the `kCGWindowLayer == 0` filter
-    /// drops the desktop picture, the Dock, the menu bar and every other system layer, leaving exactly
-    /// the set AX also describes.
-    ///
-    /// Needs **no** Screen Recording grant: numbers, pids, bounds and layers are unprivileged. Only
-    /// `kCGWindowName` is gated, and we never read it — titles come from AX.
+    /// `.optionAll` rather than `.optionOnScreenOnly` because a minimized window still needs an identity
+    /// and is by definition not on screen; `.excludeDesktopElements` plus `kCGWindowLayer == 0` drops the
+    /// desktop, Dock and menu bar, leaving the set AX also describes. Needs no Screen Recording grant —
+    /// only `kCGWindowName` is gated, and titles come from AX instead.
     public static func current() -> [WindowListEntry] {
         let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
@@ -114,13 +89,12 @@ public struct WindowListEntry: Sendable, Equatable {
 
 // MARK: - The join (pure)
 
-/// The first-sight match between AX-observed windows and public window numbers. Pure and total: it
-/// takes two lists of values and returns which ones paired up and why the rest didn't.
+/// The first-sight match between AX-observed windows and public window numbers. Pure and total: two
+/// lists of values in, which ones paired up and why the rest didn't out.
 public enum WindowIdentity {
 
-    /// A successful pairing. `observed` is an index into the input array rather than the value itself,
-    /// so the caller can carry the un-`Equatable` AX element alongside without it entering this
-    /// calculation.
+    /// A successful pairing. `observed` is an index into the input array, so the caller can carry the
+    /// un-`Equatable` AX element alongside without it entering this calculation.
     public struct Match: Sendable, Equatable {
         public let observed: Int
         public let number: CGWindowID
@@ -131,22 +105,20 @@ public enum WindowIdentity {
         }
     }
 
-    /// A window we declined to bind, and the reason — which the daemon logs, because "emira is not
-    /// managing that window" must never be silent.
+    /// A window we declined to bind, and why — which the daemon logs, because "emira is not managing
+    /// that window" must never be silent.
     public struct Rejection: Sendable, Equatable {
         public let observed: Int
         public let reason: Reason
 
         public enum Reason: String, Sendable, Equatable {
-            /// No window-list entry for this pid sits at this frame. The window list and the AX read
-            /// disagree — normally because the window moved between the two, occasionally because the
-            /// app reports a frame that isn't where it draws.
+            /// No window-list entry for this pid sits at this frame — usually the window moved between
+            /// the two reads, occasionally the app reports a frame that isn't where it draws.
             case noCandidate
-            /// Several entries match equally well. Binding to either would be a coin flip, and the
-            /// wrong side of that flip is permanent.
+            /// Several entries match equally well; binding to either would be a permanent coin flip.
             case ambiguous
-            /// Two AX windows both matched the *same* entry uniquely. Exactly one of them is right and
-            /// nothing here can say which, so neither is bound.
+            /// Two AX windows matched the *same* entry uniquely. One is right, nothing here can say
+            /// which, so neither binds.
             case contested
         }
 
@@ -171,14 +143,12 @@ public enum WindowIdentity {
 
     /// Pair each observed window with the one window-list entry that has the same owner and frame.
     ///
-    /// - Parameter tolerance: per-edge slack, in points, when comparing frames. Small on purpose: this
-    ///   absorbs rounding between two subsystems describing the same rectangle, and nothing more. Widen
-    ///   it and adjacent windows start matching each other's entries.
+    /// - Parameter tolerance: per-edge slack in points. Small on purpose — it absorbs rounding between
+    ///   two subsystems describing one rectangle; widen it and adjacent windows match each other.
     ///
-    /// Two passes, because uniqueness has two directions and only checking one of them leaves the
-    /// interesting bug. First: each observed window must see exactly one candidate. Second: no two
-    /// observed windows may have landed on the same entry — which *can* happen when one window's own
-    /// entry is missing from the list (it closed mid-scan, say) and it falls onto its neighbour's.
+    /// Two passes, because uniqueness has two directions: each observed window must see exactly one
+    /// candidate, and no two observed windows may land on the same entry (which happens when a window's
+    /// own entry is missing from the list and it falls onto its neighbour's).
     public static func bind(_ observed: [ObservedWindow], to entries: [WindowListEntry],
                             tolerance: Double = 2) -> Binding {
         var byPid: [pid_t: [WindowListEntry]] = [:]
@@ -192,16 +162,10 @@ public enum WindowIdentity {
             var candidates = (byPid[window.pid] ?? []).filter {
                 sameFrame($0.frame, window.frame, tolerance: tolerance)
             }
-            // Owner and frame are not always enough, in the wild. Safari (in native full screen)
-            // carries **two** layer-0 window-list entries with byte-identical bounds, only one of
-            // which the window server considers on screen — found the first time this ran against a
-            // real desktop, where it made the only real window unbindable.
-            //
-            // Narrowing on `isOnScreen` is not a tie-break dressed up as evidence: an entry the window
-            // server says is not on screen cannot be the window AX just described as visible. It is a
-            // *third* fact, and it is only consulted when the first two have already failed to
-            // separate the candidates — so an unambiguous off-screen match (a minimized window, or one
-            // on another Space) still binds exactly as before.
+            // Owner and frame are not always enough: Safari in native full screen carries two layer-0
+            // entries with byte-identical bounds, only one of them on screen. Consulted only after the
+            // first two facts fail to separate candidates, so an unambiguous off-screen match (minimized,
+            // or on another Space) still binds.
             if candidates.count > 1 {
                 let live = candidates.filter(\.isOnScreen)
                 if live.count == 1 { candidates = live }
@@ -240,13 +204,8 @@ public enum WindowIdentity {
 // MARK: - The registry
 
 /// Mints `WindowId`s and holds the shell-private binding behind each one: the public window number, the
-/// owning process, and the live AX element to write to.
-///
-/// It is the *only* place in emira where a `WindowId` becomes a thing you can act on, which is what
-/// keeps `EmiraCore` free of `AXUIElement`, `CGWindowID` and pid (IMPLEMENTATION.md §7).
-///
-/// `@MainActor` like everything else holding mutable state: it is written during enumeration and by the
-/// observers, and read by the AX executor — all on the pump's thread (PRINCIPLES.md §7).
+/// owning process, and the live AX element to write to. The only place a `WindowId` becomes a thing you
+/// can act on, which is what keeps `EmiraCore` free of `AXUIElement`, `CGWindowID` and pid.
 @MainActor
 public final class WindowRegistry {
 
@@ -257,12 +216,12 @@ public final class WindowRegistry {
         public let id: WindowId
         /// The public window number this id is bound to, for life.
         public let number: CGWindowID
-        /// The owning process — the AX serial-queue key (`AXClient`).
+        /// The owning process — the AX serial-queue key.
         public let pid: pid_t
         /// The owning app's bundle identifier.
         public let bundleId: String
-        /// The AX element to read and write. Refreshed on re-enumeration: elements can go stale while
-        /// the window number does not, which is precisely why identity keys on the number.
+        /// The AX element to read and write. Refreshed on re-enumeration: elements go stale while the
+        /// window number does not, which is why identity keys on the number.
         var element: AXWindow
 
         init(id: WindowId, number: CGWindowID, pid: pid_t, bundleId: String, element: AXWindow) {
@@ -275,15 +234,12 @@ public final class WindowRegistry {
     }
 
     /// The id counter. Monotonic and never reused — a recycled id would let a stale `Effect` land on a
-    /// different window than the one the reducer meant.
+    /// different window than the reducer meant.
     private var nextRaw: UInt64 = 1
     /// The permanent binding, window number → id. The map that makes re-enumeration idempotent.
     private var idByNumber: [CGWindowID: WindowId] = [:]
-    /// The *observers'* lookup, AX element → id. Not a second identity — identity is the window number
-    /// and only the window number (§7). This is the reverse of `Record.element`, kept because an AX
-    /// notification arrives carrying an element and nothing else, and turning that back into a
-    /// `WindowId` is the alternative to the private `_AXUIElementGetWindow` we have chartered ourselves
-    /// out of. It is derived state: written and cleared in lock-step with `records`.
+    /// The observers' lookup, AX element → id: a notification arrives carrying an element and nothing
+    /// else. Not a second identity — derived state, written and cleared in lock-step with `records`.
     private var idByElement: [AXWindow: WindowId] = [:]
     /// Everything known about each managed window.
     private var records: [WindowId: Record] = [:]
@@ -293,19 +249,12 @@ public final class WindowRegistry {
     /// Take a bound window into management and return the `WindowSnapshot` the core is told about, or
     /// `nil` if the bind contradicts one we already hold.
     ///
-    /// **Idempotent by window number.** A second enumeration of a window we already know reuses its id
-    /// and refreshes its AX element rather than minting a new one — so a re-scan produces
-    /// `windowCreated` events the reducer already treats as last-writer-wins updates (`World.insert`),
-    /// and nothing on the strip duplicates.
+    /// Idempotent by window number: a re-enumeration reuses the id and refreshes the AX element, so the
+    /// resulting `windowCreated` events are last-writer-wins updates and nothing on the strip duplicates.
     ///
-    /// **A contradiction is refused, not resolved.** If this element is already bound to a *different*
-    /// window number, the join was fed two reads taken at different instants and matched a stale AX
-    /// frame onto a newer window's list entry (2026-07-26). Minting here would put a second id — a
-    /// column with no window behind it — on the strip, move `idByElement` onto the newer id so the old
-    /// window's own notifications resolve to the wrong one, and leave the real newcomer with its
-    /// number already spent. `AXEnumerator` no longer asks (a known element skips the join entirely),
-    /// so this is the belt to that braces: identity is made once and kept, and there is exactly one
-    /// place that can be true.
+    /// A contradiction is refused, not resolved. An element already bound to a *different* number means
+    /// the join matched a stale AX frame onto a newer window's list entry; minting anyway would strand a
+    /// column with no window behind it and redirect the old window's notifications to the wrong id.
     @discardableResult
     public func adopt(_ observed: ObservedWindow, element: AXWindow,
                       number: CGWindowID) -> WindowSnapshot? {
@@ -318,10 +267,9 @@ public final class WindowRegistry {
             nextRaw += 1
             idByNumber[number] = id
         }
-        // A re-scan hands back a *fresh* element for a window we already know. It compares equal to the
-        // old one (`AXWindow: Hashable`), so this is normally a no-op — but an app that hands out an
-        // element which no longer compares equal would otherwise leave a stale key pointing at a live
-        // id, and every notification about the window would resolve to the wrong one. Cheap to be exact.
+        // A re-scan's fresh element normally compares equal to the old one, so this is a no-op — but an
+        // app handing back an unequal element would leave a stale key pointing at a live id, resolving
+        // every notification about the window to the wrong one.
         if let previous = records[id]?.element, previous != element { idByElement[previous] = nil }
         idByElement[element] = id
         records[id] = Record(id: id, number: number, pid: observed.pid,
@@ -334,25 +282,21 @@ public final class WindowRegistry {
     /// The record behind an id, or `nil` if it is unknown or has been forgotten.
     public func record(_ id: WindowId) -> Record? { records[id] }
 
-    /// The AX element to act on for an id. `AXExecutor` reaches it through `record(_:)` (it needs the
+    /// The AX element to act on for an id. `AXExecutor` goes through `record(_:)` instead (it needs the
     /// pid too, to pick the lane); this is the direct form for callers that already know the app.
     public func element(for id: WindowId) -> AXWindow? { records[id]?.element }
 
     /// The id bound to a window number, if we have seen it.
     public func id(forNumber number: CGWindowID) -> WindowId? { idByNumber[number] }
 
-    /// The id behind an AX element — how an observer callback becomes an `Event`.
-    ///
-    /// `nil` means "not a window emira manages", which is a complete and normal answer: the user has
-    /// windows we declined to bind, windows we classified as floating furniture, and windows belonging
-    /// to apps we never scanned. An observation about one of those is not an error, it is silence.
+    /// The id behind an AX element — how an observer callback becomes an `Event`. `nil` means "not a
+    /// window emira manages", a normal answer rather than an error.
     func id(for element: AXWindow) -> WindowId? { idByElement[element] }
 
     /// Drop one window (it closed).
     ///
-    /// The number → id entry goes too. A `CGWindowID` *is* reused by the window server after a window
-    /// is destroyed, so keeping the mapping would eventually hand a dead window's id to a live one —
-    /// the one way this scheme could mis-bind, closed by forgetting promptly.
+    /// The number → id entry goes too: the window server *does* reuse a `CGWindowID` after a window is
+    /// destroyed, so a stale mapping would eventually hand a dead window's id to a live one.
     public func forget(_ id: WindowId) {
         guard let record = records.removeValue(forKey: id) else { return }
         idByNumber[record.number] = nil

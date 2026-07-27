@@ -1,31 +1,14 @@
 import Foundation
 
-// The command vocabulary — the *one* list of "things you can ask emira to do" (IMPLEMENTATION.md §2).
-//
-// This type is defined once, here in the pure core, and reused by every surface so a new verb is
-// added in exactly one place:
-//
-//   · the CLI parses `argv` into a `Command` and sends it over the socket;
-//   · the hotkey manager maps a key combo to a `Command`;
-//   · the config file binds keys and window-rules to `Command`s;
-//   · the wire protocol is `Command` (Codable) inside `EmiraProtocol`'s envelope;
-//   · the core consumes it as `Event.command(Command)`.
-//
-// Keeping it in `EmiraCore` (not the protocol layer) means the reducer, the tests, and the CLI all
-// speak the same type with no translation — `EmiraProtocol` only *wraps* it for the wire.
-//
-// Everything here is a pure `Codable` value type: no framework, no ids the user can't name. The
-// small supporting enums (`Direction`, `Axis`, `Toggle`, `WorkspaceRef`, `MonitorRef`) live
-// alongside `Command` because they exist to spell it.
+// The command vocabulary — the one list of "things you can ask emira to do", reused by every surface
+// (CLI, hotkeys, config bindings, the wire protocol) so a new verb is added in exactly one place.
 
-/// The four cardinal directions on the strip. Left/right run **along the ribbon** (between
-/// columns); up/down run **within a column** (between the windows stacked in it). Used by
-/// `focus`, `moveWindow`, and `consumeOrExpel`, whose meaning turns on the axis.
+/// The four cardinal directions on the strip. Left/right run along the ribbon (between columns);
+/// up/down run within a column (between the windows stacked in it).
 public enum Direction: String, Sendable, Codable, CaseIterable, Equatable {
     case left, right, up, down
 
-    /// The reversed direction — `left↔right`, `up↔down`. Handy for symmetric reducer logic
-    /// (expel is consume in the opposite sense, an undo retraces the move, …).
+    /// The reversed direction.
     public var opposite: Direction {
         switch self {
         case .left: return .right
@@ -35,8 +18,7 @@ public enum Direction: String, Sendable, Codable, CaseIterable, Equatable {
         }
     }
 
-    /// Which axis this direction travels. Left/right are horizontal (across columns); up/down are
-    /// vertical (within a column). The strip scroll only ever responds to the horizontal axis.
+    /// Which axis this direction travels.
     public var axis: Axis {
         switch self {
         case .left, .right: return .horizontal
@@ -45,20 +27,17 @@ public enum Direction: String, Sendable, Codable, CaseIterable, Equatable {
     }
 }
 
-/// The two axes of the layout: horizontal is the infinite ribbon of columns; vertical is the stack
-/// of windows inside one column.
+/// The two axes: horizontal is the infinite ribbon of columns, vertical the stack inside one column.
 public enum Axis: String, Sendable, Codable, CaseIterable, Equatable {
     case horizontal, vertical
 }
 
-/// A boolean command that can be forced on/off or flipped — for `fullscreen` and `float`, which
-/// are stateful toggles. `.toggle` is the usual keybind; `.on`/`.off` let a script or rule assert
-/// an absolute state without knowing the current one.
+/// A boolean command: forced on/off, or flipped. `.on`/`.off` let a script assert an absolute state
+/// without knowing the current one.
 public enum Toggle: String, Sendable, Codable, CaseIterable, Equatable {
     case on, off, toggle
 
-    /// Resolve against the present state: `on`→true, `off`→false, `toggle`→the negation. Pure, so
-    /// the reducer applies a `Toggle` with no branching of its own.
+    /// Resolve against the present state.
     public func resolved(current: Bool) -> Bool {
         switch self {
         case .on: return true
@@ -68,29 +47,17 @@ public enum Toggle: String, Sendable, Codable, CaseIterable, Equatable {
     }
 }
 
-/// How much to change a size by — the argument to `grow` / `shrink`. Always a *magnitude*: the verb
-/// carries the sign, so there is no such thing as a negative delta and `grow -10%` is a syntax error
-/// rather than a second spelling of `shrink 10%`.
-///
-/// **A percentage is of the monitor's working extent, not of the current size** (settled 2026-07-26).
-/// The alternative — a factor on the column's own width — compounds, so its step size drifts with
-/// every press and `grow 10%` followed by `shrink 10%` loses 1% instead of landing back where it
-/// started. Against the working width the steps are uniform and the two verbs are exact inverses,
-/// which is also the only reading that composes with the ⅓/½/⅔ presets (`PresetSize.proportion`),
-/// since those are proportions of the same extent.
-///
-/// Distinct from `PresetSize` despite the identical arithmetic: that type is an absolute size *intent*
-/// ("be half the screen"), this one is a *change* ("be 10 points of screen wider"). A `grow` resolves
-/// one into the other, which is precisely why they are not the same type.
+/// How much to change a size by — the argument to `grow` / `shrink`. Always a magnitude: the verb
+/// carries the sign, so `grow -10%` is a syntax error rather than a second spelling of `shrink 10%`.
+/// A percentage is of the monitor's working extent, not of the current size, so the steps are uniform,
+/// the two verbs are exact inverses, and it composes with the presets.
 public enum SizeDelta: Sendable, Codable, Equatable {
-    /// An absolute number of points (`grow 100px`). Points, not device pixels — the unit everything in
-    /// the core speaks; `px` is accepted as its spelling because it is what people type.
+    /// Points, not device pixels. `px` is accepted as a spelling because it is what people type.
     case points(Double)
-    /// A percentage of the working extent (`grow 10%` on an 1800 pt-wide working area is 180 pt),
-    /// spelled as a percentage rather than a fraction because that is how the user writes it.
+    /// A percentage of the working extent (`grow 10%` of an 1800 pt-wide area is 180 pt).
     case percent(Double)
 
-    /// This delta in points, against the working extent a percentage is measured on.
+    /// This delta in points, against the working extent a percentage measures.
     public func resolved(available: Double) -> Double {
         switch self {
         case .points(let points): return points
@@ -99,23 +66,9 @@ public enum SizeDelta: Sendable, Codable, Equatable {
     }
 }
 
-/// A user-facing way to name one of the 36 workspace addresses (`WorkspaceName`) — absolutely, by the
-/// single character that spells it, or relative to the focused one.
-///
-/// **Two relative motions, not one** (decided 2026-07-26). `next`/`previous` step one *address*,
-/// occupied or not; `nextOccupied`/`previousOccupied` step to the next address that actually holds a
-/// window. The difference is walking the domain versus walking what you have open, and both are worth
-/// a keybind.
-///
-/// **Both pairs clamp at the ends — no wrap.** `next` at `"z"` and `previous` at `"0"` resolve to the
-/// workspace you are already on, i.e. to nothing, which is exactly what `focus left|right` already does
-/// at the strip's edges. Same fact, one axis over.
-///
-/// Deliberately still a *reference* rather than a `WorkspaceName`: a relative ref has no name until it
-/// is resolved against the focused workspace and the occupancy of the set, which is
-/// `Workspaces.resolve(_:)`'s job. `.name` is the one case that needs no resolving, and it carries the
-/// real type rather than an `Int` because the address space is fixed and a bad character is a parse
-/// error rather than a lookup that fails later.
+/// A user-facing way to name one of the 36 workspace addresses — by the character that spells it, or
+/// relative to the focused one. A *reference*, not a `WorkspaceName`: a relative ref has no name until
+/// `Workspaces.resolve(_:)` resolves it against focus and occupancy. Relative refs clamp, never wrap.
 public enum WorkspaceRef: Sendable, Codable, Equatable {
     /// The address spelled by its character — `1`…`9`, `0`, then `a`…`z`.
     case name(WorkspaceName)
@@ -129,9 +82,9 @@ public enum WorkspaceRef: Sendable, Codable, Equatable {
     case previousOccupied
 }
 
-/// A user-facing way to name a monitor — by spatial direction from the focused one, by absolute
-/// position, or relatively. Mirrors AeroSpace's `--focus-monitor (left|right|…|next|prev|N)`. Like
-/// `WorkspaceRef`, it carries no `MonitorId`; the shell resolves it against the live display set.
+/// A user-facing way to name a monitor — by direction from the focused one, by absolute position, or
+/// relatively. Like `WorkspaceRef` it carries no `MonitorId`; the shell resolves it against the live
+/// display set.
 public enum MonitorRef: Sendable, Codable, Equatable {
     /// The monitor physically to the given side of the focused one.
     case direction(Direction)
@@ -142,45 +95,32 @@ public enum MonitorRef: Sendable, Codable, Equatable {
     case previous
 }
 
-/// The complete set of operations emira can perform. **This is the single source of truth** — the
-/// list "…grows here, and only here" (IMPLEMENTATION.md §2). Adding a verb is one case here plus
-/// its handling in the reducer; every surface picks it up for free.
-///
-/// `Codable` so it rides the wire and the deterministic replay log; `Equatable` so scenario tests
-/// can assert the exact command a keybind or CLI arg produced. The `Codable` shape is Swift's
-/// synthesized enum form (`{"focus":{"_0":"left"}}`, `{"cycleWidth":{}}`); `EmiraProtocol` (M2)
-/// owns the outer envelope and may refine presentation there — the core just needs a faithful
-/// round-trip, which this has.
+/// The complete set of operations emira can perform. The `Codable` shape is Swift's synthesized enum
+/// form (`{"focus":{"_0":"left"}}`); `EmiraProtocol` owns the outer envelope.
 public enum Command: Sendable, Codable, Equatable {
     /// Move keyboard focus to the neighbouring column (left/right) or window-in-column (up/down).
     case focus(Direction)
-    /// Move the focused window one slot in the given direction (reorder within/between columns,
-    /// or push it to the next column along the ribbon).
+    /// Move the focused window one slot in the given direction.
     case moveWindow(Direction)
     /// Move the focused window to another workspace, leaving focus behind on this one.
     case moveToWorkspace(WorkspaceRef)
-    /// Move the focused window to another workspace **and follow it there** — the same edit as
-    /// `moveToWorkspace` plus the switch, which is the only thing the two differ in.
+    /// Move the focused window to another workspace and follow it there.
     case moveToWorkspaceAndFocus(WorkspaceRef)
     /// Move the focused window (and follow it) to another monitor.
     case moveToMonitor(MonitorRef)
     /// Cycle the focused column through the preset widths.
     case cycleWidth
-    /// Widen the focused column by a delta — the continuous alternative to `cycleWidth`'s ladder.
-    /// Bounded above by the working width; a column already there is a silent no-op.
+    /// Widen the focused column by a delta — the continuous alternative to `cycleWidth`'s ladder,
+    /// bounded above by the working width.
     case grow(SizeDelta)
-    /// Narrow the focused column by a delta. Bounded below by a floor, and in practice by whatever
-    /// the app inside answers when asked to be that narrow (`SizeCorrection`).
+    /// Narrow the focused column by a delta, bounded below by a floor and by what the app accepts.
     case shrink(SizeDelta)
     /// Cycle the focused window through the preset heights (within its column).
     case cycleHeight
-    /// Consume or expel: pull the adjacent window *into* this column, or push the focused
-    /// window *out* of it — direction selects which.
+    /// Pull the adjacent window *into* this column, or push the focused one *out* — direction selects.
     case consumeOrExpel(Direction)
-    /// Toggle (or force) the focused **column** to the strip's full width — 100% of the content area,
-    /// the same top rung `cycleWidth` and `grow` resolve against. Not macOS's native full screen (no
-    /// new Space); the strip stays the strip and the neighbouring columns simply scroll out of view.
-    /// Toggling off restores the width the column already had, exactly (`ColumnLayout.isFullscreen`).
+    /// Toggle (or force) the focused *column* to the strip's full width. Not macOS's native full screen
+    /// (no new Space) — neighbours just scroll out of view, and toggling off restores the exact width.
     case fullscreen(Toggle)
     /// Toggle (or force) floating (untiled) for the focused window.
     case float(Toggle)

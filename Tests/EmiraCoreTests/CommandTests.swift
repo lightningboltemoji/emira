@@ -2,10 +2,8 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-/// The one command vocabulary (IMPLEMENTATION.md §2) and its supporting enums. These types cross
-/// the socket and land in the replay log, so the load-bearing property is a faithful `Codable`
-/// round-trip; the small pure helpers (`Direction.opposite/axis`, `Toggle.resolved`) get direct
-/// checks too.
+/// The command vocabulary and its supporting enums. These types cross the socket and land in the
+/// replay log, so the load-bearing property is a faithful `Codable` round-trip.
 @Suite struct CommandTests {
 
     // MARK: Direction
@@ -45,7 +43,7 @@ import Testing
     // MARK: Codable round-trips — the contract that matters
 
     /// Every command, including one carrying each supporting-enum shape, survives encode→decode
-    /// unchanged. This is the guarantee the CLI↔daemon wire and the replay log depend on.
+    /// unchanged — the guarantee the CLI↔daemon wire and the replay log depend on.
     @Test func everyCommandRoundTrips() throws {
         let commands: [Command] = [
             .focus(.left), .focus(.right), .focus(.up), .focus(.down),
@@ -87,9 +85,8 @@ import Testing
         }
     }
 
-    /// Pin the committed wire shape for one payload-carrying case and one bare case, so a change to
-    /// the serialized contract (which `EmiraProtocol` and any replay fixtures depend on) is a
-    /// deliberate, test-visible act rather than a silent surprise.
+    /// Pin the committed wire shape for one payload-carrying case and one bare case, so a change to the
+    /// serialized contract is a deliberate, test-visible act.
     @Test func commandWireShapeIsStable() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
