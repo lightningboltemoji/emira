@@ -49,8 +49,8 @@ public enum Event: Sendable, Equatable, Codable {
 
     // MARK: Display hotplug
 
-    /// The set of displays changed. Carries the full monitor set in enumeration order, so
-    /// `MonitorRef.index`/`.next` resolve consistently.
+    /// The set of displays changed. Carries the full monitor set in system enumeration order, which
+    /// decides which display the strip is laid out against (`State.metrics()` takes the first).
     case screensChanged([MonitorInfo])
 
     // MARK: Effect feedback — every effect's result is just another event

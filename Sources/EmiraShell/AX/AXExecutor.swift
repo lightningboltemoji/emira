@@ -59,10 +59,15 @@ public final class AXExecutor: Executor {
                 guard let record = registry.record(id) else { continue }
                 writer.raise(record)
 
+            // Lifetime: also issued as encountered, and also unacked. Whether the window actually goes
+            // is the app's call, and the answer arrives as a destroy observation rather than here.
+            case .closeWindow(let id):
+                guard let record = registry.record(id) else { continue }
+                writer.close(record)
+
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .endTransition,
-                 .reloadConfig:
+            case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .endTransition:
                 break
             }
         }

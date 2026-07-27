@@ -14,6 +14,28 @@ public enum WindowHeight: Sendable, Equatable, Codable {
     case preset(PresetSize)
 }
 
+/// What one window answered about its height, in the direction it refused (`SizeCorrection.heightBound`).
+/// The two cases are mutually exclusive by construction — an answer is either taller or shorter than the
+/// question, never both — and the direction is exactly what a bare number would lose: offered 400, a
+/// window that answered 200 must be held at 200 while one that answered 500 must be given 500.
+public enum HeightBound: Sendable, Equatable, Codable {
+    /// The window would not shrink to the height it was offered; it needs at least this much. Honoring
+    /// it is what stops a stack overlapping — the refused surplus has to come off someone else.
+    case atLeast(Double)
+    /// The window would not grow to the height it was offered; it will not use more than this. Honoring
+    /// it is what hands the surplus *back*, instead of leaving a hole under a window in its own slot.
+    case atMost(Double)
+
+    /// The height to pin this window at instead of `share`, or `nil` if `share` is one it might accept —
+    /// a floor below the share (it takes more happily) or a ceiling above it (it takes less).
+    func ruling(outOf share: Double) -> Double? {
+        switch self {
+        case .atLeast(let floor):  return floor > share ? floor : nil
+        case .atMost(let ceiling): return ceiling < share ? ceiling : nil
+        }
+    }
+}
+
 /// The vertical layout of one column: its box on the strip plus per-window height intents, turned into
 /// stacked window frames. No policy — which window is pinned to what is decided upstream.
 public struct Column: Sendable, Equatable {
@@ -23,18 +45,19 @@ public struct Column: Sendable, Equatable {
     public let windowHeights: [WindowHeight]
     /// The gap between vertically-adjacent windows. Inter-window only, matching `Strip`'s convention.
     public let gap: Double
-    /// Per-window height floors, top→bottom, 1:1 with `windowHeights` — a window's own answer to the
-    /// height the column last offered it (`SizeCorrection`). `nil` or a short array means no floor.
+    /// Per-window height bounds, top→bottom, 1:1 with `windowHeights` — a window's own answer to the
+    /// height the column last offered it (`SizeCorrection`). `nil` or a short array means unbounded.
     ///
-    /// A separate array rather than a `WindowHeight` case because a floor is a constraint, not an
+    /// A separate array rather than a `WindowHeight` case because a bound is a constraint, not an
     /// intent: autos honor it, but a pinned preset is the user's instruction and is left alone.
-    public let minHeights: [Double?]
+    public let heightBounds: [HeightBound?]
 
-    public init(frame: Rect, windowHeights: [WindowHeight], gap: Double, minHeights: [Double?] = []) {
+    public init(frame: Rect, windowHeights: [WindowHeight], gap: Double,
+                heightBounds: [HeightBound?] = []) {
         self.frame = frame
         self.windowHeights = windowHeights
         self.gap = gap
-        self.minHeights = minHeights
+        self.heightBounds = heightBounds
     }
 
     public var count: Int { windowHeights.count }
@@ -44,9 +67,10 @@ public struct Column: Sendable, Equatable {
 
     /// Each window's resolved point height, top→bottom, 1:1 with `windowHeights`. Presets resolve
     /// against the column height; what remains after them and the gaps splits equally among the autos,
-    /// clamped at zero. Floors are water-filled: an auto whose floor exceeds its share takes the floor
-    /// and stops sharing, re-dividing the rest — a fixpoint reached in at most `count` passes, since
-    /// the floored set only grows.
+    /// clamped at zero. Bounds are water-filled **in both directions**: an auto whose bound rules its
+    /// share out takes the bound and stops sharing, and the rest re-divide what is left — which a
+    /// ceiling *grows* and a floor shrinks. A fixpoint in at most `count` passes either way, since the
+    /// bounded set only ever grows and a window is pinned at the value it answered, not at a share.
     public func resolvedHeights() -> [Double] {
         guard count > 0 else { return [] }
         let totalGap = Double(count - 1) * gap
@@ -64,25 +88,27 @@ public struct Column: Sendable, Equatable {
             }
         }
 
-        // Share what's left equally, promote anyone under their floor to it, repeat.
+        // Share what's left equally, pin anyone whose answer rules that share out, repeat.
         while true {
             let autoCount = isAuto.filter { $0 }.count
             let share = autoCount > 0 ? max((frame.height - totalGap - fixedSum) / Double(autoCount), 0) : 0
-            guard let floored = isAuto.indices.first(where: { i in
-                isAuto[i] && (heightFloor(at: i).map { $0 > share } ?? false)
-            }) else {
+            guard let (index, bound) = isAuto.indices.lazy.compactMap({ i -> (Int, Double)? in
+                guard isAuto[i], let pinned = self.heightBound(at: i)?.ruling(outOf: share)
+                else { return nil }
+                return (i, pinned)
+            }).first else {
                 for i in isAuto.indices where isAuto[i] { heights[i] = share }
                 return heights
             }
-            heights[floored] = heightFloor(at: floored) ?? share
-            fixedSum += heights[floored]
-            isAuto[floored] = false
+            heights[index] = bound
+            fixedSum += bound
+            isAuto[index] = false
         }
     }
 
-    /// Window `i`'s height floor, if it has one. Total against a short or absent `minHeights`.
-    private func heightFloor(at i: Int) -> Double? {
-        minHeights.indices.contains(i) ? minHeights[i] : nil
+    /// Window `i`'s height bound, if it has one. Total against a short or absent `heightBounds`.
+    private func heightBound(at i: Int) -> HeightBound? {
+        heightBounds.indices.contains(i) ? heightBounds[i] : nil
     }
 
     // MARK: Placement
@@ -107,8 +133,9 @@ public struct Column: Sendable, Equatable {
         return frames.indices.contains(i) ? frames[i] : nil
     }
 
-    /// The total stacked height. Equals `frame.height` when at least one window is auto and unfloored;
-    /// may exceed it when pinned heights or floors overflow the box.
+    /// The total stacked height. Equals `frame.height` when at least one window is auto and unbounded;
+    /// may exceed it when pinned heights or floors overflow the box, and falls short of it when every
+    /// auto has a ceiling — the column's windows are as tall as they will go and the rest is desktop.
     public var contentHeight: Double {
         guard count > 0 else { return 0 }
         return resolvedHeights().reduce(0, +) + Double(count - 1) * gap

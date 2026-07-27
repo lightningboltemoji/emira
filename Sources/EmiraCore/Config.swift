@@ -14,6 +14,12 @@ public struct Config: Sendable, Equatable, Codable {
     /// cycle, resolved to points against the monitor at layout time, so a "½" column stays ½ on any
     /// display.
     public var widthPresets: PresetCycle
+    /// The window height presets `cycleHeight` steps through, resolved against the *column* height the
+    /// same way widths resolve against the content width. The ladder has one more rung than it lists:
+    /// **auto**, the default, which shares the column's leftover height with the other autos. Cycling
+    /// runs auto → first → … → last → auto, so every selection is reachable and reversible without a
+    /// second verb.
+    public var heightPresets: PresetCycle
     /// Points between adjacent columns on the strip (inter-column only).
     public var columnGap: Double
     /// Points between vertically-adjacent windows within a column (inter-window only).
@@ -55,6 +61,7 @@ public struct Config: Sendable, Equatable, Codable {
 
     public init(
         widthPresets: PresetCycle = .defaultWidths,
+        heightPresets: PresetCycle = .defaultHeights,
         columnGap: Double = 0,
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
@@ -69,6 +76,7 @@ public struct Config: Sendable, Equatable, Codable {
         keys: [KeyBinding] = []
     ) {
         self.widthPresets = widthPresets
+        self.heightPresets = heightPresets
         self.columnGap = columnGap
         self.windowGap = windowGap
         self.outerGaps = outerGaps

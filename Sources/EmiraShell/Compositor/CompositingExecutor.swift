@@ -46,7 +46,6 @@ public final class CompositingExecutor: Executor {
         case presentation
         case capture
         case truth
-        case config
     }
 
     /// Called when a cover comes down, with the frames blitted while it was up. The one smoothness
@@ -57,19 +56,15 @@ public final class CompositingExecutor: Executor {
     private let surface: any CoverSurface
     private let store: any CaptureStore
     private let truth: any Executor
-    private let config: (any ConfigSource)?
     /// Frames blitted since the current cover was raised, and when it went up.
     private var framesBlitted = 0
     private var coverRaisedAt = Date()
 
-    /// `store` is the same object that backs `surface`'s pixels; `config` is optional because a daemon
-    /// can run without hot reload.
-    public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor,
-                config: (any ConfigSource)? = nil) {
+    /// `store` is the same object that backs `surface`'s pixels.
+    public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor) {
         self.surface = surface
         self.store = store
         self.truth = truth
-        self.config = config
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -78,8 +73,6 @@ public final class CompositingExecutor: Executor {
             case .presentation: present(run.effects, feedback: feedback)
             case .capture:      store.capture(Self.captureIds(run.effects), feedback: feedback)
             case .truth:        truth.execute(run.effects, feedback: feedback)
-            // A run of reloads is one reload — the file can only be in one state.
-            case .config:       config?.reload()
             }
         }
     }
@@ -111,10 +104,8 @@ public final class CompositingExecutor: Executor {
             return .presentation
         case .capture:
             return .capture
-        case .setFrame, .park, .focus, .raise:
+        case .setFrame, .park, .focus, .raise, .closeWindow:
             return .truth
-        case .reloadConfig:
-            return .config
         }
     }
 
@@ -143,7 +134,7 @@ public final class CompositingExecutor: Executor {
                 blitted = true
             case .endTransition:
                 dismissing = true
-            case .setFrame, .park, .capture, .focus, .raise, .reloadConfig:
+            case .setFrame, .park, .capture, .focus, .raise, .closeWindow:
                 break                       // routed to another plane; unreachable here
             }
         }

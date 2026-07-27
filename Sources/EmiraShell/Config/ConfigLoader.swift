@@ -8,13 +8,6 @@ import EmiraCore
 // A missing file is not an error — it loads as `Config()`. A broken file changes nothing: falling back
 // to defaults on a syntax error would rearrange the whole desktop as the side effect of a typo.
 
-/// What `Effect.reloadConfig` reaches, narrowed so the executor needn't know what a config *is*.
-@MainActor
-public protocol ConfigSource: AnyObject {
-    /// Re-read the file and report the outcome (a `configChanged` event, or a diagnostic).
-    func reload()
-}
-
 /// Something that says "the config file may have changed". Tests hand-fire it.
 @MainActor
 public protocol FileWatcher: AnyObject {
@@ -50,7 +43,7 @@ public enum ConfigLoadError: Error, CustomStringConvertible {
 
 /// Loads `~/.config/emira/emira.toml` and keeps the daemon in step with it.
 @MainActor
-public final class ConfigLoader: ConfigSource {
+public final class ConfigLoader {
 
     public let path: String
 
@@ -114,22 +107,19 @@ public final class ConfigLoader: ConfigSource {
         }
     }
 
-    /// `Effect.reloadConfig`, i.e. the user asking. Reports even when nothing changed: a silent
-    /// reload is indistinguishable from no reload.
-    public func reload() {
-        reload(suppressingUnchanged: false)
-    }
-
-    /// - Parameter suppressingUnchanged: when `true`, a file that parses to the config we already have
-    ///   is not reported — *any* activity in the watched directory wakes us, so unrelated temp files
-    ///   would otherwise reload every few seconds. Failures are always reported: a suppressed repeat
-    ///   would make a save that *didn't* fix the problem look like one that did.
-    private func reload(suppressingUnchanged: Bool) {
+    /// Re-read after a filesystem event — the only thing that ever asks, now that the config file is
+    /// the whole interface and there is no `reload-config` verb to ask on a user's behalf.
+    ///
+    /// A file that parses to the config we already have is **not** reported: *any* activity in the
+    /// watched directory wakes us, so unrelated temp files would otherwise reload every few seconds.
+    /// Failures are always reported, because a suppressed repeat would make a save that *didn't* fix
+    /// the problem look like one that did.
+    func reload() {
         let result = read()
         if case .success(let config) = result {
             let unchanged = config == lastLoaded
             lastLoaded = config
-            if suppressingUnchanged && unchanged { return }
+            if unchanged { return }
         }
         onLoad?(result)
     }
@@ -151,7 +141,7 @@ public final class ConfigLoader: ConfigSource {
         scheduler.schedule(after: coalesce) { [weak self] in
             guard let self else { return }
             self.reloadPending = false
-            self.reload(suppressingUnchanged: true)
+            self.reload()
         }
     }
 }

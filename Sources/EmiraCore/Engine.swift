@@ -59,6 +59,8 @@ public struct State: Sendable, Equatable, Codable {
         return LayoutMetrics(
             workingArea: monitor.frame.inset(by: config.struts),
             widthPresets: config.widthPresets,
+            heightPresets: config.heightPresets,
+            heightSelections: workspaces.heightSelections,
             columnGap: config.columnGap,
             windowGap: config.windowGap,
             outerGaps: config.outerGaps,
@@ -257,8 +259,19 @@ public enum Engine {
             guard let focused = s.world.focusedWindow else { return [] }
             return scrollReveal(&s, to: focused, center: true)
 
+        case .closeWindow:
+            // Ask, and change nothing. The window is still there until its app says otherwise, and when
+            // it does that arrives as `windowDestroyed` — the same path a user-clicked close takes, with
+            // the same animated closing of ranks. Removing it here would fight the app over a window it
+            // may well keep (an unsaved document puts up a sheet).
+            guard let focused = s.world.focusedWindow else { return [] }
+            return [.closeWindow(focused)]
+
         case .cycleWidth:
             return handleCycleWidth(&s)
+
+        case .cycleHeight:
+            return handleCycleHeight(&s)
 
         case .grow(let delta):
             return handleResizeColumn(&s, by: delta, sign: +1)
@@ -268,6 +281,9 @@ public enum Engine {
 
         case .fullscreen(let toggle):
             return handleFullscreen(&s, toggle)
+
+        case .float(let toggle):
+            return handleFloat(&s, toggle)
 
         case .moveWindow(let direction):
             return handleMoveWindow(&s, direction)
@@ -284,13 +300,10 @@ public enum Engine {
         case .moveToWorkspaceAndFocus(let ref):
             return handleMoveToWorkspace(&s, ref, follow: true)
 
-        case .reloadConfig:
-            // Pass-through: the shell reads the file and answers with `configChanged`, or with nothing.
-            return [.reloadConfig]
-
-        // Not built yet — except `dumpState`, permanently a no-op here: it is a read, answered out of
-        // band by the shell off `Runtime.state`.
-        case .moveToMonitor, .cycleHeight, .float, .closeWindow, .dumpState:
+        // The only verb that is permanently a no-op here: `dumpState` is a *read*, answered out of band
+        // by the shell off `Runtime.state` (§11, 2026-07-24). Everything else in the vocabulary does
+        // something — a listed verb is a promise, since `Command.usage` is `emira --help`.
+        case .dumpState:
             return []
         }
     }
@@ -635,6 +648,43 @@ public enum Engine {
         return [.endTransition]
     }
 
+    // MARK: - Floating (leaving the strip on purpose)
+
+    /// Float or tile the focused window. It is the *same* pair of paths a minimize and a restore take —
+    /// a departure and an arrival — so the strip closes and opens ranks in motion, and this handler owns
+    /// no geometry of its own.
+    ///
+    /// Two things are decided here. **The override is tri-state**, so `float off` on a dialog *tiles* it
+    /// rather than merely clearing a flag back to a role that says float; without that, half the verb
+    /// does nothing and there is no way to tile a window macOS classed as a panel. And **it is stored
+    /// even when it agrees with the role**, because an AX subrole describes presentation rather than
+    /// identity and does change under us (§10's full-screen Safari window reporting `AXDialog`) — the
+    /// user's answer has to outrank a role that moves.
+    ///
+    /// A floated window keeps the frame it had. We stop placing it; we don't get an opinion about where
+    /// it should sit instead.
+    private static func handleFloat(_ s: inout State, _ toggle: Toggle) -> [Effect] {
+        guard let focused = s.world.focusedWindow, s.world.windows[focused] != nil else { return [] }
+        let current = s.world.isFloating(focused)
+        guard toggle.resolved(current: current) != current else { return [] }
+
+        guard !current else {                       // floating → tiled: an arrival, like a de-minimize
+            let before = strandedGeometry(&s)
+            let beside = insertionAnchor(s)
+            s.world.setFloating(focused, false)
+            // Still off the strip (its app is hidden, or it is minimized): nothing to animate into.
+            guard s.world.participatesInStrip(focused), let before else { return emitPlacements(&s) }
+            // No `.focus`: it already holds focus, and re-asserting it is an AX set that can make an
+            // app raise a *different* window forward.
+            return arriveOnStrip(&s, focused, beside: beside, old: before, announcingFocus: false)
+        }
+
+        // Tiled → floating: a departure, like a minimize — except focus stays put, because the window is
+        // still there. `departFromStrip` only picks a successor when focus was actually lost, and the
+        // viewport holds, since a window with no column reveals to nowhere.
+        return departFromStrip(&s, focused) { $0.world.setFloating(focused, true) }
+    }
+
     // MARK: - Placement (the instant-correct core)
 
     /// Snap the viewport to reveal `id`'s column (centered, or minimally revealed per config) and re-place
@@ -724,6 +774,36 @@ public enum Engine {
             layout.setWidthPreset(metrics.widthPresets.nextIndex(after: column.widthPreset),
                                   ofColumn: column.id)
         }
+    }
+
+    /// Step the focused window to the next height preset inside its column.
+    ///
+    /// Unlike `cycleWidth` this animates **no new quantity**. A height change moves and resizes the
+    /// windows of one column and touches nothing else on the strip — which is exactly the per-window
+    /// *displacement* a structural edit already animates, because `Rect.delta` carries size as well as
+    /// origin. So a window that only got shorter is a displacement whose origin term happens to be zero,
+    /// and the third animated quantity absorbs a fourth for free.
+    ///
+    /// The whole column re-divides — the water-fill hands back what a pinned window gives up — so every
+    /// window in it forgets what it last answered about its size. The user asked again; a bound learned
+    /// against the old share would hold the column at the shape it is trying to leave.
+    private static func handleCycleHeight(_ s: inout State) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        guard let metrics = s.metrics(),
+              let focused = s.world.focusedWindow,
+              let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
+
+        let windowIds = s.layout.columns[index].windowIds     // a copy; read before the mutation
+        let old = structuralSnapshot(s, metrics)
+
+        s.workspaces.cycleHeight(of: focused, through: s.config.heightPresets)
+        s.world.forgetCorrections(of: windowIds)
+
+        // A cycle that resolves to the height it was already at displaces nobody, and
+        // `finishStructuralEdit` is silent in exactly that case — the stored selection still moved, so
+        // the next press acts at once. Same contract `resizeFocusedColumn` keeps for widths.
+        return finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
+                                    focused: focused, mover: focused, animatingFrom: old)
     }
 
     /// The narrowest an explicit `shrink` may leave a column — a backstop for apps that accept any size,
@@ -906,11 +986,15 @@ public enum Engine {
     ///
     /// - Parameter keepingWidth: the launch scan's arrival — the column takes the width the window
     ///   already has rather than the ladder's first rung.
+    /// - Parameter announcingFocus: whether to emit `.focus`. `false` when the window already holds it
+    ///   (`float off`), where asking again is a redundant AX set that can make an app raise.
     private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
-                                      old: StructuralSnapshot, keepingWidth: Bool = false) -> [Effect] {
+                                      old: StructuralSnapshot, keepingWidth: Bool = false,
+                                      announcingFocus: Bool = true) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
+        let announce: [Effect] = announcingFocus ? [.focus(id)] : []
         // A window that didn't join a column has nothing to animate; ordinary placement still runs.
-        guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + [.focus(id)] }
+        guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + announce }
         // Before the geometry below is read, so an adopted window travels to its place on the strip
         // rather than also resizing on the way.
         if keepingWidth { keepExistingWidth(&s, id) }
@@ -919,7 +1003,7 @@ public enum Engine {
         let seeded = opened.map { old.including(id, at: $0) } ?? old
         let edit = LayoutEdit(moved: true, destroyedColumn: nil)
         return finishStructuralEdit(&s, edit, focused: id, mover: id,
-                                    animatingFrom: seeded) + [.focus(id)]
+                                    animatingFrom: seeded) + announce
     }
 
     /// Seed a just-adopted column with the width its window already has, instead of the ladder's first
@@ -1006,16 +1090,21 @@ public enum Engine {
               let question = s.workspaces[name].uncorrectedSize(of: id, metrics: metrics)
         else { return [] }
 
-        // A narrower answer teaches only when it answered the question — one narrowing per question, or
-        // an app always returning slightly less than asked walks the column toward nothing. Widening
-        // keeps learning unconditionally: too wide overlaps a neighbour.
-        if actual.width < requested.width - 0.5,
-           !approximatelyEqualScalar(requested.width, question.width) { return [] }
+        // A smaller answer teaches only when it answered the question — one shrink per question **on
+        // either axis**, or an app always returning slightly less than asked walks its column toward
+        // nothing, one placement at a time. Growing keeps learning unconditionally: too wide overlaps a
+        // neighbour, too tall overlaps a stackmate, and those are the invariants the strip promises.
+        if shrankOffQuestion(actual.width, requested: requested.width, question: question.width)
+            || shrankOffQuestion(actual.height, requested: requested.height, question: question.height) {
+            return []
+        }
 
         let before = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
+        let stackedBefore = s.workspaces[name].naturalFrames(scrollOffset: 0, metrics: metrics)
         s.world.noteCorrection(id, wanted: question, actual: actual.size)
         guard let corrected = s.metrics() else { return [] }
         let after = s.workspaces[name].resolvedWidth(of: column, metrics: corrected)
+        springHeightChange(&s, on: name, column, from: stackedBefore, to: corrected)
 
         // Under a cover every layer frame is re-derived from the strip's geometry each tick, so a column
         // that changes width between two frames jumps. Put the change under the resize spring instead.
@@ -1029,6 +1118,30 @@ public enum Engine {
         // Mid-capture nothing has moved yet; the raise's own teleport will read the correction.
         if s.motion.isCovered { return teleportBehindCover(&s) }
         return s.motion.isTransitioning ? [] : emitPlacements(&s)
+    }
+
+    /// Carry a learned *height* across a raised cover, for the reason the width branch below it exists:
+    /// the layers re-derive their frames from the layout every tick, so a column that re-divides between
+    /// two frames jumps. This is the third animated quantity rather than the second, and correctly so —
+    /// a height answer re-runs the water-fill, and before and after are two different divisions of the
+    /// column with no single number to interpolate, exactly like a structural edit. So what springs is
+    /// each window's *displacement* from where the column now says it belongs, decaying to zero.
+    ///
+    /// Vertical components only: `x`/`width` belong to the column-width animator, and the two must not
+    /// both have an opinion about one number. Idle (no session open) there is nothing to smooth — the
+    /// placement snaps, as every uncovered placement does.
+    private static func springHeightChange(_ s: inout State, on name: WorkspaceName,
+                                           _ column: ColumnLayout,
+                                           from stackedBefore: [WindowId: Rect],
+                                           to corrected: LayoutMetrics) {
+        guard s.motion.isTransitioning else { return }
+        let stackedAfter = s.workspaces[name].naturalFrames(scrollOffset: 0, metrics: corrected)
+        for window in column.windowIds {
+            guard let was = stackedBefore[window], let now = stackedAfter[window] else { continue }
+            let delta = Rect(x: 0, y: was.minY - now.minY, width: 0, height: was.height - now.height)
+            guard delta != .zero else { continue }
+            s.motion.displaceWindow(window, by: delta, params: s.config.resizeSpring)
+        }
     }
 
     /// Re-derive where an open transition is travelling to, after something changed the geometry its
@@ -1106,6 +1219,13 @@ public enum Engine {
     private static func approximatelyEqual(_ a: Rect, _ b: Rect, tolerance: Double = 0.5) -> Bool {
         abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
         abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    }
+
+    /// Whether one axis of an answer came back smaller than a request that was **not** the question —
+    /// the recursion guard, per axis. The request being the question is what makes an answer a fact
+    /// about the app rather than a fact about our own last concession to it.
+    private static func shrankOffQuestion(_ actual: Double, requested: Double, question: Double) -> Bool {
+        actual < requested - 0.5 && !approximatelyEqualScalar(requested, question)
     }
 
     /// Two sizes within half a point on both axes — the comparison a `SizeCorrection` is matched with.

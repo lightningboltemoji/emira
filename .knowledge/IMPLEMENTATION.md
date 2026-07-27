@@ -72,7 +72,6 @@ enum Command {
     case moveWindow(Direction)
     case moveToWorkspace(WorkspaceRef)
     case moveToWorkspaceAndFocus(WorkspaceRef)   // …and follow it there
-    case moveToMonitor(MonitorRef)
     case cycleWidth                  // preset column widths
     case grow(SizeDelta)             // …and the continuous alternative to that ladder
     case shrink(SizeDelta)
@@ -83,11 +82,15 @@ enum Command {
     case focusWorkspace(WorkspaceRef)
     case closeWindow
     case centerColumn
-    case reloadConfig
     case dumpState                   // introspection for `emira debug`
     // …grows here, and only here.
 }
 ```
+
+**And shrinks here too, when a verb turns out not to earn its place.** The rule this vocabulary lives by is that
+**every verb in it does something**, because `Command.usage` *is* `emira --help` and a listed verb is a promise. That
+is not automatic: a verb can parse, ride the socket, be answered `ok`, and be inert in the reducer, with the syntax and
+wire tests green the whole time — those check that a verb *parses*, which is not the property anyone cares about.
 
 Keeping this in the pure core (not the protocol layer) means the reducer, the tests, and the CLI all speak the same
 type with no translation. `EmiraProtocol` only wraps it for the wire.
@@ -278,7 +281,11 @@ emira/
 │   │   │   │                        # over the whole set, each strip's scroll/focus **memory**,
 │   │   │   │                        # `WorkspaceRef` resolution, and the atomic cross-strip `move`
 │   │   │   ├── Strip.swift          # infinite-axis math, viewport scroll, centering
-│   │   │   ├── Column.swift         # vertical stack, heights
+│   │   │   ├── Column.swift         # vertical stack, heights; the height **water-fill** — an auto
+│   │   │   │                        # window whose `HeightBound` rules its share out takes the bound
+│   │   │   │                        # and the others re-divide, to a fixpoint. Both directions: a
+│   │   │   │                        # floor shrinks what the rest divide, a ceiling (an app that will
+│   │   │   │                        # not *grow*) hands the surplus back rather than leaving a hole
 │   │   │   ├── Presets.swift        # cyclable width/height presets, inner + outer gaps, struts
 │   │   │   ├── Cascade.swift        # the one layout that isn't the strip: the **quit cascade**.
 │   │   │   │                        # Centre ¾ of the working area, 30 pt stagger, bottom-rights
@@ -517,10 +524,16 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     animator `cycle-width` uses, retargeted in place — which is also *required* during a resize, since the layers must
     converge on the width the reals were teleported to. Mid-*capture*, the correction is recorded and nothing is
     placed: the raise's own teleport is moments away and reads it.
-  - **Heights are the same fact on the other axis**, and `Column` grew a **water-fill** for it: an auto window whose
-    floor exceeds its equal share takes the floor and stops sharing, the remainder re-divides among the rest, and the
-    pass repeats to a fixpoint (≤ n passes, since the floored set only grows). A floor never overrides a pinned
-    preset: a pin is the user's instruction, a floor is the app's constraint.
+  - **Heights are the same fact on the other axis, and the bound is *signed*.** `Column` runs a **water-fill**: an
+    auto window whose bound rules its share out takes the bound and the others re-divide, to a fixpoint (≤ n passes,
+    since the bounded set only grows). It pins in **both** directions — a floor above its share takes the floor and
+    *shrinks* what the rest divide; a ceiling below its share takes the ceiling and *grows* it. Direction is the one
+    thing a bare number loses: offered 400, a window that answered 200 must be held at 200 while one that answered 500
+    must be given 500. A bound never overrides a pinned preset: a pin is the user's instruction, a bound is the app's
+    constraint. Two residues, both deliberate — a column whose every window has a ceiling **under**-fills its box,
+    since there is nowhere to give the height back (unlike the strip, which just packs the next column against a
+    narrow one), and a height learned mid-transition rides the **third** animated quantity rather than the second,
+    since re-running the water-fill produces two different divisions of one box with no number to interpolate.
 - **Layout engine:** columns ↔ windows, preset cycling, scroll/center, per-monitor strips, dynamic workspaces, and
   **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's **bottom-right**
   corner, the window's own title bar left on screen as a grab handle and the nub's *height* carrying the stagger
@@ -634,6 +647,33 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     is confined to one strip, which is every command but these. Across two strips z-order is arbitrary anyway — they
     are one screen apart and never overlap — which is also why a plain `focus-workspace` elevates nothing while the
     two move verbs elevate the window that moved.
+- **Three verbs that own no geometry of their own.**
+  - **`close-window` is an `Effect`, and deliberately unacked.** It presses the window's own `AXCloseButton`, which is
+    the public equivalent of the user clicking the red dot and — the point — *not* the same as destroying the window
+    behind the app's back: the app runs its own close path, so an unsaved document still gets its sheet. The reducer
+    therefore changes **no state**. Removing the window optimistically, the way placement writes frames
+    optimistically, would be asserting a fact only the app owns, and would be wrong every time an app declines. The
+    strip closes ranks on the destroy notification, which is the path a user-clicked close already takes, so the
+    animation came for free. Reading `AXCloseButton` is a window-level *attribute*, not the child walk
+    `PRINCIPLES.md` §5 forbids.
+  - **`float` is a tri-state override, stored explicitly.** Tri-state (absent = follow the role) rather than a flag,
+    because `float off` has to *tile* a window macOS classed as a dialog — with a mere flag half the verb is
+    unreachable and a mis-classified window is stuck floating forever. And stored **even when it agrees with the
+    role**, because an AX subrole describes presentation rather than identity and changes under us (`PRINCIPLES.md`
+    §6), so a user's answer must outrank a role that moves. The verb owns no geometry: floating is the departure path
+    minus the refocus (the window is still there to look at), and tiling is the arrival path minus the focus effect
+    (it already has focus).
+  - **`cycle-height` needed no fourth animated quantity.** The budgeted cost was a new animator, since heights had
+    never moved. There isn't one: a height change moves and resizes the windows of *one column* and nothing else,
+    which is exactly the per-window **displacement** structural edits already animate — `Rect` deltas carry size as
+    well as origin, so a window that only got shorter is a displacement whose origin term is zero.
+    - **The selection is keyed by window and lives on `Workspaces`, not on a column.** A parallel array beside the
+      column's window ids would have to survive four structural primitives plus reconcile, and desyncs silently.
+      Keyed, it survives all of them for free, and holding it for the whole set rather than per strip means a
+      workspace move carries it without `move` remembering to. It rides into geometry through `LayoutMetrics` for
+      exactly the reason corrections do: it must reach *every* query or they disagree about how tall a window is.
+    - **Auto is a rung of the ladder, not a state you can only leave.** The cycle runs auto → ⅓ → ½ → ⅔ → auto, so one
+      verb reaches every selection *and* gets home; the alternative is a second verb whose only job is "un-pin".
 - **Rules engine:** pure predicates over window metadata → assign-to-workspace / float / initial-width. Definitions
   come from config; evaluation is pure. Built-in taxonomy defaults: only `AXStandardWindow` tiles;
   dialogs/sheets/panels/popovers float; native-fullscreen windows are excluded (they live on their own Space);
@@ -904,7 +944,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
 `EmiraCore`, and so is the **parse** (`ConfigSyntax.swift` — a `String → Config` function is pure by construction);
 the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
-`center-focused-column`, and animation params (spring stiffness/damping, durations, and `animation.window` —
+`center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through), and
+animation params (spring stiffness/damping, durations, and `animation.window` —
 `"stretch"` or `"crop"`, the only config value that reaches the *compositor* rather than the reducer). Struts are
 deliberately *not* a
 key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with

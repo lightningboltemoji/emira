@@ -195,8 +195,7 @@ menuBar.onError = { log($0) }
 // MARK: - The pump
 
 let truth = AXExecutor(registry: registry, writer: AXWindowWriter(client: axClient))
-let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
-                                   config: loader)
+let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below.

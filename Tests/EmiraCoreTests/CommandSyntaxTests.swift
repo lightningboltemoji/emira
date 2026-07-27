@@ -18,8 +18,6 @@ import Testing
         .moveToWorkspace(.previous), .moveToWorkspace(.nextOccupied),
         .moveToWorkspace(.previousOccupied),
         .moveToWorkspaceAndFocus(.name(WorkspaceName("a")!)), .moveToWorkspaceAndFocus(.next),
-        .moveToMonitor(.direction(.right)), .moveToMonitor(.index(2)),
-        .moveToMonitor(.next), .moveToMonitor(.previous),
         .cycleWidth, .cycleHeight,
         .grow(.points(100)), .grow(.percent(10)),
         .shrink(.points(12.5)), .shrink(.percent(5)),
@@ -29,7 +27,7 @@ import Testing
         .focusWorkspace(.name(.first)), .focusWorkspace(.name(.last)),
         .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
-        .closeWindow, .centerColumn, .reloadConfig, .dumpState,
+        .closeWindow, .centerColumn, .dumpState,
     ]
 
     // MARK: - The two load-bearing properties
@@ -64,12 +62,10 @@ import Testing
         #expect(Command.focusWorkspace(.nextOccupied).words == ["focus-workspace", "next-non-empty"])
         #expect(Command.focusWorkspace(.previousOccupied).words
                 == ["focus-workspace", "previous-non-empty"])
-        #expect(Command.moveToMonitor(.direction(.right)).words == ["move-to-monitor", "right"])
         #expect(Command.consumeOrExpel(.left).words == ["consume-or-expel", "left"])
         #expect(Command.fullscreen(.toggle).words == ["fullscreen", "toggle"])
         #expect(Command.cycleWidth.words == ["cycle-width"])
         #expect(Command.closeWindow.words == ["close-window"])
-        #expect(Command.reloadConfig.words == ["reload-config"])
         // `emira debug` is the documented user-facing verb for `dumpState`.
         #expect(Command.dumpState.words == ["debug"])
     }
@@ -78,7 +74,6 @@ import Testing
         #expect(try Command.parse(["dump-state"]) == .dumpState)
         #expect(try Command.parse(["focus-workspace", "prev"]) == .focusWorkspace(.previous))
         #expect(try Command.parse(["move-to-workspace", "prev"]) == .moveToWorkspace(.previous))
-        #expect(try Command.parse(["move-to-monitor", "prev"]) == .moveToMonitor(.previous))
         // `prev-non-empty` is the short spelling; `previous-non-empty` is what `words` emits.
         #expect(try Command.parse(["focus-workspace", "prev-non-empty"])
                 == .focusWorkspace(.previousOccupied))
@@ -168,18 +163,9 @@ import Testing
         #expect(error == .missingArgument(verb: "grow", expected: "<Npx|N%>"))
     }
 
-    /// Monitors are still 1-based the way a user counts them, so `0` is a mistake — and a
-    /// silently-accepted `0` would index a different monitor than the one typed.
-    @Test func monitorIndicesAreOneBasedAndPositive() throws {
-        #expect(try Command.parse(["move-to-monitor", "2"]) == .moveToMonitor(.index(2)))
-        for bad in ["0", "-1", "two", "1.5", ""] {
-            #expect(throws: CommandSyntaxError.self) { try Command.parse(["move-to-monitor", bad]) }
-        }
-    }
-
-    /// Workspaces go the other way from monitors, deliberately: they are a fixed 36-address domain in
-    /// *key* order — `1` first, `0` tenth — and every address is one character. There is no index left to
-    /// be off by one, so a two-character or out-of-domain word is the only way to get it wrong.
+    /// Workspaces are a fixed 36-address domain in *key* order — `1` first, `0` tenth — and every address
+    /// is one character. There is no index to be off by one, so a two-character or out-of-domain word is
+    /// the only way to get it wrong.
     @Test func aWorkspaceIsNamedByItsCharacterAndOneIsTheFirstOne() throws {
         #expect(try Command.parse(["focus-workspace", "1"]) == .focusWorkspace(.name(.first)))
         #expect(try Command.parse(["focus-workspace", "0"])

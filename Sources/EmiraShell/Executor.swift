@@ -104,9 +104,10 @@ public final class MockExecutor: Executor {
             feedback(.crossfadeDone)
 
         // No reply by contract: raising the cover is synchronous, layer blits are writes the core already
-        // knows it made, a raise has no observable completion. `reloadConfig` does have a reply, but only
-        // a real file can say what it contains, so it is left unanswered as a failed parse would be.
-        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .raise, .reloadConfig:
+        // knows it made, and a raise has no observable completion. `closeWindow` is unacked for a
+        // different reason — a real app may refuse, so simulating a destroy here would be inventing the
+        // one fact only the app can supply.
+        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .raise, .closeWindow:
             break
         }
     }

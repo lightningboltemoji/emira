@@ -58,12 +58,6 @@ public enum Effect: Sendable, Equatable, Codable {
     /// with `Event.crossfadeDone`.
     case endTransition
 
-    // MARK: Configuration — the filesystem
-
-    /// Re-read the config file from disk, acked by `Event.configChanged` when it parses. A failed
-    /// reload logs a diagnostic and leaves the running config exactly as it was.
-    case reloadConfig
-
     // MARK: Focus & stacking — AX + `NSRunningApplication`
 
     /// Give a real window keyboard focus (raise + make key via AX / app activation).
@@ -71,4 +65,12 @@ public enum Effect: Sendable, Equatable, Codable {
 
     /// Raise a real window in the z-order without necessarily focusing it (stacking within a column).
     case raise(WindowId)
+
+    // MARK: Lifetime — AX
+
+    /// Ask a window to close itself, as clicking its close button would. Deliberately unacked: the app
+    /// owns its own close path, so it may put up a save sheet, close later, or refuse outright. The only
+    /// truth is the destroy observation, which arrives as `Event.windowDestroyed` like any other close —
+    /// so the core changes no state here and the strip closes ranks when (and if) the window really goes.
+    case closeWindow(WindowId)
 }

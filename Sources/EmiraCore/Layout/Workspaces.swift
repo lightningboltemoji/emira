@@ -54,6 +54,12 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// that mint — which is why those live here rather than on the `Layout` projection.
     private var columnIds: ColumnAllocator
 
+    /// Which height preset each window is pinned to (`cycleHeight`); absent means auto. Kept for the
+    /// whole set rather than per strip, so a window carries its height to another workspace without
+    /// `move` having to remember to bring it — the same reason one `ColumnAllocator` serves all 36.
+    /// Reconciled against the live strip set, so a closed window's selection does not outlive it.
+    public private(set) var heightSelections: [WindowId: Int] = [:]
+
     /// A fresh set: `focused` materialized and empty, nothing else. The launch state.
     public init(focused: WorkspaceName = .first) {
         self.strips = [focused: WorkspaceState()]
@@ -209,6 +215,24 @@ public struct Workspaces: Sendable, Equatable, Codable {
                   self[name].columnIndex(ofWindow: remembered) == nil else { continue }
             strips[name]?.lastFocus = nil
         }
+
+        // A height pinned to a window that has left every strip — closed, minimized, floated — goes
+        // with it. Asked of `keep` rather than of the strips, so a window in flight between two of
+        // them keeps its height.
+        heightSelections = heightSelections.filter { keep.contains($0.key) }
+    }
+
+    /// Step `window` to the next height preset, wrapping through **auto**: absent → 0 → … → last →
+    /// absent. Auto is a rung of the ladder rather than a state you can only leave, so one verb reaches
+    /// every selection *and* gets back home — the alternative is a second verb whose only job is
+    /// "un-pin". Total: an empty cycle, or an index drifted past a shortened one, resolves to auto.
+    public mutating func cycleHeight(of window: WindowId, through cycle: PresetCycle) {
+        guard cycle.count > 0, let current = heightSelections[window] else {
+            heightSelections[window] = cycle.count > 0 ? 0 : nil
+            return
+        }
+        let next = current + 1
+        heightSelections[window] = next < cycle.count ? next : nil
     }
 
     /// Move `window` out into a freshly-minted single-window column on **its own** workspace

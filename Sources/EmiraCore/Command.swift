@@ -82,19 +82,6 @@ public enum WorkspaceRef: Sendable, Codable, Equatable {
     case previousOccupied
 }
 
-/// A user-facing way to name a monitor — by direction from the focused one, by absolute position, or
-/// relatively. Like `WorkspaceRef` it carries no `MonitorId`; the shell resolves it against the live
-/// display set.
-public enum MonitorRef: Sendable, Codable, Equatable {
-    /// The monitor physically to the given side of the focused one.
-    case direction(Direction)
-    /// 1-based position in system enumeration order.
-    case index(Int)
-    /// The next / previous monitor in enumeration order (wraps).
-    case next
-    case previous
-}
-
 /// The complete set of operations emira can perform. The `Codable` shape is Swift's synthesized enum
 /// form (`{"focus":{"_0":"left"}}`); `EmiraProtocol` owns the outer envelope.
 public enum Command: Sendable, Codable, Equatable {
@@ -106,8 +93,6 @@ public enum Command: Sendable, Codable, Equatable {
     case moveToWorkspace(WorkspaceRef)
     /// Move the focused window to another workspace and follow it there.
     case moveToWorkspaceAndFocus(WorkspaceRef)
-    /// Move the focused window (and follow it) to another monitor.
-    case moveToMonitor(MonitorRef)
     /// Cycle the focused column through the preset widths.
     case cycleWidth
     /// Widen the focused column by a delta — the continuous alternative to `cycleWidth`'s ladder,
@@ -130,8 +115,6 @@ public enum Command: Sendable, Codable, Equatable {
     case closeWindow
     /// Scroll the strip so the focused column is centred in the viewport.
     case centerColumn
-    /// Re-read the config file and re-lay-out in place.
-    case reloadConfig
     /// Dump the live `State` as JSON over the socket — introspection for `emira debug`.
     case dumpState
 }

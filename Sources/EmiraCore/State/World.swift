@@ -33,7 +33,8 @@ public struct WindowState: Sendable, Equatable, Codable {
         self.isMinimized = isMinimized
     }
 
-    /// Window-*local* tiling truth; `World.participatesInStrip` combines it with `AppState.isHidden`.
+    /// What the window's *role* says about tiling, before the user gets a say. `World.isFloating`
+    /// overrides it and `World.participatesInStrip` combines both with `AppState.isHidden`.
     public var isTileable: Bool { role.tiles && !isMinimized }
 }
 
@@ -63,14 +64,21 @@ public struct SizeCorrection: Sendable, Equatable, Codable {
         return actual.width
     }
 
-    /// This answer's height, if it answers `question` and is *taller* — the case a stacked column reaches
-    /// when its share drops below what an app accepts, feeding `Column`'s height water-fill.
-    /// One-directional where `width(forQuestion:)` is not, and the asymmetry is real: a column's height is
-    /// the viewport's and fixed, so a refused share is a gap inside the column, not phantom strip extent.
-    public func heightFloor(forQuestion question: Double, tolerance: Double = 0.5) -> Double? {
-        guard abs(wanted.height - question) <= tolerance, actual.height > question + tolerance
-        else { return nil }
-        return actual.height
+    /// This answer's height as a bound on the share its column offers it, if it answers `question` —
+    /// in *either* direction, like `width(forQuestion:)` and for the same reason: a slot the window
+    /// cannot fill is not cosmetic either. A column's height is the viewport's and fixed, so the two
+    /// refusals land differently — too tall overlaps a stackmate, too short leaves a hole under the
+    /// window — but both are the layout holding a size the app has already refused, and re-asking is
+    /// a resize the app rejects again on every placement.
+    ///
+    /// Direction is `Column`'s job, via the water-fill: it is what tells a share of 400 offered to a
+    /// window that answered 200 (pin it) from the same share offered to one that answered 500 (pin it
+    /// too) from either offered to a window that answered nothing (share it).
+    public func heightBound(forQuestion question: Double, tolerance: Double = 0.5) -> HeightBound? {
+        guard abs(wanted.height - question) <= tolerance else { return nil }
+        if actual.height > question + tolerance { return .atLeast(actual.height) }
+        if actual.height < question - tolerance { return .atMost(actual.height) }
+        return nil
     }
 }
 
@@ -109,7 +117,8 @@ public struct World: Sendable, Equatable, Codable {
     public private(set) var windows: [WindowId: WindowState]
     /// Every app with at least one live window. Reference-counted against `windows`.
     public private(set) var apps: [String: AppState]
-    /// The displays, in enumeration order, so `MonitorRef.index`/`.next` resolve consistently.
+    /// The displays, in system enumeration order — which is meaningful, not incidental: `State.metrics()`
+    /// lays the strip out against `monitors.first`, so the order decides which display emira manages.
     public private(set) var monitors: [MonitorState]
     /// The currently focused window, or `nil` when focus has left every managed window. Kept
     /// referentially honest: `remove` clears it if the focused window is the one going away.
@@ -122,6 +131,11 @@ public struct World: Sendable, Equatable, Codable {
     /// a timed-out write usually can't be read back — so without this mark that guess stands as truth and
     /// `Engine.isAlreadyPlaced` skips the window forever. Not a retry: nothing here schedules anything.
     public private(set) var unverified: Set<WindowId>
+    /// The user's explicit float/tile answer per window, where they have given one — `Command.float`.
+    /// A side table rather than a field on `WindowState` for the same reason `corrections` is one:
+    /// `insert` rebuilds the whole record (a re-scan overwrites it), and an answer the user gave should
+    /// outlive a re-enumeration. Absent means "follow the role"; see `isFloating`.
+    public private(set) var floating: [WindowId: Bool]
     /// The last window focus rested on that belongs to the strip — "where was the user working", against
     /// `focusedWindow`'s "what is focused", which goes `nil` routinely for a moment because an app focuses
     /// a new window *before* we adopt it. A new column opens beside *this*: without it, ⌘N raced that
@@ -135,6 +149,7 @@ public struct World: Sendable, Equatable, Codable {
         self.focusedWindow = nil
         self.corrections = [:]
         self.unverified = []
+        self.floating = [:]
         self.lastStripFocus = nil
     }
 
@@ -159,6 +174,7 @@ public struct World: Sendable, Equatable, Codable {
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
         unverified.remove(id)
+        floating[id] = nil
         if lastStripFocus == id { lastStripFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
@@ -226,8 +242,24 @@ public struct World: Sendable, Equatable, Codable {
     /// Whether a window is currently on the tiled strip: it exists, its own state permits tiling, and its
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
     public func participatesInStrip(_ id: WindowId) -> Bool {
-        guard let window = windows[id], window.isTileable else { return false }
+        guard let window = windows[id], !window.isMinimized, !isFloating(id) else { return false }
         return !(apps[window.bundleId]?.isHidden ?? false)
+    }
+
+    /// Whether this window floats: the user's explicit answer where they have given one, else what the
+    /// role says. Distinct from "off the strip" — minimizing and `Cmd-H` also take a window off, and
+    /// neither of them is a float.
+    public func isFloating(_ id: WindowId) -> Bool {
+        guard let window = windows[id] else { return false }
+        return floating[id] ?? !window.role.tiles
+    }
+
+    /// Fold `Command.float`. Stored **explicitly**, even when it agrees with the role, because a
+    /// subrole describes a window's *presentation* and can change under us — a natively full-screen
+    /// Safari window reports `AXDialog` (§10) — and the user's answer must outrank a role that moves.
+    public mutating func setFloating(_ id: WindowId, _ isFloating: Bool) {
+        guard windows[id] != nil else { return }
+        floating[id] = isFloating
     }
 
     /// The windows currently on the strip, sorted by id for deterministic layout and replay.
@@ -238,11 +270,6 @@ public struct World: Sendable, Equatable, Codable {
     /// The ids of every live window owned by `bundleId`, sorted — what app-level operations read.
     public func windowIds(inApp bundleId: String) -> [WindowId] {
         windows.values.filter { $0.bundleId == bundleId }.map(\.id).sorted()
-    }
-
-    /// The display at an enumeration index (for `MonitorRef.index`), bounds-checked to `nil`.
-    public func monitor(atIndex index: Int) -> MonitorState? {
-        monitors.indices.contains(index) ? monitors[index] : nil
     }
 
     public var focusedWindowState: WindowState? {

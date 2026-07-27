@@ -85,8 +85,8 @@ public struct ScreenGeometry: Sendable, Equatable {
                    right: max(Double(frame.maxX - visible.maxX), 0))
     }
 
-    /// The attached displays as the core's `MonitorInfo`, in AppKit enumeration order — what
-    /// `MonitorRef.index`/`.next` resolve against. The id is the `CGDirectDisplayID`.
+    /// The attached displays as the core's `MonitorInfo`, in AppKit enumeration order — the order the
+    /// core reads `monitors.first` out of. The id is the `CGDirectDisplayID`.
     public func monitors(_ screens: [NSScreen]) -> [MonitorInfo] {
         screens.enumerated().map { index, screen in
             let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID

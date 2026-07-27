@@ -15,6 +15,7 @@ import EmiraMotion
 // column-gap = 0                        # points; likewise window-gap and outer-gap
 // outer-gap-top = 0                     # …and -left/-bottom/-right, overriding outer-gap per side
 // width-presets = [0.333, 0.5, 0.667]   # ≤ 1 is a fraction of the *content* width; > 1 is points
+// height-presets = [0.333, 0.5, 0.667]  # likewise, against the column height (`cycle-height`)
 // center-focused-column = false         # false = scroll the minimum that reveals the column
 //
 // [animation]
@@ -95,6 +96,7 @@ extension Config {
         }
         if let flag = try table.bool("layout.center-focused-column") { config.centerFocusedColumn = flag }
         if let presets = try table.presetCycle("layout.width-presets") { config.widthPresets = presets }
+        if let presets = try table.presetCycle("layout.height-presets") { config.heightPresets = presets }
 
         table.acceptTable("animation")
         if let flag = try table.bool("animation.smooth-transitions") { config.smoothTransitions = flag }

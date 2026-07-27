@@ -35,6 +35,11 @@ private enum AXKey {
     /// An app's currently focused window. Read on activation, when `NSWorkspace` says an app came
     /// forward but not which of its windows.
     static let focusedWindow = "AXFocusedWindow"
+    /// The window's own close button. A window-level *attribute*, not a child walk — the one element
+    /// below a window emira ever asks for, and the only public way to close a foreign window
+    /// (`PRINCIPLES.md` §5's "never walk the child tree" is about enumerating a tree, not naming a
+    /// standard part). A window that cannot be closed simply doesn't answer.
+    static let closeButton = "AXCloseButton"
 }
 
 /// The AX *actions* emira performs. Separate from attributes because an action is performed, not
@@ -42,6 +47,8 @@ private enum AXKey {
 private enum AXAction {
     /// Front of the app's window stack. Z-order only — it does not move keyboard focus.
     static let raise = "AXRaise"
+    /// Click a button. Performed on a close button, never on a window.
+    static let press = "AXPress"
 }
 
 // MARK: - The application element
@@ -217,6 +224,20 @@ public struct AXWindow: @unchecked Sendable {
     @discardableResult
     func raise() -> Bool {
         performAction(element, AXAction.raise)
+    }
+
+    /// Press the window's close button — the public equivalent of the user clicking the red dot, which
+    /// is deliberately *not* the same as quitting the app or destroying the window behind its back: the
+    /// app runs its own close path, so an unsaved document still gets to put up its sheet.
+    ///
+    /// Returns `false` when the window exposes no close button (a panel, a sheet, an app that hides it).
+    /// Nothing else here reports success either — the truth that the window went away arrives as an
+    /// `AXUIElementDestroyed` observation, not as this return value.
+    @discardableResult
+    func close() -> Bool {
+        guard let raw = copyAttribute(element, AXKey.closeButton),
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
+        return performAction(raw as! AXUIElement, AXAction.press)
     }
 
     /// Only gates the corrective pass; the *reported* drift threshold is `AXExecutor.landingTolerance`.

@@ -103,14 +103,12 @@ enum CommandSamples {
         .moveToWorkspace(.previous), .moveToWorkspace(.nextOccupied),
         .moveToWorkspaceAndFocus(.name(WorkspaceName("a")!)),
         .moveToWorkspaceAndFocus(.previousOccupied),
-        .moveToMonitor(.direction(.left)), .moveToMonitor(.index(2)), .moveToMonitor(.next),
-        .moveToMonitor(.previous),
         .cycleWidth, .cycleHeight,
         .consumeOrExpel(.right),
         .fullscreen(.on), .fullscreen(.off), .fullscreen(.toggle),
         .float(.on), .float(.toggle),
         .focusWorkspace(.name(.first)), .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
-        .closeWindow, .centerColumn, .reloadConfig, .dumpState,
+        .closeWindow, .centerColumn, .dumpState,
     ]
 }

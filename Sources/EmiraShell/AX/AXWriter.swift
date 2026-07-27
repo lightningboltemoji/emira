@@ -66,6 +66,11 @@ public protocol WindowWriter {
 
     /// Raise a window within its app's stack, without touching focus.
     func raise(_ window: WindowRegistry.Record)
+
+    /// Ask the window to close itself, as clicking its close button would. Reports nothing: the window
+    /// actually going away arrives as a destroy observation, and an app is entitled to refuse (or to
+    /// put up a save sheet and close later, or never).
+    func close(_ window: WindowRegistry.Record)
 }
 
 // MARK: - The live writer
@@ -121,6 +126,13 @@ public final class AXWindowWriter: WindowWriter {
         let element = window.element
         client.perform(app: window.pid) { _ in
             element.raise()
+        } then: { _ in }
+    }
+
+    public func close(_ window: WindowRegistry.Record) {
+        let element = window.element
+        client.perform(app: window.pid) { _ in
+            element.close()
         } then: { _ in }
     }
 }

@@ -48,7 +48,6 @@ extension Command {
         case .moveWindow(let direction):      return ["move-window", direction.rawValue]
         case .moveToWorkspace(let ref):       return ["move-to-workspace", ref.word]
         case .moveToWorkspaceAndFocus(let r): return ["move-to-workspace-and-focus", r.word]
-        case .moveToMonitor(let ref):         return ["move-to-monitor", ref.word]
         case .cycleWidth:                     return ["cycle-width"]
         case .grow(let delta):                return ["grow", delta.word]
         case .shrink(let delta):              return ["shrink", delta.word]
@@ -59,7 +58,6 @@ extension Command {
         case .focusWorkspace(let ref):        return ["focus-workspace", ref.word]
         case .closeWindow:                    return ["close-window"]
         case .centerColumn:                   return ["center-column"]
-        case .reloadConfig:                   return ["reload-config"]
         // `debug` is the user-facing spelling; `dump-state` parses as an alias.
         case .dumpState:                      return ["debug"]
         }
@@ -175,13 +173,6 @@ extension Command {
              summary: "Move the focused window to a workspace and follow it.",
              build: { verb, args in .moveToWorkspaceAndFocus(try workspaceRef(args, verb: verb)) }),
 
-        Verb("move-to-monitor", arguments: Grammar.monitor,
-             summary: "Move the focused window to a monitor.",
-             build: { verb, args in .moveToMonitor(try monitorRef(args, verb: verb)) }),
-
-        Verb("reload-config", summary: "Re-read the config and re-lay-out in place.",
-             build: bare(.reloadConfig)),
-
         Verb("debug", aliases: ["dump-state"], summary: "Print the daemon's live state as JSON.",
              build: bare(.dumpState)),
     ]
@@ -194,7 +185,6 @@ extension Command {
         // One bracket rather than listed flat: `usage` pads to the widest signature, and this fragment
         // sits on the longest verb in the table.
         static let workspace = "<0-9|a-z|(next|prev)[-non-empty]>"
-        static let monitor = "<left|right|up|down|next|prev|N>"
         static let delta = "<Npx|N%>"
     }
 
@@ -278,19 +268,6 @@ extension Command {
         }
     }
 
-    private static func monitorRef(_ args: [String], verb: String) throws -> MonitorRef {
-        let word = try only(args, verb: verb, expected: Grammar.monitor)
-        if let direction = Direction(rawValue: word) { return .direction(direction) }
-        switch word {
-        case "next": return .next
-        case "previous", "prev": return .previous
-        default:
-            guard let index = Int(word), index >= 1 else {
-                throw CommandSyntaxError.badArgument(verb: verb, value: word, expected: Grammar.monitor)
-            }
-            return .index(index)
-        }
-    }
 }
 
 // MARK: - Reference spellings
@@ -322,18 +299,6 @@ extension WorkspaceRef {
         case .previous: return "previous"
         case .nextOccupied: return "next-non-empty"
         case .previousOccupied: return "previous-non-empty"
-        }
-    }
-}
-
-extension MonitorRef {
-    /// How this reference is written as a single word (`"left"`, `"next"`, `"2"`).
-    var word: String {
-        switch self {
-        case .direction(let direction): return direction.rawValue
-        case .index(let index): return String(index)
-        case .next: return "next"
-        case .previous: return "previous"
         }
     }
 }

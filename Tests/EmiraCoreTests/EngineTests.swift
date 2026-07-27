@@ -453,6 +453,196 @@ import EmiraMotion
         #expect(fx.isEmpty)
     }
 
+    // MARK: - Cycling a window's height inside its column
+
+    /// A stacked column, `halfWidthSnap` so the frames are readable in the command's own batch.
+    /// 800 pt of column height, two windows, no gaps: 400 each until one is pinned.
+    static func stackedPair() -> State {
+        var s = Self.run(Self.booted(config: Self.halfWidthSnap),
+                         [.windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2))]).0
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // w2 joins w1's column
+        return s
+    }
+
+    static func heights(_ s: State) -> [WindowId: Double] {
+        s.layout.targetFrames(scrollOffset: 0, metrics: s.metrics()!).mapValues(\.height)
+    }
+
+    /// Pinning one window re-divides the column: the water-fill hands what it gave up to the autos.
+    @Test func cyclingHeightPinsTheFocusedWindowAndTheStackmateRedivides() {
+        var s = Self.stackedPair()
+        #expect(Self.heights(s)[WindowId(2)] == 400)                  // auto: 800 split two ways
+
+        (s, _) = Engine.reduce(s, .command(.cycleHeight))             // w2 → ⅓
+        #expect(s.workspaces.heightSelections[WindowId(2)] == 0)
+        let after = Self.heights(s)
+        #expect(Self.approxScalar(after[WindowId(2)]!, 800.0 / 3.0))
+        #expect(Self.approxScalar(after[WindowId(1)]!, 800 - 800.0 / 3.0))   // the auto absorbs the rest
+        // The column still fills its box exactly — a pin must not leave a hole.
+        #expect(Self.approxScalar(after[WindowId(1)]! + after[WindowId(2)]!, 800))
+    }
+
+    /// Auto is a **rung of the ladder**, not a state you can only leave: ⅓ → ½ → ⅔ → auto. One verb
+    /// reaches every selection and gets home again, so there is no second "un-pin" verb to invent.
+    @Test func theHeightCycleWrapsBackThroughAuto() {
+        var s = Self.stackedPair()
+        var seen: [Int?] = [s.workspaces.heightSelections[WindowId(2)]]
+        for _ in 0..<4 {
+            (s, _) = Engine.reduce(s, .command(.cycleHeight))
+            seen.append(s.workspaces.heightSelections[WindowId(2)])
+        }
+        #expect(seen == [nil, 0, 1, 2, nil])                          // three presets, then home
+        #expect(Self.heights(s)[WindowId(2)] == 400)                  // and auto really is auto again
+    }
+
+    /// The selection is keyed by window and held for the whole workspace set, so it survives every
+    /// structural edit — including the one that changes which strip the window is on.
+    @Test func aPinnedHeightFollowsItsWindowToAnotherWorkspace() {
+        var s = Self.stackedPair()
+        (s, _) = Engine.reduce(s, .command(.cycleHeight))
+        #expect(s.workspaces.heightSelections[WindowId(2)] == 0)
+
+        (s, _) = Engine.reduce(s, .command(.moveToWorkspaceAndFocus(.name(WorkspaceName("2")!))))
+        #expect(s.workspaces.workspace(of: WindowId(2)) == WorkspaceName("2")!)
+        #expect(s.workspaces.heightSelections[WindowId(2)] == 0)      // carried, not dropped
+    }
+
+    /// And it dies with the window rather than outliving it — `reconcile` is where that happens, so a
+    /// window that merely *floats* off the strip loses its pin too, and re-tiles as an auto.
+    @Test func aPinnedHeightDoesNotOutliveItsWindow() {
+        var s = Self.stackedPair()
+        (s, _) = Engine.reduce(s, .command(.cycleHeight))
+        (s, _) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
+        #expect(s.workspaces.heightSelections[WindowId(2)] == nil)
+    }
+
+    /// Totality: nothing focused, and no display yet, are both silent.
+    @Test func aHeightCycleWithNothingToActOnIsSilent() {
+        let s = Self.booted()
+        let (after, fx) = Engine.reduce(s, .command(.cycleHeight))
+        #expect(fx.isEmpty)
+        #expect(after == s)
+
+        let blind = State(config: Config())                           // no `screensChanged` yet
+        let (still, bfx) = Engine.reduce(blind, .command(.cycleHeight))
+        #expect(bfx.isEmpty)
+        #expect(still == blind)
+    }
+
+    // MARK: - Floating (leaving the strip on purpose)
+
+    /// Floating is a departure with `minimize`'s shape and one difference: focus stays on the window,
+    /// because unlike a minimize the window is still there to look at.
+    @Test func floatingTakesAWindowOffTheStripAndKeepsFocusOnIt() {
+        var s = Self.world(2)                       // w2 focused, two columns
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .command(.float(.toggle)))
+
+        #expect(s.world.isFloating(WindowId(2)))
+        #expect(!s.world.participatesInStrip(WindowId(2)))
+        #expect(s.layout.columns.count == 1)        // the survivor closed ranks
+        #expect(s.world.focusedWindow == WindowId(2))   // still focused, just not tiled
+        // No `.focus` handoff: nothing lost focus, so nothing needs to be given it.
+        #expect(!fx.contains(.focus(WindowId(1))))
+    }
+
+    /// And back again — the arrival path, so the strip opens for it in motion like a restore.
+    @Test func tilingAFloatedWindowPutsItBackOnTheStrip() {
+        var s = Self.world(2)
+        (s, _) = Engine.reduce(s, .command(.float(.on)))
+        s = Self.settle(s)
+        #expect(s.layout.columns.count == 1)
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .command(.float(.off)))
+        #expect(!s.world.isFloating(WindowId(2)))
+        #expect(s.layout.columns.count == 2)
+        #expect(s.world.focusedWindow == WindowId(2))
+        // It already holds focus; re-asserting it is an AX set that can make an app raise something else.
+        #expect(!fx.contains(.focus(WindowId(2))))
+    }
+
+    /// The reason the override is tri-state rather than a flag: `float off` has to *tile* a window
+    /// macOS classed as a dialog, or half the verb is unreachable. `AXDialog` is a claim about
+    /// presentation (§10 — a full-screen Safari window reports it), not a verdict the user can't overrule.
+    @Test func floatOffTilesAWindowWhoseRoleSaysItShouldFloat() {
+        var s = Self.booted()
+        (s, _) = Engine.reduce(s, .windowCreated(Self.snapshot(1)))
+        s = Self.settle(s)
+        (s, _) = Engine.reduce(s, .windowCreated(Self.snapshot(2, role: .dialog)))
+        s = Self.settle(s)
+
+        #expect(s.world.isFloating(WindowId(2)))    // the role's answer, unopposed
+        #expect(s.layout.columns.count == 1)
+
+        s.world.setFocus(WindowId(2))
+        (s, _) = Engine.reduce(s, .command(.float(.off)))
+        #expect(!s.world.isFloating(WindowId(2)))
+        #expect(s.layout.columns.count == 2)        // the dialog now holds a column
+    }
+
+    /// Stored explicitly, so it outranks a role that moves *and* survives the re-`insert` a re-scan
+    /// does — `WindowState` is rebuilt wholesale there, which is why this lives beside `corrections`
+    /// rather than on the window record.
+    @Test func theFloatAnswerSurvivesAReScanAndDiesWithTheWindow() {
+        var s = Self.world(1)
+        (s, _) = Engine.reduce(s, .command(.float(.on)))
+
+        // A re-scan re-inserts the same id with a fresh record.
+        s.world.insert(Self.snapshot(1))
+        #expect(s.world.isFloating(WindowId(1)))
+
+        s.world.remove(WindowId(1))
+        #expect(s.world.floating[WindowId(1)] == nil)
+    }
+
+    /// Totality: asking for the state it is already in, and asking with nothing focused, are both silent.
+    @Test func aFloatThatChangesNothingIsSilent() {
+        var s = Self.world(1)
+        let (same, fx) = Engine.reduce(s, .command(.float(.off)))    // already tiled
+        #expect(fx.isEmpty)
+        #expect(same == s)
+
+        s = Self.booted()
+        let (empty, efx) = Engine.reduce(s, .command(.float(.toggle)))
+        #expect(efx.isEmpty)
+        #expect(empty == s)
+    }
+
+    // MARK: - Asking a window to close
+
+    /// `close-window` asks and changes nothing. The window is still open until its app says otherwise —
+    /// an unsaved document is entitled to put up a sheet and stay — so removing it here would be the
+    /// core asserting a fact only the app owns. The strip closes ranks on `windowDestroyed`, which is
+    /// the same path a user-clicked close already takes.
+    @Test func closingAsksTheAppAndLeavesTheStripAlone() {
+        let s = Self.world(2)                       // w2 focused
+        let (after, fx) = Engine.reduce(s, .command(.closeWindow))
+
+        #expect(fx == [.closeWindow(WindowId(2))])
+        #expect(after == s)                         // not one byte of state
+    }
+
+    /// And the window really does leave only when the destroy arrives — the two halves in sequence.
+    @Test func theStripClosesRanksOnlyWhenTheDestroyArrives() {
+        var s = Self.world(2)
+        (s, _) = Engine.reduce(s, .command(.closeWindow))
+        #expect(s.layout.columns.count == 2)        // asked, not gone
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
+        #expect(s.layout.columns.count == 1)
+        #expect(s.world.focusedWindow == WindowId(1))
+        #expect(fx.contains(.focus(WindowId(1))))
+    }
+
+    /// Totality: nothing focused is silence, not a close of something arbitrary.
+    @Test func closingWithNothingFocusedIsSilent() {
+        let (s, fx) = Engine.reduce(Self.booted(), .command(.closeWindow))
+        #expect(fx.isEmpty)
+        #expect(s == Self.booted())
+    }
+
     // MARK: - Destroy / minimize (leave the strip, refocus, reflow)
 
     @Test func destroyingFocusedWindowRefocusesAndReflows() {
@@ -1896,6 +2086,145 @@ import EmiraMotion
         #expect(s.layout.resolvedWidth(ofColumn: s.layout.columns[0].id, metrics: s.metrics()!) == 500)
     }
 
+    @Test func aShorterAnswerCapsTheWindowAndTheLayoutStopsAskingItToGrow() {
+        // The other direction, which used to be recorded and then never consulted: a window that will
+        // not *grow* (Digital Color Meter is fixed in both axes) answered 200 to a full-height slot,
+        // and the layout went on handing it 800 forever. Every placement was a resize the app refused
+        // again, and — the visible half — every scroll back into view animated a layer from the 200 pt
+        // still it was captured at to an 800 pt slot, which is the stretch that reads as "expanding".
+        var s = Self.twoColumns()
+        let asked = Rect(x: 0, y: 0, width: Self.third, height: 800)
+        let short = Rect(x: 0, y: 0, width: Self.third, height: 200)
+
+        let (next, fx) = Engine.reduce(s, .placementCorrected(WindowId(1), requested: asked, actual: short))
+        s = next
+
+        // The answer is now a *ceiling*, keyed to the question like the width answer beside it.
+        let correction = try! #require(s.world.corrections[WindowId(1)])
+        #expect(correction.heightBound(forQuestion: 800) == .atMost(200))
+        // The column is built around it: the slot is the height the window actually is…
+        let frames = s.layout.targetFrames(scrollOffset: 0, metrics: s.metrics()!)
+        #expect(frames[WindowId(1)]?.height == 200)
+        // …on the presentation plane too, so the layer holding its still has nothing left to stretch.
+        #expect(s.layout.naturalFrames(scrollOffset: 0, metrics: s.metrics()!)[WindowId(1)]?.height == 200)
+        // …and it is already there, so it is not asked again — now, or on any later re-place.
+        #expect(fx.isEmpty)
+        #expect(Self.placement(of: WindowId(1), in: Engine.reduce(s, .dragEnded).1) == nil)
+    }
+
+    @Test func aCappedWindowKeepsItsHeightWhenParkedAndComingBackIsAMove() {
+        // The scroll-in symptom, stated as the property that kills it: parking repositions and never
+        // resizes, so a capped window's parked frame and its tiled frame differ in *position only*.
+        // While the layout held a height the app refused, the two differed in size as well and every
+        // return from the strip's edge re-asked for it.
+        var s = Self.twoColumns()
+        (s, _) = Engine.reduce(s, .placementCorrected(
+            WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 800),
+            actual: Rect(x: 0, y: 0, width: Self.third, height: 200)))
+        let metrics = s.metrics()!
+
+        let tiled = try! #require(s.layout.targetFrames(scrollOffset: 0, metrics: metrics)[WindowId(1)])
+        let parked = try! #require(s.layout.parkedFrames(metrics: metrics, parkingFrom: 0)[WindowId(1)])
+        #expect(tiled.size == parked.size)
+        #expect(parked.size == Size(width: Self.third, height: 200))
+    }
+
+    @Test func aShorterAnswerCapsTheWindowInItsColumnAndTheStackmateTakesTheRest() {
+        // The consume symptom. Sharing a column with an elastic window, the fixed-height one was given
+        // half the column and used 200 of it, leaving the rest as a hole underneath — the placeholder
+        // that has no counterpart on the width axis, where a column simply narrows to what it can be.
+        // The surplus now goes back to the stack, so the column still fills its box exactly.
+        var s = Self.run(Self.booted(config: Self.halfWidthSnap),
+                         [.windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2))]).0
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // w2 joins w1's column
+        #expect(s.layout.columns.count == 1)
+
+        let asked = try! #require(s.layout.targetFrames(scrollOffset: 0, metrics: s.metrics()!)[WindowId(2)])
+        #expect(asked.height == 400)                                  // 800 split two ways, no gaps
+        var short = asked
+        short.size.height = 200
+        (s, _) = Engine.reduce(s, .placementCorrected(WindowId(2), requested: asked, actual: short))
+
+        let frames = s.layout.targetFrames(scrollOffset: 0, metrics: s.metrics()!)
+        let w1 = try! #require(frames[WindowId(1)])
+        let w2 = try! #require(frames[WindowId(2)])
+        #expect(w2.height == 200)                                     // …the cap
+        #expect(w1.height == 600)                                     // …and the stackmate absorbs it
+        #expect(w1.height + w2.height == 800)                         // no hole anywhere in the column
+        let (upper, lower) = w1.minY <= w2.minY ? (w1, w2) : (w2, w1)
+        #expect(lower.minY == upper.minY + upper.height)              // …and none between them either
+    }
+
+    @Test func aHeightCorrectionUnderARaisedCoverSpringsTheStackRatherThanJumpingIt() {
+        // The width branch's hazard, on the vertical axis: layers re-derive their frames from the
+        // layout every tick, so a column that re-divides between two frames pops. A re-division has no
+        // single number to interpolate — it is two different splits of one box — so it rides the
+        // *displacement* animator structural edits use, seeded so the first frame reproduces the old
+        // division exactly and decaying to the new one.
+        var s = Self.run(Self.booted(config: Self.halfWidth),
+                         [.windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2))]).0
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))    // one column, two windows
+        s = Self.settle(s)
+
+        (s, _) = Engine.reduce(s, .command(.cycleWidth))               // open a session
+        for w in s.motion.transition?.windows ?? [] {
+            (s, _) = Engine.reduce(s, .captureReady(w))
+        }
+        #expect(s.motion.isCovered)
+
+        let asked = try! #require(s.layout.targetFrames(scrollOffset: s.motion.viewportOffset.target,
+                                                        metrics: s.metrics()!)[WindowId(2)])
+        var short = asked
+        short.size.height = 200
+        let (corrected, fx) = Engine.reduce(s, .placementCorrected(WindowId(2), requested: asked,
+                                                                   actual: short))
+        s = corrected
+
+        // Both windows of the column carry lag — the one that shrank and the stackmate that grew —
+        // and neither of them is a width, which the column-width animator still owns alone.
+        let capped = try! #require(s.motion.windowAnimator(WindowId(2)))
+        #expect(capped.current.height != 0)
+        #expect(capped.current.width == 0)
+        #expect(s.motion.windowAnimator(WindowId(1))?.current.height != 0)
+
+        // …and it decays: at rest the layers sit exactly on the layout's new division.
+        let done = Self.settle(s, fx)
+        #expect(done.motion.displacement(of: WindowId(2)) == .zero)
+        #expect(done.layout.targetFrames(scrollOffset: 0, metrics: done.metrics()!)[WindowId(2)]?.height
+                == 200)
+    }
+
+    /// The recursion guard, on the axis it was missing from. Symmetric with the width case above: at
+    /// most one shrink per question, or an app that always returns a little less walks its own slot to
+    /// nothing while its stackmates swell to fill the space.
+    @Test func anAppThatAlwaysReturnsShorterCannotWalkItsSlotDown() {
+        var s = Self.twoColumns()
+        func height(_ s: State) -> Double? {
+            s.layout.targetFrames(scrollOffset: 0, metrics: s.metrics()!)[WindowId(1)]?.height
+        }
+
+        // First refusal, given to the question itself: learned, and the slot follows.
+        (s, _) = Engine.reduce(s, .placementCorrected(
+            WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 800),
+            actual: Rect(x: 0, y: 0, width: Self.third, height: 200)))
+        #expect(height(s) == 200)
+
+        // Every later refusal answers a request we made *because* of the first one, so it teaches
+        // nothing — the slot holds rather than stepping down 8 pt per event forever.
+        for step in 1...5 {
+            (s, _) = Engine.reduce(s, .placementCorrected(
+                WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 200),
+                actual: Rect(x: 0, y: 0, width: Self.third, height: 200 - Double(step) * 8)))
+            #expect(height(s) == 200, "step \(step)")
+        }
+
+        // …while the growing direction keeps learning unconditionally, as it does for width.
+        (s, _) = Engine.reduce(s, .placementCorrected(
+            WindowId(1), requested: Rect(x: 0, y: 0, width: Self.third, height: 200),
+            actual: Rect(x: 0, y: 0, width: Self.third, height: 500)))
+        #expect(height(s) == 500)
+    }
+
     // MARK: - Structural edits (move-window / consume-or-expel)
     //
     // `halfWidth`/`halfWidthSnap` throughout: two 500-wide columns fill the 1000-wide viewport exactly,
@@ -2569,14 +2898,6 @@ import EmiraMotion
         // Still one session, still travelling from where it was — not teleported to the new target.
         #expect(after.motion.isTransitioning)
         #expect(after.motion.viewportOffset.current == mid)
-    }
-
-    /// `reload-config` is an `Effect`, not a router special-case, so it reaches the shell from any
-    /// surface — a keybinding never touches the socket the way `emira reload-config` does.
-    @Test func theReloadCommandAsksTheShellToReadTheFile() {
-        let (s, fx) = Engine.reduce(Self.booted(), .command(.reloadConfig))
-        #expect(fx == [.reloadConfig])
-        #expect(s == Self.booted())              // the core changes nothing by itself
     }
 
     /// `cycleWidth` animates the *resize* spring, which exists so it can differ from the scroll's.

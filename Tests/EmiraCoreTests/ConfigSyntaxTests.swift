@@ -107,6 +107,15 @@ import EmiraMotion
         #expect(config.widthPresets.presets == [.proportion(0.25), .proportion(1.0), .fixed(900)])
     }
 
+    /// Heights read the same way widths do — the same spelling, resolved against the *column* height
+    /// instead of the content width — and the two ladders are independent.
+    @Test func heightPresetsParseLikeWidthsAndAreIndependentOfThem() throws {
+        let config = try Self.parse("[layout]\nheight-presets = [0.25, 400]\n")
+        #expect(config.heightPresets.presets == [.proportion(0.25), .fixed(400)])
+        #expect(config.widthPresets == Config().widthPresets)     // untouched
+        #expect(Config().heightPresets == .defaultHeights)
+    }
+
     /// Scroll, resize and movement are separately tunable, they default to the *same* spring so nothing
     /// moves until asked, and turning one leaves the other two alone.
     @Test func theThreeSpringsAreIndependentAndDefaultToTheSameOne() throws {
@@ -411,10 +420,10 @@ import EmiraMotion
         [keys]
         cmd-1 = "focus-workspace 1"
         alt-c = "close-window"
-        alt-r = "reload-config"
+        alt-r = "center-column"
         """)
         #expect(config.keys.map(\.command)
-                == [.focusWorkspace(.name(WorkspaceName("1")!)), .closeWindow, .reloadConfig])
+                == [.focusWorkspace(.name(WorkspaceName("1")!)), .closeWindow, .centerColumn])
     }
 
     @Test func anUnreadableChordIsRefusedWithItsLine() {

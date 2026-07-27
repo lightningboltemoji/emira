@@ -44,6 +44,17 @@ public struct LayoutMetrics: Sendable, Equatable {
     public var workingArea: Rect
     /// The width presets a column cycles through (`cycleWidth`). A column's `widthPreset` indexes it.
     public var widthPresets: PresetCycle
+    /// The height presets a window cycles through inside its column (`cycleHeight`), indexed by
+    /// `heightSelections`.
+    public var heightPresets: PresetCycle
+    /// Which height preset each window is pinned to, where the user has pinned one. Absent — the
+    /// ordinary case — means **auto**: share the column's leftover height with the other autos.
+    ///
+    /// Rides in `metrics` for the same reason `corrections` does: it must reach every geometry query
+    /// or they disagree about how tall a window is. Keyed by `WindowId` rather than stored as an array
+    /// beside `ColumnLayout.windowIds`, so the four structural editing primitives cannot desync it —
+    /// a window carries its height through a move, an extract, a merge and a workspace switch alike.
+    public var heightSelections: [WindowId: Int]
     /// Gap between adjacent columns on the strip (inter-column only).
     public var columnGap: Double
     /// Gap between vertically-adjacent windows within a column (inter-window only).
@@ -62,6 +73,8 @@ public struct LayoutMetrics: Sendable, Equatable {
     public init(
         workingArea: Rect,
         widthPresets: PresetCycle = .defaultWidths,
+        heightPresets: PresetCycle = .defaultHeights,
+        heightSelections: [WindowId: Int] = [:],
         columnGap: Double = 0,
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
@@ -69,6 +82,8 @@ public struct LayoutMetrics: Sendable, Equatable {
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
+        self.heightPresets = heightPresets
+        self.heightSelections = heightSelections
         self.columnGap = columnGap
         self.windowGap = windowGap
         self.outerGaps = outerGaps
@@ -461,17 +476,23 @@ public struct Layout: Sendable, Equatable, Codable {
         columns.enumerated().map { (i, column) in
             let box = Rect(x: s.leftEdge(of: i), y: area.minY,
                            width: s.columnWidths[i], height: area.height)
+            // Each window's height intent: the preset it is pinned to (`cycleHeight`), else auto.
+            let intents = column.windowIds.map { id in
+                metrics.heightSelections[id].map { WindowHeight.preset(metrics.heightPresets.size(at: $0)) }
+                    ?? .auto
+            }
             // The height each window would get with nobody answering back — the question its own
-            // `SizeCorrection` is keyed against, which keeps a floor from re-deriving itself each pass.
-            let share = Column(frame: box,
-                               windowHeights: Array(repeating: .auto, count: column.windowIds.count),
+            // `SizeCorrection` is keyed against, which keeps a bound from re-deriving itself each pass.
+            // Resolved against the *same* intents: the question has to be the height actually offered,
+            // or a pinned window's answer would be matched against the share it never got.
+            let share = Column(frame: box, windowHeights: intents,
                                gap: metrics.windowGap).resolvedHeights()
             return Column(
                 frame: box,
-                windowHeights: Array(repeating: .auto, count: column.windowIds.count),
+                windowHeights: intents,
                 gap: metrics.windowGap,
-                minHeights: zip(column.windowIds, share).map { id, question in
-                    metrics.corrections[id]?.heightFloor(forQuestion: question)
+                heightBounds: zip(column.windowIds, share).map { id, question in
+                    metrics.corrections[id]?.heightBound(forQuestion: question)
                 }
             ).windowFrames()
         }

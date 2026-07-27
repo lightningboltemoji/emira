@@ -245,21 +245,6 @@ import EmiraCore
         #expect(reports.configs.map(\.columnGap) == [9])
     }
 
-    /// The user asking is not the filesystem guessing: an explicit `reload-config` always answers,
-    /// because a reload that reports nothing is indistinguishable from one that didn't happen.
-    @Test func anExplicitReloadReportsEvenWhenNothingChanged() {
-        let scratch = Scratch()
-        scratch.write("[layout]\ncolumn-gap = 5\n")
-        let loader = Self.loader(scratch)
-        let reports = Reports()
-        reports.attach(to: loader)
-        _ = loader.load()
-
-        loader.reload()
-        loader.reload()
-        #expect(reports.configs.map(\.columnGap) == [5, 5])
-    }
-
     @Test func stoppingTearsTheWatchDown() {
         let scratch = Scratch()
         let watcher = ManualWatcher()
@@ -269,57 +254,14 @@ import EmiraCore
         #expect(watcher.isStopped)
     }
 
-    /// A loader with no watcher is hot reload turned off, not a crash: the daemon still reads the
-    /// file at boot and on `reload-config`.
-    @Test func aLoaderWithoutAWatcherStillReloadsOnDemand() {
+    /// A loader with no watcher is hot reload turned off, not a crash: the daemon still reads the file
+    /// at boot. Without a watcher nothing ever asks it again, which is the whole of the degradation.
+    @Test func aLoaderWithoutAWatcherStillReadsTheFileAtBoot() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 6\n")
         let loader = Self.loader(scratch)
-        let reports = Reports()
-        reports.attach(to: loader)
         loader.start()                                        // no watcher: nothing to start
-        loader.reload()
-        #expect(reports.configs.map(\.columnGap) == [6])
-    }
-
-    // MARK: - The effect that reaches it
-
-    /// `Effect.reloadConfig` is routed to the config plane, not to AX and not to the compositor, so a
-    /// keybinding can reload the file without touching the socket.
-    @Test func theReloadEffectReachesTheConfigSourceAndNothingElse() {
-        final class CountingSource: ConfigSource {
-            private(set) var reloads = 0
-            func reload() { reloads += 1 }
-        }
-        let source = CountingSource()
-        let timeline = CompositingExecutorTests.Timeline()
-        let truth = CompositingExecutorTests.RecordingTruth(timeline)
-        let executor = CompositingExecutor(surface: CompositingExecutorTests.RecordingSurface(timeline),
-                                           store: CompositingExecutorTests.RecordingStore(timeline),
-                                           truth: truth,
-                                           config: source)
-
-        executor.execute([.reloadConfig], feedback: EventSink { _ in })
-        #expect(source.reloads == 1)
-        #expect(truth.batches.isEmpty)
-        // Not a presentation run either: a reload opens no frame (`beginFrame`/`endFrame`).
-        #expect(timeline.entries.isEmpty)
-    }
-
-    /// A run of reloads is one reload: the file can only be in one state, and re-reading it twice in
-    /// a batch would send the core two identical `configChanged` events.
-    @Test func aRunOfReloadsInOneBatchReadsTheFileOnce() {
-        final class CountingSource: ConfigSource {
-            private(set) var reloads = 0
-            func reload() { reloads += 1 }
-        }
-        let source = CountingSource()
-        let timeline = CompositingExecutorTests.Timeline()
-        let executor = CompositingExecutor(surface: CompositingExecutorTests.RecordingSurface(timeline),
-                                           store: CompositingExecutorTests.RecordingStore(timeline),
-                                           truth: CompositingExecutorTests.RecordingTruth(timeline),
-                                           config: source)
-        executor.execute([.reloadConfig, .reloadConfig, .reloadConfig], feedback: EventSink { _ in })
-        #expect(source.reloads == 1)
+        guard case .success(let config) = loader.load() else { return #expect(Bool(false)) }
+        #expect(config.columnGap == 6)
     }
 }

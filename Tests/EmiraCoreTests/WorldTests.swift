@@ -184,8 +184,7 @@ import Testing
             MonitorInfo(id: MonitorId(2), frame: Rect(x: 1920, y: 0, width: 2560, height: 1440)),
         ])
         #expect(world.monitors.map(\.id) == [MonitorId(1), MonitorId(2)])
-        #expect(world.monitor(atIndex: 1)?.id == MonitorId(2))
-        #expect(world.monitor(atIndex: 2) == nil)         // bounds-checked
+        #expect(world.monitors.count == 2)
 
         // Reconnect with monitor 1 dropped, 2 re-framed, 3 added — order follows the new enumeration.
         world.setMonitors([
@@ -193,7 +192,7 @@ import Testing
             MonitorInfo(id: MonitorId(3), frame: Rect(x: 3000, y: 0, width: 1080, height: 1920)),
         ])
         #expect(world.monitors.map(\.id) == [MonitorId(2), MonitorId(3)])
-        #expect(world.monitor(atIndex: 0)?.frame == Rect(x: 0, y: 0, width: 3000, height: 2000))
+        #expect(world.monitors.first?.frame == Rect(x: 0, y: 0, width: 3000, height: 2000))
     }
 
     // MARK: serialization (state dump / golden replay)

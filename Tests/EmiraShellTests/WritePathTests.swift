@@ -265,6 +265,35 @@ import EmiraCore
         #expect(writer.raised == [b])
     }
 
+    @Test("close is routed to the writer and answers nothing")
+    func closeIsRoutedAndUnacked() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.closeWindow(a)], feedback: events.sink)
+
+        #expect(writer.closed == [a])
+        // Not even an `axLanded`: whether the window goes is the app's call, and the answer arrives as
+        // a destroy observation. Acking here would tell the core a window died that may still be open.
+        #expect(events.events.isEmpty)
+    }
+
+    @Test("closing an unknown window is dropped, like focus and raise")
+    func anUnknownCloseIsDropped() {
+        let registry = WindowRegistry()
+        let writer = ScriptedWriter()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.closeWindow(WindowId(9))], feedback: events.sink)
+
+        #expect(writer.closed.isEmpty)
+        #expect(events.events.isEmpty)
+    }
+
     @Test("capture is not the truth plane's to answer")
     func captureIsNotAnsweredHere() {
         // `capture` routes to `CaptureService` via `CompositingExecutor`, so an ack from here would be
@@ -498,6 +527,7 @@ final class ScriptedWriter: WindowWriter {
     private(set) var placements: [Placement] = []
     private(set) var focused: [WindowId] = []
     private(set) var raised: [WindowId] = []
+    private(set) var closed: [WindowId] = []
 
     /// How each move answers. Default: accepted, landed exactly where it was asked to.
     var landing: ((WindowMove) -> WindowLanding)?
@@ -519,6 +549,8 @@ final class ScriptedWriter: WindowWriter {
     func focus(_ window: WindowRegistry.Record) { focused.append(window.id) }
 
     func raise(_ window: WindowRegistry.Record) { raised.append(window.id) }
+
+    func close(_ window: WindowRegistry.Record) { closed.append(window.id) }
 
     /// Deliver every held answer, in the order the placements were made.
     func flush() {
