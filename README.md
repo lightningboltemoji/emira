@@ -7,9 +7,33 @@
 
 ## about
 
-_tiling_ means windows get arranged in a non-overlapping grid
+<table>
+<tr>
+<td>
+  <p align="center">
+    <b>tiling:</b> windows are arranged in a non-overlapping grid
+  </p>
+  <p align="center">
+    <img width="282" height="172" alt="tiling" src="https://github.com/user-attachments/assets/dd6f54a4-9ece-4ebf-9bb1-d762fb0b6805" />
+  </p>
+</td>
+<td>
+  <p align="center">
+    <b>scrolling</b>: your desktop is an infinite plane
+  </p>
+  <p align="center">
+    <img width="282" height="172" alt="scrolling" src="https://github.com/user-attachments/assets/85d7605c-17de-4f0f-a87f-08b01c17d355" />
+  </p>
+</td>
+</tr>
+</table>
 
-_scrolling_ means your desktop is an infinite plane you can move through
+<p>
+  combined on macOS, these concepts look a little like this!
+</p>
+<p>
+  <img width="600" height="389" alt="emira-demo" src="https://github.com/user-attachments/assets/4c2d51f6-0d46-4d18-bf24-ae05d4b2425f" />
+</p>
 
 ## install
 

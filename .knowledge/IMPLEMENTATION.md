@@ -240,10 +240,16 @@ emira/
 │                                    # version from the git tag, `zip` archives it, `install` copies
 │                                    # it to /Applications. No CLI symlink — a Homebrew cask's
 │                                    # `binary` stanza points at the copy inside the bundle
-├── .github/workflows/
-│   ├── ci.yml                       # pull requests: build + test on macos-26
-│   └── release.yml                  # main → the `tip` prerelease; a `v*` tag → that version, and
-│                                    # the cask bump pushed to the tap (§7)
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml                   # pull requests: build + test on macos-26
+│   │   └── release.yml              # main → the `tip` prerelease; a `v*` tag → that version, and
+│   │                                # the cask bump pushed to the tap (§7)
+│   └── demo/                        # the README's film, written down. `demo.sh` choreographs shell
+│                                    # + `emira` calls with fixed pauses, captions each step through
+│                                    # `caption.swift` (an AppKit panel over a fifo) and records the
+│                                    # lot with `screencapture`, stopped by SIGINT so the film is
+│                                    # exactly as long as the choreography
 ├── CLAUDE.md                        # thin agent pointer at the docs below
 ├── .knowledge/
 │   ├── README.md                    # how this project remembers things
