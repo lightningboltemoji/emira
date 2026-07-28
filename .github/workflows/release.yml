@@ -24,6 +24,9 @@ concurrency:
 jobs:
   release:
     runs-on: macos-26
+    # Every credential the job needs lives here, and the ref that may reach them is `main` or a `v*`
+    # tag — a workflow run that is not one of the two channels cannot deploy at all.
+    environment: production
     env:
       GH_TOKEN: ${{ github.token }}
       # Read once here so the signing steps can gate on `env.X != ''`. Absent, the build still
@@ -34,6 +37,9 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      # `github.token` is scoped to this repository and cannot push to the tap; the app that can is
+      # gated on the same rule as signing.
+      TAP_APP_CLIENT_ID: ${{ secrets.TAP_APP_CLIENT_ID }}
 
     steps:
       # Full history and tags: `git describe` is the version, and a shallow clone has no tags to
@@ -146,7 +152,58 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
             --title "$GITHUB_REF_NAME" $prerelease "dist/$ZIP_NAME"
 
-      # The number a Homebrew cask bump needs, where it can be copied from.
+      # An installation token: scoped to the one repository the app is installed on, expiring in an
+      # hour, and revoked when the job ends. Nothing here is a credential a person holds or renews.
+      - name: Mint a token for the tap
+        id: tap
+        if: github.ref_type == 'tag' && !contains(github.ref_name, '-') && env.TAP_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+
+      # A version becomes a cask; `tip` never does, because its cask pins nothing a build can change
+      # (`version :latest` / `sha256 :no_check` against a permalink). A semver prerelease is excluded
+      # by the rule that keeps it out of `latest`. The release above is already published when this
+      # runs, so a failure here leaves a good release with a stale cask — re-run, don't re-tag.
+      #
+      # A skipped step has no outputs, so the token is the whole gate.
+      - name: Bump the Homebrew cask
+        if: steps.tap.outputs.token != ''
+        env:
+          TAP_TOKEN: ${{ steps.tap.outputs.token }}
+          TAP_APP_SLUG: ${{ steps.tap.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          dir="$(brew --repository)/Library/Taps/lightningboltemoji/homebrew-tap"
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/lightningboltemoji/homebrew-tap.git" "$dir"
+
+          # The commit is the app's, so it is authored as the app: its bot account's numeric id is
+          # what makes the noreply address resolve to that identity rather than to nobody. The
+          # address is still valid without it, and an unattributed commit is not worth failing a
+          # cask bump that the published release is already waiting on — so the id is optional
+          # (`${uid:+$uid+}` is "$uid+, or nothing at all if $uid is empty").
+          # `|| uid=` and not `|| true` inside: a failing `gh api` prints the error body to stdout,
+          # so the substitution succeeds at capturing it and only the exit status says otherwise.
+          uid="$(gh api "/users/$TAP_APP_SLUG%5Bbot%5D" --jq .id 2>/dev/null)" || uid=""
+          git -C "$dir" config user.name  "$TAP_APP_SLUG[bot]"
+          git -C "$dir" config user.email "${uid:+$uid+}$TAP_APP_SLUG[bot]@users.noreply.github.com"
+
+          # The checksum of the archive we just published, not a re-download of it.
+          sha="$(shasum -a 256 "dist/$ZIP_NAME" | cut -d' ' -f1)"
+          brew bump-cask-pr --write-only --commit --no-audit --no-style \
+            --version "$EMIRA_VERSION" --sha256 "$sha" lightningboltemoji/tap/emira
+
+          # Both, because they catch disjoint things: audit passes a cask whose `desc` style fails,
+          # and `--online` is what fetches the published URL and verifies the checksum against it.
+          brew style --cask lightningboltemoji/tap/emira
+          brew audit --cask --online lightningboltemoji/tap/emira
+
+          git -C "$dir" push origin HEAD:main
+
       - name: Summary
         run: |
           set -euo pipefail

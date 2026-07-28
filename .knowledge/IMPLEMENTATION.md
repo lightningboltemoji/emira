@@ -232,7 +232,8 @@ emira/
 │                                    # `binary` stanza points at the copy inside the bundle
 ├── .github/workflows/
 │   ├── ci.yml                       # pull requests: build + test on macos-26
-│   └── release.yml                  # main → the `tip` prerelease; a `v*` tag → that version (§7)
+│   └── release.yml                  # main → the `tip` prerelease; a `v*` tag → that version, and
+│                                    # the cask bump pushed to the tap (§7)
 ├── CLAUDE.md                        # thin agent pointer at the docs below
 ├── .knowledge/
 │   ├── README.md                    # how this project remembers things
@@ -1160,6 +1161,44 @@ revoking the grant mid-session.
   - **Prerelease, so `tip` is invisible to everything that asks for a version.** `/releases/latest` and a Homebrew
     cask both read the newest non-prerelease, so the rolling channel cannot become someone's install by accident. A
     semver prerelease tag (`v0.2.0-rc1`) is marked the same way, by the same rule.
+  - **A tagged release publishes the cask, and `tip` deliberately cannot have one.** The tap holds two casks and
+    only `emira` is ever bumped: `emira@tip` is `version :latest` with `sha256 :no_check` against the permalink, so
+    no build changes a field in it. Giving it a real version and checksum is the tempting repair and it is wrong —
+    tip's asset is *clobbered in place*, so a pinned checksum is correct only until the next push to main, and
+    anyone installing in the window between that upload and the tap commit gets a mismatch. `:no_check` makes the
+    race unrepresentable rather than unlikely; the price is that `version :latest` upgrades only under `brew
+    upgrade --greedy`, which is a caveat rather than a defect on a channel whose whole promise is "whatever just
+    landed".
+  - **`brew` does the edit and the verification; git does everything else.** `brew bump-cask-pr --write-only
+    --commit` rewrites `version` and `sha256` and touches nothing else, and then `brew style` and `brew audit
+    --online` gate the push — the audit fetches the published URL and checks the checksum against it, so a release
+    whose asset upload silently failed is caught before the cask points at it. Both run because they catch
+    **disjoint** things: audit, even `--strict`, passes a cask whose `desc` style fails. The wrapper actions
+    (`Homebrew/actions/bump-packages` and the third-party ones) were rejected for solving a different problem —
+    they use `livecheck` to *discover* a version and fork the tap to open a pull request, which is what
+    contributing to a tap you do not own requires. Here the checksum is already in hand from the archive just
+    built, and the tap is ours, so discovery, a fork and a pull request are all dead weight in the release path.
+    `brew style --fix` is deliberately not what runs: a fix landing inside the commit is a tap edited without
+    anyone reading it, so a style regression fails the step instead.
+  - **The cask is downstream of the release, and the ordering says so.** The bump runs after `gh release create`,
+    in the same job because that is where the archive's checksum is free — a separate job would re-download the
+    asset to hash what it had just built. The consequence is accepted rather than worked around: a failed bump
+    leaves a published release with a stale cask, which is repaired by re-running the job, never by re-tagging. A
+    version is published once (§7), and the cask is not what makes that true.
+  - **The tap is pushed to by a GitHub App, and the token is minted per run.** `github.token` is scoped to this
+    repository and cannot reach the tap, so the push needs a second credential — and an app installed on the tap
+    alone, holding `contents: write` and nothing else, is the tightest one on offer. What it hands the job is an
+    *installation* token: an hour's life, revoked when the job ends, belonging to no person, so there is nothing
+    to renew and nobody whose departure takes the release path with them. A fine-grained token grants the same
+    access with none of that and expires on a date no one is watching. The minted token is also the whole gate on
+    the bump — a skipped mint has no outputs — so a missing app skips the cask exactly as a missing certificate
+    skips signing. The commit is authored as the app, which needs the app's bot account and its numeric id for
+    the noreply address to resolve to that identity rather than to nobody.
+  - **One environment holds every credential, and it gates on the ref rather than on a person.** `production`
+    carries the six signing secrets and the app's client id and private key, and admits `main` and `v*` — the two
+    channels restated where the secrets are, so a run from any other ref cannot read them. Deliberately no
+    required reviewer: the same job builds `tip` on every push to main, so an approval rule would tax every merge
+    in order to guard the one ref a human already had to tag on purpose.
   - **The archive is `ditto -c -k --keepParent`, not `zip`.** A bundle carries symlinks, extended attributes and a
     code signature, and plain `zip` mangles all three — a mangled signature is a bundle Gatekeeper rejects for a
     reason that looks nothing like the cause. It is also the format `notarytool` accepts.
@@ -1255,3 +1294,9 @@ Settle these as we build, not now.
    emira and a release anyone else can install.
 4. **Per-monitor strips.** The layout still resolves against the first monitor; `move-to-monitor` has no second strip
    to target, and monitor hotplug is untested.
+5. **Both repositories are private, so no cask can install.** A cask's `url` is fetched by plain `curl` with no
+   GitHub credentials, so a release asset in a private repository is a 404 to Homebrew and to everyone — `brew audit
+   --online` reports exactly that today. The tap being private compounds it: `brew tap` cannot reach it either. The
+   bump step and the app it authenticates as are both in place, so visibility is the whole of what stands between the
+   cask and a green run — though, like signing, its first real run is still its first test. This is the other half of item 3 — signing decides whether a downloaded build *runs*, visibility decides
+   whether it can be downloaded at all.
