@@ -185,6 +185,19 @@ import EmiraCore
         }
     }
 
+    /// A `ProcessLauncher` that records instead of spawning — the point of the seam.
+    @MainActor final class RecordingLauncher: ProcessLauncher {
+        let timeline: Timeline
+        private(set) var launched: [String] = []
+
+        init(_ timeline: Timeline) { self.timeline = timeline }
+
+        func launch(_ line: String) {
+            launched.append(line)
+            timeline.record("exec[\(line)]")
+        }
+    }
+
     @MainActor final class EventLog {
         private(set) var events: [Event] = []
         lazy var sink = EventSink { [self] event in events.append(event) }
@@ -203,8 +216,20 @@ import EmiraCore
         let surface = RecordingSurface(timeline)
         let truth = RecordingTruth(timeline)
         let store = RecordingStore(timeline)
-        return (CompositingExecutor(surface: surface, store: store, truth: truth),
+        return (CompositingExecutor(surface: surface, store: store, truth: truth,
+                                    launcher: RecordingLauncher(timeline)),
                 surface, truth, store, timeline, EventLog())
+    }
+
+    /// The system plane's harness — the launcher is the only recorder a test about `exec` reads.
+    static func execHarness() -> (CompositingExecutor, RecordingLauncher, Timeline, EventLog) {
+        let timeline = Timeline()
+        let launcher = RecordingLauncher(timeline)
+        return (CompositingExecutor(surface: RecordingSurface(timeline),
+                                    store: RecordingStore(timeline),
+                                    truth: RecordingTruth(timeline),
+                                    launcher: launcher),
+                launcher, timeline, EventLog())
     }
 
     // MARK: Plane assignment
@@ -218,7 +243,34 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .park(WindowId(1), .zero)) == .truth)
         #expect(CompositingExecutor.plane(of: .focus(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .raise(WindowId(1))) == .truth)
+        #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .capture(WindowId(1))) == .capture)
+        #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
+    }
+
+    // MARK: The system plane
+
+    /// A spawn reaches the launcher and touches nothing else — it shares no machinery with AX, which
+    /// is why it is a plane of its own rather than a corner of the truth plane.
+    @Test func anExecReachesTheLauncherAndNoOtherPlane() {
+        let (executor, launcher, timeline, log) = Self.execHarness()
+        let line = "osascript -e 'tell application \"Ghostty\" to new window'"
+        executor.execute([.exec(line)], feedback: log.sink)
+
+        #expect(launcher.launched == [line])
+        #expect(timeline.entries == ["exec[\(line)]"])
+        #expect(log.events.isEmpty)             // unacked by contract
+    }
+
+    /// And it takes its place in emission order like any other plane change.
+    @Test func execKeepsItsPlaceInEmissionOrder() {
+        let (executor, launcher, timeline, log) = Self.execHarness()
+        executor.execute([.focus(WindowId(1)), .exec("a"), .exec("b"), .raise(WindowId(2))],
+                         feedback: log.sink)
+
+        // Two contiguous execs are one run, and each line is launched, in order.
+        #expect(launcher.launched == ["a", "b"])
+        #expect(timeline.entries == ["truth[focus1]", "exec[a]", "exec[b]", "truth[raise2]"])
     }
 
     @Test func aBatchIsSplitIntoMaximalContiguousRuns() {

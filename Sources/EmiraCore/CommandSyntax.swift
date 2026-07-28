@@ -58,6 +58,7 @@ extension Command {
         case .focusWorkspace(let ref):        return ["focus-workspace", ref.word]
         case .closeWindow:                    return ["close-window"]
         case .centerColumn:                   return ["center-column"]
+        case .exec(let line):                 return ["exec", line]
         // `debug` is the user-facing spelling; `dump-state` parses as an alias.
         case .dumpState:                      return ["debug"]
         }
@@ -77,9 +78,17 @@ extension Command {
     }
 
     /// Convenience for a whole command line as one string (a config binding's right-hand side). Splits
-    /// on whitespace runs; there is no quoting, because no argument in the vocabulary contains a space.
+    /// on whitespace runs; there is no quoting, because no argument in the vocabulary contains a space
+    /// — except a raw-tail verb's, which is why the split is skipped entirely for those.
     public static func parse(line: String) throws -> Command {
-        try parse(line.split(whereSeparator: \.isWhitespace).map(String.init))
+        let text = line.drop(while: \.isWhitespace)
+        let head = text.prefix(while: { !$0.isWhitespace })
+        // `exec`'s argument is a shell line, so the whitespace in it is the user's, not a separator.
+        if let verb = verbs.first(where: { $0.matches(String(head)) }), verb.takesRawTail {
+            let tail = text.dropFirst(head.count).trimmed
+            return try verb.build(verb.name, tail.isEmpty ? [] : [String(tail)])
+        }
+        return try parse(text.split(whereSeparator: \.isWhitespace).map(String.init))
     }
 
     // MARK: - Help
@@ -102,14 +111,19 @@ extension Command {
         let aliases: [String]
         let arguments: String
         let summary: String
+        /// This verb's argument is the rest of the line, verbatim — `parse(line:)` hands it over
+        /// unsplit. Only `exec` takes one, and only because a shell line owns its own whitespace.
+        let takesRawTail: Bool
         let build: @Sendable (String, [String]) throws -> Command
 
         init(_ name: String, aliases: [String] = [], arguments: String = "", summary: String,
+             takesRawTail: Bool = false,
              build: @escaping @Sendable (String, [String]) throws -> Command) {
             self.name = name
             self.aliases = aliases
             self.arguments = arguments
             self.summary = summary
+            self.takesRawTail = takesRawTail
             self.build = build
         }
 
@@ -173,6 +187,11 @@ extension Command {
              summary: "Move the focused window to a workspace and follow it.",
              build: { verb, args in .moveToWorkspaceAndFocus(try workspaceRef(args, verb: verb)) }),
 
+        Verb("exec", arguments: Grammar.commandLine,
+             summary: "Run a shell command line, without waiting for it.",
+             takesRawTail: true,
+             build: { verb, args in .exec(try commandLine(args, verb: verb)) }),
+
         Verb("debug", aliases: ["dump-state"], summary: "Print the daemon's live state as JSON.",
              build: bare(.dumpState)),
     ]
@@ -186,6 +205,7 @@ extension Command {
         // sits on the longest verb in the table.
         static let workspace = "<0-9|a-z|(next|prev)[-non-empty]>"
         static let delta = "<Npx|N%>"
+        static let commandLine = "<shell command>"
     }
 
     // MARK: - Argument readers
@@ -250,6 +270,17 @@ extension Command {
         return isPercent ? .percent(value) : .points(value)
     }
 
+    /// The rest of the line as one string — `exec`'s shell command. From `parse(line:)` that already
+    /// *is* one element (the tail was never split); from argv it is what the user's own shell left
+    /// after quoting, rejoined, so both spellings of the same press agree.
+    private static func commandLine(_ args: [String], verb: String) throws -> String {
+        let line = args.joined(separator: " ").trimmed
+        guard !line.isEmpty else {
+            throw CommandSyntaxError.missingArgument(verb: verb, expected: Grammar.commandLine)
+        }
+        return String(line)
+    }
+
     /// A workspace address (`1`…`9`, `0`, `a`…`z`) or one of the four relative motions. `0` is a legal
     /// address, not an off-by-one. `prev`/`prev-non-empty` parse; the long forms are what `words` emits.
     private static func workspaceRef(_ args: [String], verb: String) throws -> WorkspaceRef {
@@ -268,6 +299,16 @@ extension Command {
         }
     }
 
+}
+
+extension StringProtocol {
+    /// Both ends stripped of whitespace. Only a raw tail needs it — every other argument is a word
+    /// the split had already delimited.
+    var trimmed: SubSequence {
+        guard let first = firstIndex(where: { !$0.isWhitespace }),
+              let last = lastIndex(where: { !$0.isWhitespace }) else { return self[endIndex...] }
+        return self[first...last]
+    }
 }
 
 // MARK: - Reference spellings

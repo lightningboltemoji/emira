@@ -115,6 +115,11 @@ public enum Command: Sendable, Codable, Equatable {
     case closeWindow
     /// Scroll the strip so the focused column is centred in the viewport.
     case centerColumn
+    /// Run a command line through `/bin/sh`, without waiting for it. emira takes a bound chord from
+    /// every app on the machine, so it has to be able to hand one back — launching a terminal is the
+    /// keystroke a window manager most owes its user. Says nothing about the desktop: a window the
+    /// process opens arrives later as an ordinary creation.
+    case exec(String)
     /// Dump the live `State` as JSON over the socket — introspection for `emira debug`.
     case dumpState
 }

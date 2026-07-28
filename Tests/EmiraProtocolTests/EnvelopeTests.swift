@@ -110,5 +110,6 @@ enum CommandSamples {
         .focusWorkspace(.name(.first)), .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
         .closeWindow, .centerColumn, .dumpState,
+        .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 }

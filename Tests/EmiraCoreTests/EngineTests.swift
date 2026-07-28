@@ -643,6 +643,29 @@ import EmiraMotion
         #expect(s == Self.booted())
     }
 
+    // MARK: - Running something that isn't a window
+
+    /// `exec` is the whole of a spawn: one effect, no state, no transition. A process is not a fact
+    /// about the desktop, and it has no window until it makes one — at which point that window arrives
+    /// as an ordinary `windowCreated` and animates by the arrival path like anything else.
+    @Test func execEmitsOneEffectAndChangesNothing() {
+        let s = Self.world(2)
+        let line = "osascript -e 'tell application \"Ghostty\" to new window'"
+        let (after, fx) = Engine.reduce(s, .command(.exec(line)))
+
+        #expect(fx == [.exec(line)])
+        #expect(after == s)
+        #expect(!after.motion.isTransitioning)      // nothing to animate; no cover
+    }
+
+    /// It needs nothing of the world, unlike every other verb — no focused window, no strip, no
+    /// display. A keybind that launches a terminal has to work on an empty desktop most of all.
+    @Test func execWorksWithAnEmptyDesktop() {
+        let (s, fx) = Engine.reduce(State(), .command(.exec("ghostty")))
+        #expect(fx == [.exec("ghostty")])
+        #expect(s == State())
+    }
+
     // MARK: - Destroy / minimize (leave the strip, refocus, reflow)
 
     @Test func destroyingFocusedWindowRefocusesAndReflows() {

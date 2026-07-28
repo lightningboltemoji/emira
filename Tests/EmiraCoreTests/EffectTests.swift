@@ -19,6 +19,8 @@ import Testing
         .endTransition,
         .focus(WindowId(5)),
         .raise(WindowId(6)),
+        .closeWindow(WindowId(13)),
+        .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 
     @Test func everyEffectRoundTrips() throws {

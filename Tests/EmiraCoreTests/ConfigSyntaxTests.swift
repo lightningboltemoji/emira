@@ -568,6 +568,23 @@ import EmiraMotion
                 == [.focusWorkspace(.name(WorkspaceName("1")!)), .closeWindow, .centerColumn])
     }
 
+    /// The binding this feature exists for, written the way a user writes it: a TOML basic string
+    /// whose `\"` escapes leave the shell's own quoting intact. `exec`'s tail is never split, so the
+    /// AppleScript arrives at the daemon as one argument — which is the whole point of the raw tail.
+    @Test func aBindingMayLaunchSomethingThroughTheShell() throws {
+        let config = try Self.parse("""
+        [keys]
+        alt-space = "exec osascript -e 'tell application \\"Ghostty\\" to new window'"
+        alt-shift-space = "exec /opt/homebrew/bin/ghostty"
+        """)
+        #expect(config.keys.map(\.command) == [
+            .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
+            .exec("/opt/homebrew/bin/ghostty"),
+        ])
+        #expect(config.keys.map(\.chord) == [KeyChord([.option], .space),
+                                             KeyChord([.option, .shift], .space)])
+    }
+
     @Test func anUnreadableChordIsRefusedWithItsLine() {
         let error = Self.diagnostic("""
         [keys]

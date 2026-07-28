@@ -73,4 +73,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// truth is the destroy observation, which arrives as `Event.windowDestroyed` like any other close —
     /// so the core changes no state here and the strip closes ranks when (and if) the window really goes.
     case closeWindow(WindowId)
+
+    // MARK: System — a child process
+
+    /// Run a command line through `/bin/sh -c`, fire and forget. The one effect that reaches outside
+    /// the desktop, and unacked for the reason `closeWindow` is: what a process does belongs to the
+    /// process. A window it opens arrives on its own as `Event.windowCreated`, by the ordinary path.
+    case exec(String)
 }

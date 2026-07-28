@@ -28,6 +28,7 @@ import Testing
         .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
         .closeWindow, .centerColumn, .dumpState,
+        .exec("ghostty"), .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 
     // MARK: - The two load-bearing properties
@@ -94,6 +95,39 @@ import Testing
         #expect(try Command.parse(line: "  move-to-workspace   2  ")
                 == .moveToWorkspace(.name(WorkspaceName("2")!)))
         #expect(try Command.parse(line: "cycle-width") == .cycleWidth)
+    }
+
+    // MARK: - `exec`, the one verb whose argument owns its own whitespace
+
+    /// The motivating binding: a shell line whose interior quoting and spacing must survive intact.
+    /// Every other verb's argument is a word, so `parse(line:)` splits — for this one it must not.
+    @Test func execTakesTheRestOfTheLineVerbatim() throws {
+        let script = "osascript -e 'tell application \"Ghostty\" to new window'"
+        #expect(try Command.parse(line: "exec \(script)") == .exec(script))
+        // Interior runs of whitespace are the user's, not separators.
+        #expect(try Command.parse(line: "exec echo  a   b") == .exec("echo  a   b"))
+        // Words that would otherwise be verbs or arguments are just text here.
+        #expect(try Command.parse(line: "exec focus left") == .exec("focus left"))
+    }
+
+    /// From argv the user's own shell has already done the splitting, so the tail is rejoined — which
+    /// is what makes `emira exec …` and the config's `exec …` land on the same string.
+    @Test func execFromArgvRejoinsWhatTheShellSplit() throws {
+        #expect(try Command.parse(["exec", "open", "-a", "Ghostty"]) == .exec("open -a Ghostty"))
+        // The single-argument spelling (the user quoted it) is the one `words` round-trips through.
+        #expect(try Command.parse(["exec", "echo hi"]) == .exec("echo hi"))
+    }
+
+    /// Only the raw tail is trimmed at its ends; nothing inside it is touched.
+    @Test func execTrimsItsEndsAndRefusesAnEmptyLine() throws {
+        #expect(try Command.parse(line: "exec   ghostty  ") == .exec("ghostty"))
+        for empty in ["exec", "exec   "] {
+            let error = try #require(throws: CommandSyntaxError.self) { try Command.parse(line: empty) }
+            #expect(error == .missingArgument(verb: "exec", expected: "<shell command>"))
+        }
+        #expect(throws: CommandSyntaxError.missingArgument(verb: "exec", expected: "<shell command>")) {
+            try Command.parse(["exec"])
+        }
     }
 
     // MARK: - Diagnostics

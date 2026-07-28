@@ -46,6 +46,9 @@ public final class CompositingExecutor: Executor {
         case presentation
         case capture
         case truth
+        /// Outside the desktop entirely: a child process. Its own plane rather than a corner of the
+        /// truth plane, because it shares nothing with AX — no window, no per-app lane, no ack.
+        case system
     }
 
     /// Called when a cover comes down, with the frames blitted while it was up. The one smoothness
@@ -56,15 +59,18 @@ public final class CompositingExecutor: Executor {
     private let surface: any CoverSurface
     private let store: any CaptureStore
     private let truth: any Executor
+    private let launcher: any ProcessLauncher
     /// Frames blitted since the current cover was raised, and when it went up.
     private var framesBlitted = 0
     private var coverRaisedAt = Date()
 
     /// `store` is the same object that backs `surface`'s pixels.
-    public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor) {
+    public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor,
+                launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
         self.store = store
         self.truth = truth
+        self.launcher = launcher
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -73,8 +79,15 @@ public final class CompositingExecutor: Executor {
             case .presentation: present(run.effects, feedback: feedback)
             case .capture:      store.capture(Self.captureIds(run.effects), feedback: feedback)
             case .truth:        truth.execute(run.effects, feedback: feedback)
+            case .system:       for line in Self.execLines(run.effects) { launcher.launch(line) }
             }
         }
+    }
+
+    /// The command lines named by a run of `exec` effects, in order — a total unwrap like
+    /// `captureIds`, since a run is same-plane by construction.
+    static func execLines(_ effects: [Effect]) -> [String] {
+        effects.compactMap { if case .exec(let line) = $0 { line } else { nil } }
     }
 
     /// The windows named by a run of `capture` effects, in order. The run is same-plane by
@@ -106,6 +119,8 @@ public final class CompositingExecutor: Executor {
             return .capture
         case .setFrame, .park, .focus, .raise, .closeWindow:
             return .truth
+        case .exec:
+            return .system
         }
     }
 
@@ -134,7 +149,7 @@ public final class CompositingExecutor: Executor {
                 blitted = true
             case .endTransition:
                 dismissing = true
-            case .setFrame, .park, .capture, .focus, .raise, .closeWindow:
+            case .setFrame, .park, .capture, .focus, .raise, .closeWindow, .exec:
                 break                       // routed to another plane; unreachable here
             }
         }

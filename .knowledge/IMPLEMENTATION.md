@@ -82,6 +82,7 @@ enum Command {
     case focusWorkspace(WorkspaceRef)
     case closeWindow
     case centerColumn
+    case exec(String)                // …and the one verb that is not about the desktop at all
     case dumpState                   // introspection for `emira debug`
     // …grows here, and only here.
 }
@@ -101,6 +102,15 @@ the identical `argv ↔ Command` mapping and `ConfigLoader` cannot depend on an 
 against it. This is also why there is **no `swift-argument-parser`**: the grammar is "verb, then at most one word", it
 is already defined once here, and a subcommand type per verb would be more code in the one target that cannot be
 unit-tested at all.
+
+**One verb takes the rest of the line instead of a word, and that is a property of its argument rather than an
+exception.** Every other argument is drawn from a fixed vocabulary, so `parse(line:)` splits on whitespace and no
+quoting is needed; `exec`'s argument is a *shell* line, whose whitespace and quotes belong to the shell and not to
+this grammar. So a verb may declare `takesRawTail`, and `parse(line:)` hands it everything after its own word,
+unsplit. From argv the tail is re-joined with single spaces, which is what makes `emira exec …` and
+`alt-space = "exec …"` land on the same string: the user's own shell has already done the only splitting that was
+theirs to do. This is also why there is no argv-form `exec` beside it — with no quoting in the grammar, an argv form
+could not express `osascript -e 'tell application "Ghostty" …'`, which is the entire reason the verb exists.
 
 ---
 
@@ -371,6 +381,9 @@ emira/
 │   │   │                            # What it owns is the *waiting*; the daemon owns the order —
 │   │   │                            # silence the event sources first, since our own writes are
 │   │   │                            # observations (`WorldWatcher.stop()`)
+│   │   ├── ProcessLauncher.swift    # the system plane, whole: `Effect.exec` → `/bin/sh -c`, fire
+│   │   │                            # and forget. `ShellLauncher` reports only what a command
+│   │   │                            # surface cannot already log — a failed spawn, a bad exit
 │   │   ├── Scheduler.swift          # DelayScheduler — "try that again in a moment"
 │   │   ├── Permissions.swift        # AX + Screen Recording TCC checks + onboarding
 │   │   └── Logging.swift            # os_log wrapper
@@ -688,6 +701,33 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       exactly the reason corrections do: it must reach *every* query or they disagree about how tall a window is.
     - **Auto is a rung of the ladder, not a state you can only leave.** The cycle runs auto → ⅓ → ½ → ⅔ → auto, so one
       verb reaches every selection *and* gets home; the alternative is a second verb whose only job is "un-pin".
+- **`exec` is the one verb that is not about the desktop**, and it earns its place by what owning the keyboard
+  costs. A bound chord is taken from *every* application on the machine, so a user who binds `alt-h` to emira can no
+  longer bind `alt-space` to anything else — running a second hotkey daemon beside emira means two registries racing
+  for the same modifier space and whichever started first wins, silently. A window manager that takes the keyboard has
+  to be able to hand a chord back.
+  - **It goes through the pump like every other verb, and that is the whole of its integration.** The reducer returns
+    `(state, [.exec(line)])` — no state, no session, no ack — which is `close-window`'s shape exactly: a verb whose
+    consequence belongs to someone else. Routing it around the pump instead was the tempting shape and it costs the
+    property §6 states about hotkeys: *a press produces `Event.command`, full stop*. Intercepting one verb in
+    `HotkeyManager` would make the keyboard a second code path rather than a second surface, and would put a
+    verb-identity branch in front of a pump whose value is being total. Through the pump it is also in the event log,
+    so a session that ends "and then I pressed alt-space" replays — and replays **safely**, because `MockExecutor`
+    records effects rather than running them.
+  - **A spawn opens no transition, because a process is not a window.** Whatever the child opens announces itself as
+    an ordinary `AXWindowCreated` whenever it is ready — milliseconds or seconds later — and takes the arrival path,
+    with window rules, the seeded frame and the follow-the-newcomer focus it already has. Coupling the two would mean
+    holding a cover open for a process that may never make a window at all.
+  - **The CLI spelling looks redundant and is the diagnostic.** `emira exec …` from a shell is a slower way to run
+    something you could just run — except that it runs in the *daemon's* environment, which is the one thing a user
+    debugging a dead keybind cannot otherwise see. A bundled daemon is launched by `SMAppService` and inherits
+    launchd's `PATH`, not the login shell's, so `exec ghostty` fails for a Homebrew binary and `exec
+    /opt/homebrew/bin/ghostty` does not. Running the same line through the CLI, in a terminal, puts the child's own
+    stderr in front of the person who needs it.
+  - **`/bin/sh`, never the login shell.** `$SHELL -lc` would source the user's profile and make the PATH problem
+    disappear, at the price of a shell startup on every keypress and of emira's behaviour depending on a file it does
+    not own — a second authority over what a binding means. The escape hatch needs no mechanism, because the config
+    line is already a shell line: `exec /bin/zsh -lc 'ghostty'`.
 - **Rules engine:** pure predicates over a window's metadata at **first sight** — `WindowRule` (four AND'd matchers:
   app id and title, each exact or regex) → `RuleOutcome` (workspace / float / width). Definitions come from config;
   evaluation is pure.
@@ -756,6 +796,10 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     layers, main-thread and instant, versus AX Mach IPC into other processes, off-thread and slow. A batch is split
     into **maximal contiguous same-plane runs**, never partitioned: "cover before teleport" is the reducer's policy to
     emit, and the executor's job is only to be faithful to the order.
+    - **There are four planes, and `exec`'s is its own rather than a corner of the truth plane.** A spawn has no
+      window, no per-app lane, no enhanced-UI toggle and no ack, so the only thing it would share with AX is the file
+      it was routed in. `plane(of:)` is exhaustive on purpose — a new `Effect` must be *assigned* a home rather than
+      falling into one — and the run-splitting means the system plane keeps its place in emission order for free.
 - **AXClient / enumerator / writer / observers / watcher** — the truth plane, in its three directions: read
   (`AXEnumerator`), write (`AXExecutor`), watch (`AXObservationSource` + `WorldWatcher`). Per-app serial queues,
   messaging timeout, enhanced-UI toggle, the clamping dance, window-level-only enumeration (AX hygiene,
@@ -945,7 +989,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     make the keyboard depend on a pump that isn't running yet at boot.
   - **There are no default bindings**, inverting this milestone's usual rule on purpose: a registered chord is taken
     from *every* application on the machine, so a default is emira confiscating a keystroke nobody asked it to. An
-    unbound emira steals nothing, and the daemon reports "none bound" naming the file.
+    unbound emira steals nothing, and the daemon reports "none bound" naming the file. The same fact is what puts
+    `exec` in the vocabulary: what emira takes, it must be able to give back.
   - **Punctuation is named (`period`, `minus`), never typed**, forced by `-` being the chord separator; one rule beats
     an exception, and it has the consequence that no chord ever needs TOML quoting, because a name is bare-key-legal.
     Duplicates are detected on the `KeyChord`, not the key text (`cmd-alt-h` and `alt-cmd-h` are two TOML keys and one
@@ -1051,7 +1096,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
 ### Config (**TOML**, matching AeroSpace)
 `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`). The **parsed values** are a pure `Config` struct in
 `EmiraCore`, and so is the **parse** (`ConfigSyntax.swift` — a `String → Config` function is pure by construction);
-the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`), gaps
+the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`, including the
+`exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
 `center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through), and
 animation params (spring stiffness/damping, durations, and `animation.window` —

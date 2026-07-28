@@ -30,6 +30,7 @@ import EmiraMotion
 // [keys]                                # empty by default
 // alt-h = "focus left"
 // cmd-alt-period = "center-column"      # punctuation is named — see `KeyChord.swift`
+// alt-space = "exec ghostty"            # …or hand the chord back to the system entirely
 //
 // [[window-rules]]                      # none by default; a list, so it repeats
 // app-id = "com.tinyspeck.slackmacgap"  # …or app-id-regex / title / title-regex, all AND'd
@@ -41,7 +42,10 @@ import EmiraMotion
 // `[keys]` is the one **open** table: its names are chords the user invents (`KeyChord.swift`) and
 // its values are commands spelled as `CommandSyntax.swift` spells them, both validated here so a typo
 // in either is a diagnostic with a line number rather than a binding that never fires. No bindings
-// ship by default — registering a hotkey takes that chord from every other app on the machine.
+// ship by default — registering a hotkey takes that chord from every other app on the machine, which
+// is also why `exec` is in the vocabulary: emira has to be able to give one back. `exec`'s argument
+// runs to the end of the line, so a shell line keeps its own spacing and quoting; in a `"…"` string
+// the inner double quotes are escaped (`\"`), and the daemon's PATH is launchd's, not the shell's.
 //
 // `[[window-rules]]` is the one **repeating** table, and the only place order in the file means
 // anything: matching rules apply top to bottom, later ones overriding earlier ones field by field

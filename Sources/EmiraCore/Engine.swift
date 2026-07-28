@@ -311,6 +311,12 @@ public enum Engine {
         case .moveToWorkspaceAndFocus(let ref):
             return handleMoveToWorkspace(&s, ref, follow: true)
 
+        case .exec(let line):
+            // Changes nothing, because a spawn is not a fact about the desktop — and opens no
+            // transition for the same reason. Whatever window the process opens announces itself as
+            // `windowCreated` whenever it is ready, and *that* is what animates.
+            return [.exec(line)]
+
         // The only verb that is permanently a no-op here: `dumpState` is a *read*, answered out of band
         // by the shell off `Runtime.state` (§11, 2026-07-24). Everything else in the vocabulary does
         // something — a listed verb is a promise, since `Command.usage` is `emira --help`.

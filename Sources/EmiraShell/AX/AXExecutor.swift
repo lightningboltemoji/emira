@@ -67,7 +67,8 @@ public final class AXExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .endTransition:
+            case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame,
+                 .endTransition, .exec:
                 break
             }
         }

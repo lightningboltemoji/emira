@@ -59,6 +59,7 @@ import Testing
             .focusWorkspace(.name(WorkspaceName("a")!)), .focusWorkspace(.next),
             .focusWorkspace(.previousOccupied),
             .closeWindow, .centerColumn, .dumpState,
+            .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
         ]
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()

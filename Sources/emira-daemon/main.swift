@@ -39,8 +39,8 @@ app.setActivationPolicy(.accessory)
         alert.alertStyle = .critical
         alert.messageText = "emira can't start"
         alert.informativeText = message
-        if settings != nil { alert.addButton(withTitle: "open System Settings") }
-        alert.addButton(withTitle: "quit")
+        if settings != nil { alert.addButton(withTitle: "Open System Settings") }
+        alert.addButton(withTitle: "Quit")
         app.activate()
         if alert.runModal() == .alertFirstButtonReturn, let settings,
            let url = URL(string: settings) {
@@ -195,7 +195,15 @@ menuBar.onError = { log($0) }
 // MARK: - The pump
 
 let truth = AXExecutor(registry: registry, writer: AXWindowWriter(client: axClient))
-let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth)
+
+// The system plane. Only failures are reported: both surfaces already log the request, so what a log
+// line adds is whether it worked — and a keybind that silently does nothing is the failure this
+// feature invites, since a bundled daemon inherits launchd's bare PATH and not the user's.
+let launcher = ShellLauncher()
+launcher.onOutcome = { log("exec: \($0)") }
+
+let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
+                                   launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below.
