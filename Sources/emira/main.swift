@@ -18,6 +18,14 @@ func complain(_ message: String) {
     FileHandle.standardError.write(Data("emira: \(message)\n".utf8))
 }
 
+/// The version `make app` stamped into the enclosing bundle, from the git tag. `Bundle.main` for an
+/// executable inside `Contents/MacOS` resolves to the bundle around it, so the CLI reads the same
+/// string the daemon does — one source, no codegen, and no way for the two to disagree. Run straight
+/// out of `.build` there is no bundle to read, which is exactly the case that isn't a release.
+func bundledVersion() -> String {
+    Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+}
+
 /// Help text. The verb list comes from `Command.usage`, so the vocabulary is defined in one place.
 func help() -> String {
     """
@@ -31,7 +39,7 @@ func help() -> String {
     Options:
       --dry-run     Print the request that would be sent, and exit.
       -h, --help    Show this help.
-      --version     Show the wire protocol version.
+      --version     Show the build and wire protocol versions.
     """
 }
 
@@ -46,7 +54,7 @@ for argument in CommandLine.arguments.dropFirst() {
         print(help())
         exit(ExitCode.success)
     case "--version":
-        print("emira — wire protocol v\(Wire.version)")
+        print("emira \(bundledVersion()) — wire protocol v\(Wire.version)")
         exit(ExitCode.success)
     case "--dry-run":
         isDryRun = true

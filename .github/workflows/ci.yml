@@ -1,0 +1,29 @@
+# Build and test every pull request. Pushes to main are covered by `release.yml`, which runs the
+# same two commands before it publishes anything — there is no point building main twice.
+#
+# `macos-26` is the platform floor (PRINCIPLES.md §7); it is Apple Silicon and its default Xcode is
+# a 26.x, so nothing here selects a toolchain. `make test` detects Xcode-vs-CommandLineTools itself.
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test

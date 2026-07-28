@@ -226,9 +226,13 @@ would be the translation layer §2 exists to avoid.
 ```
 emira/
 ├── Package.swift
-├── Makefile                         # build + test; `app` assembles dist/emira.app, `install` copies
+├── Makefile                         # build + test; `app` assembles dist/emira.app and stamps its
+│                                    # version from the git tag, `zip` archives it, `install` copies
 │                                    # it to /Applications. No CLI symlink — a Homebrew cask's
 │                                    # `binary` stanza points at the copy inside the bundle
+├── .github/workflows/
+│   ├── ci.yml                       # pull requests: build + test on macos-26
+│   └── release.yml                  # main → the `tip` prerelease; a `v*` tag → that version (§7)
 ├── CLAUDE.md                        # thin agent pointer at the docs below
 ├── .knowledge/
 │   ├── README.md                    # how this project remembers things
@@ -440,6 +444,15 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     design exists to avoid, reintroduced through the back door. Worse, it pops the cross-fade, because the
     presentation plane draws that column from geometry that never parks. The conversion costs no new geometry: the
     physical viewport in strip space is the logical one *outset* by the horizontal gaps.
+    - **And sub-point overlap is not visibility**, because the two sides of that comparison are computed
+      differently. A column's left edge is a running *prefix* of the widths while the offset that frames a
+      viewport-wide column comes from their *sum*, so at the one arrangement where those are equal in exact
+      arithmetic — a `fullscreen` or grown-to-ceiling column revealed against a neighbour no binary fraction holds,
+      like ⅓ — they differ by ~1e-13 and the neighbour strictly overlaps. Tiled on that, a full-height window is
+      asked to sit entirely off the left edge, which macOS will not do; it clamps the window back to a ~40 pt sliver
+      in plain view. The presentation plane derives from the same numbers and correctly draws nothing, so the strand
+      is invisible during the motion and arrives out of the cross-fade. `Strip.visibilityTolerance` is half a point,
+      the sub-pixel tolerance the placement diff already runs at.
   - **A neighbour bleeds into the margin at rest iff `outer-gap > column-gap`.** After a reveal leaves a column flush
     with the content's right edge, its neighbour starts one `column-gap` further on while the display ends one
     `outer-gap-right` further on. Bleed is a supported state, not a defect — windows may overflow the viewport, that
@@ -1126,6 +1139,42 @@ revoking the grant mid-session.
   120 Hz, `tick` events dominate the log — record them run-length-compressed, or synthesize them on replay.)
 - **Observability.** `emira debug` dumps the live `State` as JSON over the socket; structured logging via `os_log`
   behind a small `Logging` wrapper; an optional `EMIRA_TRACE` that appends the event log to disk.
+- **Release: the git tag is the only version authority.** No file in the tree carries a version number, so there is
+  nothing to bump out of step with a tag and no reading of "what version is this" that can disagree with another.
+  `make app` asks `git describe --tags --match 'v[0-9]*'` and stamps the answer into the bundle's *copy* of
+  `Info.plist`; the source file keeps `0.0.0`, which is what a build from a tarball honestly is. `CFBundleVersion` is
+  the commit count — monotonic along main, which is the one property that key must have. The stamp is observable at
+  the far end, because `Bundle.main` for an executable inside `Contents/MacOS` resolves to the bundle around it, so
+  `emira --version` reads the daemon's own string with no codegen and no second source; run straight out of `.build`
+  there is no bundle and it says `dev`.
+  - **Two channels, and only one of them is a release.** A push to `main` force-moves the `tip` tag and updates one
+    long-lived **prerelease**, whose asset name is stable (`emira-tip.zip`) so its download URL is a permalink. A
+    human pushing a `v*` tag cuts the versioned release. Machines never decide a version; that is the whole point of
+    the split, and it is what makes "the same semver published twice" unreachable rather than merely discouraged —
+    `gh release create` refuses an existing release, and a guard refuses it earlier, before the build, with a better
+    message. The same guard requires the tag's commit to be an ancestor of `main`.
+  - **`tip` is updated in place rather than deleted and recreated.** Both reach the same end state, and creating a
+    release notifies everyone watching releases — on a rolling channel that lands on every push to main, which turns
+    a convenience into a reason to unwatch the repository. So the tag is force-moved, the release is edited, and the
+    asset is clobbered.
+  - **Prerelease, so `tip` is invisible to everything that asks for a version.** `/releases/latest` and a Homebrew
+    cask both read the newest non-prerelease, so the rolling channel cannot become someone's install by accident. A
+    semver prerelease tag (`v0.2.0-rc1`) is marked the same way, by the same rule.
+  - **The archive is `ditto -c -k --keepParent`, not `zip`.** A bundle carries symlinks, extended attributes and a
+    code signature, and plain `zip` mangles all three — a mangled signature is a bundle Gatekeeper rejects for a
+    reason that looks nothing like the cause. It is also the format `notarytool` accepts.
+  - **`make zip` deliberately does not depend on `make app`.** Notarization runs *between* them: build and sign,
+    archive, submit, staple the ticket into the bundle, archive again. A prerequisite would re-sign the bundle on that
+    second archive and discard the ticket. `make dist` is the ordinary path for anyone not notarizing.
+  - **Signing is a `CODESIGN_IDENTITY` the workflow supplies when it has one**, defaulting to ad-hoc (`-`). A real
+    identity brings `--options runtime` and `--timestamp` with it, because notarization requires both and ad-hoc can
+    have neither. Until the secrets exist the published bundle is ad-hoc: it runs locally, and on a machine that
+    *downloaded* it Gatekeeper refuses and every update re-asks for Accessibility and Screen Recording, since an
+    ad-hoc signature is identified by a cdhash that changes with every build. That is a worse failure on the rolling
+    channel than on a tagged one — tip updates on every push — and it is the concrete cost of open item 3.
+  - **Builds are arm64, not universal.** The toolchain warns that x86_64 is deprecated at this deployment target, and
+    the platform floor is a macOS that is the last to run on Intel at all. `macos-26` is Apple Silicon, so the native
+    build is the shipped build and there is no second slice to keep honest.
 
 ---
 
@@ -1200,6 +1249,9 @@ Settle these as we build, not now.
 2. **Rubber-banding.** The resting clamp is built; springing back past the strip's end during a gesture is not, and
    is an M7 question.
 3. **Real signing** — Developer ID + hardened runtime + notarization, and with them a TCC grant that survives a
-   rebuild. Ad-hoc is enough to run locally.
+   rebuild. Ad-hoc is enough to run locally. The plumbing is in place and unexercised: `release.yml` imports a
+   certificate, signs and notarizes when the six `MACOS_*`/`APPLE_*` secrets exist, and falls back to ad-hoc when they
+   do not. Until they exist, a downloaded build is one Gatekeeper refuses — which makes this the item standing between
+   emira and a release anyone else can install.
 4. **Per-monitor strips.** The layout still resolves against the first monitor; `move-to-monitor` has no second strip
    to target, and monitor hotplug is untested.

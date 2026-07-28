@@ -99,15 +99,22 @@ public struct Strip: Sendable, Equatable {
         return left >= offset && left + width <= offset + viewportWidth
     }
 
-    /// Indices of every column whose span overlaps the viewport with positive width. Overlap is strict —
-    /// a column merely flush against the viewport edge is excluded — matching `Rect.intersects`.
+    /// How much of a column must be inside the viewport to count as on screen — the sub-pixel
+    /// tolerance `Engine` diffs placements at. `leftEdge` and `maxOffset` sum the widths differently,
+    /// so a viewport-wide column can leave its neighbour ~1e-13 pt over the edge, and tiling a window
+    /// that far off-screen gets it clamped back into view by macOS.
+    public static let visibilityTolerance: Double = 0.5
+
+    /// Indices of every column overlapping the viewport by more than `visibilityTolerance`. Flush
+    /// against the edge — or within the tolerance of it — is excluded, matching `Rect.intersects`.
     public func visibleColumnIndices(viewportWidth: Double, offset: Double) -> [Int] {
+        let tol = Self.visibilityTolerance
         let viewMax = offset + viewportWidth
         var result: [Int] = []
         for i in 0..<count {
             let (left, width) = span(of: i)
             guard width > 0 else { continue }
-            if left < viewMax && left + width > offset {
+            if left < viewMax - tol && left + width > offset + tol {
                 result.append(i)
             }
         }

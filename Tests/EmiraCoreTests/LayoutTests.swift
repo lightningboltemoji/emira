@@ -105,6 +105,17 @@ import Testing
     @Test func visibleColumnIndicesEmptyOnEmptyStrip() {
         #expect(Strip(columnWidths: [], gap: 10).visibleColumnIndices(viewportWidth: 500, offset: 0) == [])
     }
+
+    /// Sub-point overlap is flush. Both ends, since the arithmetic that ties is symmetric.
+    @Test func visibleColumnIndicesTreatsSubPointOverlapAsFlush() {
+        // col0 [0,100): a viewport starting 0.1 pt inside it sees a tenth of a point — not on screen.
+        #expect(strip.visibleColumnIndices(viewportWidth: 100, offset: 99.9) == [1])
+        // …and the same at the far edge: col1 starts 0.1 pt before the viewport's right edge.
+        #expect(strip.visibleColumnIndices(viewportWidth: 110.1, offset: 0) == [0])
+        // A whole point either side still counts, so the tolerance stays under anything a user sees.
+        #expect(strip.visibleColumnIndices(viewportWidth: 100, offset: 99) == [0, 1])
+        #expect(strip.visibleColumnIndices(viewportWidth: 111, offset: 0) == [0, 1])
+    }
 }
 
 /// Cyclable width/height presets — resolution against a working extent and wrap-around cycling.
@@ -1091,6 +1102,32 @@ import Testing
         #expect(layout.visibleWindowIds(scrollOffset: 900, metrics: narrow) == [w40])
         // What the motion actually crosses: everything, in layout (z-)order.
         #expect(layout.sweptWindowIds(from: 0, to: 900, metrics: narrow) == [w10, w20, w21, w30, w40])
+    }
+
+    /// A column exactly as wide as the viewport puts the strip's end flush with it, so the neighbour is
+    /// off screen by construction — and it is the one arrangement where the float residue between
+    /// `maxOffset` and the neighbour's right edge decides tile-vs-park. Reachable two ways, `fullscreen`
+    /// and `grow` to the ceiling, which resolve to the same width.
+    ///
+    /// Real geometry, since the residue depends on the exact bits: 1800 pt and 20 pt gaps ⇒ 1760 of
+    /// content, whose ⅓ no binary fraction holds.
+    @Test(arguments: [true, false])
+    func aFullWidthColumnLeavesNoSliverOfItsNeighbourOnScreen(viaFullscreenFlag: Bool) {
+        let m = LayoutMetrics(workingArea: Rect(x: 0, y: 39, width: 1800, height: 1130),
+                              columnGap: 20, windowGap: 20,
+                              outerGaps: EdgeInsets(top: 8, left: 20, bottom: 20, right: 20))
+        let layout = Layout(columns: [
+            ColumnLayout(id: ColumnId(1), windowIds: [w10], widthPreset: 0),          // ⅓ of 1760
+            ColumnLayout(id: ColumnId(2), windowIds: [w20],
+                         widthOverride: viaFullscreenFlag ? nil : .proportion(1.0),
+                         isFullscreen: viaFullscreenFlag),
+        ])
+
+        let offset = layout.scrollOffsetToReveal(window: w20, from: 0, metrics: m) ?? 0
+        #expect(layout.visibleWindowIds(scrollOffset: offset, metrics: m) == [w20])
+        // …and the truth plane parks the neighbour rather than asking AX for an unplaceable frame.
+        let frames = layout.targetFrames(scrollOffset: offset, metrics: m)
+        #expect(frames[w10]?.minX ?? 0 > m.workingArea.maxX - 2)
     }
 
     @Test func sweptWindowIdsAreDirectionAgnostic() {
