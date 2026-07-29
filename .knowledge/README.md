@@ -1,30 +1,21 @@
 # `.knowledge/`
 
-| File | Contents | Tense |
-| --- | --- | --- |
-| `PRINCIPLES.md` | the charter, the two-plane model, the graphics thesis | present |
+| File                | Contents                                                | Tense   |
+| ------------------- | ------------------------------------------------------- | ------- |
+| `PRINCIPLES.md`     | the charter, the two-plane model, the graphics thesis   | present |
 | `IMPLEMENTATION.md` | module layout, the pure core, shell subsystems, roadmap | present |
-| `changes/<id>.md` | what one change did and why | past |
+| `changes/<id>.md`   | what one change did and why                             | past    |
 
 ## Ground truth
 
 `PRINCIPLES.md` and `IMPLEMENTATION.md` describe emira as it is now. No dated entries, no "corrected
 on", no description of prior behaviour. A superseded decision has its text replaced; the previous
-reading stays in git and in the change that replaced it. A date in either file marks a sentence that
-belongs in a change.
+reading stays in git and in the change that replaced it.
 
 ## Changes
 
-Each commit has a change id: the Unix epoch second it was made. The id names a file,
-`.knowledge/changes/1784863319.md`, and repeats as a commit trailer:
-
-```
-add outer-gap
-
-Change: 1785089081
-```
-
-Epoch seconds sort chronologically and do not collide. Nothing parses them.
+Feature work has a change id: the Unix epoch second it was made. The id names a file,
+`.knowledge/changes/1784863319.md`.
 
 ## Where an explanation goes
 
@@ -39,10 +30,10 @@ the moment someone actually needs it: it is read while chasing something else.
   macOS" is the fact; how it was found is not.
 - **Never date, attribute, or narrate.** No "previously", no "we changed this because", no bug ids.
   `PRINCIPLES.md` and `IMPLEMENTATION.md` are present-tense for the same reason.
-- The two documents are the exception that proves it: prose *is* their code, and an argument that
+- The two documents are the exception that proves it: prose _is_ their code, and an argument that
   belongs to the design as a whole lives there rather than above the line that happens to implement it.
 
-Change file format — three sections, normally under three paragraphs:
+Change file format — three sections, normally a paragraph each:
 
 ```markdown
 # <title>
