@@ -16,7 +16,9 @@ import EmiraCore
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
 //
-// Concurrency: the batch fans out, costing the slowest still rather than the sum. None of
+// Concurrency: the batch fans out, but the window server *serializes* screenshot requests — a batch
+// costs roughly 10 ms per capture however it is shaped, and the requested pixel dimensions do not enter
+// into it. The group buys partial overlap, not parallelism, so scope size is the latency. None of
 // ScreenCaptureKit's descriptor types are `Sendable`, so everything derived from one content fetch
 // shares an isolation region a child task may not reach into. Hence free functions at file scope
 // (isolation propagates into nested types) and `nonisolated(unsafe)` on each filter — narrow and true,

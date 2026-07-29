@@ -153,9 +153,12 @@ why it should be right before one can.
 for take a capture round trip and *nothing holds the layers back while they are out*; with minimal-reveal scrolling
 the newcomer's leading edge sits exactly one `column-gap` past the destination the session was already aiming at, so
 the layers cross into it within a few frames of the press. So `sweptWindowIds` returns the swept run **flanked by the
-column just outside each end** — the ones a further command can reach. It is nearly free where it is paid, because
-the head batch is a *fan-out* whose critical path is the full-display base capture, while an extension costs a
-*serial* round trip that lands mid-motion. Deliberately not `visibleWindowIds`' business: that query means "what is on
+column just outside each end** — the ones a further command can reach. It is **not** free where it is paid: the
+window server serializes screenshot requests, so every shouldered window adds ~10 ms to the head of every scroll
+whether or not a further command comes. It is paid there because the alternative does not work — deferred to a batch
+issued once the cover is up, the stills land after the layers have already crossed into the newcomer, and a spammed
+`focus` reopens a 126 pt band of wallpaper, exactly the hole the shoulder exists to close. Deliberately not
+`visibleWindowIds`' business: that query means "what is on
 screen" and the reducer parks its complement, so a shouldered answer there would place two parked columns on the
 strip.
 

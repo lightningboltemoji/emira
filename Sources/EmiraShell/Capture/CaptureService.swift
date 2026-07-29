@@ -181,9 +181,10 @@ public final class CaptureService: CaptureStore {
     ///
     /// A user-latency budget, not a safety margin: this wait sits at the head of the transition, before
     /// anything has moved or been covered, so every millisecond looks like a keypress doing nothing. A
-    /// four-window batch measures 104–140 ms end to end, so 250 ms is ~1.8× the observed worst case. It
-    /// can afford to be tight because overrunning degrades honestly — a head batch with no base answers
-    /// `Event.coverUnavailable` and the user gets an instant placement instead of a black screen.
+    /// batch costs ~10 ms for `SCShareableContent` plus ~10 ms per capture — linear, because the window
+    /// server serializes them — so a four-window batch lands near 60 ms and ~22 windows would reach this
+    /// bound. It can afford to be tight because overrunning degrades honestly: a head batch with no base
+    /// answers `Event.coverUnavailable` and the user gets an instant placement instead of a black screen.
     public static let defaultDeadline: TimeInterval = 0.25
 
     private let registry: WindowRegistry
