@@ -46,6 +46,7 @@ public final class WorldWatcher {
     private let enumerator: AXEnumerator
     private let registry: WindowRegistry
     private let scheduler: any DelayScheduler
+    private let intent: FocusIntent
     private let sink: EventSink
 
     /// Called for every scan that could not account for something it saw, on either side of the join.
@@ -79,17 +80,19 @@ public final class WorldWatcher {
     /// Whether the watcher has been shut down (`stop()`). Once set, nothing reaches the core again.
     private var isStopped = false
 
-    /// The window the *system* last reported as focused, whether or not we passed it on. It exists only
-    /// to name the window a new report displaces (`resolveFocus`), so it tracks reports rather than
-    /// deliveries and is deliberately not cleared when its window dies.
+    /// The window last reported as focused *in the present* — whether or not we passed it on, but not
+    /// counting an echo of our own that arrived out of order. It exists only to name the window a new
+    /// report displaces (`resolveFocus`), so it tracks reports rather than deliveries and is
+    /// deliberately not cleared when its window dies.
     private var focus: WindowId?
 
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
-                scheduler: any DelayScheduler, sink: EventSink) {
+                scheduler: any DelayScheduler, intent: FocusIntent, sink: EventSink) {
         self.source = source
         self.enumerator = enumerator
         self.registry = registry
         self.scheduler = scheduler
+        self.intent = intent
         self.sink = sink
     }
 
@@ -356,23 +359,50 @@ public final class WorldWatcher {
 
     // MARK: - Focus (the report that isn't self-describing)
 
-    /// Pass a focus report to the core — unless it is macOS backfilling the window that just died.
+    /// Pass a focus report to the core — unless it is our own stale echo, or macOS backfilling the
+    /// window that just died.
     ///
     /// `Event.focusChanged` means "focus moved and we did not move it, so snap the viewport to reveal
-    /// it". Right for a Cmd-Tab; wrong for the other thing that posts the same notification: an app whose
-    /// key window closes picks an arbitrary replacement, so closing the tenth Ghostty window can land
-    /// focus on the first and snap the strip across the desktop.
+    /// it". Two other things post the identical notification, and each is filtered by the one fact that
+    /// separates it from a Cmd-Tab.
     ///
-    /// AppKit picks that replacement *synchronously* and destroys the closing element later, so
+    /// **Our own focus, arriving late.** `Effect.focus` provokes the same report, and the design counts
+    /// on absorbing that echo because a reveal of an already-revealed window is a no-op. It is only a
+    /// no-op while the echo is *current*: the round trip crosses per-app lanes with no order between
+    /// them (`FocusIntent`), so spamming `focus` across a slow app and a fast one delivers an echo
+    /// naming a window two presses back, and the core — mid-scroll — retargets the live transition
+    /// backwards to reveal it. Swallowed outright rather than passed on, because it says nothing the
+    /// core does not already hold: the reducer wrote that focus optimistically when it emitted the
+    /// effect, so the echo can only ever confirm it or corrupt it.
+    ///
+    /// **macOS filling a hole.** An app whose key window closes picks an arbitrary replacement, so
+    /// closing the tenth Ghostty window can land focus on the first and snap the strip across the
+    /// desktop. AppKit picks that replacement *synchronously* and destroys the closing element later, so
     /// `AXFocusedWindowChanged` normally arrives *before* `AXUIElementDestroyed` and the two cases are
     /// indistinguishable without asking whether the displaced window still exists — live means the user
     /// moved focus, dead means macOS filled a hole. The registry answers free when the destroy got here
     /// first; only the awkward order costs a round trip, and the re-check on the answer covers a destroy
-    /// that arrived while we asked.
-    ///
-    /// Failing toward "dead" only drops a reveal (the next focus change reveals); the opposite mistake
-    /// would drop a real window off the strip, which is why this never synthesizes a `windowVanished`.
+    /// that arrived while we asked. Failing toward "dead" only drops a reveal (the next focus change
+    /// reveals); the opposite mistake would drop a real window off the strip, which is why this never
+    /// synthesizes a `windowVanished`.
     private func resolveFocus(_ id: WindowId?) {
+        switch intent.resolve(id) {
+        // News about the past. `focus` is deliberately not advanced: it names the window a *new* report
+        // displaces, and a window we stopped considering focused two presses ago is not that.
+        case .stale:
+            return
+
+        // Exactly what we asked for, so it cannot also be macOS covering for a window that died — we
+        // named the replacement ourselves. Nothing to ask, and one lane round trip not spent.
+        case .expected:
+            focus = id
+            emit(.focusChanged(id))
+            return
+
+        case .external:
+            break
+        }
+
         let displaced = focus
         focus = id
         // Nothing displaced (boot), or a report that changes nothing: there is no question to ask.

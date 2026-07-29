@@ -179,6 +179,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     let registry: WindowRegistry
     let scheduler: ManualScheduler
     let recorder: Recorder
+    let intent: FocusIntent
+    /// The intent's own clock, so a test can expire a focus request without also firing the watcher's
+    /// scan retries — two unrelated deadlines that would otherwise share a `fire()`.
+    let intentClock: ManualScheduler
     let watcher: WorldWatcher
 
     /// Two apps: Ghostty with one window, TextEdit with two. Everything bindable.
@@ -188,6 +192,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         registry = WindowRegistry()
         scheduler = ManualScheduler()
         recorder = Recorder()
+        intentClock = ManualScheduler()
+        intent = FocusIntent(scheduler: intentClock)
         windows.targets = [ScanTarget(pid: 100, bundleId: "com.mitchellh.ghostty"),
                            ScanTarget(pid: 200, bundleId: "com.apple.TextEdit")]
         windows.windowsByPid = [
@@ -206,6 +212,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
             enumerator: AXEnumerator(source: windows, registry: registry),
             registry: registry,
             scheduler: scheduler,
+            intent: intent,
             sink: recorder.sink)
     }
 
@@ -318,6 +325,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
             enumerator: AXEnumerator(source: world.windows, registry: world.registry),
             registry: world.registry,
             scheduler: world.scheduler,
+            intent: world.intent,
             sink: EventSink { [weak probe] event in
                 guard case .windowCreated = event, probe?.watchedAtFirstCreate == nil else { return }
                 probe?.watchedAtFirstCreate = source.watchedWindows.count
@@ -791,6 +799,99 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(nil))
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil)])
+    }
+
+    // MARK: Focus reports that are our own, arriving late
+    //
+    // `Effect.focus` provokes the same notification a Cmd-Tab does, and it comes back across per-app AX
+    // lanes with no order between them. Spam `focus` across a slow app and a fast one and an echo lands
+    // naming a window two presses back — which the core, mid-scroll, reads as the user asking to go
+    // there and retargets the live transition to reveal. See `FocusIntent`.
+
+    @Test func aStaleEchoOfOurOwnFocusNeverReachesTheCore() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        _ = world.intent.request(one)                 // press 1: the slow app
+        _ = world.intent.request(two)                 // press 2, before press 1 has been heard from
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(one))        // press 1's echo, arriving second
+
+        #expect(world.recorder.events.count == before, "no focusChanged reached the core")
+        #expect(world.source.aliveProbes.isEmpty, "and no round trip was spent deciding")
+    }
+
+    @Test func theEchoOfTheLatestFocusIsPassedThroughWithoutAProbe() {
+        // Harmless by design — the reducer wrote this focus optimistically when it emitted the effect,
+        // so the reveal is a no-op. It cannot be macOS covering for a dead window either: we named the
+        // replacement ourselves, which is exactly the question the probe exists to ask.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(one))        // something to be displaced
+        _ = world.intent.request(two)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(two))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two)])
+        #expect(world.source.aliveProbes.isEmpty)
+    }
+
+    @Test func aCmdTabLandingBetweenTwoFocusPressesStillReaches() {
+        // The suppression is per window, never a blanket deafness for the length of a burst.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        _ = world.intent.request(one)
+        _ = world.intent.request(two)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(term))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term)])
+    }
+
+    @Test func aSwallowedEchoIsNotWhatTheNextReportIsReadAgainst() {
+        // `focus` names the window a *new* report displaces. A window we stopped considering focused two
+        // presses ago is not that, so a stale echo must not advance it — otherwise the next real report
+        // asks its liveness question about the wrong window.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(two))        // the present: focus is on `two`
+        _ = world.intent.request(one)
+        _ = world.intent.request(two)
+        world.watcher.handle(.focusMoved(one))        // swallowed
+
+        world.watcher.handle(.focusMoved(term))       // a real Cmd-Tab after it
+
+        #expect(world.source.aliveProbes == [two], "read against `two`, not the stale `one`")
+    }
+
+    @Test func focusIsNeverSuppressedForGood() {
+        // The record is bounded, because a window manager that has gone permanently deaf to focus on
+        // every window it ever focused is the failure nobody can debug.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        _ = world.intent.request(one)
+        _ = world.intent.request(two)
+        world.watcher.handle(.focusMoved(one))        // swallowed while the record stands
+
+        world.intentClock.fire()                      // the grace runs out
+        let before = world.recorder.events.count
+        world.watcher.handle(.focusMoved(one))        // now a genuine Cmd-Tab back to it
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one)])
     }
 
     // MARK: Focus reports macOS made up

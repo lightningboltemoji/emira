@@ -342,6 +342,10 @@ emira/
 │   │   │   ├── AXObservers.swift    # AXObservationSource: per-app AXObserver (registered against
 │   │   │   │                        # *two* element scopes), NSWorkspace launch/quit/activate, and
 │   │   │   │                        # the global mouse-up monitor
+│   │   │   ├── FocusIntent.swift    # the focus emira asked for, so it can tell its own echo from the
+│   │   │   │                        # user's Cmd-Tab. Written by the writer, read by the writer (which
+│   │   │   │                        # activation is still wanted) and by WorldWatcher (which report is
+│   │   │   │                        # news). Shared per daemon, like WindowRegistry
 │   │   │   └── EnhancedUI.swift     # suspend kAXEnhancedUserInterface around a group of sets —
 │   │   │                            # read first, restore after, once per app per batch
 │   │   ├── Capture/

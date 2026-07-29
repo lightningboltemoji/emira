@@ -168,6 +168,17 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
     it was being outvoted by macOS's guess. The two are told apart by the one fact that separates them — **whether the
     window the report displaced still exists** — which is readable and never observable, because the whole difficulty
     is that the destroy notification has not arrived yet.
+  - **And *external* is not the same as *ours*.** Asking for focus provokes the identical notification, and the round
+    trip that returns it is **unordered**: the app's own notification, the read an `NSWorkspace` activation costs, and
+    the liveness probe above all cross *per-app serial lanes* with nothing sequencing one against another — the same
+    lanes carrying a transition's placement writes. So spamming `focus` across a JVM and a terminal delivers an echo
+    naming a window two presses back, and a reveal mid-scroll **redirects** rather than snaps: a scroll visibly
+    reversing under the user. The same disorder puts the wrong app in front for real, since activation is deferred
+    behind a lane hop. Both are answered by keeping the one fact that separates our echo from a Cmd-Tab — **which
+    windows we asked for, and which we asked for last.** A superseded request then drops its activation rather than
+    racing the current one, and its echo is swallowed rather than passed on, because the reducer wrote that focus
+    optimistically when it emitted the effect and a late echo can only confirm it or corrupt it. The record is bounded
+    in time and kept *per window*, so a Cmd-Tab arriving mid-burst is still the user and still reveals.
 
 ### 4b. The smoothness layer: a layered desktop reconstruction
 

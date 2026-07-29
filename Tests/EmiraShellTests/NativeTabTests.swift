@@ -336,6 +336,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
                 enumerator: AXEnumerator(source: windows, registry: registry),
                 registry: registry,
                 scheduler: ImmediateScheduler(),
+                intent: FocusIntent(scheduler: ImmediateScheduler()),
                 sink: recorder.sink)
             windows.windowsByPid = [ghostty.pid: [tab(1, title: "tab one")]]
             windows.entries = [entry(1)]

@@ -156,6 +156,10 @@ let overlay = Overlay(screen: screen, geometry: geometry, insets: struts)
 let registry = WindowRegistry()
 let axClient = AXClient()
 
+// One `FocusIntent` too, for the same reason and on the other axis: the writer records the focus it
+// asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
+let focusIntent = FocusIntent(scheduler: DispatchScheduler())
+
 // MARK: - The capture plane
 
 let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
@@ -194,7 +198,8 @@ menuBar.onError = { log($0) }
 
 // MARK: - The pump
 
-let truth = AXExecutor(registry: registry, writer: AXWindowWriter(client: axClient))
+let truth = AXExecutor(registry: registry,
+                       writer: AXWindowWriter(client: axClient, intent: focusIntent))
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this
@@ -291,6 +296,7 @@ let watcher = WorldWatcher(
     enumerator: AXEnumerator(source: AXWindowSource(client: axClient), registry: registry),
     registry: registry,
     scheduler: DispatchScheduler(),
+    intent: focusIntent,
     sink: runtime.sink)
 
 // A scan that gave up leaves a window simply unmanaged, with nothing else to say so.

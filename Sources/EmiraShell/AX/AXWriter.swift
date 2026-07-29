@@ -61,7 +61,9 @@ public protocol WindowWriter {
     func place(_ moves: [WindowMove], of app: pid_t,
                then completion: @escaping @MainActor ([WindowLanding]) -> Void)
 
-    /// Give a window keyboard focus: make it its app's key window, then bring the app forward.
+    /// Give a window keyboard focus: make it its app's key window, then bring the app forward. A writer
+    /// that really writes also puts the request on the `FocusIntent` record, since the echo it provokes
+    /// is only distinguishable from the user's own Cmd-Tab by what we asked for.
     func focus(_ window: WindowRegistry.Record)
 
     /// Raise a window within its app's stack, without touching focus.
@@ -81,11 +83,16 @@ public protocol WindowWriter {
 public final class AXWindowWriter: WindowWriter {
 
     private let client: AXClient
+    private let intent: FocusIntent
 
-    /// - Parameter client: the *same* `AXClient` the enumerator and observers use. The lanes are only
-    ///   serial — and the size → position → size dance only atomic — if every AX caller shares them.
-    public init(client: AXClient) {
+    /// - Parameters:
+    ///   - client: the *same* `AXClient` the enumerator and observers use. The lanes are only serial —
+    ///     and the size → position → size dance only atomic — if every AX caller shares them.
+    ///   - intent: the *same* `FocusIntent` `WorldWatcher` reads. One record of the focus we asked for,
+    ///     written here where the asking happens.
+    public init(client: AXClient, intent: FocusIntent) {
         self.client = client
+        self.intent = intent
     }
 
     public func place(_ moves: [WindowMove], of app: pid_t,
@@ -105,17 +112,30 @@ public final class AXWindowWriter: WindowWriter {
         }
     }
 
-    /// Make the window key, then bring its app to the front.
+    /// Make the window key, then bring its app to the front — unless a newer focus has been asked for
+    /// while this one was out on the lane.
     ///
     /// The order is load-bearing: activating an app surfaces whichever window is `AXMain` *at that
     /// moment*, so activating first raises the window the user last used and our `AXMain` write lands
     /// behind it. (`makeKey` is AX IPC on the app's lane; activation is AppKit on the main actor.)
+    ///
+    /// That deferral is also what makes activation *unordered*, and the ticket is what re-orders it.
+    /// Two focus commands to two apps are two lanes with nothing between them, so a congested one can
+    /// deliver its activation after a later command's and leave the wrong app in front — spam `focus`
+    /// across a JVM and a terminal and it does. A superseded request drops its activation instead of
+    /// racing: newest wins, exactly as a retargeted animator resolves the same contention.
+    ///
+    /// The `makeKey` itself is left to run. It cannot bring an app forward on its own, its own lane
+    /// already orders it against the app's other writes, and the echo it may post is what `FocusIntent`
+    /// exists to recognise on the way back.
     public func focus(_ window: WindowRegistry.Record) {
+        let ticket = intent.request(window.id)
         let element = window.element
         let pid = window.pid
         client.perform(app: pid) { _ in
             element.makeKey()
-        } then: { _ in
+        } then: { [intent] _ in
+            guard intent.isCurrent(ticket) else { return }
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
             NSRunningApplication(processIdentifier: pid)?.activate()
