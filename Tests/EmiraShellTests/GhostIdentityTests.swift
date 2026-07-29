@@ -35,8 +35,8 @@ import EmiraCore
         var entries: [WindowListEntry] = []
         func applications() -> [ScanTarget] { [GhostIdentityTests.ghostty] }
         func windows(of target: ScanTarget,
-                     then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
-            completion(windows)
+                     then completion: @escaping @MainActor (ScanAnswer) -> Void) {
+            completion(ScanAnswer(windows: windows, entries: entries))
         }
         func windowList() -> [WindowListEntry] { entries }
     }

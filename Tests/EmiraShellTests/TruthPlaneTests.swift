@@ -350,15 +350,17 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         var entries: [WindowListEntry] = []
         /// When true, `windows(of:then:)` parks its completion in `pending` instead of answering.
         var holdsAnswers = false
-        var pending: [(pid_t, @MainActor ([ScannedWindow]) -> Void)] = []
+        var pending: [(pid_t, @MainActor (ScanAnswer) -> Void)] = []
+        /// How many app answers carried a window list — the real source reads one per app, on the lane.
+        private(set) var listReadsInAnswers = 0
         private(set) var windowListCalls = 0
 
         func applications() -> [ScanTarget] { targets }
 
         func windows(of target: ScanTarget,
-                     then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
+                     then completion: @escaping @MainActor (ScanAnswer) -> Void) {
             guard holdsAnswers else {
-                completion(windowsByPid[target.pid] ?? [])
+                completion(answer(for: target.pid))
                 return
             }
             pending.append((target.pid, completion))
@@ -369,11 +371,18 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
             return entries
         }
 
-        /// Answer one parked app.
+        /// Answer one parked app. The list is read *now*, as the real source does — so a test that
+        /// changes `entries` between two apps answering reproduces exactly the skew this seam exists to
+        /// keep out of the join.
         func answer(pid: pid_t) {
             guard let index = pending.firstIndex(where: { $0.0 == pid }) else { return }
             let (_, completion) = pending.remove(at: index)
-            completion(windowsByPid[pid] ?? [])
+            completion(answer(for: pid))
+        }
+
+        private func answer(for pid: pid_t) -> ScanAnswer {
+            listReadsInAnswers += 1
+            return ScanAnswer(windows: windowsByPid[pid] ?? [], entries: entries)
         }
     }
 
@@ -447,14 +456,55 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 
         source.answer(pid: 200)
         #expect(completions == 0)              // one app still out — the join must not run yet
-        #expect(source.windowListCalls == 0)
 
         source.answer(pid: 100)
         #expect(completions == 1)
         #expect(report?.snapshots.count == 4)
-        // One list read for the whole scan: every window is matched against the same view of the
-        // world, which is what makes `.contested` a real signal rather than an artifact.
-        #expect(source.windowListCalls == 1)
+        // One list read per app, taken with that app's AX reads — and none for the scan as a whole.
+        // An app's windows are still all matched against one view of the world, which is what makes
+        // `.contested` a real signal rather than an artifact; that view was only ever per-app, since
+        // `bind` narrows by owner before it compares frames and a window number belongs to one process.
+        #expect(source.listReadsInAnswers == 2)
+        #expect(source.windowListCalls == 0)
+    }
+
+    @Test func eachAppIsJoinedAgainstItsOwnListRatherThanTheSlowestApps() {
+        // The boot failure this exists for. Apps answer in parallel but one list read lands after the
+        // *slowest* of them, so every app that answered early is joined against a picture of the world
+        // taken much later — and `bind` matches on the frame, so a window that moved in between matches
+        // nothing and is never managed. The gap is the slowest app's latency, which is why the symptom
+        // grows with the number of windows on the desktop rather than with anything about the window
+        // that goes missing.
+        let (source, registry, enumerator) = populated()
+        source.holdsAnswers = true
+        var report: AXEnumerator.Report?
+
+        enumerator.enumerate { report = $0 }
+        source.answer(pid: 100)                 // app A answers while its windows are where it says
+
+        // App B is slow, and one of A's windows moves before it finally answers.
+        source.entries.removeAll { $0.number == 1 }
+        source.entries.append(entry(1, pid: 100, frame: rect(5000)))
+        source.answer(pid: 200)
+
+        #expect(report?.snapshots.count == 4)
+        #expect(report?.unbound.isEmpty == true)
+        #expect(report?.isIncomplete == false)
+        #expect(registry.count == 4)
+    }
+
+    @Test func onlyTheAppsThatFailedAreWorthAskingAgain() {
+        // The retry target set. Re-scanning the whole desktop to re-confirm what already bound is seven
+        // round trips per window per attempt, on exactly the machines where the attempts are needed.
+        let (source, _, enumerator) = populated()
+        source.entries.removeAll { $0.number == 2 }   // app A's second window is not listed yet
+        var report: AXEnumerator.Report?
+
+        enumerator.enumerate { report = $0 }
+
+        #expect(report?.isIncomplete == true)
+        #expect(report?.apps.count == 2)
+        #expect(report?.incompleteApps.map(\.pid) == [100])
     }
 
     @Test func anUnidentifiableWindowIsReportedWithEnoughDetailToRecogniseIt() {

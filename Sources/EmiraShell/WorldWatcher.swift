@@ -1,3 +1,4 @@
+import CoreGraphics
 import EmiraCore
 import Foundation
 
@@ -35,6 +36,15 @@ public final class WorldWatcher {
     /// window server and the app to move on, short enough to tile before the user notices.
     public static let rescanDelay: TimeInterval = 0.15
 
+    /// How often the window server is re-read to find windows nothing else accounted for. The retry
+    /// chain answers races measured in frames; this answers the ones measured in seconds.
+    public static let reconcileInterval: TimeInterval = 3
+
+    /// How many consecutive reconciliations may ask about the same unmanaged window before it is
+    /// accepted as one emira cannot manage. An on-screen layer-0 entry AX will never describe is a real
+    /// thing, and without a cap it costs a scan of its app every interval, forever.
+    public static let maxReconcileRounds = 3
+
     /// How long a destroyed window's id may wait for a scan to say whether anything took its place
     /// (`vanish`). A backstop rather than a delay: the ordinary answer arrives when the scan does, one
     /// lane round trip later, including the app that answers with no windows at all — which is what
@@ -48,6 +58,9 @@ public final class WorldWatcher {
     private let scheduler: any DelayScheduler
     private let intent: FocusIntent
     private let sink: EventSink
+    /// The reconciliation tick. Optional because the watcher is complete without it — it is a backstop,
+    /// not a mechanism anything depends on — and a test that isn't about reconciliation leaves it out.
+    private let heartbeat: (any Heartbeat)?
 
     /// Called for every scan that could not account for something it saw, on either side of the join.
     /// A window manager quietly not managing something is the failure a user cannot debug.
@@ -80,6 +93,11 @@ public final class WorldWatcher {
     /// Whether the watcher has been shut down (`stop()`). Once set, nothing reaches the core again.
     private var isStopped = false
 
+    /// On-screen windows the window server lists that emira does not manage, and how many consecutive
+    /// reconciliations have asked about each. Cleared per number as soon as it binds or goes away, so a
+    /// window that reappears at a recycled number starts with a full budget.
+    private var unaccounted: [CGWindowID: Int] = [:]
+
     /// The window last reported as focused *in the present* — whether or not we passed it on, but not
     /// counting an echo of our own that arrived out of order. It exists only to name the window a new
     /// report displaces (`resolveFocus`), so it tracks reports rather than deliveries and is
@@ -87,13 +105,15 @@ public final class WorldWatcher {
     private var focus: WindowId?
 
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
-                scheduler: any DelayScheduler, intent: FocusIntent, sink: EventSink) {
+                scheduler: any DelayScheduler, intent: FocusIntent, sink: EventSink,
+                heartbeat: (any Heartbeat)? = nil) {
         self.source = source
         self.enumerator = enumerator
         self.registry = registry
         self.scheduler = scheduler
         self.intent = intent
         self.sink = sink
+        self.heartbeat = heartbeat
     }
 
     /// Enumerate the desktop, adopt it, and start watching. `completion` runs once the boot scan's
@@ -104,6 +124,7 @@ public final class WorldWatcher {
     /// about *this scan*, not about a window — the enumerator runs identical code at boot and after.
     public func start(completion: @escaping @MainActor (AXEnumerator.Report) -> Void = { _ in }) {
         source.start { [weak self] observation in self?.handle(observation) }
+        heartbeat?.start(every: Self.reconcileInterval) { [weak self] in self?.reconcile() }
         enumerator.enumerate { [weak self] report in
             self?.absorb(report, attempt: 0, alreadyOpen: true)
             completion(report)
@@ -117,6 +138,9 @@ public final class WorldWatcher {
     /// sources at exit buys nothing and crashes if subtly wrong.
     public func stop() {
         isStopped = true
+        // Not merely latched: teardown places every managed window into the quit cascade, and a tick
+        // landing mid-cascade would scan apps and re-adopt windows on their way off the strip.
+        heartbeat?.stop()
     }
 
     /// Hand one event to the core, unless we have stopped. Every `sink` call in this file goes through
@@ -236,6 +260,50 @@ public final class WorldWatcher {
         emit(.windowDestroyed(id))
     }
 
+    // MARK: - Reconciliation (the standing question the notification stream cannot answer)
+
+    /// Ask the window server what is on screen, and scan any app holding a window emira does not manage.
+    ///
+    /// The standing check behind an otherwise entirely edge-triggered design, where every discovery path
+    /// is one notification at one moment and a missed one is never reissued. Level-triggered and cheap:
+    /// the list is a window-server query, and AX is reached only when the two disagree.
+    private func reconcile() {
+        guard !isStopped else { return }
+
+        // On-screen only, for the same reason `Report.unclaimed` is: an app's off-screen layer-0
+        // oddments are not windows and never will be. A window on another Space or in the Dock is off
+        // screen too — those are adopted by the notification that brings them back.
+        let strays = enumerator.windowList().filter {
+            $0.isOnScreen && registry.id(forNumber: $0.number) == nil
+        }
+        // A number that bound, or whose window closed, forfeits its history.
+        unaccounted = unaccounted.filter { number, _ in strays.contains { $0.number == number } }
+
+        var targets: [pid_t: ScanTarget] = [:]
+        var known: [pid_t: ScanTarget]?
+        for stray in strays {
+            let round = (unaccounted[stray.number] ?? 0) + 1
+            unaccounted[stray.number] = round
+            guard round <= Self.maxReconcileRounds, targets[stray.pid] == nil else { continue }
+            if let target = apps[stray.pid] {
+                targets[stray.pid] = target
+                continue
+            }
+            // An app absent from `apps` is invisible to every notification we hold: it was running
+            // before the daemon, so `appLaunched` never fires for it, and `windowAppeared` is gated on
+            // already knowing it. The one question the retry chain deliberately never asks.
+            if known == nil {
+                known = Dictionary(enumerator.applications().map { ($0.pid, $0) }) { first, _ in first }
+            }
+            if let target = known?[stray.pid] { targets[stray.pid] = target }
+        }
+
+        guard !targets.isEmpty else { return }
+        // `alreadyOpen`, like the boot scan: a window reconciliation finds is by definition one emira
+        // did not watch open, so the core keeps its existing width rather than snapping it to a preset.
+        scan(Array(targets.values), attempt: 0, alreadyOpen: true)
+    }
+
     // MARK: - Scanning
 
     /// Scan a set of apps and absorb the result, carrying the attempt number so the report knows whether
@@ -325,15 +393,16 @@ public final class WorldWatcher {
         if !pending.isEmpty { scan(pending, attempt: 0) }
 
         // A window one side of the join described and the other didn't is the "asked too early" race.
-        // Retry the same apps, not `source.applications()`, which may answer differently and turn a
-        // one-app retry into a full re-scan.
+        // Retry the apps that failed: not `source.applications()`, which may answer differently and turn
+        // a one-app retry into a full re-scan, and not the whole scanned set, which at boot is every app
+        // on the machine re-confirming what already bound.
         guard report.isIncomplete else { return }
         // Reported on the last attempt only — the earlier ones are the race being waited out, and saying
         // so every 150 ms would make the ordinary case look like a fault.
         if attempt + 1 >= Self.maxScanAttempts { onIncompleteScan?(report) }
 
         guard attempt + 1 < Self.maxScanAttempts else { return }
-        let targets = report.apps
+        let targets = report.incompleteApps
         scheduler.schedule(after: Self.rescanDelay) { [weak self] in
             self?.scan(targets, attempt: attempt + 1, alreadyOpen: alreadyOpen)
         }

@@ -46,27 +46,34 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     /// scan open and drive a second request into it — the only way to reach two overlapping scans of
     /// one app.
     var holdsAnswers = false
-    var pending: [(pid_t, @MainActor ([ScannedWindow]) -> Void)] = []
+    var pending: [(pid_t, @MainActor (ScanAnswer) -> Void)] = []
+
+    /// How many times the bare window list has been read — reconciliation's only cost when nothing is
+    /// wrong, and the instrument for proving it stays off the AX lanes.
+    private(set) var windowListCalls = 0
 
     func applications() -> [ScanTarget] { targets }
 
     func windows(of target: ScanTarget,
-                 then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
+                 then completion: @escaping @MainActor (ScanAnswer) -> Void) {
         scanCounts[target.pid, default: 0] += 1
         guard holdsAnswers else {
-            completion(windowsByPid[target.pid] ?? [])
+            completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries))
             return
         }
         pending.append((target.pid, completion))
     }
 
-    func windowList() -> [WindowListEntry] { entries }
+    func windowList() -> [WindowListEntry] {
+        windowListCalls += 1
+        return entries
+    }
 
     /// Answer the oldest parked scan.
     func answerScan() {
         guard !pending.isEmpty else { return }
         let (pid, completion) = pending.removeFirst()
-        completion(windowsByPid[pid] ?? [])
+        completion(ScanAnswer(windows: windowsByPid[pid] ?? [], entries: entries))
     }
 }
 
@@ -165,6 +172,30 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
+/// A heartbeat that ticks only when a test says so. Deliberately *not* a `ManualScheduler`: a repeating
+/// tick drained by `fire()` would never let a retry chain terminate, which is the whole reason the two
+/// are separate seams.
+@MainActor private final class ManualHeartbeat: Heartbeat {
+    private(set) var interval: TimeInterval?
+    private(set) var stopped = false
+    private var tick: (@MainActor () -> Void)?
+
+    func start(every seconds: TimeInterval, _ tick: @escaping @MainActor () -> Void) {
+        interval = seconds
+        self.tick = tick
+    }
+
+    func stop() {
+        stopped = true
+        tick = nil
+    }
+
+    var isRunning: Bool { tick != nil }
+
+    /// One reconciliation pass.
+    func beat() { tick?() }
+}
+
 /// Somewhere for an ordering assertion to write from inside a `@Sendable` sink closure.
 @MainActor private final class OrderProbe {
     var watchedAtFirstCreate: Int?
@@ -183,6 +214,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     /// The intent's own clock, so a test can expire a focus request without also firing the watcher's
     /// scan retries — two unrelated deadlines that would otherwise share a `fire()`.
     let intentClock: ManualScheduler
+    let heartbeat: ManualHeartbeat
     let watcher: WorldWatcher
 
     /// Two apps: Ghostty with one window, TextEdit with two. Everything bindable.
@@ -193,6 +225,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         scheduler = ManualScheduler()
         recorder = Recorder()
         intentClock = ManualScheduler()
+        heartbeat = ManualHeartbeat()
         intent = FocusIntent(scheduler: intentClock)
         windows.targets = [ScanTarget(pid: 100, bundleId: "com.mitchellh.ghostty"),
                            ScanTarget(pid: 200, bundleId: "com.apple.TextEdit")]
@@ -213,7 +246,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
             registry: registry,
             scheduler: scheduler,
             intent: intent,
-            sink: recorder.sink)
+            sink: recorder.sink,
+            heartbeat: heartbeat)
     }
 
     var created: [WindowSnapshot] {
@@ -1006,5 +1040,121 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.windowMinimized(WindowId(9_999)))
 
         #expect(world.recorder.events.count == before)
+    }
+}
+
+// MARK: - Reconciliation
+
+@Suite @MainActor struct WorldWatcherReconcileTests {
+
+    @Test func aWindowNoNotificationEverMentionedIsFoundAndAdopted() {
+        // Every other discovery path is edge-triggered: a notification, once, at the moment something
+        // happened. An app whose observer was not registered in time never sends one, and nothing asks
+        // again — the window is unmanaged for the life of the daemon.
+        let world = LiveWorld()
+        world.watcher.start()
+        #expect(world.created.count == 3)
+
+        // A fourth window exists, and emira was never told.
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.heartbeat.beat()
+
+        #expect(world.created.map(\.title) == ["term", "one", "two", "three"])
+    }
+
+    @Test func aWindowFoundByReconciliationIsOneWeMetAlreadyOpen() {
+        // It is the boot case by definition — emira did not watch it open — so the core keeps its
+        // existing width instead of snapping it onto the first preset.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.heartbeat.beat()
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == true)
+    }
+
+    @Test func anAppMissingFromTheBootScanIsStillReachable() {
+        // The silent hole: an app running before the daemon sends no `appLaunched`, and `windowAppeared`
+        // is gated on already knowing it. Re-asking the app list is the only way back.
+        let world = LiveWorld()
+        world.watcher.start()
+
+        let safari = ScanTarget(pid: 300, bundleId: "com.apple.Safari")
+        world.windows.targets.append(safari)
+        world.windows.windowsByPid[300] = [
+            scanned(pid: 300, seed: 5, bundle: "com.apple.Safari", title: "web", frame: rect(2100))]
+        world.windows.entries.append(WindowListEntry(number: 5, pid: 300, frame: rect(2100)))
+
+        world.heartbeat.beat()
+
+        #expect(world.created.map(\.title) == ["term", "one", "two", "web"])
+        #expect(world.source.watchedApps.contains(300))   // and it is observed from now on
+    }
+
+    @Test func anAccountedForDesktopCostsOneWindowListReadAndNoAXAtAll() {
+        // The price of the backstop when nothing is wrong. `CGWindowListCopyWindowInfo` is a window
+        // server query, not IPC into anybody's app, so it cannot be slowed down by a busy one.
+        let world = LiveWorld()
+        world.watcher.start()
+        let scansAfterBoot = world.windows.scanCounts
+        let readsAfterBoot = world.windows.windowListCalls
+
+        world.heartbeat.beat()
+        world.heartbeat.beat()
+
+        #expect(world.windows.scanCounts == scansAfterBoot)
+        #expect(world.windows.windowListCalls == readsAfterBoot + 2)
+    }
+
+    @Test func aWindowThatWillNeverBindIsAskedAboutABoundedNumberOfTimes() {
+        // An on-screen layer-0 entry AX will never describe is a real thing, and the alternative is a
+        // scan of somebody's app every interval for the life of the daemon.
+        let world = LiveWorld()
+        world.watcher.start()
+        // Listed, but no app will ever describe it.
+        world.windows.entries.append(WindowListEntry(number: 9, pid: 200, frame: rect(2100)))
+        let before = world.windows.scanCounts[200] ?? 0
+
+        for _ in 0..<10 { world.heartbeat.beat() }
+
+        #expect((world.windows.scanCounts[200] ?? 0) - before == WorldWatcher.maxReconcileRounds)
+    }
+
+    @Test func aWindowThatGoesAwayForfeitsItsHistory() {
+        // The budget is per window number and must not leak: a number the window server stops listing
+        // is gone, and the window server does reuse numbers.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.entries.append(WindowListEntry(number: 9, pid: 200, frame: rect(2100)))
+        for _ in 0..<WorldWatcher.maxReconcileRounds { world.heartbeat.beat() }
+        let exhausted = world.windows.scanCounts[200] ?? 0
+
+        world.windows.entries.removeAll { $0.number == 9 }
+        world.heartbeat.beat()                                    // forgotten here
+        world.windows.entries.append(WindowListEntry(number: 9, pid: 200, frame: rect(2100)))
+        world.heartbeat.beat()
+
+        #expect((world.windows.scanCounts[200] ?? 0) == exhausted + 1)
+    }
+
+    @Test func teardownStopsTheTickRatherThanLettingItLandMidCascade() {
+        // Shutdown places every managed window into the quit cascade; a tick landing in the middle of it
+        // would scan apps and re-adopt windows on their way off the strip.
+        let world = LiveWorld()
+        world.watcher.start()
+        #expect(world.heartbeat.isRunning)
+        #expect(world.heartbeat.interval == WorldWatcher.reconcileInterval)
+
+        world.watcher.stop()
+
+        #expect(world.heartbeat.stopped)
+        #expect(!world.heartbeat.isRunning)
     }
 }

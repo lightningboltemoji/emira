@@ -418,7 +418,7 @@ emira/
 │   │   ├── ProcessLauncher.swift    # the system plane, whole: `Effect.exec` → `/bin/sh -c`, fire
 │   │   │                            # and forget. `ShellLauncher` reports only what a command
 │   │   │                            # surface cannot already log — a failed spawn, a bad exit
-│   │   ├── Scheduler.swift          # DelayScheduler — "try that again in a moment"
+│   │   ├── Scheduler.swift          # DelayScheduler — "try that again in a moment"; Heartbeat — "and keep asking"
 │   │   ├── Permissions.swift        # AX + Screen Recording TCC checks + onboarding
 │   │   └── Logging.swift            # os_log wrapper
 │   ├── emira-daemon/main.swift      # accessory NSApplication; wire up Runtime + subsystems
@@ -888,7 +888,19 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     can't make the window manager go deaf.
   - **Two macOS races share one bounded retry** (three attempts, ~150 ms apart): a window the window list hasn't
     caught up with, and an app not yet ready to be observed — the same "asked too early" bug, where the alternative
-    reading of either is "not ours" and must not become a busy loop.
+    reading of either is "not ours" and must not become a busy loop. It revisits `Report.incompleteApps`, not every
+    app the scan covered: at boot that is the whole desktop, seven round trips per window, re-confirming what already
+    bound — and each attempt slower than the last on exactly the machines needing them.
+  - **A reconciliation heartbeat is the standing check behind all of it** (`WorldWatcher.reconcile`, every 3 s).
+    Everything else is edge-triggered — one notification, at one moment — so a discovery missed is a window unmanaged
+    for the life of the daemon, silently: an app that wasn't `.regular` when `applications()` was asked is one
+    `appLaunched` never fires for and `windowAppeared` is gated against, and an off-screen window AX failed to
+    describe sets neither `unbound` nor `unclaimed`. The list is a window-server query rather than IPC into anyone's
+    app, so being level-triggered costs ~2.5 ms and no AX until the two disagree. `maxReconcileRounds` caps attempts
+    per window number, because an on-screen layer-0 entry AX will never describe is a real thing; the budget is
+    dropped when a number stops being listed, because the window server reuses them. What it finds is announced
+    `alreadyOpen` — emira did not watch it open. `Heartbeat` is its own seam beside `DelayScheduler`: a retry
+    terminates and a heartbeat does not, and one drained by a test's "run everything pending" loop never would.
   - **Move notifications are coalesced to at most one read in flight per window**, because AX emits them at the
     refresh rate during a drag and each answer queues on the *same serial lane* our placement writes use.
   - **A focus report is not self-describing, so the watcher asks before passing it on.** `Event.focusChanged` has
@@ -970,11 +982,20 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     would list it" and "this window's AX attributes were unreadable" both left no trace and triggered no retry. Both
     now feed the same bounded chain. The on-screen restriction is not a tweak: ordinary apps carry several off-screen
     layer-0 entries that are not windows and never will be — four `1800×39` strips at the origin for Ghostty, Safari
-    *and* Finder — and counting them would mark every scan of those apps incomplete forever.
+    *and* Finder — and counting them would mark every scan of those apps incomplete forever. The cost of that
+    restriction is an off-screen window AX also failed to describe, which lands in no report at all; the heartbeat is
+    what covers it.
+  - **The two sides of the join are read together, per app** (`ScanAnswer`). The list read belongs on the app's lane,
+    immediately after its AX reads — a window-server query, so it is safe off the main actor and safe concurrently
+    across lanes. Read once for a whole fan-out instead, it is stale by the *slowest* app's latency for every app
+    that answered early, and the join matches within ±2 pt: a window that moved is a window unmanaged, and the gap
+    widens with the number of windows on the desktop rather than with anything about the window that goes missing.
+    Decomposing this way costs no outcome: `bind` narrows by owner before comparing frames and a `CGWindowID` belongs
+    to one process, so no window of one app can match, contest or displace a window of another.
   - **Scans coalesce per app, exactly as frame reads already do.** Four ⌘N presses otherwise produce four concurrent
     full re-scans of one app, each seven AX round trips per window, on the one serial lane placement writes share. It
     is the same argument coalescing makes for drags — a notification storm is a poll unless you coalesce it — and it
-    is *upstream* of the identity join: less lane pressure is less skew between the join's two sides.
+    is *upstream* of the identity join: less lane pressure is a scan that answers sooner.
   - **A failed window-level observer registration rolls back.** Discarding the result while marking the window watched
     optimistically makes a registration a busy app refused permanent *and* silent: no destroy notification, so `World`
     keeps the window and the strip carries an empty column for the session. Registration is idempotent, so re-offering

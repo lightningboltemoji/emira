@@ -47,8 +47,8 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
 
     func applications() -> [ScanTarget] { targets }
     func windows(of target: ScanTarget,
-                 then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
-        completion(windowsByPid[target.pid] ?? [])
+                 then completion: @escaping @MainActor (ScanAnswer) -> Void) {
+        completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries))
     }
     func windowList() -> [WindowListEntry] { entries }
 }

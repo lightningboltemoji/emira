@@ -312,7 +312,8 @@ let watcher = WorldWatcher(
     registry: registry,
     scheduler: DispatchScheduler(),
     intent: focusIntent,
-    sink: runtime.sink)
+    sink: runtime.sink,
+    heartbeat: DispatchHeartbeat())
 
 // A scan that gave up leaves a window simply unmanaged, with nothing else to say so.
 watcher.onIncompleteScan = { report in

@@ -38,17 +38,33 @@ public struct ScannedWindow: Sendable {
     }
 }
 
+/// One app's answer to a scan: the windows it described, and the window list as it stood at that moment.
+///
+/// The two travel together because the join matches on the frame: a window that moves between the two
+/// reads matches nothing and goes unmanaged. One read per fan-out is stale, for every app that answered
+/// early, by the latency of the slowest.
+public struct ScanAnswer: Sendable {
+    public let windows: [ScannedWindow]
+    public let entries: [WindowListEntry]
+
+    public init(windows: [ScannedWindow], entries: [WindowListEntry]) {
+        self.windows = windows
+        self.entries = entries
+    }
+}
+
 /// Everything `AXEnumerator` needs from a live macOS. `windows(of:then:)` is asynchronous because the
 /// real one crosses a thread and must not block the pump; the other two are cheap local reads.
 @MainActor
 public protocol WindowSource {
     /// The apps worth asking about windows, right now.
     func applications() -> [ScanTarget]
-    /// One app's windows, delivered on the main actor. Must call `completion` exactly once — including
-    /// when the app answers with nothing, the common case for an app with no AX support or one that
-    /// has just quit.
-    func windows(of target: ScanTarget, then completion: @escaping @MainActor ([ScannedWindow]) -> Void)
-    /// The public window list, for identity binding.
+    /// One app's windows *and the window list read alongside them* (`ScanAnswer`), delivered on the main
+    /// actor. Must call `completion` exactly once — including when the app answers with nothing, the
+    /// common case for an app with no AX support or one that has just quit.
+    func windows(of target: ScanTarget, then completion: @escaping @MainActor (ScanAnswer) -> Void)
+    /// The public window list on its own — what reconciliation re-reads to find windows no notification
+    /// accounted for. Touches no app's run loop, so it costs nothing an app can slow down.
     func windowList() -> [WindowListEntry]
 }
 
@@ -83,6 +99,10 @@ public final class AXEnumerator {
         /// The apps this scan covered. Carried so the caller can re-scan exactly what failed without
         /// asking the source a second question it may answer differently.
         public let apps: [ScanTarget]
+        /// The apps whose answer this scan could not fully account for — what a retry revisits, and a
+        /// subset of `apps`. Retrying the whole set re-reads every window of every app at seven round
+        /// trips each, to re-confirm what already bound.
+        public let incompleteApps: [ScanTarget]
         /// How many windows AX reported in total, bound or not.
         public let seenWindows: Int
         /// The windows that could not be given a stable identity, and why.
@@ -95,7 +115,7 @@ public final class AXEnumerator {
         public var boundWindows: Int { snapshots.count + rebound.count }
         /// Whether this scan saw something it could not account for, on either side of the join — or
         /// about a window it already manages.
-        public var isIncomplete: Bool { mayHaveMissedAnArrival || !undescribed.isEmpty }
+        public var isIncomplete: Bool { !incompleteApps.isEmpty }
         /// Whether this scan could have missed a window *arriving*: one it described but could not bind,
         /// or one the window server listed that it never described. Narrower than `isIncomplete`, which
         /// also counts windows already managed — and those, whatever else is wrong with them, are not
@@ -152,50 +172,110 @@ public final class AXEnumerator {
             // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
             // that never fires would leave the daemon waiting forever.
             completion(Report(snapshots: [], rebound: [], succeeded: [], departed: [], undescribed: [],
-                              apps: [], seenWindows: 0, unbound: [], unclaimed: 0))
+                              apps: [], incompleteApps: [], seenWindows: 0, unbound: [], unclaimed: 0))
             return
         }
 
         let gather = Gather(pending: targets.count)
         for target in targets {
-            source.windows(of: target) { [self] windows in
-                gather.windows += windows
+            source.windows(of: target) { [self] answer in
+                gather.answers[target.pid] = answer
                 gather.pending -= 1
                 guard gather.pending == 0 else { return }
-                completion(finish(gather.windows, apps: targets))
+                completion(finish(gather.answers, apps: targets))
             }
         }
     }
 
-    /// Join, adopt, and describe.
+    /// The apps worth scanning right now — re-asked rather than remembered, which is the point: an app
+    /// that was still starting when the daemon booted is a perfectly good scan target by the time
+    /// reconciliation runs, and nothing else would ever ask again.
+    public func applications() -> [ScanTarget] { source.applications() }
+
+    /// The window list on its own, for reconciliation.
+    public func windowList() -> [WindowListEntry] { source.windowList() }
+
+    /// Join, adopt, and describe — one app at a time, against the list that app answered with.
+    ///
+    /// The join cannot reach across processes: `bind` narrows candidates by owner before it compares
+    /// frames, and a `CGWindowID` belongs to one process. So per-app costs no outcome, and buys each app
+    /// a list read beside its own AX reads.
+    private func finish(_ answers: [pid_t: ScanAnswer], apps: [ScanTarget]) -> Report {
+        var snapshots: [WindowSnapshot] = []
+        var rebound: [WindowId] = []
+        var succeeded: [WindowId] = []
+        var departed: [WindowId] = []
+        var undescribed: [WindowId] = []
+        var unbound: [Report.Unbound] = []
+        var incompleteApps: [ScanTarget] = []
+        var seenWindows = 0
+        var unclaimed = 0
+
+        for target in apps {
+            let answer = answers[target.pid] ?? ScanAnswer(windows: [], entries: [])
+            seenWindows += answer.windows.count
+            let outcome = join(answer, of: target)
+
+            snapshots += outcome.snapshots
+            rebound += outcome.rebound
+            succeeded += outcome.succeeded
+            departed += outcome.departed
+            undescribed += outcome.undescribed
+            unbound += outcome.unbound
+            unclaimed += outcome.unclaimed
+            if outcome.isIncomplete { incompleteApps.append(target) }
+        }
+
+        return Report(snapshots: snapshots, rebound: rebound, succeeded: succeeded.sorted(),
+                      departed: departed, undescribed: undescribed, apps: apps,
+                      incompleteApps: incompleteApps, seenWindows: seenWindows,
+                      unbound: unbound, unclaimed: unclaimed)
+    }
+
+    /// What one app's answer resolved to. Aggregated into the `Report` by `finish`.
+    private struct AppOutcome {
+        var snapshots: [WindowSnapshot] = []
+        var rebound: [WindowId] = []
+        var succeeded: [WindowId] = []
+        var departed: [WindowId] = []
+        var undescribed: [WindowId] = []
+        var unbound: [Report.Unbound] = []
+        var unclaimed = 0
+        /// Whether this app is worth asking again — the retry's target set is built from this.
+        var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 || !undescribed.isEmpty }
+    }
+
+    /// Both joins for one app, against the window list it answered with.
     ///
     /// A window we already know is never re-joined: the two sides of the join are read at different
     /// instants and *we* are what moves windows in between, so under a burst of window creation a stale
     /// read can report window A at the frame B has since taken and match B's entry uniquely.
-    private func finish(_ scanned: [ScannedWindow], apps: [ScanTarget]) -> Report {
-        let entries = source.windowList()
+    private func join(_ answer: ScanAnswer, of target: ScanTarget) -> AppOutcome {
+        var outcome = AppOutcome()
 
-        var rebound: [WindowId] = []
         var fresh: [ScannedWindow] = []
-        for window in scanned {
+        for window in answer.windows {
             if let id = registry.id(for: window.element) {
                 // Refresh element and metadata against the id it already has; the number is on file,
                 // so the join is not consulted.
                 if let record = registry.record(id) {
                     registry.adopt(window.observed, element: window.element, number: record.number)
                 }
-                rebound.append(id)
+                outcome.rebound.append(id)
             } else {
                 fresh.append(window)
             }
         }
 
-        // An entry already bound to a live window is not a candidate for anything: its identity is
-        // settled. Withholding it stops a stale frame from claiming a *known* window's entry.
-        let available = entries.filter { registry.id(forNumber: $0.number) == nil }
+        // This app's entries only — the join cannot reach across processes — minus those already bound
+        // to a live window, whose identity is settled: withholding them stops a stale frame from
+        // claiming a *known* window's entry.
+        let available = answer.entries.filter {
+            $0.pid == target.pid && registry.id(forNumber: $0.number) == nil
+        }
         let binding = WindowIdentity.bind(fresh.map(\.observed), to: available)
 
-        // The second join: managed windows of these apps that AX did not describe this time. Almost
+        // The second join: managed windows of this app that AX did not describe this time. Almost
         // always a native tab going to the background, which posts nothing at all — hence a set
         // difference rather than a notification.
         //
@@ -207,22 +287,16 @@ public final class AXEnumerator {
         // and `isIncomplete` asks again. A tab group always leaves its selected tab behind, so the case
         // this exists for never rides on a scan that came back short.
         let matched = Set(binding.matches.map(\.number))
-        var unreliable = Set(binding.rejections.map { fresh[$0.observed].observed.pid })
-        for entry in available where entry.isOnScreen && !matched.contains(entry.number) {
-            unreliable.insert(entry.pid)
-        }
-        let answered = Set(scanned.map(\.observed.pid))
-            .intersection(apps.map(\.pid))
-            .subtracting(unreliable)
-        let listed = Set(rebound)
-        let departures = registry.records(ofApps: answered)
+        let disagrees = !binding.rejections.isEmpty
+            || available.contains { $0.isOnScreen && !matched.contains($0.number) }
+        let listed = Set(outcome.rebound)
+        let departures = answer.windows.isEmpty || disagrees ? [] : registry.records(ofApps: [target.pid])
             .filter { !listed.contains($0.id) }
             .map { WindowIdentity.Departure(id: $0.id, pid: $0.pid, frame: $0.frame) }
         let arrivals = binding.matches.map { fresh[$0.observed].observed }
         let (successions, orphaned) = WindowIdentity.succeed(departed: departures, arrived: arrivals)
 
         // Applied before anything is adopted: a succeeded arrival must not also mint an id of its own.
-        var succeeded: [WindowId] = []
         var leaving = orphaned
         var inherited: Set<Int> = []
         for succession in successions {
@@ -236,7 +310,7 @@ public final class AXEnumerator {
                 continue
             }
             inherited.insert(succession.arrived)
-            succeeded.append(succession.departed)
+            outcome.succeeded.append(succession.departed)
         }
 
         // Corroboration, and only where it is needed. A succession is *evidenced* — a window is standing
@@ -253,15 +327,14 @@ public final class AXEnumerator {
         // server agrees there is nothing there to see. (It cannot separate a backgrounded tab from a
         // minimized window — both are simply off screen — but AX keeps listing minimized windows, so
         // they never reach this point.)
-        let visible = Set(entries.lazy.filter(\.isOnScreen).map(\.number))
-        var departed: [WindowId] = []
-        var undescribed: [WindowId] = []
+        let visible = Set(answer.entries.lazy.filter(\.isOnScreen).map(\.number))
         for id in leaving.sorted() {
             guard let number = registry.record(id)?.number else { continue }
-            if visible.contains(number) { undescribed.append(id) } else { departed.append(id) }
+            if visible.contains(number) { outcome.undescribed.append(id) } else {
+                outcome.departed.append(id)
+            }
         }
 
-        var snapshots: [WindowSnapshot] = []
         var claimed: Set<CGWindowID> = []
         for (index, match) in binding.matches.enumerated() {
             // An inherited arrival is bound — to an id that already exists, so it is not news.
@@ -273,9 +346,9 @@ public final class AXEnumerator {
                                                 element: fresh[match.observed].element,
                                                 number: match.number) else { continue }
             claimed.insert(match.number)
-            snapshots.append(snapshot)
+            outcome.snapshots.append(snapshot)
         }
-        let unbound = binding.rejections.map { rejection in
+        outcome.unbound = binding.rejections.map { rejection in
             let observed = fresh[rejection.observed].observed
             return Report.Unbound(bundleId: observed.bundleId, title: observed.title,
                                   frame: observed.frame, reason: rejection.reason)
@@ -286,22 +359,17 @@ public final class AXEnumerator {
         // Finder each answer with four off-screen `1800×39` strips at the origin, plus 64×64 and 0×0
         // oddments), and counting those would make every scan of those apps incomplete forever. A window
         // on another Space or in the Dock is off screen too, and is adopted by the notification that
-        // brings it back.
-        let scannedPids = Set(apps.map(\.pid))
-        let unclaimed = available.filter {
-            $0.isOnScreen && scannedPids.contains($0.pid) && !claimed.contains($0.number)
-        }
-
-        return Report(snapshots: snapshots, rebound: rebound, succeeded: succeeded.sorted(),
-                      departed: departed, undescribed: undescribed, apps: apps,
-                      seenWindows: scanned.count, unbound: unbound, unclaimed: unclaimed.count)
+        // brings it back — or, failing that, by reconciliation.
+        outcome.unclaimed = available.count { $0.isOnScreen && !claimed.contains($0.number) }
+        return outcome
     }
 
-    /// The fan-out's accumulator. A reference type because several escaping completions append to it;
-    /// `@MainActor` because they all arrive there, which is what makes the mutation safe.
+    /// The fan-out's accumulator. A reference type because several escaping completions write to it;
+    /// `@MainActor` because they all arrive there, which is what makes the mutation safe. Keyed by pid
+    /// rather than appended, so the report is assembled in `apps` order however the answers race.
     @MainActor
     private final class Gather {
-        var windows: [ScannedWindow] = []
+        var answers: [pid_t: ScanAnswer] = [:]
         var pending: Int
 
         init(pending: Int) {
@@ -337,17 +405,22 @@ public final class AXWindowSource: WindowSource {
         }
     }
 
-    /// Read one app's windows on its own lane. A window whose frame is unreadable is dropped here
-    /// rather than reported unbound: without a frame there is nothing to join *on*.
+    /// Read one app's windows on its own lane, and the window list with them. A window whose frame is
+    /// unreadable is dropped here rather than reported unbound: without a frame there is nothing to
+    /// join *on*.
+    ///
+    /// The list read sits on the lane, immediately after: `CGWindowListCopyWindowInfo` queries the window
+    /// server rather than the app, so it is safe off the main actor and safe concurrently across lanes.
     public func windows(of target: ScanTarget,
-                        then completion: @escaping @MainActor ([ScannedWindow]) -> Void) {
+                        then completion: @escaping @MainActor (ScanAnswer) -> Void) {
         client.perform(app: target.pid) { application in
-            application.windows().compactMap { window in
+            let windows = application.windows().compactMap { window in
                 window.snapshot(bundleId: target.bundleId)
                     .map { ScannedWindow(observed: $0, element: window) }
             }
-        } then: { windows in
-            completion(windows)
+            return ScanAnswer(windows: windows, entries: WindowListEntry.current())
+        } then: { answer in
+            completion(answer)
         }
     }
 
