@@ -8,6 +8,20 @@ import EmiraMotion
 // **Lengths are in points; width presets are proportions of the content width.** A zero-config
 // `Config()` lays out a sensible strip, which is also what a missing config file produces.
 
+/// When a cover may go up: once every window in it is exact, or the moment the desktop behind it is.
+/// The question `WindowAnimation` answers in space — what to paint where the pixels aren't there yet —
+/// asked in time. Neither mode changes a frame of emitted geometry.
+public enum CoverMode: String, Sendable, Equatable, Codable, CaseIterable {
+    /// Raise only once every scoped window's own still has landed: pixel-identical to the desktop it
+    /// replaces, at a head latency that grows with the number of columns the motion sweeps.
+    case exact
+    /// Raise as soon as the desktop base has landed, standing in for each window with whatever still an
+    /// earlier cover left behind, and sharpening each layer as its own capture arrives. The head cost is
+    /// then one capture whatever the strip looks like — at the price of a window whose content changed
+    /// since it was last filmed being briefly wrong.
+    case immediate
+}
+
 /// The pure configuration values the reducer reads.
 public struct Config: Sendable, Equatable, Codable {
     /// The column width presets `cycleWidth` steps through. A column stores an *index* into this
@@ -47,6 +61,9 @@ public struct Config: Sendable, Equatable, Codable {
     /// by the compositor, never the reducer — the core's emitted geometry is identical under both,
     /// and the two differ only when a window's rect stops matching the still captured of it.
     public var windowAnimation: WindowAnimation
+    /// When a cover may be raised. Read by the capture plane, never the reducer: what changes is when a
+    /// window is deemed to *have* pixels, not what the core does once every scoped one does.
+    public var coverMode: CoverMode
     /// Whether a scroll animates under a layered cover or simply snaps. Also a capability bit: the
     /// cover is made of captured pixels, so the shell clears this when the Screen Recording grant is
     /// missing, which degrades emira to instant, correct placement rather than a blank rectangle.
@@ -75,6 +92,7 @@ public struct Config: Sendable, Equatable, Codable {
         moveSpring: SpringParams = .smooth,
         centerFocusedColumn: Bool = false,
         windowAnimation: WindowAnimation = .stretch,
+        coverMode: CoverMode = .exact,
         smoothTransitions: Bool = true,
         holdTimeout: Double = 1.0,
         keys: [KeyBinding] = [],
@@ -91,6 +109,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.moveSpring = moveSpring
         self.centerFocusedColumn = centerFocusedColumn
         self.windowAnimation = windowAnimation
+        self.coverMode = coverMode
         self.smoothTransitions = smoothTransitions
         self.holdTimeout = holdTimeout
         self.keys = keys

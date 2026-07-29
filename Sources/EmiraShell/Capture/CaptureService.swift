@@ -8,11 +8,16 @@ import EmiraCore
 //  1. Every `capture` answers, exactly once, within a deadline. The core emits `beginTransition` on the
 //     *last* `captureReady`, so a still that never arrives is a command that silently does nothing with
 //     no cover raised and no hold timer to rescue it. Failure, timeout and unknown-window all answer.
-//  2. A batch is atomic — per-window acks would let the core count down to a raise the base isn't ready
-//     for, and the base is what makes the cover opaque.
+//  2. No ack leaves a head batch before its base has landed. A batch delivers its pieces as they land,
+//     and the overlay's own fill is black, so a raise with no base blacks out the display.
 //  3. The store is written before the acks go out: the last `captureReady` re-enters the pump
 //     synchronously and comes back out as `raiseCover`, which reads this store.
-//  4. Stills live exactly as long as the cover. A window image at 2× is several megabytes.
+//  4. Stills live exactly as long as the cover — at capture resolution. A window image at 2× is several
+//     megabytes, so what outlives one is the reduced copy `SurfaceCache` keeps, under `.immediate` only.
+//
+// `CoverMode` is the only policy here the core does not decide, and it changes one thing: whether a
+// window whose kept still fits is ready *now*, its own capture following as a `captureRefreshed`, or
+// only once that capture lands. The gate the core counts down is identical either way.
 
 /// One window's captured surface, and the frame it was taken from.
 ///
@@ -98,23 +103,22 @@ public struct CaptureRequest: Sendable {
     }
 }
 
-/// What one capture batch yielded. Optional-by-absence: a window whose still failed is missing from
-/// `surfaces`, a base that failed is `nil`. No errors, because there is no decision to make from one.
-public struct CaptureBatch: Sendable {
-    public let surfaces: [WindowId: CapturedSurface]
+/// One thing a batch produced, handed over the moment it lands rather than with the rest of its batch.
+///
+/// Optional by absence in both directions: a window whose still failed simply never appears, and a base
+/// that failed never does either. No errors, because there is no decision to make from one.
+public enum CapturePiece: Sendable {
     /// The display *excluding* every requested window — the desktop the layers slide over.
-    public let base: CGImage?
-
-    public init(surfaces: [WindowId: CapturedSurface], base: CGImage?) {
-        self.surfaces = surfaces
-        self.base = base
-    }
+    case base(CGImage)
+    case window(WindowId, CapturedSurface)
 }
 
 /// The untestable half: ScreenCaptureKit behind one method.
 ///
-/// Implementers must call `completion` exactly once, on the main actor, however the batch turns out —
-/// including when the grant is missing and nothing can be captured at all.
+/// Implementers must deliver each piece to `piece` as it arrives and call `done` exactly once, on the
+/// main actor, however the batch turns out — including when the grant is missing and nothing can be
+/// captured at all. Pieces stream because the window server *serializes* screenshots, so a batch's
+/// stills arrive about 10 ms apart and a cover gated on the base need not wait for the last.
 ///
 /// `includeBase` is `false` for a batch *growing* an existing cover: a second base taken mid-transition
 /// would bake the first batch's windows, by then already teleported, into the desktop behind their own
@@ -122,7 +126,20 @@ public struct CaptureBatch: Sendable {
 @MainActor
 public protocol SurfaceCapturer: AnyObject {
     func capture(_ requests: [CaptureRequest], includeBase: Bool,
-                 then completion: @escaping @MainActor (CaptureBatch) -> Void)
+                 piece: @escaping @MainActor (CapturePiece) -> Void,
+                 done: @escaping @MainActor () -> Void)
+}
+
+/// One window a transition needs pixels for, and the size the core records it at — which is what decides
+/// whether a kept still may stand in for it (`Effect.capture`, `SurfaceCache`).
+public struct CaptureTarget: Sendable, Equatable {
+    public let id: WindowId
+    public let size: Size
+
+    public init(id: WindowId, size: Size) {
+        self.id = id
+        self.size = size
+    }
 }
 
 /// Names one cover's worth of stills, so a cross-fade finishing *after* a newer transition started
@@ -140,9 +157,12 @@ public struct CoverToken: Sendable, Equatable {
 @MainActor
 public protocol CaptureStore: AnyObject {
     /// Capture these windows — and, if no cover session is open, the desktop behind them — then ack each
-    /// window through `feedback` as `Event.captureReady`, exactly once and within a bounded time. A batch
-    /// that finds a session already open is *growing* a cover and takes no new base.
-    func capture(_ windows: [WindowId], feedback: EventSink)
+    /// through `feedback` as `Event.captureReady`, exactly once and within a bounded time. A batch that
+    /// finds a session already open is *growing* a cover and takes no new base.
+    ///
+    /// Under `CoverMode.immediate` a window a kept still fits is acked at once, its own capture arriving
+    /// later as `Event.captureRefreshed` — still one `captureReady` per window.
+    func capture(_ targets: [CaptureTarget], feedback: EventSink)
 
     /// This cover's still for `window`, if one arrived.
     func surface(for window: WindowId) -> CapturedSurface?
@@ -165,6 +185,19 @@ public struct CaptureReport: Sendable {
     public let windows: Int
     /// How many of them still have no still afterwards — holes in the cover.
     public let missing: Int
+    /// How many windows a kept still was *installed* for — cache hits at request time, which is not the
+    /// same as how many the cover was actually built from (`standing`).
+    public let stoodIn: Int
+    /// How many of those still had nothing better to show when the batch stopped owing acks — the layers
+    /// the raise paints with kept pixels. Zero against a high `stoodIn` is a cover that came out exact
+    /// because every stand-in was overtaken before the gate opened.
+    public let standing: Int
+    /// Wall-clock from the request to the moment the batch stopped owing acks — **the head latency**,
+    /// i.e. what a keypress feels like before anything moves. `nil` if it never stopped owing them.
+    public let gate: TimeInterval?
+    /// Wall-clock from the request to the base landing, `nil` if it never did. The gate can be no
+    /// earlier than this, and under `.immediate` it should be barely later.
+    public let base: TimeInterval?
     /// Wall-clock from the request to the resolution: `SCShareableContent` plus the fan-out.
     public let elapsed: TimeInterval
     /// Whether the deadline resolved it rather than the capturer.
@@ -191,6 +224,13 @@ public final class CaptureService: CaptureStore {
     private let capturer: any SurfaceCapturer
     private let scheduler: any DelayScheduler
     private let deadline: TimeInterval
+    /// Where stills go to outlive their cover, and where `.immediate`'s stand-ins come from.
+    private let cache: SurfaceCache
+
+    /// When a cover may be raised. Read when a batch is *issued*, so a config reload landing mid-flight
+    /// changes the next transition rather than the one in the air — the same rule `Reconstruction`
+    /// applies to `WindowAnimation`.
+    public var mode: CoverMode
 
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
@@ -199,6 +239,10 @@ public final class CaptureService: CaptureStore {
     /// one's cross-fade hands its token back.
     private var surfaces: [WindowId: CapturedSurface] = [:]
     private var baseImage: CGImage?
+    /// Which of `surfaces` are this cover's *own* captures, as against stand-ins it inherited. Only these
+    /// are worth keeping: reducing an already-reduced still would degrade it once per transition it
+    /// survives, until a window that is never re-filmed fades to nothing.
+    private var freshlyCaptured: Set<WindowId> = []
 
     /// Whether a cover session is open: whether the next batch *grows* a cover (merge, no new base) or
     /// *opens* one (clear the store, take a base).
@@ -212,13 +256,33 @@ public final class CaptureService: CaptureStore {
     /// starts a second batch while the first is still out, and superseding the first would ack its
     /// windows with no pixels. Each batch owes its own acks and pays them itself.
     private struct Pending {
+        /// Every window this batch owes a `captureReady`, in scope order.
         let windows: [WindowId]
+        /// Those a kept still stands in for. They have pixels from the moment the batch is issued, so
+        /// their own capture — if it lands at all — is a `captureRefreshed`, never a second ack.
+        let stoodIn: Set<WindowId>
         let feedback: EventSink
         let startedAt: Date
         let isHead: Bool
         /// The cover this batch was captured for. A batch that answers after its cover was abandoned
         /// still owes its acks, but its images belong to nothing and must not reach the store.
         let cover: Int
+
+        /// Windows still owing their one `captureReady`.
+        var owed: Set<WindowId>
+        /// Windows that have pixels but may not say so yet — rule 2. Ordered, so the acks a release
+        /// flushes go out in the order the pixels arrived.
+        var held: [WindowId] = []
+        /// Whether a raise built on this batch would have a desktop under it. A batch that takes no base
+        /// is growing a cover already standing on one, so it starts satisfied.
+        var baseLanded: Bool
+
+        /// When the base arrived, and when the last ack went out — the two numbers that say whether
+        /// `.immediate` did anything. Both relative to `startedAt`, both recorded once.
+        var baseAt: TimeInterval?
+        var gateAt: TimeInterval?
+        /// Stand-ins whose own capture had not yet overtaken them at `gateAt`.
+        var standingAtGate = 0
     }
     private var pending: [Int: Pending] = [:]
     /// Bumped by every batch, so the two racers — the capturer answering and the deadline firing — can
@@ -228,10 +292,14 @@ public final class CaptureService: CaptureStore {
     public init(registry: WindowRegistry,
                 capturer: any SurfaceCapturer,
                 scheduler: any DelayScheduler,
+                cache: SurfaceCache = SurfaceCache(),
+                mode: CoverMode = .exact,
                 deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.registry = registry
         self.capturer = capturer
         self.scheduler = scheduler
+        self.cache = cache
+        self.mode = mode
         self.deadline = deadline
     }
 
@@ -253,7 +321,7 @@ public final class CaptureService: CaptureStore {
         clearStore()
     }
 
-    public func capture(_ windows: [WindowId], feedback: EventSink) {
+    public func capture(_ targets: [CaptureTarget], feedback: EventSink) {
         // A batch with no cover session open is *opening* one: it owns the base and starts the store
         // clean. One with a session open grows a raised cover and merges into what is there.
         let isHead = !coverIsOpen
@@ -263,71 +331,175 @@ public final class CaptureService: CaptureStore {
             clearStore()
         }
 
+        // Which windows a kept still can already answer for. Written into the store *before* any ack
+        // goes out (rule 3) — and before the batch is even on the wire, since a synchronous capturer
+        // could otherwise land a fresh still on top of a stand-in that had not been installed yet.
+        var stoodIn: Set<WindowId> = []
+        if mode == .immediate {
+            for target in targets {
+                guard let kept = cache.surface(for: target.id, at: target.size) else { continue }
+                surfaces[target.id] = kept
+                stoodIn.insert(target.id)
+            }
+        }
+
         generation &+= 1
         let mine = generation
-        pending[mine] = Pending(windows: windows, feedback: feedback, startedAt: Date(),
-                                isHead: isHead, cover: coverGeneration)
+        let windows = targets.map(\.id)
+        pending[mine] = Pending(windows: windows, stoodIn: stoodIn, feedback: feedback,
+                                startedAt: Date(), isHead: isHead, cover: coverGeneration,
+                                owed: Set(windows), baseLanded: !isHead)
 
         // An id the registry doesn't know has no window number to ask about, but is still owed an ack —
         // dropped from the *request*, kept in the ack list. It reaches the cover as a missing layer,
         // which is truthful for the likely cause: destroyed between the reducer scoping it and here.
-        let requests = windows.compactMap { id in
-            registry.record(id).map { CaptureRequest(id: id, number: $0.number) }
+        // A stood-in window is still filmed: the stand-in buys the raise, not the transition.
+        let requests = targets.compactMap { target in
+            registry.record(target.id).map { CaptureRequest(id: target.id, number: $0.number) }
         }
 
-        capturer.capture(requests, includeBase: isHead) { [weak self] batch in
-            self?.resolve(generation: mine, batch: batch)
-        }
+        // The stand-ins have pixels already, so they are ready as soon as anything is — `ready` still
+        // routes them through rule 2's hold, which is the whole of what `.immediate` waits for. Before
+        // the batch goes on the wire, so that a capturer answering synchronously cannot deliver a
+        // window's own still before the stand-in it replaces has been declared.
+        for id in stoodIn { ready(generation: mine, id) }
+
+        capturer.capture(requests, includeBase: isHead,
+                         piece: { [weak self] piece in self?.receive(generation: mine, piece: piece) },
+                         done: { [weak self] in self?.finish(generation: mine, timedOut: false) })
         scheduler.schedule(after: deadline) { [weak self] in
-            self?.resolve(generation: mine, batch: nil)
+            self?.finish(generation: mine, timedOut: true)
         }
     }
 
     // MARK: - Resolution
 
-    /// Finish the batch `generation` names: store whatever arrived, then ack every window it owes.
-    /// Idempotent by generation, which is what makes "exactly once" true when the deadline and the
-    /// capturer both fire. `batch == nil` is the deadline: ack with whatever the store already holds.
-    private func resolve(generation: Int, batch: CaptureBatch?) {
-        guard let owed = pending.removeValue(forKey: generation) else { return }
+    /// Take one piece of the batch `generation` names: store it, then say so.
+    private func receive(generation: Int, piece: CapturePiece) {
+        guard let batch = pending[generation] else { return }   // already finished; nothing owes an ack
 
         // Whether this batch's cover still exists: a session can be abandoned, or a whole further
-        // transition can start, while a slow batch is out, and its stills would then be somebody else's
+        // transition can start, while a slow batch is out, and its pixels would then be somebody else's
         // desktop. The acks are still owed; the images stop here.
-        let isCurrent = owed.cover == coverGeneration
+        let isCurrent = batch.cover == coverGeneration
 
-        // Order is the contract (rule 3): the last ack below re-enters the pump synchronously and comes
-        // back out as `raiseCover`, which reads exactly these two properties. Merged, not replaced — a
-        // growing cover keeps the stills the raise was built from.
-        if let batch, isCurrent {
-            surfaces.merge(batch.surfaces) { _, new in new }
-            if let base = batch.base { baseImage = base }
-        }
+        switch piece {
+        case .base(let image):
+            // Order is the contract (rule 3): releasing the hold below can ack the last window the core
+            // is waiting on, which re-enters the pump synchronously and comes back out as `raiseCover`.
+            if isCurrent { baseImage = image }
+            pending[generation]?.baseLanded = true
+            pending[generation]?.baseAt = Date().timeIntervalSince(batch.startedAt)
+            release(generation: generation)
 
-        onBatchResolved?(CaptureReport(
-            windows: owed.windows.count,
-            missing: owed.windows.filter { surfaces[$0] == nil }.count,
-            elapsed: Date().timeIntervalSince(owed.startedAt),
-            timedOut: batch == nil,
-            isHead: owed.isHead))
-
-        // A head batch with no base has nothing to build a cover from, and the overlay's own fill is
-        // black — acking here would black out the display for the whole transition. The core abandons
-        // the session before anything has moved, and snaps instead.
-        if owed.isHead, isCurrent, baseImage == nil {
-            coverIsOpen = false             // no cover will be raised; the next scroll starts fresh
-            clearStore()
-            owed.feedback(.coverUnavailable)
-            return
-        }
-
-        for window in owed.windows {
-            owed.feedback(.captureReady(window))
+        case .window(let id, let surface):
+            if isCurrent {
+                surfaces[id] = surface
+                freshlyCaptured.insert(id)
+            }
+            guard batch.stoodIn.contains(id) else { return ready(generation: generation, id) }
+            // A stand-in has spent its `captureReady`, so this asks for a repaint instead, which settles
+            // no gate. Only once that ack has gone out — before it there is no layer, and the raise finds
+            // these pixels in the store anyway — and only if they reached the store at all.
+            guard isCurrent, pending[generation]?.owed.contains(id) == false else { return }
+            batch.feedback(.captureRefreshed(id))
         }
     }
 
+    /// This window has pixels: ack it, or hold the ack until the base lands (rule 2).
+    ///
+    /// Holding does not clear `owed` — `finish` pays from that set when a base never lands — so the hold
+    /// list is what dedupes a piece delivered twice.
+    private func ready(generation: Int, _ id: WindowId) {
+        guard var batch = pending[generation], batch.owed.contains(id) else { return }
+        guard batch.baseLanded else {
+            if !batch.held.contains(id) { batch.held.append(id) }
+            pending[generation] = batch
+            return
+        }
+        batch.owed.remove(id)
+        pending[generation] = batch
+        noteGate(generation)
+        batch.feedback(.captureReady(id))
+    }
+
+    /// The base has landed: everything held on it may speak.
+    private func release(generation: Int) {
+        guard var batch = pending[generation] else { return }
+        let held = batch.held
+        batch.held.removeAll()
+        batch.owed.subtract(held)
+        pending[generation] = batch
+        noteGate(generation)
+        for id in held { batch.feedback(.captureReady(id)) }
+    }
+
+    /// The batch owes nothing further: record when, and how many stand-ins the cover will be built from.
+    ///
+    /// Measured before the acks go out: the last of them re-enters the pump synchronously and comes back
+    /// out as the raise, so measuring after would time the raise itself.
+    private func noteGate(_ generation: Int) {
+        guard var batch = pending[generation], batch.gateAt == nil, batch.owed.isEmpty else { return }
+        batch.gateAt = Date().timeIntervalSince(batch.startedAt)
+        batch.standingAtGate = batch.stoodIn.subtracting(freshlyCaptured).count
+        pending[generation] = batch
+    }
+
+    /// Close the batch `generation` names and pay whatever it still owes. Idempotent by generation,
+    /// which is what makes "exactly once" true when the deadline and the capturer both fire.
+    private func finish(generation: Int, timedOut: Bool) {
+        guard let batch = pending.removeValue(forKey: generation) else { return }
+        let isCurrent = batch.cover == coverGeneration
+
+        onBatchResolved?(CaptureReport(
+            windows: batch.windows.count,
+            missing: batch.windows.filter { surfaces[$0] == nil }.count,
+            stoodIn: batch.stoodIn.count,
+            standing: batch.standingAtGate,
+            gate: batch.gateAt,
+            base: batch.baseAt,
+            elapsed: Date().timeIntervalSince(batch.startedAt),
+            timedOut: timedOut,
+            isHead: batch.isHead))
+
+        // A head batch with no base has nothing to build a cover from, and the overlay's own fill is
+        // black — acking here would black out the display for the whole transition. The core abandons
+        // the session before anything has moved, and snaps instead. The held acks die with it.
+        if batch.isHead, isCurrent, baseImage == nil {
+            coverIsOpen = false             // no cover will be raised; the next scroll starts fresh
+            clearStore()
+            batch.feedback(.coverUnavailable)
+            return
+        }
+
+        // Whatever never arrived is acked anyway, in scope order — rule 1. Held acks are among them: the
+        // base has landed by now, or this is not a head batch and never waited on one.
+        for window in batch.windows where batch.owed.contains(window) {
+            batch.feedback(.captureReady(window))
+        }
+    }
+
+    /// Drop this cover's pixels — and, on the way out, hand its own captures to the cache. The single
+    /// point every still passes through on its way to being freed, which is why the hand-off is here and
+    /// not in `discard`: a cover can also lose its stills to the *next* transition claiming the store.
     private func clearStore() {
+        keep(surfaces.filter { freshlyCaptured.contains($0.key) })
         surfaces.removeAll()
+        freshlyCaptured.removeAll()
         baseImage = nil
+    }
+
+    /// Reduce these captures and keep them for a later `.immediate` cover to stand in with.
+    ///
+    /// Detached: the reduction is Core Graphics work proportional to the scope, and a cover comes down
+    /// during the next transition's animation whenever a key is held.
+    private func keep(_ captures: [WindowId: CapturedSurface]) {
+        guard mode == .immediate, !captures.isEmpty else { return }
+        let cache = self.cache
+        Task.detached(priority: .utility) {
+            let reduced = captures.compactMapValues { SurfaceCache.reduced($0) }
+            guard !reduced.isEmpty else { return }
+            await MainActor.run { cache.keep(reduced) }
+        }
     }
 }

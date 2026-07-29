@@ -23,6 +23,11 @@ import EmiraCore
 // shares an isolation region a child task may not reach into. Hence free functions at file scope
 // (isolation propagates into nested types) and `nonisolated(unsafe)` on each filter — narrow and true,
 // since a filter is built at the send site, never stored or mutated, and used by exactly one child task.
+//
+// That serialization is why pieces are handed back one at a time rather than as a batch: a cover gated
+// on the base alone (`CoverMode.immediate`) then waits for one capture rather than for all of them. And
+// it is why the base is awaited *before* the group opens rather than added as its first task — `addTask`
+// order is not execution order, so a base merely queued first can be taken last.
 
 /// Captures window surfaces and the desktop beneath them via ScreenCaptureKit.
 @MainActor
@@ -40,23 +45,28 @@ public final class SCKCapturer: SurfaceCapturer {
     }
 
     public func capture(_ requests: [CaptureRequest], includeBase: Bool,
-                        then completion: @escaping @MainActor (CaptureBatch) -> Void) {
+                        piece: @escaping @MainActor (CapturePiece) -> Void,
+                        done: @escaping @MainActor () -> Void) {
         let numbers = Dictionary(requests.map { ($0.number, $0.id) }, uniquingKeysWith: { first, _ in first })
         let displayId = self.displayId
         let scale = self.scale
 
         Task {
-            let shots = await grab(windows: Set(numbers.keys), display: displayId, scale: scale,
-                                   includeBase: includeBase)
-            var surfaces: [WindowId: CapturedSurface] = [:]
-            for shot in shots.windows {
-                guard let id = numbers[shot.number] else { continue }
-                // Measured here, once per still, where the scale it was taken at is known for certain.
-                surfaces[id] = CapturedSurface(
-                    image: shot.image, frame: shot.frame,
-                    cornerRadius: CapturedSurface.measuredCornerRadius(of: shot.image, scale: scale))
+            await grab(windows: Set(numbers.keys), display: displayId, scale: scale,
+                       includeBase: includeBase) { shot in
+                switch shot {
+                case .base(let image):
+                    await piece(.base(image))
+                case .window(let window):
+                    guard let id = numbers[window.number] else { return }
+                    // Measured here, once per still, where the scale it was taken at is known for certain.
+                    await piece(.window(id, CapturedSurface(
+                        image: window.image, frame: window.frame,
+                        cornerRadius: CapturedSurface.measuredCornerRadius(of: window.image,
+                                                                           scale: scale))))
+                }
             }
-            completion(CaptureBatch(surfaces: surfaces, base: shots.base))
+            done()
         }
     }
 }
@@ -74,11 +84,6 @@ private struct Shot: Sendable {
     let frame: Rect
 }
 
-private struct Shots: Sendable {
-    let windows: [Shot]
-    let base: CGImage?
-}
-
 /// What one child task of the batch came back with. The base and the window stills go through the
 /// *same* task group rather than a group plus an `async let`, because two concurrent readers of one
 /// isolation region is exactly what Swift 6 rejects.
@@ -87,7 +92,7 @@ private enum Piece: Sendable {
     case base(CGImage)
 }
 
-/// Fetch the shareable content once, then fan the captures out.
+/// Fetch the shareable content once, then fan the captures out, handing each back as it lands.
 ///
 /// One `SCShareableContent` read, because it is a window-server round trip and one per window would put
 /// the enumeration cost back at the head of the transition. `onScreenWindowsOnly: true` is safe for a
@@ -96,14 +101,15 @@ private enum Piece: Sendable {
 private func grab(windows: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
-                  includeBase: Bool) async -> Shots {
+                  includeBase: Bool,
+                  deliver: @Sendable (Piece) async -> Void) async {
     let content: SCShareableContent
     do {
         content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
     } catch {
         // Overwhelmingly: the Screen Recording grant is missing or has lapsed. `CaptureService` acks
-        // either way, so an empty batch is a complete answer.
-        return Shots(windows: [], base: nil)
+        // either way, so delivering nothing at all is a complete answer.
+        return
     }
 
     let targets = content.windows.filter { windows.contains($0.windowID) }
@@ -117,7 +123,19 @@ private func grab(windows: Set<CGWindowID>,
     // sliding layers.
     let scDisplay = includeBase ? content.displays.first { $0.displayID == display } : nil
 
-    return await withTaskGroup(of: Piece?.self) { group in
+    // Before the group, not first in it: this is the gate, and it is the one piece whose arrival time
+    // we are unwilling to leave to the scheduler. See the file header.
+    if let scDisplay {
+        nonisolated(unsafe) let filter = SCContentFilter(display: scDisplay,
+                                                         excludingWindows: excluded)
+        let size = (width: Int(Double(scDisplay.width) * scale),
+                    height: Int(Double(scDisplay.height) * scale))
+        if let image = try? await shot(filter, width: size.width, height: size.height) {
+            await deliver(.base(image))
+        }
+    }
+
+    await withTaskGroup(of: Piece?.self) { group in
         for window in targets {
             let frame = window.frame
             guard frame.width >= 1, frame.height >= 1 else { continue }
@@ -133,28 +151,11 @@ private func grab(windows: Set<CGWindowID>,
             }
         }
 
-        if let scDisplay {
-            nonisolated(unsafe) let filter = SCContentFilter(display: scDisplay,
-                                                             excludingWindows: excluded)
-            let size = (width: Int(Double(scDisplay.width) * scale),
-                        height: Int(Double(scDisplay.height) * scale))
-            group.addTask {
-                guard let image = try? await shot(filter, width: size.width, height: size.height)
-                else { return nil }
-                return .base(image)
-            }
-        }
-
-        var stills: [Shot] = []
-        var base: CGImage?
         for await piece in group {
-            switch piece {
-            case .window(let shot): stills.append(shot)
-            case .base(let image):  base = image
-            case nil:               break        // this piece failed; the batch carries on without it
-            }
+            // A piece that failed is simply not delivered; the batch carries on without it.
+            guard let piece else { continue }
+            await deliver(piece)
         }
-        return Shots(windows: stills, base: base)
     }
 }
 

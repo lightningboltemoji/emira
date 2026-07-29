@@ -36,7 +36,7 @@ import EmiraMotion
             var feedback: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let w): feedback.append(.captureReady(w))
+                case .capture(let w, _): feedback.append(.captureReady(w))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 default: continue
                 }
@@ -188,7 +188,7 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .windowCreated(Self.snap(3, frame: opened)))
 
         #expect(s.motion.isTransitioning, "the strip opens for it under the cover")
-        #expect(fx.contains { if case .capture(WindowId(3)) = $0 { return true }; return false },
+        #expect(fx.contains { if case .capture(WindowId(3), _) = $0 { return true }; return false },
                 "so it needs a still of its own")
 
         // The seeded displacement is what makes the raise seamless: the newcomer's first animated
@@ -335,7 +335,7 @@ import EmiraMotion
         #expect(s.motion.isTransitioning, "a scroll transition is open")
 
         // Raise the cover so the session is past `.capturing` — the state a real ⌘N lands in.
-        for id in fx.compactMap({ if case .capture(let w) = $0 { return w }; return nil }) {
+        for id in fx.compactMap({ if case .capture(let w, _) = $0 { return w }; return nil }) {
             (s, _) = Engine.reduce(s, .captureReady(id))
         }
         #expect(s.motion.isCovered)
@@ -345,7 +345,7 @@ import EmiraMotion
         #expect(s.layout.columns.count == 3, "it joined the strip")
         #expect(Self.placement(of: WindowId(3), in: fx) != nil,
                 "and the real window was told where to go")
-        #expect(fx.contains { if case .capture(WindowId(3)) = $0 { return true }; return false },
+        #expect(fx.contains { if case .capture(WindowId(3), _) = $0 { return true }; return false },
                 "and it is in the transition's scope, so the cover gets a layer for it")
     }
 }

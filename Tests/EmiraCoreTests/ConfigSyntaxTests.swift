@@ -750,6 +750,35 @@ import EmiraMotion
                 == .unknownKey(line: 2, key: "layout.struts"))
     }
 
+    // MARK: `animation.cover` — the same question `animation.window` asks, in time
+
+    @Test func theCoverModeIsExactUntilAskedOtherwise() throws {
+        #expect(try ConfigSyntaxTests.parse("").coverMode == .exact)
+        #expect(try ConfigSyntaxTests.parse("[animation]\nhold-timeout = 2\n").coverMode == .exact)
+    }
+
+    @Test func bothCoverModesParse() throws {
+        #expect(try ConfigSyntaxTests.parse("[animation]\ncover = \"immediate\"\n").coverMode
+                    == .immediate)
+        #expect(try ConfigSyntaxTests.parse("[animation]\ncover = \"exact\"\n").coverMode == .exact)
+    }
+
+    /// The two word-valued keys of `[animation]` are independent: neither implies anything about the
+    /// other, because one is about a rect the still no longer fits and the other about a still that has
+    /// not arrived.
+    @Test func theCoverModeAndTheWindowAnimationDoNotImplyEachOther() throws {
+        let config = try ConfigSyntaxTests.parse(
+            "[animation]\nwindow = \"crop\"\ncover = \"immediate\"\n")
+        #expect(config.windowAnimation == .crop)
+        #expect(config.coverMode == .immediate)
+    }
+
+    @Test func anUnknownCoverModeIsRefusedAndTheLegalOnesNamed() {
+        #expect(ConfigSyntaxTests.diagnostic("[animation]\ncover = \"fast\"\n")
+                == .badValue(line: 2, key: "animation.cover",
+                             message: "must be \"exact\" or \"immediate\", not \"fast\""))
+    }
+
     // MARK: `animation.window` — the schema's one word-valued key
 
     @Test func theWindowAnimationIsStretchUntilAskedOtherwise() throws {

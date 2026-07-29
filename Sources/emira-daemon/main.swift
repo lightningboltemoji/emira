@@ -163,11 +163,14 @@ let focusIntent = FocusIntent(scheduler: DispatchScheduler())
 // MARK: - The capture plane
 
 let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+// One cache for the daemon's life: it outlives every cover, which is the whole of what it is for.
+let surfaceCache = SurfaceCache()
 let capture = CaptureService(
     registry: registry,
     capturer: SCKCapturer(displayId: displayId ?? CGMainDisplayID(),
                           scale: screen.backingScaleFactor),
-    scheduler: DispatchScheduler())
+    scheduler: DispatchScheduler(),
+    cache: surfaceCache)
 let reconstruction = Reconstruction(overlay: overlay, store: capture)
 
 // MARK: - The config, finished
@@ -184,9 +187,11 @@ func applyEnvironment(to config: Config) -> Config {
 
 var config = applyEnvironment(to: parsedConfig)
 
-// The one config value that reaches the compositor rather than the reducer: how a still is painted
-// into a rect that no longer matches it. The core can't carry it — its geometry is identical either way.
+// The two config values that reach the shell rather than the reducer: how a still is painted into a
+// rect that no longer matches it, and when a cover may go up at all. The core can't carry either — its
+// emitted geometry is identical under both settings of both.
 reconstruction.animation = config.windowAnimation
+capture.mode = config.coverMode
 
 // MARK: - The GUI
 //
@@ -215,12 +220,18 @@ let executor = CompositingExecutor(surface: reconstruction, store: capture, trut
 var captureHeadMs = 0.0
 
 capture.onBatchResolved = { report in
-    if report.isHead { captureHeadMs = report.elapsed * 1000 }
-    log(String(format: "capture: %@%d window%@ in %.0f ms%@%@",
+    // The head is when the batch stopped blocking the raise, not when it finished; under
+    // `CoverMode.immediate` those are different numbers.
+    if report.isHead { captureHeadMs = (report.gate ?? report.elapsed) * 1000 }
+    log(String(format: "capture: %@%d window%@ — raise at %@, done at %.0f ms%@%@%@",
                report.isHead ? "" : "+", report.windows, report.windows == 1 ? "" : "s",
+               report.gate.map { String(format: "%.0f ms", $0 * 1000) } ?? "never",
                report.elapsed * 1000,
-               report.missing > 0 ? " (\(report.missing) missing)" : "",
-               report.timedOut ? " — DEADLINE" : ""))
+               report.base.map { String(format: " (base %.0f ms)", $0 * 1000) } ?? "",
+               // Matched, over built-from: the two differing is a cover that came out exact anyway.
+               report.stoodIn > 0 ? " (\(report.standing)/\(report.stoodIn) standing)" : "",
+               report.missing > 0 ? " (\(report.missing) missing)" : "")
+        + (report.timedOut ? " — DEADLINE" : ""))
 }
 
 executor.onCoverDismissed = { frames, seconds in
@@ -277,6 +288,10 @@ loader.onLoad = { result in
         runtime.dispatch(.configChanged(live))
         applyKeys(live)
         reconstruction.animation = live.windowAnimation
+        capture.mode = live.coverMode
+        // Leaving `.immediate` retires the stills it kept, which would otherwise sit there until the
+        // budget collected them.
+        if live.coverMode == .exact { surfaceCache.removeAll() }
         menuBar.configError = nil
     case .failure(let error):
         log("config: \(error) — keeping the previous settings")

@@ -219,6 +219,14 @@ public enum Engine {
             }
             return (s, [])
 
+        case .captureRefreshed(let id):
+            // The window's own pixels, for a layer already standing in with older ones. No gate reads
+            // this and no geometry follows from it — a window with no layer yet (its still beat the
+            // raise) needs nothing either, because the raise reads the store and will find the fresh
+            // one waiting there.
+            guard let layer = s.motion.layerId(for: id) else { return (s, []) }
+            return (s, [.refreshLayer(layer)])
+
         case .coverUnavailable:
             // No pixels from the capture plane; raising anyway would black out the display. Nothing has
             // moved yet, so abandon and snap.
@@ -772,13 +780,19 @@ public enum Engine {
         guard s.motion.isTransitioning else {
             s.motion.openTransition(scope: scope)
             s.motion.retargetViewport(to: end)
-            return scope.map { .capture($0) }
+            return captures(s, scope)
         }
         s.motion.retargetViewport(to: end)
         let newcomers = s.motion.extendTransition(scope: scope)
-        var effects: [Effect] = newcomers.map { .capture($0) }
+        var effects: [Effect] = captures(s, newcomers)
         if s.motion.isCovered { effects += teleportBehindCover(&s) }
         return effects
+    }
+
+    /// Ask the capture plane for each of `ids`, carrying the size the world currently records for it —
+    /// the one fact that decides whether a kept still may stand in for a fresh capture (`Effect.capture`).
+    private static func captures(_ s: State, _ ids: [WindowId]) -> [Effect] {
+        ids.map { .capture($0, size: s.world.windows[$0]?.frame.size ?? .zero) }
     }
 
     // MARK: - The animated resize (the strip's own geometry in motion)

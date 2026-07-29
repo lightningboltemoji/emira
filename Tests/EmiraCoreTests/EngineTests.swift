@@ -52,7 +52,7 @@ import EmiraMotion
             var feedback: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let w): feedback.append(.captureReady(w))
+                case .capture(let w, _): feedback.append(.captureReady(w))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 default: continue
                 }
@@ -127,7 +127,7 @@ import EmiraMotion
 
     /// The window ids a run of `.capture` effects requested, in order.
     static func capturedIds(in fx: [Effect]) -> [WindowId] {
-        fx.compactMap { if case .capture(let w) = $0 { return w }; return nil }
+        fx.compactMap { if case .capture(let w, _) = $0 { return w }; return nil }
     }
 
     /// The `Rect` a `.setLayerFrame` targeted the given layer with (last wins), or `nil`.
@@ -908,7 +908,7 @@ import EmiraMotion
             state = next
             for e in fx {
                 switch e {
-                case .capture(let w):
+                case .capture(let w, _):
                     inbox[frame + captureLatency, default: []].append(.captureReady(w))
                 case .setFrame(let w, _), .park(let w, _):
                     inbox[frame + axLatency, default: []].append(.axLanded(w))
@@ -1094,6 +1094,53 @@ import EmiraMotion
             .compactMap { if case .beginTransition(let b) = $0 { return b }; return nil }.flatMap { $0 }
         #expect(bindings.map(\.window) == [WindowId(2), WindowId(3), WindowId(4), WindowId(1)])
         #expect(!Self.hasEffect(raiseFx) { if case .extendCover = $0 { return true }; return false })
+    }
+
+    // MARK: The sharpen (`CoverMode.immediate`)
+
+    /// A cover raised over stand-ins gets each window's own pixels as they land. The core's part is one
+    /// translation — window to layer — because a content swap settles no gate and moves nothing: the
+    /// transition's shape is already decided by the time one arrives.
+    @Test func aRefreshedCaptureRepaintsThatWindowsLayerAndNothingElse() throws {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
+            .windowCreated(Self.snapshot(3)),
+        ])
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        #expect(s.motion.isCovered)
+
+        let before = s
+        let layer = try #require(s.motion.transition?.layerId(for: WindowId(1)))
+        let (after, fx) = Engine.reduce(s, .captureRefreshed(WindowId(1)))
+
+        #expect(fx == [.refreshLayer(layer)])
+        // Nothing about the transition changed: not its scope, not what it is still waiting on, not
+        // where anything is. A refresh is the one effect that costs the core no state at all.
+        #expect(after.motion == before.motion)
+    }
+
+    /// A refresh for a window with no layer — its still beat the raise, or it was never scoped — asks
+    /// for nothing. The shell has already put those pixels in the store, and the raise will find them.
+    @Test func aRefreshForAWindowWithNoLayerIsSilent() {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)), .windowCreated(Self.snapshot(2)),
+            .windowCreated(Self.snapshot(3)),
+        ])
+        // Mid-capture: a session is open and no layer has been minted yet.
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.isTransitioning && !s.motion.isCovered)
+        let (mid, midFx) = Engine.reduce(s, .captureRefreshed(WindowId(1)))
+        #expect(midFx.isEmpty)
+        #expect(mid.motion == s.motion)
+
+        // …and with no session at all, which is where a batch outliving its cover lands.
+        let idle = Self.run(Self.booted(config: Self.fullWidth),
+                            [.windowCreated(Self.snapshot(1))]).0
+        #expect(!idle.motion.isTransitioning)
+        let (after, fx) = Engine.reduce(idle, .captureRefreshed(WindowId(1)))
+        #expect(fx.isEmpty)
+        #expect(after.motion == idle.motion)
     }
 
     /// No pixels ⇒ no cover, never a black one. A head capture batch that comes back without a desktop

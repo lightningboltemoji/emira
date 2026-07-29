@@ -122,6 +122,9 @@ import EmiraCore
         func setLayerFrame(_ layer: LayerId, to rect: Rect) {
             timeline.record("blit(\(layer.raw)@\(Int(rect.minX)))")
         }
+        func refreshLayer(_ layer: LayerId) {
+            timeline.record("refresh(\(layer.raw))")
+        }
         func dismiss(completion: @escaping @MainActor () -> Void) {
             timeline.record("dismiss")
             if completesDismissal { completion() } else { heldCompletion = completion }
@@ -143,7 +146,7 @@ import EmiraCore
             switch effect {
             case .setFrame(let w, _):  return "setFrame\(w.raw)"
             case .park(let w, _):      return "park\(w.raw)"
-            case .capture(let w):      return "capture\(w.raw)"
+            case .capture(let w, _): return "capture\(w.raw)"
             case .focus(let w):        return "focus\(w.raw)"
             case .raise(let w):        return "raise\(w.raw)"
             default:                   return "?"
@@ -155,7 +158,7 @@ import EmiraCore
     /// `CaptureService`'s job and is proved in `CaptureTests`; here we only care *what reached it*.
     @MainActor final class RecordingStore: CaptureStore {
         let timeline: Timeline
-        private(set) var requests: [[WindowId]] = []
+        private(set) var requests: [[CaptureTarget]] = []
         private(set) var discards = 0
         private(set) var closes = 0
         /// The tokens `discard` was handed, so a test can prove the executor gave back the one
@@ -166,9 +169,9 @@ import EmiraCore
 
         init(_ timeline: Timeline) { self.timeline = timeline }
 
-        func capture(_ windows: [WindowId], feedback: EventSink) {
-            requests.append(windows)
-            timeline.record("capture[\(windows.map { "\($0.raw)" }.joined(separator: ","))]")
+        func capture(_ targets: [CaptureTarget], feedback: EventSink) {
+            requests.append(targets)
+            timeline.record("capture[\(targets.map { "\($0.id.raw)" }.joined(separator: ","))]")
         }
         func surface(for window: WindowId) -> CapturedSurface? { nil }
         var base: CGImage? { nil }
@@ -244,7 +247,8 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .focus(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .raise(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
-        #expect(CompositingExecutor.plane(of: .capture(WindowId(1))) == .capture)
+        #expect(CompositingExecutor.plane(of: .capture(WindowId(1), size: .zero)) == .capture)
+        #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
     }
 
@@ -335,13 +339,18 @@ import EmiraCore
     // MARK: The capture plane
 
     /// A run of `capture`s reaches the store as one call, not one per window: the batch is the unit —
-    /// one shareable-content fetch, one fan-out, one set of acks.
+    /// one shareable-content fetch, one fan-out, one set of acks. Each window's recorded size travels
+    /// with it, because that is what decides whether a kept still may stand in for a fresh capture.
     @Test func aRunOfCapturesReachesTheStoreAsASingleBatch() {
         let (executor, _, truth, store, timeline, log) = Self.fullHarness()
-        executor.execute([.capture(WindowId(1)), .capture(WindowId(2)), .capture(WindowId(3))],
-                         feedback: log.sink)
+        let size = Size(width: 800, height: 600)
+        executor.execute([.capture(WindowId(1), size: size),
+                          .capture(WindowId(2), size: size),
+                          .capture(WindowId(3), size: .zero)], feedback: log.sink)
 
-        #expect(store.requests == [[WindowId(1), WindowId(2), WindowId(3)]])
+        #expect(store.requests == [[CaptureTarget(id: WindowId(1), size: size),
+                                    CaptureTarget(id: WindowId(2), size: size),
+                                    CaptureTarget(id: WindowId(3), size: .zero)]])
         #expect(truth.batches.isEmpty)          // the truth plane no longer answers for captures
         #expect(!timeline.entries.contains("beginFrame"))
     }
@@ -351,7 +360,7 @@ import EmiraCore
     @Test func captureRunsKeepTheirPlaceAmongTheOtherPlanes() {
         let (executor, _, _, _, timeline, log) = Self.fullHarness()
         executor.execute([.focus(WindowId(1)),
-                          .capture(WindowId(1)), .capture(WindowId(2)),
+                          .capture(WindowId(1), size: .zero), .capture(WindowId(2), size: .zero),
                           .setLayerFrame(LayerId(1), Self.rect(0))], feedback: log.sink)
 
         #expect(timeline.entries == ["truth[focus1]", "capture[1,2]",
@@ -452,6 +461,40 @@ import EmiraCore
         executor.execute([.endTransition], feedback: log.sink)
 
         #expect(counter.frames == 3)            // three frames, six blits
+    }
+
+    /// A layer sharpening in place is not a frame of motion, and counting it would inflate the one
+    /// smoothness number there is — a transition whose stand-ins all resolved would read as smoother
+    /// than the identical one that never needed to.
+    @Test func aRefreshIsNotCountedAsAFrame() {
+        let (executor, surface, _, _, log) = Self.harness()
+        let counter = Counter()
+        executor.onCoverDismissed = { frames, _ in counter.frames = frames }
+
+        executor.execute([.beginTransition(Self.bindings)], feedback: log.sink)
+        executor.execute([.setLayerFrame(LayerId(1), Self.rect(0))], feedback: log.sink)
+        executor.execute([.refreshLayer(LayerId(1)), .refreshLayer(LayerId(2))], feedback: log.sink)
+        executor.execute([.endTransition], feedback: log.sink)
+
+        #expect(counter.frames == 1)
+        // …but it did reach the surface, inside a frame like every other presentation write.
+        #expect(surface.timeline.entries.contains("refresh(1)"))
+        #expect(surface.timeline.entries.contains("refresh(2)"))
+    }
+
+    /// A refresh arriving on the same tick as a blit rides in that tick's transaction rather than
+    /// opening one of its own: they are one presentation run, so they reach the window server together.
+    @Test func aRefreshSharesTheFrameOfTheBlitsAroundIt() {
+        let (executor, surface, _, _, log) = Self.harness()
+        executor.execute([.beginTransition(Self.bindings)], feedback: log.sink)
+        surface.timeline.record("—")
+
+        executor.execute([.setLayerFrame(LayerId(1), Self.rect(7)),
+                          .refreshLayer(LayerId(1)),
+                          .setLayerFrame(LayerId(2), Self.rect(7))], feedback: log.sink)
+
+        let frame = surface.timeline.entries.drop { $0 != "—" }.dropFirst()
+        #expect(Array(frame) == ["beginFrame", "blit(1@7)", "refresh(1)", "blit(2@7)", "endFrame"])
     }
 
     @Test func theFrameCounterResetsWithEachCover() {

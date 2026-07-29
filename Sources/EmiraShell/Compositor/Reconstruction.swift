@@ -12,6 +12,9 @@ import EmiraCore
 /// Animation facts pulling against each other — a layer with `masksToBounds` on cannot draw its own
 /// shadow, and a crop must clip or a shrinking window grows square corners.
 private struct CoverLayer {
+    /// The window this layer stands for — what `refreshLayer` needs to find its still in the store, and
+    /// the one thing the `LayerId` key cannot answer.
+    let window: WindowId
     /// What the overlay hosts and `setLayerFrame` positions. Carries the image in `.stretch`; in
     /// `.crop` only the shadow, with the window's extent as its bounds.
     let root: CALayer
@@ -84,6 +87,26 @@ public final class Reconstruction: CoverSurface {
         place(target, at: rect)
     }
 
+    public func refreshLayer(_ layer: LayerId) {
+        // Total, for the same reasons `setLayerFrame` is, plus one of its own: the still may have been
+        // freed with its cover between the ack and this call.
+        guard let cover = layers[layer],
+              let surface = store.surface(for: cover.window) else { return }
+        // `.crop` carries the image a layer down, under the clip that rounds it; `.stretch` on `root`.
+        let target = cover.still ?? cover.root
+        guard let previous = target.contents else { return }
+
+        // Explicit: the surrounding frame has implicit animations disabled, and this is not a frame of
+        // motion — the geometry is wherever the last tick left it and only the pixels inside change.
+        let fade = CABasicAnimation(keyPath: "contents")
+        fade.fromValue = previous
+        fade.duration = Self.refreshDuration
+        target.contents = surface.image
+        target.add(fade, forKey: "refresh")
+        // The corner radius and `natural` stand: a stand-in matches the window's size, so re-deriving
+        // either from these pixels could only move a hard edge by a rounding error.
+    }
+
     public func dismiss(completion: @escaping @MainActor () -> Void) {
         overlay.fadeOut { [weak self] completed in
             // `completed == false` ⇒ a newer transition owns the layer tree; tearing it down here
@@ -101,13 +124,13 @@ public final class Reconstruction: CoverSurface {
         for binding in bindings {
             guard layers[binding.layer] == nil,
                   let surface = store.surface(for: binding.window) else { continue }
-            let layer = makeLayer(with: surface)
+            let layer = makeLayer(for: binding.window, with: surface)
             layers[binding.layer] = layer
             overlay.addLayer(layer.root)
         }
     }
 
-    private func makeLayer(with surface: CapturedSurface) -> CoverLayer {
+    private func makeLayer(for window: WindowId, with surface: CapturedSurface) -> CoverLayer {
         let root = CALayer()
         root.contentsScale = overlay.backingScale
         // Synthesized, not captured: a window's system drop-shadow isn't part of its surface, and a
@@ -127,7 +150,8 @@ public final class Reconstruction: CoverSurface {
             // No `masksToBounds` and no `shadowPath`: a capture is transparent outside the window's
             // rounded corners, so CA derives the shadow from the contents' alpha. Clipping to bounds
             // would square it off and cut it away.
-            cover = CoverLayer(root: root, clip: nil, still: nil, natural: surface.frame.size)
+            cover = CoverLayer(window: window, root: root, clip: nil, still: nil,
+                               natural: surface.frame.size)
 
         case .crop:
             // Measured off the capture, not a constant: a guessed radius goes stale with the next macOS.
@@ -156,7 +180,8 @@ public final class Reconstruction: CoverSurface {
             // `root` holds only the shadow and has no contents to derive one from, so the crop states
             // its silhouette outright. Re-stated every frame by `place`.
             root.shadowPath = Self.shadowPath(for: .zero, radius: radius)
-            cover = CoverLayer(root: root, clip: clip, still: still, natural: surface.frame.size)
+            cover = CoverLayer(window: window, root: root, clip: clip, still: still,
+                               natural: surface.frame.size)
         }
 
         // A layer starts at its capture's own rect, where the crop is the identity, so neither mode
@@ -193,6 +218,11 @@ public final class Reconstruction: CoverSurface {
     /// Used only when a capture's alpha couldn't answer for itself — an opaque or square-cornered
     /// surface, where `CapturedSurface.measuredCornerRadius` returns `nil`.
     private static let fallbackCornerRadius: Double = 12
+
+    /// How long a stand-in takes to become the window's own pixels (`CoverMode.immediate`). Well under
+    /// the cross-fade that ends a transition, because this one happens *during* the motion and its job
+    /// is to be finished before the eye has settled anywhere.
+    private static let refreshDuration: TimeInterval = 0.12
 
     /// The silhouette the shadow is cast from — the window's whole extent, not the fraction the still
     /// currently covers.

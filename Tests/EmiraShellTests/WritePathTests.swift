@@ -303,7 +303,7 @@ import EmiraCore
         let writer = ScriptedWriter()
         let events = Recorder()
 
-        AXExecutor(registry: registry, writer: writer).execute([.capture(id)], feedback: events.sink)
+        AXExecutor(registry: registry, writer: writer).execute([.capture(id, size: .zero)], feedback: events.sink)
 
         #expect(events.events.isEmpty)
         #expect(writer.placements.isEmpty)
@@ -571,7 +571,7 @@ final class InstantCaptures: Executor {
 
     func execute(_ effects: [Effect], feedback: EventSink) {
         inner.execute(effects, feedback: feedback)
-        for case .capture(let id) in effects { feedback(.captureReady(id)) }
+        for case .capture(let id, _) in effects { feedback(.captureReady(id)) }
     }
 }
 

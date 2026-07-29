@@ -34,7 +34,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// Grab a still of `win`'s surface (SCK captures it even when occluded), acked by
     /// `Event.captureReady`. Gating on that ack is what makes the cover opaque before any real
     /// window teleports behind it.
-    case capture(WindowId)
+    ///
+    /// `size` is the window's size *now*, which decides whether a still kept from an earlier cover may
+    /// stand in for this one (`CoverMode.immediate`) — a window that merely moved is showing the pixels
+    /// it was filmed with. Zero for a window the world has lost, which no kept still matches.
+    case capture(WindowId, size: Size)
 
     // MARK: Transition lifecycle — the layered reconstruction (Compositor)
 
@@ -47,6 +51,12 @@ public enum Effect: Sendable, Equatable, Codable {
     /// original scope never named. Immediately followed by a `setLayerFrame` for every binding, so a
     /// newcomer is created and placed within one frame.
     case extendCover([LayerBinding])
+
+    /// Swap one layer's stand-in for the window's own still, which has since landed — a cross-fade of
+    /// *contents*, at whatever rect the last tick left the layer at. Emitted only under
+    /// `CoverMode.immediate`. Not a frame of motion, so the shell owns the fade, as it does
+    /// `endTransition`'s.
+    case refreshLayer(LayerId)
 
     /// Move one layer to the top of the cover's z-order for the rest of the transition. Only
     /// structural edits need it: two columns trading places pass through each other, and which is on

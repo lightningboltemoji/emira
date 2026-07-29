@@ -220,6 +220,22 @@ mini-compositor, animate in it, and cross-fade back to the real desktop.
 > photo). Gappy per-window overlays expose the real windows (we can't hide them without SkyLight). A **full, opaque,
 > layered** reconstruction has neither flaw: it covers everything (no exposure) yet moves in parts (real animation).
 
+> **The head of a transition is the scope, and `[animation] cover` is how you decline to pay it.** The window server
+> **serializes** screenshot requests, so a cover costs one content fetch plus ~10 ms per capture, linearly: base alone
+> is ~23 ms and a four-column sweep is ~63 ms, all of it before anything has moved or been covered. Resolution does
+> not enter into it — the requested pixel dimensions are free — so a bigger display costs you *columns*, not pixels.
+> **`exact`** (the default) raises only once every scoped window's own still is in, and pays that linear term.
+> **`immediate`** raises on the base alone, standing in for each window with whatever still an earlier cover left
+> behind and sharpening each layer as its own capture lands: the head becomes one capture whatever the strip looks
+> like. What is approximated is exactly the thing about to be smeared by motion anyway, while the base — the menu bar,
+> the wallpaper, every window that is *not* moving — stays exact, because it is the frame of reference the eye judges
+> the transition against and its cost does not grow. The stand-ins are kept at a quarter scale on each axis, which is
+> both the only affordable way to hold one per window and the disclosure: a still filmed minutes ago must not be able
+> to pass for the window as it is now, and an upscale back to the window's own size is a blur that says so. A window
+> with nothing kept for it, or one whose app has re-laid it out since (**size is the whole of freshness** — a window
+> that merely moved is showing the pixels it was filmed with), simply waits, so a cold cache is the old latency and
+> nothing worse.
+
 **The residual tradeoff — content freshness.** Each window layer is a _snapshot_, so its content (not its motion) is
 frozen for the transition's duration (~150–400ms). Two ways to handle it:
 
@@ -321,6 +337,11 @@ Much of the "slow AX" pain is self-inflicted and controllable:
   §4a — instant, correct placement, i.e. AeroSpace parity — and every window still lands exactly where the smooth path
   would have put it. A coloured rectangle sliding where a window should be is worse than no animation, which is why
   there is no placeholder fallback anywhere in the daemon.
+- **A screenshot costs per call, not per pixel, and the window server takes them one at a time.** ~10 ms each,
+  unchanged by the requested dimensions (a window captured at 1/32 of its pixel size costs the same as at native), and
+  `withTaskGroup` buys partial overlap rather than parallelism. So the head of every covered transition is *linear in
+  how many windows it scopes* — which is what `[animation] cover` exists to opt out of, and why anything that reduces
+  the scope is worth more than anything that makes one capture cheaper.
 - **Snapshot layers freeze _content_, never motion.** With static layers a window's _content_ is frozen during a
   transition (its movement is always smooth). Live ScreenCaptureKit layers remove even that, at a per-window
   streaming cost. Keep transitions short regardless.

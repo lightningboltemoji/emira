@@ -28,6 +28,11 @@ public protocol CoverSurface: AnyObject {
     /// Move one reconstruction layer to `rect` (core top-left coordinates) for this frame.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
 
+    /// Cross-fade one layer's contents to the window's own still, which has landed since the cover was
+    /// built over a stand-in. Geometry is untouched: wherever the last tick put the layer is where it
+    /// stays. No-op for an absent layer, or one whose window still has nothing better to show.
+    func refreshLayer(_ layer: LayerId)
+
     /// Move one layer to the top of the cover's z-order, where it stays until something else is
     /// elevated — which window slides *over* the one it trades places with. No-op for an absent layer.
     func elevate(_ layer: LayerId)
@@ -77,7 +82,7 @@ public final class CompositingExecutor: Executor {
         for run in Self.runs(of: effects) {
             switch run.plane {
             case .presentation: present(run.effects, feedback: feedback)
-            case .capture:      store.capture(Self.captureIds(run.effects), feedback: feedback)
+            case .capture:      store.capture(Self.captureTargets(run.effects), feedback: feedback)
             case .truth:        truth.execute(run.effects, feedback: feedback)
             case .system:       for line in Self.execLines(run.effects) { launcher.launch(line) }
             }
@@ -90,10 +95,12 @@ public final class CompositingExecutor: Executor {
         effects.compactMap { if case .exec(let line) = $0 { line } else { nil } }
     }
 
-    /// The windows named by a run of `capture` effects, in order. The run is same-plane by
-    /// construction, so this is a total unwrap, not a filter.
-    static func captureIds(_ effects: [Effect]) -> [WindowId] {
-        effects.compactMap { if case .capture(let id) = $0 { id } else { nil } }
+    /// The windows named by a run of `capture` effects, in order, each with the size the core recorded
+    /// for it. The run is same-plane by construction, so this is a total unwrap, not a filter.
+    static func captureTargets(_ effects: [Effect]) -> [CaptureTarget] {
+        effects.compactMap {
+            if case .capture(let id, let size) = $0 { CaptureTarget(id: id, size: size) } else { nil }
+        }
     }
 
     /// Maximal contiguous same-plane runs, in order — a tick's blits stay one run, hence one frame.
@@ -113,7 +120,8 @@ public final class CompositingExecutor: Executor {
     /// Exhaustive on purpose: a new `Effect` case must be assigned a plane, never default into one.
     static func plane(of effect: Effect) -> Plane {
         switch effect {
-        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .endTransition:
+        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer,
+             .endTransition:
             return .presentation
         case .capture:
             return .capture
@@ -147,6 +155,10 @@ public final class CompositingExecutor: Executor {
             case .setLayerFrame(let layer, let rect):
                 surface.setLayerFrame(layer, to: rect)
                 blitted = true
+            case .refreshLayer(let layer):
+                // Not counted as a blit either: a layer sharpening in place is not a frame of motion,
+                // and counting it would inflate the one smoothness measurement there is.
+                surface.refreshLayer(layer)
             case .endTransition:
                 dismissing = true
             case .setFrame, .park, .capture, .focus, .raise, .closeWindow, .exec:

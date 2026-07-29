@@ -91,7 +91,7 @@ public final class MockExecutor: Executor {
             feedback(.axLanded(id))
 
         // Capture: the still is in the (imaginary) image cache.
-        case .capture(let id):
+        case .capture(let id, _):
             feedback(.captureReady(id))
 
         // The real shell moves focus via AX and the observers echo it back, so the core absorbs its own
@@ -108,8 +108,8 @@ public final class MockExecutor: Executor {
         // different reason — a real app may refuse, so simulating a destroy here would be inventing the
         // one fact only the app can supply. `exec` for a third: a child process is not a desktop fact,
         // and this being a *record* is what keeps a replayed session log from spawning anything.
-        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .raise, .closeWindow,
-             .exec:
+        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise,
+             .closeWindow, .exec:
             break
         }
     }

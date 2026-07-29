@@ -22,6 +22,7 @@ import EmiraMotion
 // smooth-transitions = true             # false = always snap
 // hold-timeout = 1.0                    # seconds a cover may stay up waiting for AX to land
 // window = "stretch"                    # or "crop" — how a still is painted into a changing rect
+// cover = "exact"                       # or "immediate" — raise on the desktop alone, sharpen after
 //
 // [animation.scroll]                    # likewise [animation.resize] and [animation.movement]
 // stiffness = 800
@@ -138,6 +139,9 @@ extension Config {
         }
         if let animation: WindowAnimation = try table.word("animation.window") {
             config.windowAnimation = animation
+        }
+        if let cover: CoverMode = try table.word("animation.cover") {
+            config.coverMode = cover
         }
         if let spring = try table.spring("animation.scroll", default: config.scrollSpring) {
             config.scrollSpring = spring

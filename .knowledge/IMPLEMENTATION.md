@@ -185,6 +185,24 @@ the placement diff skips the window forever. Marking it unverified makes that pr
 the set clears it. Deliberately **not** a retry — nothing is scheduled — so a genuinely hung app costs one extra set
 per real event instead of a busy loop.
 
+**A batch streams its pieces, and what the atomic batch was protecting is now said outright.** Stills used to be
+answered all at once, on the reasoning that per-window acks would let the core count down to a raise the base was not
+ready for. That reasoning is about the *base*, not about batching, and answering as a unit charges every cover the
+full serialized cost of its scope (§6). So a batch hands each piece over as it lands, and the capture plane holds
+every ack until the base is in — the same guarantee, stated as the rule it always was. The core's gate is untouched:
+it still raises on the last `captureReady` and knows nothing about a base.
+
+**`CoverMode` decides when a window *has* pixels, and that is the whole of it.** Under `immediate` a window whose
+kept still fits is acked at once, and its own capture — still taken, because the stand-in buys the raise and not the
+transition — comes back as `Event.captureRefreshed`, which the reducer turns into `Effect.refreshLayer`: a cross-fade
+of one layer's *contents*, at whatever rect the last tick left it. It settles no gate, so it cannot raise, extend or
+close anything; a refresh naming a window with no layer yet is silently nothing, because the raise reads the store and
+finds those pixels already there. `Effect.capture` carries the window's current **size** for this, since only the core
+can say whether a window moved (its pixels are still good) or was re-laid-out (they are not), and `SurfaceCache` holds
+what a cover leaves behind at quarter scale — the memory budget and the "this is not live" tell, bought once. Nothing
+invalidates on a window's death: `WindowId`s are never reused, so a dead window's entry is unreachable rather than
+wrong, and the byte budget collects it.
+
 **A deadline that fires must degrade, not black out.** Every `capture` is answered exactly once within a bounded
 deadline (250 ms), because the core raises the cover on the *last* `captureReady` and the hold-timeout only starts at
 the raise — a dropped ack is a command that silently does nothing, with nothing to rescue it. A head batch that
@@ -352,11 +370,14 @@ emira/
 │   │   │   └── EnhancedUI.swift     # suspend kAXEnhancedUserInterface around a group of sets —
 │   │   │                            # read first, restore after, once per app per batch
 │   │   ├── Capture/
-│   │   │   ├── CaptureService.swift # the capture *plane*: batch, deadline, ack-exactly-once, and
-│   │   │   │                        # the WindowId-keyed store the cover reads
+│   │   │   ├── CaptureService.swift # the capture *plane*: batch, deadline, ack-exactly-once, hold
+│   │   │   │                        # every ack for the base, and the WindowId-keyed store the
+│   │   │   │                        # cover reads
+│   │   │   ├── SurfaceCache.swift   # stills that outlive their cover, at quarter scale — what
+│   │   │   │                        # CoverMode.immediate raises over, matched on size alone
 │   │   │   ├── SCKCapturer.swift    # the ScreenCaptureKit half: one still per window
 │   │   │   │                        # (desktopIndependentWindow) + the display excluding them as
-│   │   │   │                        # the base, fanned out concurrently
+│   │   │   │                        # the base, streamed back a piece at a time, base first
 │   │   │   └── LiveStream.swift     # SCK live layers (deluxe; M7)
 │   │   ├── Compositor/
 │   │   │   ├── ScreenGeometry.swift # THE Y-flip: core top-left ↔ Cocoa bottom-left (one number)
@@ -1113,8 +1134,10 @@ the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`
 `exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
 `center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through), and
-animation params (spring stiffness/damping, durations, and `animation.window` —
-`"stretch"` or `"crop"`, the only config value that reaches the *compositor* rather than the reducer). Struts are
+animation params (spring stiffness/damping, durations, and the two word-valued keys that reach the *shell* rather
+than the reducer — `animation.window`, `"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`;
+one says what to paint where a still no longer fits the rect, the other what to paint before it has arrived, and the
+core's emitted geometry is identical under both settings of both). Struts are
 deliberately *not* a
 key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with
 them and measured inside them. Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.

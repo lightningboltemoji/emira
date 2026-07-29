@@ -67,9 +67,16 @@ public enum Event: Sendable, Equatable, Codable {
     /// A `setFrame`/`park` was refused or timed out — the write did not happen at all.
     case axFailed(WindowId)
 
-    /// A `capture(win)` produced a still. Once every window a transition needs has reported ready, the
-    /// core raises the cover (`beginTransition`) or grows an already-raised one (`extendCover`).
+    /// A `capture(win)` produced pixels the cover can be built from — the window's own still, or, under
+    /// `CoverMode.immediate`, one kept from an earlier cover standing in for it. Once every window a
+    /// transition needs has reported ready, the core raises the cover (`beginTransition`) or grows an
+    /// already-raised one (`extendCover`).
     case captureReady(WindowId)
+
+    /// The window's *own* still has landed for a window the cover is standing in for. Only
+    /// `CoverMode.immediate` produces one, and it settles nothing: the transition's gates were paid at
+    /// `captureReady`, so this asks for a content swap and changes no geometry.
+    case captureRefreshed(WindowId)
 
     /// The capture plane could not produce a cover at all. Arrives *instead of* that batch's
     /// `captureReady` acks, so the core never counts down to a raise it has no pixels for.
