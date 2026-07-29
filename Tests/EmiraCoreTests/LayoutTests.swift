@@ -694,18 +694,18 @@ import Testing
         // …over a ladder rung.
         layout.setWidthPreset(1, ofColumn: ColumnId(1))
         #expect(layout.strip(metrics: m).columnWidths[0] == 600)
-        layout.setFullscreen(true, ofColumn: ColumnId(1))
+        layout.setFullscreen(.plain, ofColumn: ColumnId(1))
         #expect(layout.strip(metrics: m).columnWidths[0] == 900)
-        layout.setFullscreen(false, ofColumn: ColumnId(1))
+        layout.setFullscreen(nil, ofColumn: ColumnId(1))
         #expect(layout.strip(metrics: m).columnWidths[0] == 600)   // the rung, untouched
         #expect(layout.columns[0].widthPreset == 1)
 
         // …and over a `grow`n override, which is the case a saved point count would have to get right.
         layout.setWidthOverride(.fixed(250), ofColumn: ColumnId(1))
-        layout.setFullscreen(true, ofColumn: ColumnId(1))
+        layout.setFullscreen(.plain, ofColumn: ColumnId(1))
         #expect(layout.strip(metrics: m).columnWidths[0] == 900)
         #expect(layout.columns[0].widthOverride == .fixed(250))    // still there, merely shadowed
-        layout.setFullscreen(false, ofColumn: ColumnId(1))
+        layout.setFullscreen(nil, ofColumn: ColumnId(1))
         #expect(layout.strip(metrics: m).columnWidths[0] == 250)
     }
 
@@ -715,7 +715,7 @@ import Testing
         for setIntent in [{ (l: inout Layout) in l.setWidthPreset(1, ofColumn: ColumnId(1)) },
                           { (l: inout Layout) in l.setWidthOverride(.fixed(250), ofColumn: ColumnId(1)) }] {
             var layout = fourColumns()
-            layout.setFullscreen(true, ofColumn: ColumnId(1))
+            layout.setFullscreen(.plain, ofColumn: ColumnId(1))
             setIntent(&layout)
             #expect(!layout.columns[0].isFullscreen)
         }
@@ -726,7 +726,7 @@ import Testing
     @Test func anExtractedColumnInheritsFullscreen() {
         var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
-        layout.setFullscreen(true, ofColumn: ColumnId(2))
+        layout.setFullscreen(.plain, ofColumn: ColumnId(2))
         layout.extract(window: w21, toNewColumnAt: 2, columnIds: &ids)
         #expect(layout.columns[1].isFullscreen)
         #expect(layout.columns[2].isFullscreen)
@@ -736,7 +736,7 @@ import Testing
     @Test func settingFullscreenOnAnUnknownColumnIsANoOp() {
         var layout = fourColumns()
         let before = layout
-        layout.setFullscreen(true, ofColumn: ColumnId(99))
+        layout.setFullscreen(.plain, ofColumn: ColumnId(99))
         #expect(layout == before)
     }
 
@@ -1120,7 +1120,7 @@ import Testing
             ColumnLayout(id: ColumnId(1), windowIds: [w10], widthPreset: 0),          // ⅓ of 1760
             ColumnLayout(id: ColumnId(2), windowIds: [w20],
                          widthOverride: viaFullscreenFlag ? nil : .proportion(1.0),
-                         isFullscreen: viaFullscreenFlag),
+                         fullscreen: viaFullscreenFlag ? .plain : nil),
         ])
 
         let offset = layout.scrollOffsetToReveal(window: w20, from: 0, metrics: m) ?? 0
@@ -1321,7 +1321,7 @@ import Testing
     /// the two verbs would come to rest one outer gap apart.
     @Test func fullscreenIsTheContentWidthNotTheDisplayWidth() {
         let m = metrics()                            // 1000 wide, 40 pt outer gaps ⇒ 920 of content
-        let column = ColumnLayout(id: ColumnId(1), windowIds: [w0], isFullscreen: true)
+        let column = ColumnLayout(id: ColumnId(1), windowIds: [w0], fullscreen: .plain)
         #expect(Layout(columns: [column]).resolvedWidth(of: column, metrics: m) == 920)
     }
 

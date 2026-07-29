@@ -520,20 +520,42 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width and the floor is a
     bare minimum, but each is widened to the current width when the column is already outside it — so a `grow` on a
     column a config deliberately made wider than the screen is a no-op rather than a sudden shrink to fit.
-  - **`fullscreen` is a third layer *shadowing* both, not a fourth way of writing a width.** It toggles the focused
-    **column** between its own width and 100% of the content area — the strip's fullscreen, not the system's: no
-    Space, nothing hidden, the neighbours simply park and scroll back. Because the flag shadows the override, which
-    shadows the preset, **coming off needs no memory and no restore policy**: a column grown to 40% is 40% again
-    exactly, and one on a ladder rung is that rung, re-resolved against whatever the presets say *now*. The
-    alternative (save the old intent, put it back) has to decide what a saved 500 pt means after the ladder was
-    rewritten, and there is no good answer.
+  - **`fullscreen` is a third layer *shadowing* both, not a fourth way of writing a width.** It takes the focused
+    window to 100% of the content area — the strip's fullscreen, not the system's: no Space, nothing hidden, the
+    neighbours simply park and scroll back. Because the flag shadows the override, which shadows the preset, **the
+    width underneath needs no memory and no restore policy**: a column grown to 40% is 40% again exactly, and one on
+    a ladder rung is that rung, re-resolved against whatever the presets say *now*. The alternative (save the old
+    intent, put it back) has to decide what a saved 500 pt means after the ladder was rewritten, and there is no good
+    answer.
   - **An explicit width verb clears the flag**, which is a decision rather than hygiene: a width the user asked for
     out loud must be a width they can see. Left shadowed it is an invisible number, and the next `shrink` on a column
     already at 100% would move nothing at all — a dead knob. Cleared, the same press is *continuous* for free, since
-    the delta is taken from the resolved width.
-  - **Not exclusive, and column-scoped rather than window-scoped.** Two fullscreen columns is two full-width columns,
-    an arrangement `grow` already reaches. With stackmates this maximizes the **column**, so both windows stay on
-    screen at half height.
+    the delta is taken from the resolved width. It clears the undo record with it, for the same reason: what the user
+    just asked for is where things now are.
+  - **A window, not a column — so it *expels*, and therefore has to undo.** One with stackmates pops out into a
+    column of its own first, which is how it becomes full height as well as full width with no per-window height
+    intent to invent. That branch is the one `move-window` and `consume-or-expel` already make: alone in its column ⇒
+    the column resizes; with stackmates ⇒ it pops out. An expel is only tolerable because the second press puts it
+    back, so the column carries a `Fullscreen` record — the stack it left (column id + row) and the viewport it was
+    looking at. **Two things shadowing cannot carry, and nothing else**: the width still comes back by being
+    un-shadowed.
+    - **The viewport is stored as an anchor, not an offset** — a column, and its distance from the content area's
+      left edge. A scroll offset is a number in strip space that a column opening, closing or resizing to its *left*
+      silently re-points; re-reading the anchor's left edge at restore time absorbs all three, so rearranging the
+      part of the strip you were not looking at leaves the restore exact.
+    - **Staleness is not detected, it is unrepresentable.** Each half of the record names a `ColumnId`, ids are never
+      re-issued, and each half is simply not applied if its column has gone — the window keeps the column it is in,
+      or the strip reveals it the ordinary way. So "somebody rearranged things" needs no predicate and no expiry, and
+      every degradation lands on exactly what `fullscreen` did before it remembered anything.
+    - **The growth rides the structural edit, not the width spring.** The popped-out column is *born* at 100% and
+      never resizes, so its width is the expelled window's displacement from the slot it left — one animator with an
+      opinion about that number, the same division of labour `springHeightChange` keeps on the other axis. The
+      solo-window branch stays a pure resize and keeps the width spring, which is what a `SizeCorrection` springs back
+      through.
+  - **Still not exclusive.** Two fullscreen windows is two full-width columns, an arrangement `grow` already reaches,
+    and each carries its own record, so each undoes on its own and in either order. A window carried to another
+    workspace, or expelled out of a fullscreen column, takes the **width** and not the record: the arrangement it
+    would restore into is not the one it is going to.
 - **What an app answered is a fact the geometry consults, in both directions** (`World.corrections`, one
   `SizeCorrection { wanted, actual }` per window, `PRINCIPLES.md` §5). `wanted` is the **uncorrected** layout size —
   computed by running the ordinary geometry against metrics with the corrections emptied — so the question cannot

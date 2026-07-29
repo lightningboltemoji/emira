@@ -166,7 +166,7 @@ extension Command {
              build: bare(.cycleHeight)),
 
         Verb("fullscreen", arguments: Grammar.toggle,
-             summary: "Toggle the focused column to the strip's full width.",
+             summary: "Toggle the focused window to the strip's full width, and back.",
              build: { verb, args in .fullscreen(try toggle(args, verb: verb)) }),
 
         Verb("float", arguments: Grammar.toggle,

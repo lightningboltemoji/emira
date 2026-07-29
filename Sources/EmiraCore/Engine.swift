@@ -493,9 +493,13 @@ public enum Engine {
     /// - Parameter mover: the window drawn on top, `nil` for a departure — the thing that moved has left.
     /// - Parameter focused: the window the viewport frames on afterwards, `nil` to keep the offset.
     /// - Parameter old: the geometry being left, `nil` to snap (no display known, or a deliberate cut).
+    /// - Parameter framedAt: an offset to come to rest at instead of the reveal `focused` would compute —
+    ///   an un-fullscreen restoring a remembered viewport rather than framing on anything. Still subject
+    ///   to the no-motion snap below, so a restore to where we already are is free.
     private static func finishStructuralEdit(_ s: inout State, _ edit: LayoutEdit,
                                              focused: WindowId?, mover: WindowId?,
-                                             animatingFrom old: StructuralSnapshot?) -> [Effect] {
+                                             animatingFrom old: StructuralSnapshot?,
+                                             framedAt: Double? = nil) -> [Effect] {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
         guard let metrics = s.metrics() else { return emitPlacements(&s) }
@@ -506,11 +510,12 @@ public enum Engine {
         let start = s.motion.viewportOffset.current
 
         // No `end == start ⇒ snap` guard: a swap in full view moves the viewport not at all.
-        let end = focused.flatMap {
+        let revealed = focused.flatMap {
             s.config.centerFocusedColumn
                 ? s.layout.scrollOffsetToCenter(window: $0, metrics: metrics)
                 : s.layout.scrollOffsetToReveal(window: $0, from: start, metrics: metrics)
-        } ?? start
+        }
+        let end = framedAt ?? revealed ?? start
 
         guard let old else {                    // not animating this one — land it at once
             s.motion.snapViewport(to: end)
@@ -864,14 +869,89 @@ public enum Engine {
         }
     }
 
-    /// Take the focused column to the strip's full width, or hand back the width it already had. The
-    /// strip's fullscreen, not macOS's: no native Space, just a column resolving to 100% of the content
-    /// area with its neighbours parked at slivers. `isFullscreen` shadows the width intent rather than
-    /// replacing it, so coming back off survives a config reload or a display change.
+    /// Take the focused **window** to the strip's full width, and put it back. The strip's fullscreen,
+    /// not macOS's: no native Space, just a column at 100% of the content area with its neighbours
+    /// parked at slivers. A window rather than a column, so one with stackmates is expelled into a
+    /// column of its own — the branch `move-window` and `consume-or-expel` make — and the `Fullscreen`
+    /// record it carries is what puts it back.
     private static func handleFullscreen(_ s: inout State, _ toggle: Toggle) -> [Effect] {
-        resizeFocusedColumn(&s) { layout, column, _, _ in
-            layout.setFullscreen(toggle.resolved(current: column.isFullscreen), ofColumn: column.id)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        guard let metrics = s.metrics(),
+              let focused = s.world.focusedWindow,
+              let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
+
+        let column = s.layout.columns[index]      // a copy; never re-read after a mutation
+        // Before anything is written: `fullscreen on` twice must not overwrite the record with the
+        // arrangement fullscreen itself created.
+        guard toggle.resolved(current: column.isFullscreen) != column.isFullscreen else { return [] }
+
+        return column.isFullscreen
+            ? leaveFullscreen(&s, focused, column, metrics)
+            : enterFullscreen(&s, focused, column, at: index, metrics)
+    }
+
+    /// Fullscreen on. The anchor names the window's *current* column, the one certain to survive an
+    /// expel, and is read at `viewportOffset.target` — a press landing mid-scroll remembers where that
+    /// scroll is coming to rest.
+    private static func enterFullscreen(_ s: inout State, _ focused: WindowId, _ column: ColumnLayout,
+                                        at index: Int, _ metrics: LayoutMetrics) -> [Effect] {
+        let anchor = Fullscreen.Anchor(
+            column: column.id,
+            dx: s.layout.strip(metrics: metrics).leftEdge(of: index) - s.motion.viewportOffset.target)
+
+        guard column.windowIds.count > 1,
+              let row = column.windowIds.firstIndex(of: focused) else {
+            // Alone in its column: nothing to expel, so a pure resize.
+            return resizeFocusedColumn(&s) { layout, column, _, _ in
+                layout.setFullscreen(Fullscreen(anchor: anchor), ofColumn: column.id)
+            }
         }
+
+        // With stackmates, a structural edit — and the growth rides it rather than the width spring,
+        // since the popped-out column is born at 100% and never resizes.
+        let old = structuralSnapshot(s, metrics)
+        // In place, the column it leaves sliding right, so the anchor does not move under it.
+        let edit = s.workspaces.extract(window: focused, toNewColumnAt: index)
+        guard edit.moved, let popped = s.layout.columnIndex(ofWindow: focused) else { return [] }
+        s.layout.setFullscreen(Fullscreen(stack: .init(column: column.id, row: row), anchor: anchor),
+                               ofColumn: s.layout.columns[popped].id)
+        return finishStructuralEdit(&s, edit, focused: focused, mover: focused, animatingFrom: old)
+    }
+
+    /// Fullscreen off. Each half of the record is applied only if its column is still on the strip;
+    /// a half whose column has gone leaves the window where it is, or the strip revealing it the
+    /// ordinary way. `ColumnId`s are never re-issued, so a surviving match is that column.
+    private static func leaveFullscreen(_ s: inout State, _ focused: WindowId, _ column: ColumnLayout,
+                                        _ metrics: LayoutMetrics) -> [Effect] {
+        let record = column.fullscreen ?? .plain
+
+        guard let stack = record.stack, s.layout.columnIndex(withId: stack.column) != nil else {
+            // Nothing to merge back into: a pure resize down the width stack. The anchor still applies —
+            // only this column's width changed, not the strip's shape.
+            return resizeFocusedColumn(&s, framedAt: restoredOffset(s, record.anchor, metrics)) {
+                layout, column, _, _ in layout.setFullscreen(nil, ofColumn: column.id)
+            }
+        }
+
+        let old = structuralSnapshot(s, metrics)
+        // Cleared before the merge, so a merge that no-ops still leaves a width the user can act on.
+        s.layout.setFullscreen(nil, ofColumn: column.id)
+        let edit = s.layout.move(window: focused, toColumn: stack.column, at: stack.row)
+        // Read *after* the merge: the strip is a column shorter, so the anchor's left edge has moved.
+        return finishStructuralEdit(&s, edit, focused: focused, mover: focused, animatingFrom: old,
+                                    framedAt: restoredOffset(s, record.anchor, metrics))
+    }
+
+    /// The offset that puts `anchor`'s column back the same distance from the content area's left edge —
+    /// or `nil` if that column has gone, which leaves the caller's ordinary reveal in charge. Clamped
+    /// here and not by `emitPlacements`, which the animated path never reaches: with what the distance
+    /// was measured across now gone it asks to look past the strip's origin, and a scroll aimed there
+    /// travels there.
+    private static func restoredOffset(_ s: State, _ anchor: Fullscreen.Anchor?,
+                                       _ metrics: LayoutMetrics) -> Double? {
+        guard let anchor, let i = s.layout.columnIndex(withId: anchor.column) else { return nil }
+        return s.layout.clampScrollOffset(s.layout.strip(metrics: metrics).leftEdge(of: i) - anchor.dx,
+                                          metrics: metrics)
     }
 
     /// The shared body of every column resize: read the width being left, let `retarget` write the new
@@ -880,10 +960,13 @@ public enum Engine {
     /// and warrants a transition even when the viewport does not move, so the `end == start` guard is
     /// deliberately absent. The reals teleport to their final size behind the cover.
     ///
+    /// - Parameter framedAt: an offset to come to rest at instead of the reveal the resize would compute —
+    ///   an un-fullscreen whose window never left its column, restoring a remembered viewport.
     /// - Parameter retarget: given the layout, the focused column as it was, the metrics, and its current
     ///   resolved width, records the new intent. Called once, between the two reads.
     private static func resizeFocusedColumn(
         _ s: inout State,
+        framedAt: Double? = nil,
         _ retarget: (inout Layout, ColumnLayout, LayoutMetrics, Double) -> Void
     ) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
@@ -905,7 +988,9 @@ public enum Engine {
         let toWidth = s.layout.resolvedWidth(ofColumn: column.id, metrics: metrics.uncorrected) ?? fromWidth
 
         // Nothing to look at: a single-preset cycle, two presets resolving alike, or a clamp that left the
-        // intent where it was. The stored intent still moved, so a later press acts at once.
+        // intent where it was. The stored intent still moved, so a later press acts at once. `framedAt`
+        // is skipped with it: a column reaching here at one width is already at 100%, and a content-width
+        // column rests flush under both reveal and center, so its anchor is the offset it already has.
         guard !approximatelyEqualScalar(fromWidth, toWidth) else { return emitPlacements(&s) }
 
         // The user asked again, so ask the app again: limits track what a window is currently showing.
@@ -913,9 +998,10 @@ public enum Engine {
         guard let asked = s.metrics() else { return emitPlacements(&s) }
 
         // A resize scrolls too: a column that just grew may no longer fit where it was.
-        let end = (s.config.centerFocusedColumn
+        let revealed = s.config.centerFocusedColumn
             ? s.layout.scrollOffsetToCenter(window: focused, metrics: asked)
-            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: asked)) ?? start
+            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: asked)
+        let end = framedAt ?? revealed ?? start
 
         let scope = scopeUnion(s.workspaces, departing,
                                s.layout.sweptWindowIds(from: start, to: end, metrics: asked))

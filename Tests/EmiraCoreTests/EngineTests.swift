@@ -1836,6 +1836,290 @@ import EmiraMotion
         }
     }
 
+    // MARK: - Fullscreen as a reversible window operation (the expel and its undo)
+
+    /// The strip every test below starts from: `[w1] [w2 w3] [w4]`, focus on `w3`, the first two columns
+    /// in view and the third scrolled off. ½-width presets over a 1000-wide display, snapping — these
+    /// are about *where* things end up.
+    static func stackedStrip() -> State {
+        var s = Self.run(Self.booted(config: Self.halfWidthSnap), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+            .windowCreated(Self.snapshot(3)),
+        ]).0
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // w3 joins w2's column
+        s = Self.run(s, [.windowCreated(Self.snapshot(4))]).0         // …opening beside that column
+        // Back to w3 by way of w1, which is what scrolls the strip home.
+        for command in [Command.focus(.left), .focus(.left), .focus(.right), .focus(.down)] {
+            (s, _) = Engine.reduce(s, .command(command))
+        }
+
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)]])
+        #expect(s.world.focusedWindow == WindowId(3))
+        #expect(s.motion.viewportOffset.current == 0)
+        return s
+    }
+
+    /// The whole feature in one round trip. Fullscreen is a **window** operation: a window with
+    /// stackmates pops out into a column of its own — which is how it gets full *height* too, with no
+    /// per-window height intent needed — and the second press is an *undo* rather than a second width
+    /// change. The column it returns to is the same `ColumnId` it left, not a rebuild.
+    @Test func fullscreenExpelsAStackedWindowAndPutsItBackWhereItCameFrom() {
+        var s = Self.stackedStrip()
+        let home = s.layout.columns[1].id
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        // Popped out **in place**: the column it left slides right, so the strip does not rearrange
+        // around the window the user is looking at.
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(2)], [WindowId(4)]])
+        #expect(Self.width(s, 1) == 1000)
+        #expect(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
+                                          metrics: s.metrics()!) == [WindowId(3)])
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.toggle)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)]])
+        #expect(s.layout.columns[1].id == home)
+        #expect(Self.width(s, 1) == 500)
+        // …and the scroll position too, which is the half a column that merely shrinks again never had.
+        #expect(s.motion.viewportOffset.current == 0)
+    }
+
+    /// The row, not just the column: a window taken out of the middle of a stack goes back to the
+    /// middle. `Layout.move(window:toColumn:at:)` clamps, so a stack that changed depth meanwhile lands
+    /// it at the nearest end rather than refusing.
+    @Test func fullscreenRestoresTheRowWithinTheStackNotJustTheColumn() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.focus(.down)))            // w4 is still its own column…
+        s = Self.run(s, []).0
+        (s, _) = Engine.reduce(s, .command(.focus(.right)))           // …so go get it
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // [w1] [w2 w3 w4]
+        (s, _) = Engine.reduce(s, .command(.focus(.up)))              // the middle one, w3
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3), WindowId(4)]])
+        #expect(s.world.focusedWindow == WindowId(3))
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(2), WindowId(4)]])
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3), WindowId(4)]])
+    }
+
+    /// A window already alone in its column has nothing to expel, so fullscreen stays the pure resize it
+    /// has always been — the same branch `move-window` and `consume-or-expel` make. Nothing is minted and
+    /// nothing is merged, which is what keeps the width spring (and its correction spring-back) in play.
+    @Test func fullscreenOnASoloWindowMovesNothingStructural() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))            // w1, alone in column 0
+        let before = s.layout.columns.map(\.id)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(s.layout.columns.map(\.id) == before)
+        #expect(Self.width(s, 0) == 1000)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.id) == before)
+        #expect(Self.width(s, 0) == 500)
+    }
+
+    /// The stack can vanish while the window is fullscreen — the stackmate closed, or moved away. There
+    /// is then nothing to merge into, so the window keeps the column it is in and simply stops being full
+    /// width, which is exactly what fullscreen did before it remembered anything. The anchor names that
+    /// same column, so the scroll falls back to the ordinary reveal in the same breath.
+    @Test func unFullscreenKeepsItsOwnColumnWhenTheStackItLeftHasGone() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(2)], [WindowId(4)]])
+
+        s = Self.run(s, [.windowDestroyed(WindowId(2))]).0            // the column's last window
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(4)]])
+        #expect(Self.width(s, 1) == 500)                              // its own width, all that was owed
+        #expect(!s.layout.columns[1].isFullscreen)
+    }
+
+    /// Why the record stores a column and a distance rather than a scroll offset. A column that changed
+    /// width to the *left* of the anchor moves every strip coordinate right of it, so a remembered
+    /// offset would put the strip back somewhere it never was. Re-reading the anchor's left edge absorbs
+    /// exactly that, and the column comes to rest the same distance from the viewport's edge it left at.
+    @Test func theViewportAnchorSurvivesAColumnResizingToItsLeft() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+
+        // Widen column 0 while w3 is fullscreen, then come back to it.
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        (s, _) = Engine.reduce(s, .command(.grow(.points(100))))
+        #expect(Self.width(s, 0) == 600)
+        (s, _) = Engine.reduce(s, .command(.focus(.right)))
+        #expect(s.world.focusedWindow == WindowId(3))
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)]])
+        // 500 pt from the content area's left edge — where it was — rather than the remembered 0, which
+        // is now 100 pt of somebody else's column.
+        let strip = s.layout.strip(metrics: s.metrics()!)
+        #expect(strip.leftEdge(of: 1) - s.motion.viewportOffset.current == 500)
+        #expect(s.motion.viewportOffset.current == 100)
+    }
+
+    /// The anchor can survive while everything that *put* it where it was does not. Its `dx` then asks
+    /// for an offset left of the strip's origin — there is no longer anything there to show — and the
+    /// clamp every scroll target passes through absorbs it: the strip lands flush left and the column
+    /// gives up the distance rather than being pushed right with nothing behind it.
+    @Test func aRestoredAnchorWithNothingLeftOfItCollapsesFlushInsteadOfPushingRight() {
+        var s = Self.stackedStrip()
+        // A fourth column, so the strip is still scrollable after the loss and the *floor* is what bites
+        // rather than the ceiling collapsing to zero anyway.
+        (s, _) = Engine.reduce(s, .command(.focus(.right)))
+        s = Self.run(s, [.windowCreated(Self.snapshot(5))]).0
+        for command in [Command.focus(.left), .focus(.left), .focus(.left), .focus(.right), .focus(.down)] {
+            (s, _) = Engine.reduce(s, .command(command))
+        }
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)], [WindowId(5)]])
+        #expect(s.world.focusedWindow == WindowId(3))
+        #expect(s.motion.viewportOffset.current == 0)      // …so the anchor's dx is a full column, 500
+
+        // Animated, deliberately: the snap path re-clamps the resting offset in `emitPlacements`, so
+        // only a transition can tell whether the *restore itself* clamps. Aimed past the origin, the
+        // scroll would travel there and sit there — `closeTransition` snaps to the target it was given.
+        (s, _) = Engine.reduce(s, .configChanged(Self.halfWidth))
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        (s, _) = Self.drive(s)
+        s = Self.run(s, [.windowDestroyed(WindowId(1))]).0  // the column the 500 was measured across
+        (s, _) = Self.drive(s)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.motion.viewportOffset.target == 0)       // aimed at the origin, not 500 pt past it
+        (s, _) = Self.drive(s)
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(2), WindowId(3)], [WindowId(4)], [WindowId(5)]])
+        // 0 − 500 asks to look past the strip's origin; the clamp floors it, so the column comes to rest
+        // at the content area's left edge instead of 500 pt into empty space.
+        #expect(Self.approxScalar(s.motion.viewportOffset.current, 0))
+        #expect(Self.approxScalar(s.layout.strip(metrics: s.metrics()!).leftEdge(of: 0)
+                                  - s.motion.viewportOffset.current, 0))
+    }
+
+    /// An explicit width verb ends the operation, record and all — the same decision that already clears
+    /// the flag, for the same reason. What the user asked for out loud is where things now are, so a
+    /// later fullscreen undoes to *here* rather than teleporting the window back into a stack it left
+    /// two commands ago.
+    @Test func aWidthVerbClearsTheUndoRecordAndNotJustTheFlag() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        (s, _) = Engine.reduce(s, .command(.shrink(.percent(10))))
+        #expect(s.layout.columns[1].fullscreen == nil)
+        #expect(Self.width(s, 1) == 900)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(2)], [WindowId(4)]])
+    }
+
+    /// Still not exclusive: two fullscreen windows is two full-width columns, an arrangement `grow`
+    /// already reaches. Each carries its own record, so each undoes on its own and in either order.
+    @Test func twoWindowsCanBeFullscreenAtOnceAndEachUndoesOnItsOwn() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))          // w3 pops out
+        for _ in 0..<2 { (s, _) = Engine.reduce(s, .command(.focus(.right))) }
+        #expect(s.world.focusedWindow == WindowId(4))
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))          // w4, already alone
+        #expect(Self.width(s, 1) == 1000 && Self.width(s, 3) == 1000)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))         // w4 first
+        #expect(Self.width(s, 3) == 500)
+        #expect(Self.width(s, 1) == 1000)                              // w3 untouched by it
+
+        for _ in 0..<2 { (s, _) = Engine.reduce(s, .command(.focus(.left))) }
+        #expect(s.world.focusedWindow == WindowId(3))
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)]])
+    }
+
+    /// A cross-workspace move carries the fullscreen *width*, because that is a size the user asked for
+    /// out loud — but not the record, whose columns are on the strip it left. It arrives fullscreen with
+    /// nothing to undo, which is the state `Fullscreen.plain` exists to name.
+    @Test func aFullscreenWindowMovedToAnotherWorkspaceCarriesTheWidthButNotTheUndo() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        (s, _) = Engine.reduce(s, .command(.moveToWorkspaceAndFocus(.name(WorkspaceName("2")!))))
+        #expect(s.layout.columns.map(\.windowIds) == [[WindowId(3)]])
+        #expect(s.layout.columns[0].fullscreen == .plain)
+        #expect(Self.width(s, 0) == 1000)
+
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        #expect(Self.width(s, 0) == 500)
+        // The strip it left closed ranks and is not reached into from here.
+        #expect(s.workspaces[WorkspaceName("1")!].columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2)], [WindowId(4)]])
+    }
+
+    /// The expel is a **structural edit**, and the growth to full width rides that rather than the width
+    /// spring: the popped-out column is born at 100% and never resizes, so exactly one animator has an
+    /// opinion about its width — the same division of labour `springHeightChange` keeps on the other axis.
+    @Test func fullscreensExpelAnimatesAsAStructuralEditNotAWidthSpring() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .configChanged(Self.halfWidth))      // …now animating
+
+        let (full, ffx) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(full.motion.isTransitioning)
+        #expect(full.motion.columnWidth(full.layout.columns[1].id) == nil)
+        #expect(full.motion.windowAnimator(WindowId(3)) != nil)
+        #expect(Self.capturedIds(in: ffx).contains(WindowId(3)))
+
+        let (done, dfx) = Self.drive(full)
+        #expect(dfx.contains(.endTransition))
+        #expect(Self.approxScalar(Self.placement(of: WindowId(3), in: dfx)?.width ?? 0, 1000))
+        #expect(Self.width(done, 1) == 1000)
+        #expect(done.motion.currentColumnWidths.isEmpty)
+    }
+
+    /// A fullscreen press landing on a scroll still in flight *redirects* that session rather than
+    /// opening a second one — the expel is a structural edit and rides `driveTransition` like every
+    /// other. The anchor is read off `viewportOffset.target`, not `.current`, so what it remembers is
+    /// where the interrupted scroll was going to come to rest and not the frame it was passing through.
+    @Test func fullscreenLandingMidScrollRidesTheOpenTransitionAndAnchorsOnItsDestination() {
+        var s = Self.stackedStrip()
+        (s, _) = Engine.reduce(s, .configChanged(Self.halfWidth))
+
+        // `center-column` scrolls without moving focus, so the press below lands on w3 with the strip
+        // genuinely in flight — 0 → 250, interrupted three frames in.
+        (s, _) = Engine.reduce(s, .command(.centerColumn))
+        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        for _ in 0..<3 { (s, _) = Engine.reduce(s, .tick(dt: 1.0 / 120)) }
+        let destination = s.motion.viewportOffset.target
+        #expect(destination == 250)
+        #expect(!Self.approxScalar(s.motion.viewportOffset.current, destination))
+
+        let generation = s.motion.retargetGeneration
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.on)))
+        #expect(s.motion.retargetGeneration > generation)          // redirected…
+        #expect(s.motion.transition != nil)                        // …the same session, not a second one
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(3)], [WindowId(2)], [WindowId(4)]])
+
+        (s, _) = Self.drive(s)
+        (s, _) = Engine.reduce(s, .command(.fullscreen(.off)))
+        (s, _) = Self.drive(s)
+        #expect(s.layout.columns.map(\.windowIds)
+                == [[WindowId(1)], [WindowId(2), WindowId(3)], [WindowId(4)]])
+        // Where the interrupted scroll was coming to rest, not the frame it was passing through — the
+        // two are ~250 pt apart here, so an anchor read off `.current` would land visibly short.
+        #expect(Self.approxScalar(s.motion.viewportOffset.current, destination))
+    }
+
     @Test func cyclingWidthWrapsBackToTheFirstPreset() {
         var (s, _) = Self.run(Self.booted(), [
             .windowCreated(Self.snapshot(1)),
