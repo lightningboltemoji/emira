@@ -5,9 +5,7 @@
   a tiling, scrolling window manager for macOS, inspired by <a href="https://github.com/niri-wm/niri">niri</a> and <a href="https://github.com/nikitabobko/AeroSpace">AeroSpace</a>
 </p>
 
-## about
-
-<table>
+<table align="center">
 <tr>
 <td>
   <p align="center">
@@ -28,12 +26,27 @@
 </tr>
 </table>
 
-<p>
-  combined on macOS, these concepts look a little like this!
-</p>
-<p>
+## about
+
+emira makes managing many windows less painful.
+
+imagine if your monitor extended infinitely to both sides. your windows are arranged for you along this infinite strip; you control what slice is in view. that's pretty much what it does!
+
+and even better, you can have as many strips of windows as you want, and swap between them at any time.
+
+<br />
+<p align="center">
   <img width="600" height="389" alt="emira-demo" src="https://github.com/user-attachments/assets/4c2d51f6-0d46-4d18-bf24-ae05d4b2425f" />
 </p>
+
+## config
+
+driven by `~/.config/emira/emira.toml`
+
+you can assign key binds to a number of commands:
+
+- window (`focus`, `grow`, `shrink`, `move-window`, `fullscreen`, `float`, `consume-or-expel`)
+- workspace (`focus-workspace`, `move-to-workspace`, `move-to-workspace-and-focus`)
 
 ## install
 
