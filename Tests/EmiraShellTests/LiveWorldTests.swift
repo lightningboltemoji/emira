@@ -819,7 +819,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.mouseUp)
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
-            .windowMinimized(id), .windowDeminimized(id), .focusChanged(id), .dragEnded,
+            .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system), .dragEnded,
         ])
     }
 
@@ -832,7 +832,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.watcher.handle(.focusMoved(nil))
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil)])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil, origin: .system)])
     }
 
     // MARK: Focus reports that are our own, arriving late
@@ -871,7 +871,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.watcher.handle(.focusMoved(two))
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two)])
+        // `.ours`, which is also the fact `[focus] system-events` needs: a policy that could refuse this
+        // would refuse every focus command emira issues.
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two, origin: .ours)])
         #expect(world.source.aliveProbes.isEmpty)
     }
 
@@ -888,7 +890,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.watcher.handle(.focusMoved(term))
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term)])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term, origin: .system)])
     }
 
     @Test func aSwallowedEchoIsNotWhatTheNextReportIsReadAgainst() {
@@ -925,7 +927,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let before = world.recorder.events.count
         world.watcher.handle(.focusMoved(one))        // now a genuine Cmd-Tab back to it
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one)])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
     }
 
     // MARK: Focus reports macOS made up
@@ -943,7 +945,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(id))
 
         #expect(world.source.aliveProbes.isEmpty, "nothing was displaced, so there is no question")
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(id)])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(id, origin: .system)])
     }
 
     @Test func aFocusReportDisplacingALiveWindowIsTheUserAndReaches() {
@@ -957,7 +959,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(two))       // a Cmd-Tab: window `one` is still there
 
         #expect(world.source.aliveProbes == [one])
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two)])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two, origin: .system)])
     }
 
     @Test func aFocusReportBackfillingADeadWindowIsDropped() {
@@ -1028,7 +1030,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let before = world.recorder.events.count
         world.watcher.handle(.focusMoved(term))       // a real Cmd-Tab a moment later
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term)],
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term, origin: .system)],
                 "read against `two`, which is alive")
     }
 

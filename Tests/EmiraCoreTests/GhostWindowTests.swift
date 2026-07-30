@@ -101,7 +101,7 @@ import EmiraMotion
         #expect(s.layout.columns.count == 3)
 
         // ...but it can still take focus: activating an app surfaces whichever window is AXMain.
-        (s, _) = Self.run(s, [.focusChanged(WindowId(9))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(9), origin: .system)])
         #expect(s.world.focusedWindow == WindowId(9))
 
         // `right` re-enters at the left edge, `left` at the right edge — and both actually move.
@@ -157,7 +157,7 @@ import EmiraMotion
                 "each arrival opened beside the one that had focus, so they chain left to right")
 
         // Go back to the first column and open another: it lands immediately to its right.
-        (s, _) = Self.run(s, [.focusChanged(WindowId(1)), .windowCreated(Self.snap(4))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(1), origin: .system), .windowCreated(Self.snap(4))])
         #expect(s.layout.columns.map(\.windowIds)
                 == [[WindowId(1)], [WindowId(4)], [WindowId(2)], [WindowId(3)]])
         #expect(s.world.focusedWindow == WindowId(4), "and it takes focus")
@@ -169,10 +169,10 @@ import EmiraMotion
         // Anchoring on live focus alone appends every ⌘N at the far end; `lastStripFocus` survives it.
         var s = Self.booted()
         (s, _) = Self.run(s, (1...3).map { .windowCreated(Self.snap($0)) })
-        (s, _) = Self.run(s, [.focusChanged(WindowId(1))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(1), origin: .system)])
         #expect(s.world.lastStripFocus == WindowId(1))
 
-        (s, _) = Self.run(s, [.focusChanged(nil), .windowCreated(Self.snap(4))])
+        (s, _) = Self.run(s, [.focusChanged(nil, origin: .system), .windowCreated(Self.snap(4))])
         #expect(s.layout.columns.map(\.windowIds)
                 == [[WindowId(1)], [WindowId(4)], [WindowId(2)], [WindowId(3)]],
                 "opened beside where the user was working, not at the end")
@@ -267,7 +267,7 @@ import EmiraMotion
         (s, _) = Self.run(s, (1...4).map { .windowCreated(Self.snap($0)) })
 
         // Focus the third column, then close it: focus takes the column that slid into its place.
-        (s, _) = Self.run(s, [.focusChanged(WindowId(3)), .windowDestroyed(WindowId(3))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(3), origin: .system), .windowDestroyed(WindowId(3))])
         #expect(s.world.focusedWindow == WindowId(4), "the right neighbour, not window 1")
 
         // Close the last column: there is no right neighbour, so the left one takes over.
@@ -279,10 +279,10 @@ import EmiraMotion
         var s = Self.booted(Self.halfSnap)
         (s, _) = Self.run(s, (1...3).map { .windowCreated(Self.snap($0)) })
         // Pull window 2 into window 1's column, so column 0 is a two-window stack.
-        (s, _) = Self.run(s, [.focusChanged(WindowId(2)), .command(.consumeOrExpel(.left))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(2), origin: .system), .command(.consumeOrExpel(.left))])
         #expect(s.layout.columns.first?.windowIds.count == 2)
 
-        (s, _) = Self.run(s, [.focusChanged(WindowId(2)), .windowDestroyed(WindowId(2))])
+        (s, _) = Self.run(s, [.focusChanged(WindowId(2), origin: .system), .windowDestroyed(WindowId(2))])
         #expect(s.world.focusedWindow == WindowId(1), "the surviving stackmate, not another column")
     }
 

@@ -431,9 +431,9 @@ public final class WorldWatcher {
     /// Pass a focus report to the core — unless it is our own stale echo, or macOS backfilling the
     /// window that just died.
     ///
-    /// `Event.focusChanged` means "focus moved and we did not move it, so snap the viewport to reveal
-    /// it". Two other things post the identical notification, and each is filtered by the one fact that
-    /// separates it from a Cmd-Tab.
+    /// `Event.focusChanged` means "focus moved, so snap the viewport to reveal it", and carries whether
+    /// *we* moved it — the fact `[focus] system-events` judges, and one only this file holds. Two other
+    /// things post the identical notification, and each is filtered by the same record that answers that.
     ///
     /// **Our own focus, arriving late.** `Effect.focus` provokes the same report, and the design counts
     /// on absorbing that echo because a reveal of an already-revealed window is a no-op. It is only a
@@ -465,7 +465,7 @@ public final class WorldWatcher {
         // named the replacement ourselves. Nothing to ask, and one lane round trip not spent.
         case .expected:
             focus = id
-            emit(.focusChanged(id))
+            emit(.focusChanged(id, origin: .ours))
             return
 
         case .external:
@@ -476,13 +476,13 @@ public final class WorldWatcher {
         focus = id
         // Nothing displaced (boot), or a report that changes nothing: there is no question to ask.
         guard let displaced, displaced != id else {
-            emit(.focusChanged(id))
+            emit(.focusChanged(id, origin: .system))
             return
         }
         guard isLive(displaced) else { return }   // already known dead — free answer
         source.isAlive(displaced) { [weak self] alive in
             guard let self, alive, isLive(displaced) else { return }
-            emit(.focusChanged(id))
+            emit(.focusChanged(id, origin: .system))
         }
     }
 

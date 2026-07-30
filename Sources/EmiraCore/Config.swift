@@ -22,6 +22,32 @@ public enum CoverMode: String, Sendable, Equatable, Codable, CaseIterable {
     case immediate
 }
 
+/// Which focus changes emira did not ask for it will honour. Apps move focus to themselves at moments
+/// nobody chose — dismissing a floating reminder brings its parked window forward from another
+/// workspace — and the strip follows, because a focus emira did not cause is still one it must reveal.
+///
+/// Three escalating refusals, and the ladder is monotone: `ignore`'s admissions are a subset of
+/// `onScreen`'s, which are a subset of `respect`'s. Each buys quiet at the price of a piece of system
+/// behaviour, so the choice is how much of macOS's own focus you still need — all of it, clicking what
+/// you can see, or none.
+///
+/// **What none means.** `ignore` still honours focus onto a window emira does not place — a float, a
+/// dialog, a sheet. Not an exception grudgingly made: emira already declines an opinion about where a
+/// float *sits*, and policing focus onto one is the same opinion. It is also what keeps a modal save
+/// sheet usable, since at this layer a sheet taking focus and a Cmd-Tab are the same notification.
+public enum SystemFocusEvents: String, Sendable, Equatable, Codable, CaseIterable {
+    /// Every focus change is honoured — the strip reveals whatever the system focused.
+    case respect
+    /// Honoured only if the window is already on the screen. A parked column, another workspace, a
+    /// minimized window and a hidden app are all refused, so nothing an app does to itself can move the
+    /// viewport or switch workspaces; clicking a window you can see still works, and so does Cmd-Tab
+    /// *to* one.
+    case onScreen = "on-screen"
+    /// Honoured only for windows emira does not place. Focus between tiled windows becomes emira's
+    /// alone: Cmd-Tab and a click on a neighbouring window both bounce back.
+    case ignore
+}
+
 /// The pure configuration values the reducer reads.
 public struct Config: Sendable, Equatable, Codable {
     /// The column width presets `cycleWidth` steps through. A column stores an *index* into this
@@ -57,6 +83,9 @@ public struct Config: Sendable, Equatable, Codable {
     public var moveSpring: SpringParams
     /// Whether a focus change centers the focused column or does the minimal scroll that reveals it.
     public var centerFocusedColumn: Bool
+    /// Which focus changes emira did not cause it honours. `respect` is every one of them, which is
+    /// macOS's own behaviour and the only setting under which an app can move the viewport by itself.
+    public var systemFocusEvents: SystemFocusEvents
     /// How a window's captured still is painted into the rect it occupies during a transition. Read
     /// by the compositor, never the reducer — the core's emitted geometry is identical under both,
     /// and the two differ only when a window's rect stops matching the still captured of it.
@@ -91,6 +120,7 @@ public struct Config: Sendable, Equatable, Codable {
         resizeSpring: SpringParams = .smooth,
         moveSpring: SpringParams = .smooth,
         centerFocusedColumn: Bool = false,
+        systemFocusEvents: SystemFocusEvents = .respect,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
         smoothTransitions: Bool = true,
@@ -108,6 +138,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.resizeSpring = resizeSpring
         self.moveSpring = moveSpring
         self.centerFocusedColumn = centerFocusedColumn
+        self.systemFocusEvents = systemFocusEvents
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
         self.smoothTransitions = smoothTransitions

@@ -380,7 +380,7 @@ import Testing
         #expect(s.workspaces.workspace(of: away) == other)
         #expect(s.workspaces.focused == .first)
 
-        let (after, fx) = run(s, [.focusChanged(away)])
+        let (after, fx) = run(s, [.focusChanged(away, origin: .system)])
         #expect(after.workspaces.focused == other)
         #expect(after.world.focusedWindow == away)
         #expect(tiled(in: fx) == [away])
@@ -404,7 +404,7 @@ import Testing
 
         // Feed our own effect back as the shell's AX observer would. Emitting nothing is the proof: a
         // stream with no `.focus`, `.setFrame` or `.park` cannot echo again, so the sequence terminates.
-        let (echoed, echoFx) = run(s, [.focusChanged(WindowId(2))])
+        let (echoed, echoFx) = run(s, [.focusChanged(WindowId(2), origin: .ours)])
         #expect(echoFx.isEmpty, "the echo re-emitted \(echoFx)")
         #expect(echoed.workspaces == s.workspaces)
         #expect(echoed.world == s.world)
@@ -421,7 +421,7 @@ import Testing
         #expect(s.workspaces.focused == name("5"))
 
         // Cmd-Tab back to a window that lives at home — window 1, not the one we left focused.
-        s = run(s, [.focusChanged(WindowId(1))]).0
+        s = run(s, [.focusChanged(WindowId(1), origin: .system)]).0
         #expect(s.workspaces.focused == .first)
         // "5" remembers the window we were on when we were pulled away.
         #expect(s.workspaces[lastFocusOf: name("5")] == WindowId(2))
@@ -431,7 +431,7 @@ import Testing
     /// has always been. Only the cross-workspace case is new.
     @Test func externalFocusOnThisWorkspaceStillJustReveals() {
         let s = world(3)
-        let (after, fx) = run(s, [.focusChanged(WindowId(1))])
+        let (after, fx) = run(s, [.focusChanged(WindowId(1), origin: .system)])
         #expect(after.workspaces.focused == .first)
         #expect(after.world.focusedWindow == WindowId(1))
         #expect(focused(in: fx).isEmpty)
@@ -489,7 +489,7 @@ import Testing
         #expect(s.workspaces.workspace(of: away) == other)
         #expect(!s.motion.isTransitioning)
 
-        let (after, fx) = Engine.reduce(s, .focusChanged(away))
+        let (after, fx) = Engine.reduce(s, .focusChanged(away, origin: .system))
         #expect(after.workspaces.focused == other)
         #expect(!after.motion.isTransitioning, "an external focus raised a cover")
         #expect(!EngineTests.hasEffect(fx) { if case .capture = $0 { return true }; return false })

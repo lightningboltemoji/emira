@@ -438,7 +438,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(3)),   // focus w3, scrolled to offset 500; w1 parked
         ])
         let fx: [Effect]
-        (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1)))
+        (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(s.motion.viewportOffset.current == 0)   // snapped back to reveal w1
         #expect(!fx.contains(.focus(WindowId(1))))       // shell-initiated: no focus effect
@@ -448,7 +448,7 @@ import EmiraMotion
     @Test func externalFocusToNilJustClearsFocus() {
         var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
         let fx: [Effect]
-        (s, fx) = Engine.reduce(s, .focusChanged(nil))
+        (s, fx) = Engine.reduce(s, .focusChanged(nil, origin: .system))
         #expect(s.world.focusedWindow == nil)
         #expect(fx.isEmpty)
     }
@@ -1241,7 +1241,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
             .windowCreated(Self.snapshot(3)),
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2)))      // focus the middle column, no scroll
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))      // focus the middle column, no scroll
         #expect(s.motion.isTransitioning == false)
 
         (s, _) = Engine.reduce(s, .command(.cycleWidth))
@@ -1276,7 +1276,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(3)),
             .windowCreated(Self.snapshot(4)),
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))
         #expect(Self.approxScalar(s.motion.viewportOffset.current, 0))
         #expect(s.layout.visibleWindowIds(scrollOffset: 0, metrics: s.metrics()!)
                 == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
@@ -2619,7 +2619,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))   // leftmost column
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))   // leftmost column
         let (n, fx) = Engine.reduce(s, .command(.moveWindow(.left)))
         #expect(fx.isEmpty)
         #expect(n == s)
@@ -2648,7 +2648,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
         ])
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // → one column [w1, w2]
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))         // focus the top of the stack
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))         // focus the top of the stack
 
         let (n, fx) = Engine.reduce(s, .command(.moveWindow(.down)))
         #expect(n.layout.columns[0].windowIds == [WindowId(2), WindowId(1)])
@@ -2665,7 +2665,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
         ])
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))         // already row 0
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))         // already row 0
         let (n, fx) = Engine.reduce(s, .command(.moveWindow(.up)))
         #expect(fx.isEmpty)
         #expect(n == s)
@@ -2692,7 +2692,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
         ])
         let rightColumn = s.layout.columns[1].id
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))         // the lone window on the left
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))         // the lone window on the left
 
         let (n, _) = Engine.reduce(s, .command(.consumeOrExpel(.right)))
         #expect(n.layout.columns.count == 1)
@@ -2733,7 +2733,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
             .windowCreated(Self.snapshot(3)),
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         let (n, fx) = Engine.reduce(s, .command(.consumeOrExpel(.down)))
         #expect(n.layout.columns.map(\.windowIds) == [[WindowId(1), WindowId(2)], [WindowId(3)]])
         #expect(n.world.focusedWindow == WindowId(1))
@@ -2746,7 +2746,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
         ])
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))   // → [[w1, w2]]
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         let (n, _) = Engine.reduce(s, .command(.consumeOrExpel(.up)))
         #expect(n.layout.columns.map(\.windowIds) == [[WindowId(2)], [WindowId(1)]])
     }
@@ -2770,7 +2770,7 @@ import EmiraMotion
         #expect(rfx.isEmpty)
         #expect(right == s)
 
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))         // leftmost
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))         // leftmost
         let (left, lfx) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
         #expect(lfx.isEmpty)
         #expect(left == s)
@@ -2836,7 +2836,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2, role: .dialog)),   // never joins the strip
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2)))  // …but can still hold focus
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))  // …but can still hold focus
         for command in Self.structuralCommands {
             let (n, fx) = Engine.reduce(s, .command(command))
             #expect(fx.isEmpty, "\(command)")
@@ -3051,7 +3051,7 @@ import EmiraMotion
             .windowCreated(Self.snapshot(2)),
             .windowCreated(Self.snapshot(3)),
         ])
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
         for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
         var tickFx: [Effect] = []
@@ -3318,7 +3318,7 @@ import EmiraMotion
     /// where they belong, so a settled world would answer with a trivially-satisfying empty batch.
     private static func placements() -> (placed: [WindowId: Rect], parked: [WindowId], display: Rect) {
         var s = EngineTests.settle(EngineTests.world(4, config: config))
-        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         s = EngineTests.settle(s)
         for raw in 1...4 {
             (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(UInt64(raw)),

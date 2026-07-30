@@ -811,4 +811,62 @@ import EmiraMotion
         #expect(ConfigSyntaxTests.diagnostic("[animation.window]\nstiffness = 800\n")
                 == .unknownKey(line: 1, key: "animation.window"))
     }
+
+}
+
+/// `[focus]` — one word-valued key today, named for what it gates rather than for the setting it is.
+/// The behaviour behind it is `SystemFocusEventTests`; this is only the reading of the file.
+@Suite struct FocusConfigTests {
+
+    private static func parse(_ text: String,
+                              sourceLocation: SourceLocation = #_sourceLocation) throws -> Config {
+        try ConfigSyntaxTests.parse(text, sourceLocation: sourceLocation)
+    }
+
+    private static func diagnostic(_ text: String) -> ConfigSyntaxError? {
+        ConfigSyntaxTests.diagnostic(text)
+    }
+
+    /// macOS's own behaviour until asked otherwise: a window manager must not confiscate focus nobody
+    /// asked it to, the same rule that ships no key bindings.
+    @Test func systemFocusEventsAreRespectedUntilAskedOtherwise() throws {
+        #expect(try Self.parse("").systemFocusEvents == .respect)
+        #expect(try Self.parse("[focus]\n").systemFocusEvents == .respect)
+    }
+
+    @Test func allThreeSystemFocusEventModesParse() throws {
+        let read = { (word: String) in try Self.parse("[focus]\nsystem-events = \"\(word)\"\n") }
+        #expect(try read("respect").systemFocusEvents == .respect)
+        #expect(try read("on-screen").systemFocusEvents == .onScreen)
+        #expect(try read("ignore").systemFocusEvents == .ignore)
+    }
+
+    /// Hyphenated in the file, camel-cased in Swift — so the diagnostic must quote the *file's* spelling,
+    /// which it does because it reads the raw values off the type.
+    @Test func anUnknownSystemFocusEventModeIsRefusedAndTheLegalOnesNamed() {
+        #expect(Self.diagnostic("[focus]\nsystem-events = \"onscreen\"\n")
+                == .badValue(line: 2, key: "focus.system-events",
+                             message: "must be \"respect\" or \"on-screen\" or \"ignore\", "
+                                    + "not \"onscreen\""))
+    }
+
+    @Test func anUnquotedSystemFocusEventModeIsRefused() {
+        #expect(Self.diagnostic("[focus]\nsystem-events = false\n")
+                == .badValue(line: 2, key: "focus.system-events",
+                             message: "must be a word in quotes, not a boolean"))
+    }
+
+    /// The bare `system` is not quietly accepted as a synonym. Nothing shipped under that spelling, but
+    /// the schema's whole promise is that a key it does not know is a diagnostic rather than a shrug.
+    @Test func theBareSystemSpellingIsNotAKey() {
+        #expect(Self.diagnostic("[focus]\nsystem = \"ignore\"\n")
+                == .unknownKey(line: 2, key: "focus.system"))
+    }
+
+    /// `[focus]` is emira's own table, not a place to spell a `focus` *command* — an unknown key under it
+    /// is refused like any other.
+    @Test func anUnknownKeyUnderFocusIsRefused() {
+        #expect(Self.diagnostic("[focus]\nfollow-mouse = true\n")
+                == .unknownKey(line: 2, key: "focus.follow-mouse"))
+    }
 }

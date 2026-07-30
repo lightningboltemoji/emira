@@ -95,9 +95,10 @@ public final class MockExecutor: Executor {
             feedback(.captureReady(id))
 
         // The real shell moves focus via AX and the observers echo it back, so the core absorbs its own
-        // echo (a reveal of an already-revealed window is a no-op).
+        // echo (a reveal of an already-revealed window is a no-op). `.ours`, as the live path marks it:
+        // an ack the policy could refuse would be a mock that fights the core it is standing in for.
         case .focus(let id):
-            feedback(.focusChanged(id))
+            feedback(.focusChanged(id, origin: .ours))
 
         // The cross-fade finished and the cover is down.
         case .endTransition:

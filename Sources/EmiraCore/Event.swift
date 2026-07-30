@@ -29,8 +29,9 @@ public enum Event: Sendable, Equatable, Codable {
 
     /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
     /// commands *and* external ones — Cmd-Tab, a Dock click. The core snaps rather than animates to
-    /// reveal it: we made no motion, so we owe no animation.
-    case focusChanged(WindowId?)
+    /// reveal it: we made no motion, so we owe no animation. `origin` is what `[focus] system-events`
+    /// judges.
+    case focusChanged(WindowId?, origin: FocusOrigin)
 
     /// A window was minimized: it leaves the strip, animated out like a close, its position remembered.
     case windowMinimized(WindowId)
@@ -87,6 +88,18 @@ public enum Event: Sendable, Equatable, Codable {
 
     /// The transition hold-timeout fired: close the session regardless, and keep reconciling.
     case holdTimeout
+}
+
+/// Who moved focus — the one thing a focus report does not say about itself, and the only fact
+/// `[focus] system-events` needs to judge one. The shell already separates the two to recognise its own
+/// echo (`FocusIntent`); this carries that answer the rest of the way.
+public enum FocusOrigin: String, Sendable, Equatable, Codable, CaseIterable {
+    /// The echo of an `Effect.focus` the core asked for. Never refused, whatever the policy: the
+    /// reducer wrote that focus optimistically when it emitted the effect, so refusing it would make
+    /// every command that moves focus fight itself.
+    case ours
+    /// Nobody here asked for this — Cmd-Tab, a Dock click, a click on a window, an app raising itself.
+    case system
 }
 
 /// The first-sight observation of a window — the boundary payload the shell hands the core, not the

@@ -6,8 +6,8 @@ import Testing
 /// so a faithful `Codable` round-trip is the contract that matters.
 @Suite struct EventTests {
 
-    /// One value of every case, including both `focusChanged` shapes and payloads that carry the DTOs.
-    /// This list is the exhaustiveness checklist for `Event`.
+    /// One value of every case, including all three `focusChanged` shapes and payloads that carry the
+    /// DTOs. This list is the exhaustiveness checklist for `Event`.
     static let all: [Event] = [
         .command(.focus(.left)),
         .command(.closeWindow),
@@ -17,8 +17,9 @@ import Testing
             role: .standard, frame: Rect(x: 0, y: 0, width: 1280, height: 800))),
         .windowDestroyed(WindowId(2)),
         .windowFrameChanged(WindowId(3), Rect(x: 5, y: 5, width: 640, height: 480)),
-        .focusChanged(WindowId(4)),
-        .focusChanged(nil),
+        .focusChanged(WindowId(4), origin: .system),
+        .focusChanged(WindowId(4), origin: .ours),
+        .focusChanged(nil, origin: .system),
         .windowMinimized(WindowId(5)),
         .windowDeminimized(WindowId(5)),
         .dragEnded,
@@ -46,10 +47,22 @@ import Testing
     /// genuinely different events and both must survive the log — the snap-reveal logic branches on
     /// exactly this distinction.
     @Test func focusChangedNilIsDistinctAndRoundTrips() throws {
-        #expect(Event.focusChanged(nil) != Event.focusChanged(WindowId(1)))
+        #expect(Event.focusChanged(nil, origin: .system)
+                != Event.focusChanged(WindowId(1), origin: .system))
         let encoder = JSONEncoder(), decoder = JSONDecoder()
-        let decoded = try decoder.decode(Event.self, from: encoder.encode(Event.focusChanged(nil)))
-        #expect(decoded == .focusChanged(nil))
+        let decoded = try decoder.decode(
+            Event.self, from: encoder.encode(Event.focusChanged(nil, origin: .system)))
+        #expect(decoded == .focusChanged(nil, origin: .system))
+    }
+
+    /// The origin is part of the event's identity, not a hint attached to it: `[focus] system-events` refuses
+    /// on exactly this distinction, so a log that flattened the two would replay a refusal as an
+    /// admission.
+    @Test func focusOriginIsPartOfTheEventsIdentityAndSurvivesTheLog() throws {
+        let ours = Event.focusChanged(WindowId(1), origin: .ours)
+        #expect(ours != Event.focusChanged(WindowId(1), origin: .system))
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        #expect(try decoder.decode(Event.self, from: encoder.encode(ours)) == ours)
     }
 
     // MARK: WindowRole taxonomy

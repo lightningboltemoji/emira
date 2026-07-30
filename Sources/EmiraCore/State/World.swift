@@ -243,7 +243,15 @@ public struct World: Sendable, Equatable, Codable {
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
     public func participatesInStrip(_ id: WindowId) -> Bool {
         guard let window = windows[id], !window.isMinimized, !isFloating(id) else { return false }
-        return !(apps[window.bundleId]?.isHidden ?? false)
+        return !isAppHidden(of: id)
+    }
+
+    /// Whether `Cmd-H` has hidden the app owning `id` — the one reason a window is nowhere on the screen
+    /// that is a fact about its app rather than about itself. The reader matching `setAppHidden`, so the
+    /// flag is consulted in one spelling by both the strip test and the on-screen one.
+    public func isAppHidden(of id: WindowId) -> Bool {
+        guard let window = windows[id] else { return false }
+        return apps[window.bundleId]?.isHidden ?? false
     }
 
     /// Whether this window floats: the user's explicit answer where they have given one, else what the

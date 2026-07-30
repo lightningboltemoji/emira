@@ -656,6 +656,27 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     window is `AXMain` at that moment, which need not be the one we asked for. So a focus command with no column to
     start from re-enters the strip at the near end: `right` at the leftmost column, `left` at the rightmost. The
     strip's own edges still no-op; no-wrap is a different fact.
+  - **`[focus] system-events` decides which focus changes emira did not cause it honours** — `respect` (all of them,
+    macOS's own behaviour), `on-screen` (only onto a window already in view), `ignore` (only onto a window emira does
+    not place). The key is named for what it gates rather than for the setting it is: a *system focus event* is a
+    click on a window, a Dock click, a Cmd-Tab, an app raising itself — which is exactly `FocusOrigin.system`, so the
+    file's vocabulary and the event's are one word.
+    Apps move focus to themselves at moments nobody chose, and under `respect` the strip faithfully follows
+    them across the desktop. The refusal is one `.focus` effect restoring the focus the core already believed in and
+    **no state change at all**: no reveal, no workspace switch, no cover — the transition is precisely what the user
+    is trying to stop seeing. Three things are admitted whatever the mode: our own echo (the reducer wrote that focus
+    optimistically when it emitted the effect, so refusing it would make every focus command fight itself), a `nil`
+    report (it names no window, and refusing it breaks ⌘N — see the insertion anchor above), and a report with no
+    focus of ours to restore. **The predicate is "on screen", which is not "on the strip"**: a float is off the strip
+    and plainly visible while a minimized window is off the strip and in the Dock, so `isOnScreen` tests minimized
+    and `Cmd-H` first, then treats anything emira does not place as visible, then asks the `setFrame`-vs-`park`
+    question of the rest — at `viewportOffset.target`, since `teleportBehindCover` puts the real windows at the
+    destination's frames the moment a cover goes up.
+  - **Provenance is a field of `focusChanged`, not a second event.** The shell is the only place that can tell a
+    Cmd-Tab from the echo of our own `Effect.focus` (`FocusIntent`), and it already computes exactly that verdict; the
+    origin carries it the rest of the way. Re-deriving it in the core would duplicate a ticket ordinal and a grace
+    timer the core has no clock for, and splitting the case in two would let a third focus source be added without
+    anyone being made to think about the policy.
 - **Workspaces: 36 strips, one focused, the rest parked in full** (`PRINCIPLES.md` §1). Nothing is persisted across
   restart, so a daemon restart adopts every window onto the focused workspace — accepted deliberately, and the most
   annoying consequence of the charter.
@@ -1176,7 +1197,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
 the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`, including the
 `exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
-`center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through), and
+`center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through),
+`focus.system-events` (`"respect"` / `"on-screen"` / `"ignore"` — which focus changes emira did not cause it honours), and
 animation params (spring stiffness/damping, durations, and the two word-valued keys that reach the *shell* rather
 than the reducer — `animation.window`, `"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`;
 one says what to paint where a still no longer fits the rect, the other what to paint before it has arrived, and the

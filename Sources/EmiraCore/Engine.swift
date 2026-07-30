@@ -135,13 +135,14 @@ public enum Engine {
             let effects = emitPlacements(&s)   // a window dragged off its target snaps back
             return (s, effects)
 
-        case .focusChanged(let id):
+        case .focusChanged(let id, let origin):
             // Externally-initiated focus (Cmd-Tab, Dock click, self-activation) and the echo of our own
             // `focus` effect. Snap to reveal it; we made no motion, so we owe no animation and no `focus`.
             guard let id else {
                 s.world.setFocus(nil)              // focus left every managed window
                 return (s, [])
             }
+            if let refusal = refuseSystemFocusEvent(&s, id, origin) { return (s, refusal) }
             let effects = revealAcrossWorkspaces(&s, id)
             return (s, effects)
 
@@ -652,6 +653,71 @@ public enum Engine {
                                         focused: target, mover: mover, animatingFrom: old)
         if let target, announcingFocus { effects.append(.focus(target)) }
         return effects
+    }
+
+    // MARK: - The focus we did not ask for (`[focus] system-events`)
+
+    /// Whether `[focus] system-events` refuses this focus report — and if so, the whole of the response.
+    ///
+    /// `nil` admits, and the caller carries on as if the policy did not exist. A refusal is one `.focus`
+    /// effect and **no state change at all**: the core's belief about focus never moved, so re-asserting
+    /// it is the entire undo. Nothing reveals, no workspace switches, no cover goes up — which is the
+    /// point, since the transition is exactly what the user did not want to watch.
+    ///
+    /// Two things are always admitted, in every mode. **Our own echo**, because the reducer wrote that
+    /// focus optimistically when it emitted the effect, so refusing it would leave the core arguing with
+    /// itself. And a report we have **nothing to answer with** — no focus of our own, or one already on
+    /// the window in question — because a desktop with no key window at all is worse than a focus we did
+    /// not want. Before the first `screensChanged` there is no geometry to judge against either, and no
+    /// grounds to refuse is not a refusal.
+    private static func refuseSystemFocusEvent(_ s: inout State, _ id: WindowId,
+                                               _ origin: FocusOrigin) -> [Effect]? {
+        // `.respect` is redundant with `admitsSystemFocusEvent` and tested here anyway, so the default
+        // policy pays nothing below — not the reconcile, and not a layout query per focus report.
+        guard origin == .system, s.config.systemFocusEvents != .respect,
+              s.metrics() != nil else { return nil }
+        // The predicate reads a window's workspace, which is derived from the strips — so the strips
+        // must already account for every window `World` knows about, as every other reader here ensures.
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        guard !admitsSystemFocusEvent(s, id) else { return nil }
+        guard let restore = s.world.focusedWindow, restore != id else { return nil }
+        return [.focus(restore)]
+    }
+
+    /// Whether the policy lets a focus emira did not cause land on `id`.
+    ///
+    /// The ladder is monotone by construction rather than by three separate tests: `ignore` is
+    /// `onScreen` minus the windows emira places, and `respect` admits without asking.
+    private static func admitsSystemFocusEvent(_ s: State, _ id: WindowId) -> Bool {
+        switch s.config.systemFocusEvents {
+        case .respect:
+            return true
+        case .onScreen:
+            return isOnScreen(s, id)
+        case .ignore:
+            return isOnScreen(s, id) && !s.world.participatesInStrip(id)
+        }
+    }
+
+    /// Whether the user can see `id` right now. Not the same question as `participatesInStrip`, and the
+    /// difference is the whole of this function: **off the strip and off the screen are different sets.**
+    /// A float is off the strip and plainly visible; a minimized window is off the strip and in the Dock.
+    ///
+    /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch — on the focused
+    /// workspace, in a column the viewport overlaps — read at `viewportOffset.target` rather than
+    /// `.current`, because `teleportBehindCover` moves the real windows to the destination's frames the
+    /// moment a cover goes up. Mid-scroll, the target is where they actually are.
+    private static func isOnScreen(_ s: State, _ id: WindowId) -> Bool {
+        guard let window = s.world.windows[id] else { return false }
+        // Nowhere on the screen for a reason that has nothing to do with the strip.
+        guard !window.isMinimized, !s.world.isAppHidden(of: id) else { return false }
+        // A window emira does not place is wherever its app put it, which is in view.
+        guard s.world.participatesInStrip(id) else { return true }
+        guard let metrics = s.metrics(), s.workspaces.workspace(of: id) == s.workspaces.focused
+        else { return false }
+        return s.layout
+            .visibleWindowIds(scrollOffset: s.motion.viewportOffset.target, metrics: metrics)
+            .contains(id)
     }
 
     /// Reveal an externally-focused window (Cmd-Tab, a Dock click, an app raising itself), switching

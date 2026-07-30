@@ -18,6 +18,10 @@ import EmiraMotion
 // height-presets = [0.333, 0.5, 0.667]  # likewise, against the column height (`cycle-height`)
 // center-focused-column = false         # false = scroll the minimum that reveals the column
 //
+// [focus]
+// system-events = "respect"             # or "on-screen" / "ignore" — which focus changes emira did
+//                                       # not cause it honours
+//
 // [animation]
 // smooth-transitions = true             # false = always snap
 // hold-timeout = 1.0                    # seconds a cover may stay up waiting for AX to land
@@ -131,6 +135,11 @@ extension Config {
         if let flag = try table.bool("layout.center-focused-column") { config.centerFocusedColumn = flag }
         if let presets = try table.presetCycle("layout.width-presets") { config.widthPresets = presets }
         if let presets = try table.presetCycle("layout.height-presets") { config.heightPresets = presets }
+
+        table.acceptTable("focus")
+        if let mode: SystemFocusEvents = try table.word("focus.system-events") {
+            config.systemFocusEvents = mode
+        }
 
         table.acceptTable("animation")
         if let flag = try table.bool("animation.smooth-transitions") { config.smoothTransitions = flag }
