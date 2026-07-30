@@ -60,9 +60,11 @@ public final class DispatchHeartbeat: Heartbeat {
     public func start(every seconds: TimeInterval, _ tick: @escaping @MainActor () -> Void) {
         stop()
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        // A generous leeway: this is a backstop that runs for the life of the daemon, and waking the
-        // CPU on time buys nothing when the thing being checked changes on a human timescale.
-        timer.schedule(deadline: .now() + seconds, repeating: seconds, leeway: .seconds(1))
+        // Leeway proportional to the period: waking the CPU on time buys nothing when the thing being
+        // checked changes on a human timescale, and a fixed second of slack would swallow a sub-second
+        // poll whole.
+        timer.schedule(deadline: .now() + seconds, repeating: seconds,
+                       leeway: .milliseconds(Int(seconds * 1000 / 3)))
         timer.setEventHandler {
             // The main queue *is* the main actor's executor: an assertion, not a hop.
             MainActor.assumeIsolated { tick() }

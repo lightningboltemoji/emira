@@ -24,6 +24,30 @@ func summary(of reply: Reply) -> String {
     }
 }
 
+// MARK: - The capture probe
+//
+// Answered before anything else exists, because it is the whole of this process: `--probe-capture` is how
+// a *running* daemon finds out whether Screen Recording has been granted since it started, which its own
+// preflight can no longer tell it (`Permissions.probeScreenRecording`). One read, one exit code, no
+// `NSApplication`.
+//
+// Anything else *fails* rather than falling through, because the fall-through is a window manager that
+// adopts the whole desktop — a lot to get from a typo.
+
+switch Array(CommandLine.arguments.dropFirst()) {
+case []:
+    break
+case [Permissions.captureProbeFlag]:
+    exit(Permissions.screenRecording.isGranted ? 0 : 1)
+case let unexpected:
+    FileHandle.standardError.write(Data(
+        ("emira-daemon: unexpected \(unexpected.joined(separator: " ")) — the only argument is "
+            + "\(Permissions.captureProbeFlag)\n").utf8))
+    exit(2)
+}
+
+// MARK: - The daemon proper
+
 /// A peer vanishing mid-reply must be a failed `write`, never a signal that kills the daemon.
 signal(SIGPIPE, SIG_IGN)
 
@@ -31,21 +55,17 @@ let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
 /// Die, having said why somewhere the user is looking: launched from `emira.app` nobody reads stderr,
-/// so when bundled the message is also an alert. `settings` is a pane to offer a button for.
-@MainActor func die(_ message: String, settings: String? = nil) -> Never {
+/// so when bundled the message is also an alert.
+@MainActor func die(_ message: String) -> Never {
     log(message)
     if LoginItem.isBundled {
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "emira can't start"
         alert.informativeText = message
-        if settings != nil { alert.addButton(withTitle: "Open System Settings") }
         alert.addButton(withTitle: "Quit")
         app.activate()
-        if alert.runModal() == .alertFirstButtonReturn, let settings,
-           let url = URL(string: settings) {
-            NSWorkspace.shared.open(url)
-        }
+        alert.runModal()
     }
     exit(1)
 }
@@ -81,54 +101,26 @@ case .failure(let error):
 //
 // Both grants are required to start; only Accessibility is required to keep running — without it
 // every AX read returns nothing *without an error*. Screen Recording is demanded only when the config
-// asked for the cover, and a running daemon degrades rather than dies when macOS revokes it, which is
-// why `Permissions.screenRecording` is computed, never cached.
+// asked for the cover, and a running daemon degrades rather than dies when macOS revokes it.
+//
+// `gate` holds boot until they are in, so everything below may assume it. It returns `.restart` whenever
+// it had to open a window: a grant given to a *running* emira is only half a grant, and the next launch
+// has the whole of it.
 
-/// A grant emira won't start without, and everything needed to ask for it and to explain it.
-struct RequiredGrant {
-    let name: String
-    /// Completes "emira needs <name> …".
-    let purpose: String
-    let pane: String
-    /// The deep link the alert's button opens.
-    let url: String
+let onboarding = OnboardingModel.live(wantsCover: parsedConfig.smoothTransitions)
+if !onboarding.isSatisfied {
+    log("waiting for \(onboarding.missing.joined(separator: ", "))")
 }
 
-let accessibilityGrant = RequiredGrant(
-    name: "Accessibility",
-    purpose: "to see and move your windows",
-    pane: "Privacy & Security › Accessibility",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+switch OnboardingWindow.gate(onboarding) {
+case .granted:
+    break
 
-let screenRecordingGrant = RequiredGrant(
-    name: "Screen Recording",
-    purpose: "to animate them smoothly",
-    pane: "Privacy & Security › Screen & System Audio Recording",
-    url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-
-var missingGrants: [RequiredGrant] = []
-
-if !Permissions.accessibility.isGranted {
-    Permissions.requestAccessibility()
-    missingGrants.append(accessibilityGrant)
-}
-
-if parsedConfig.smoothTransitions && !Permissions.screenRecording.isGranted {
-    Permissions.requestScreenRecording()
-    missingGrants.append(screenRecordingGrant)
-}
-
-if !missingGrants.isEmpty {
-    let needs = missingGrants.map { "\($0.name) \($0.purpose)" }.joined(separator: ", and ")
-    let panes = missingGrants.map { "  • System Settings › \($0.pane)" }.joined(separator: "\n")
-    die("emira needs \(needs).\n\n"
-        + "\(missingGrants.count == 1 ? "Grant it here" : "Grant them here"):\n\(panes)\n\n"
-        + "Then launch emira again."
-        + (missingGrants.contains { $0.name == screenRecordingGrant.name }
-           ? "\n\nTo run without the smooth scroll instead, set `smooth-transitions = false` in "
-             + "\(loader.path)."
-           : ""),
-        settings: missingGrants[0].url)
+case .restart(let missing):
+    log(missing.isEmpty
+        ? "grants in place — quitting so the next launch starts with them"
+        : "onboarding closed without \(missing.joined(separator: ", ")) — quitting")
+    exit(0)
 }
 
 // MARK: - The presentation plane

@@ -8,16 +8,23 @@
   `CADisplayLink`), so there is no headless build of emira to put under launchd — bundling only makes
   permanent what the process already declares at runtime.
 
-  Two keys are load-bearing:
+  Three keys are load-bearing:
 
   · `LSUIElement` — no Dock icon, no app menu. The menu bar item is the whole GUI.
   · `CFBundleIdentifier` — TCC records the Accessibility and Screen Recording grants against the
     code signature of what is running. A stable bundle identity is what lets the user grant once
     instead of once per build.
+  · `CFBundleIconName` — names the icon *inside* `Assets.car`, which is the only form macOS 26 reads.
+    `LSUIElement` means this is never a Dock icon; where it is seen is the Privacy & Security grant
+    lists and the prompts that precede them, which is emira's first impression.
 
   Deliberately absent: TCC purpose strings. Both grants emira needs (Accessibility, Screen Recording)
   use system-generated prompts with no `NS*UsageDescription` key to supply — unlike, say, Apple
   Events. Adding one would be a key nothing reads.
+
+  Also deliberately absent: `CFBundleIconFile`. It names a legacy `.icns`, which is what a macOS
+  older than 26 falls back to — and `LSMinimumSystemVersion` rules those out, so every system that
+  can run emira reads `Assets.car`.
 -->
 <plist version="1.0">
 <dict>
@@ -29,6 +36,8 @@
 	<string>zip.tanner.emira</string>
 	<key>CFBundleExecutable</key>
 	<string>emira-daemon</string>
+	<key>CFBundleIconName</key>
+	<string>emira</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

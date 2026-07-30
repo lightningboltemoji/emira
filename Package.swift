@@ -27,7 +27,12 @@ let package = Package(
         .target(name: "EmiraMotion"),
         .target(name: "EmiraCore", dependencies: ["EmiraMotion"]),
         .target(name: "EmiraProtocol", dependencies: ["EmiraCore"]),
-        .target(name: "EmiraShell", dependencies: ["EmiraCore", "EmiraProtocol"]),
+        // The onboarding window's wordmark is a resource of the target that draws it, not of the app
+        // bundle: `Bundle.module` resolves in a bare `swift build` daemon too, so the first-launch
+        // window looks the same however emira was started. `make app` copies the bundle inwards.
+        .target(name: "EmiraShell",
+                dependencies: ["EmiraCore", "EmiraProtocol"],
+                resources: [.copy("Resources/logo.webp")]),
         .executableTarget(name: "emira-daemon", dependencies: ["EmiraShell"]),
         // The CLI names `Command` (it parses argv straight into the one vocabulary, §2), so it
         // depends on EmiraCore as well — which EmiraProtocol already pulls in. What matters is what

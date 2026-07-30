@@ -13,6 +13,9 @@ import Foundation
 // session, `Config.smoothTransitions` goes false and scrolls snap rather than killing the daemon and
 // stranding every parked window at its sliver. `emira-daemon` still requires both grants to *start* —
 // which answer is fatal is its policy, not this file's.
+//
+// Nor are the two equally *readable*: an Accessibility grant lands in a running process, a Screen
+// Recording grant does not, which is what `probeScreenRecording` is for.
 
 /// The system permissions emira depends on, and the checks for them.
 public enum Permissions {
@@ -54,10 +57,11 @@ public enum Permissions {
     /// Whether this process currently holds the Screen Recording grant — what `CaptureService` needs to
     /// build a cover out of real pixels.
     ///
-    /// Computed, never cached: macOS periodically re-prompts users to keep allowing screen capture, so
-    /// this can flip to `.denied` in a running daemon with no user action at all, and a cached `true`
-    /// means transitions that cover the screen with nothing. `CGPreflightScreenCaptureAccess` asks
-    /// without prompting.
+    /// Re-read at every call site and never stored by us — macOS periodically re-prompts users to keep
+    /// allowing screen capture, and a cached `true` would mean transitions that cover the screen with
+    /// nothing. `CGPreflightScreenCaptureAccess` asks without prompting, but caches an answer of its own
+    /// for the process's life, so a grant *arriving* while emira runs is never reported here
+    /// (`probeScreenRecording`).
     public static var screenRecording: Grant {
         CGPreflightScreenCaptureAccess() ? .granted : .denied
     }
@@ -67,5 +71,35 @@ public enum Permissions {
     @discardableResult
     public static func requestScreenRecording() -> Grant {
         CGRequestScreenCaptureAccess() ? .granted : .denied
+    }
+
+    // MARK: - Asking again, from outside
+
+    /// The argument `emira-daemon` answers with the Screen Recording grant and nothing else.
+    public static let captureProbeFlag = "--probe-capture"
+
+    /// Ask a **fresh process** whether Screen Recording is granted, because this one can't find out: the
+    /// preflight's answer is cached for a process's life, which is why macOS offers "Quit & Reopen"
+    /// instead of picking the grant up. So this runs the daemon's own executable with `captureProbeFlag`
+    /// — same binary, same signature, same bundle identity, which is what TCC records a grant against.
+    ///
+    /// The caller must keep at most one probe in flight; nothing here throttles. In development the
+    /// answer can belong to someone else: TCC attributes a child to the *responsible* process, which is
+    /// `emira.app` when bundled and the **terminal** under `swift run`.
+    @MainActor
+    public static func probeScreenRecording(_ completion: @escaping @MainActor (Grant) -> Void) {
+        guard let path = Bundle.main.executablePath else { return completion(.denied) }
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: path)
+        probe.arguments = [captureProbeFlag]
+        probe.terminationHandler = { finished in
+            let grant: Grant = finished.terminationStatus == 0 ? .granted : .denied
+            DispatchQueue.main.async { MainActor.assumeIsolated { completion(grant) } }
+        }
+        do {
+            try probe.run()
+        } catch {
+            completion(.denied)
+        }
     }
 }

@@ -257,7 +257,13 @@ would be the translation layer §2 exists to avoid.
 ```
 emira/
 ├── Package.swift
-├── Makefile                         # build + test; `app` assembles dist/emira.app and stamps its
+├── Makefile                         # build + test; `app` assembles dist/emira.app — the two
+│                                    # executables, the nested CLI signed before the outer seal, plus
+│                                    # EmiraShell's resource bundle, which is *not* signed: it holds no
+│                                    # code, the outer seal covers its files, and whether SwiftPM gives
+│                                    # it a Contents/Info.plist is toolchain-dependent — codesign
+│                                    # rejects the flat form. Also compiles the icon (§5 Resources) and
+│                                    # stamps its
 │                                    # version from the git tag, `zip` archives it, `install` copies
 │                                    # it to /Applications. No CLI symlink — a Homebrew cask's
 │                                    # `binary` stanza points at the copy inside the bundle
@@ -282,6 +288,11 @@ emira/
 │   │                                # CFBundleIdentifier, which is what TCC records a grant
 │   │                                # against. No TCC usage strings: neither Accessibility nor
 │   │                                # Screen Recording takes one
+│   ├── emira.icon/                  # the app icon, layered: three offset panes the system relights
+│   │                                # per layer. `icon.json` composes `Assets/{back,middle,front}.svg`,
+│   │                                # one group each so every pane casts its own shadow. `make icon`
+│   │                                # compiles it to Assets.car, named by CFBundleIconName; no legacy
+│   │                                # .icns, since macOS 26 is the floor
 │   └── default-config.toml
 ├── Sources/
 │   ├── EmiraMotion/
@@ -402,11 +413,27 @@ emira/
 │   │   │   ├── SocketServer.swift   # unix-domain socket, JSON-lines, dispatch to Runtime
 │   │   │   └── RequestRouter.swift  # Request -> Reply: commands are writes, dumpState is a read
 │   │   ├── MenuBar/
-│   │   │   └── StatusItem.swift     # the whole GUI: an NSStatusItem showing the focused
+│   │   │   └── StatusItem.swift     # the running GUI: an NSStatusItem showing the focused
 │   │   │                            # workspace's address, `!` when the config won't parse.
 │   │   │                            # `StatusModel` is the pure title/diagnostic policy;
 │   │   │                            # `LoginItem` wraps SMAppService; `MenuBarItem` is the
 │   │   │                            # AppKit wiring. Quit and open-at-login are the menu
+│   │   ├── Onboarding/              # the *other* GUI, and it only ever runs once: the first
+│   │   │   ├── Onboarding.swift     # launch. `OnboardingModel` is the policy — which grants
+│   │   │   │                        # are asked for, the copy, when boot may proceed — and
+│   │   │   │                        # `OnboardingPlacement` the geometry that keeps the
+│   │   │   │                        # window clear of macOS's own prompt
+│   │   │   ├── OnboardingWindow.swift  # the AppKit wiring: wordmark, blurb, a row per grant,
+│   │   │   │                        # and a modal session that *holds boot* while a 300 ms
+│   │   │   │                        # heartbeat waits for the switch to be flipped
+│   │   │   ├── Wordmark.swift       # the heading: the README's animated WebP, one frame decoded
+│   │   │   │                        # at a time on the delays the asset itself declares
+│   │   │   └── PulseButton.swift    # `quit emira` — the only control emira asks anyone to press,
+│   │   │                            # so it glows and shimmers. The cell draws nothing; the
+│   │   │                            # gradient, the sheen and the label are all ours
+│   │   ├── Resources/logo.webp      # that asset — the README's wordmark, animation and alpha
+│   │   │                            # included. A resource of the target that draws it, so
+│   │   │                            # `Bundle.module` resolves in a bare `swift build` tree too
 │   │   ├── WorldWatcher.swift       # the live world's *policy*: boot scan -> adopt -> watch;
 │   │   │                            # re-scan an app when it makes a window; one bounded retry for
 │   │   │                            # the two "asked too early" races; coalesced frame reads
@@ -419,9 +446,11 @@ emira/
 │   │   │                            # and forget. `ShellLauncher` reports only what a command
 │   │   │                            # surface cannot already log — a failed spawn, a bad exit
 │   │   ├── Scheduler.swift          # DelayScheduler — "try that again in a moment"; Heartbeat — "and keep asking"
-│   │   ├── Permissions.swift        # AX + Screen Recording TCC checks + onboarding
+│   │   ├── Permissions.swift        # AX + Screen Recording TCC checks (asked for in Onboarding/)
 │   │   └── Logging.swift            # os_log wrapper
-│   ├── emira-daemon/main.swift      # accessory NSApplication; wire up Runtime + subsystems
+│   ├── emira-daemon/main.swift      # accessory NSApplication; wire up Runtime + subsystems. Also
+│   │                                # answers `--probe-capture` before any of that exists — one
+│   │                                # TCC read, one exit code, for onboarding's subprocess probe
 │   └── emira/main.swift             # argv -> Command -> Request -> socket; --dry-run, --help
 └── Tests/
     ├── EmiraMotionTests/            # spring convergence, retarget velocity carryover
@@ -1131,8 +1160,17 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     desktop stays exactly as it was — which means a typo and a correct edit that happens to be a no-op are
     indistinguishable from the outside. In a terminal the diagnostic was on stderr; a bundled app has no stderr anyone
     reads, so the indicator takes the title and the menu carries the text. The same argument produces the **one
-    alert** on the fatal paths: an `.app` that exits silently on first launch because Accessibility isn't granted is
-    indistinguishable from a broken download.
+    alert** on the two remaining fatal paths — no displays, a control socket that won't bind: an `.app` that exits
+    silently is indistinguishable from a broken download. A missing grant *was* a third such path, and is now a window
+    that waits instead of a message that gives up.
+  - **On the launch that goes through the grant flow the item does not appear, and it is routed around rather than
+    fixed.** Everything the item can be asked says it is fine — `isVisible` true, a button, a title, and even a child
+    under `AXExtrasMenuBar` — while nothing is on screen; it is there on every launch afterwards, which is what
+    onboarding's closing restart guarantees. Ruled out by measurement, so that nobody re-runs the search: a modal
+    session before `NSApplication.run()`, an `execv`, a spawned successor, an item created before the run loop starts, a
+    bare binary versus a bundled `LSUIElement` app, and a LaunchServices launch versus a shell one. The lesson worth
+    keeping is about the instrument: `AXExtrasMenuBar` answers "this app has an extras menu bar with something in it",
+    which is not "the user can see it", and two probes were built on that misreading before a real launch disproved it.
   - **It is a *display* seam, so `Runtime` grew an `onStateChanged` observer rather than an `Effect`.** Nothing about
     the status item changes state, so it must not be in the effect vocabulary — the same judgement `dumpState` got. It
     fires **once per drain**, not once per event: a single command cascades through capture → raise → teleport →
@@ -1159,15 +1197,85 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     cascade and the layout fight until the deadline. So every event source is silenced first — a latch on delivery,
     not an unregistration of live `AXObserver`s, because tearing those down at exit buys nothing the process exiting
     doesn't and its failure mode is a crash on the way out.
-- **Permissions** — Accessibility + Screen Recording TCC checks and a first-run onboarding flow. **Both grants are
+- **Permissions** — Accessibility + Screen Recording TCC checks and the window that asks for them. **Both grants are
   required to *start*; only Accessibility is required to keep *running*.** Screen Recording being non-fatal is correct
   as a response to macOS revoking the grant under a live daemon, and it must survive — killing the window manager
   there would strand every parked window at its 1 px nub with nothing to put them back. As a *first launch* it is a
   quiet failure: the user installed a scrollable-tiling window manager, received a permanently snappier AeroSpace, and
-  the explanation went to a stderr a bundled app has nowhere to print. Two refinements come with the boot check:
-  **asking for the cover is what makes the grant required** (`smooth-transitions = false` waives it — demanding a
-  screen-recording permission to power a feature the user disabled is both obnoxious and a privacy smell), and **both
-  grants are checked together**, so a first launch costs one relaunch instead of two.
+  the explanation went to a stderr a bundled app has nowhere to print. **Asking for the cover is what makes the grant
+  required** (`smooth-transitions = false` waives it — demanding a screen-recording permission to power a feature the
+  user disabled is both obnoxious and a privacy smell), so the waived grant is not a row in the window rather than a
+  row marked optional, and "satisfied" stays "all of them".
+  - **One window, and every grant in it, because the alternative is a queue of prompts.** A grant apiece meant an alert
+    apiece, each naming one pane and each ending in "then launch emira again" — and the count is the tell: two grants
+    that must both be in place before anything works is *one* piece of setup, so it gets one surface. The rows carry
+    the state (✅/❌ per grant, live), the blurb carries the reason, and each row carries the button that opens its own
+    pane, so nothing has to be read in order.
+  - **It opens in the top-right corner, inset 80 pt, and that is a *structural* answer to a placement problem.** macOS
+    puts its own grant prompt in the middle of the screen, and that prompt must stay clickable — it deep-links to the
+    pane with emira already listed, and it is the only dialog here that never dismisses itself. Clearing a centred
+    prompt on the y axis means knowing its height, which nothing tells us; a corner is *beside* it instead, and no
+    prompt height can reach the right-hand column. It is also where emira lives, a few points under the menu bar item
+    the window hands the user over to — so it opens on `NSScreen.screens.first`, the display the strip is laid out on,
+    for the same reason the compositor does and not `NSScreen.main`. `.floating` completes it: watching the row turn ✅
+    from the pane you are standing in is the whole point of a live table.
+  - **A grant is polled, not waited on, because macOS offers no notification for one.** The window re-reads every
+    300 ms — fast enough that flipping the switch and glancing back reads as instant, which is the whole of what the
+    live table buys: the user learns their click landed without leaving the pane, and finds out immediately rather than
+    by relaunching emira to see whether it worked.
+  - **The two grants are not equally *readable*, and that asymmetry costs a subprocess.** `AXIsProcessTrusted` answers
+    freshly every call, so Accessibility lands in a running process. `CGPreflightScreenCaptureAccess` does not: the
+    answer is cached for the life of the process, which is why macOS offers "Quit & Reopen" instead of picking the grant
+    up — and a relaunch working *at all* is the evidence that a new process reads the truth. So onboarding relaunches
+    something small: the daemon's own executable with `--probe-capture`, which preflights, exits with the answer and
+    touches nothing else. Same binary, same signature, same bundle identity — which is what TCC records a grant
+    against. One probe in flight at a time, ~200 ms each, so the row lands within about half a second of the switch.
+    Two consequences fall out: `GrantRow.refreshed()` is **monotonic**, since an in-process read would revert the
+    probe's answer on the very next tick; and an unexpected argument to `emira-daemon` now *fails*, because the
+    fall-through is a window manager that adopts the whole desktop, which is a lot to get from a typo.
+  - **Onboarding ends in a restart, and that is the design rather than a shortfall.** A grant given to a *running*
+    emira is only half a grant: this process cannot read the Screen Recording answer it was just handed (above), its
+    capture client is stale in the same way, and — separately and still unexplained — its menu bar item never appears.
+    Each was worked around in turn and every workaround was then removed, an in-place `execv` included: it fixed the
+    two capture problems and did nothing for the indicator, which reports itself present while being nowhere on screen.
+    So the window ends with the one thing that fixes all three and needs no mechanism at all — **quit emira, open it
+    again** — carried by a centred `quit emira` button with the reason directly beneath it, at the size of the
+    paragraphs above because it is the same kind of sentence. `Outcome.restart` covers both ways out, the button and
+    the close box, because the daemon's move is the same: exit, and let the next launch have the grants from the start.
+    - **That button is the only control emira ever asks anyone to press, and it is drawn to say so** — the wordmark's
+      greens, a glow that breathes, a highlight that crosses its face and then rests (`PulseButton`). Instruction, not
+      decoration: a window that says "quit, then open it again" over a plain grey button reads as an error. `NSButton`
+      keeps the click, the target/action and the key equivalent; the drawing is entirely ours, because a layer-backed
+      button draws its cell into the layer's contents where any sublayer of ours would cover it — hence a subview
+      label for the title. Core Animation is driven by the render server, so both animations run inside the modal
+      session (measured off the presentation layer), and `accessibilityDisplayShouldReduceMotion` turns them off.
+  - **The wait is a modal session**, which is what keeps the daemon's boot straight-line. Everything below the
+    permissions check assumes the grants are in, and a modal loop is the only way to wait *before*
+    `NSApplication.run()` has started; a main-queue timer still fires inside one, which is what the poll needs. Two
+    consequences to remember. The loop has exactly one exit — a `stopModal` delivered after the session ends is
+    remembered and closes the *next* one. And **`runModal(for:)` centres a window it has to show itself**, discarding
+    any frame set beforehand, so the window is ordered front *first*; unfixed, that is not a small misplacement but
+    precisely the collision the placement exists to avoid, since `NSWindow.center()` is 75% of the free space and the
+    system prompt is centred by the same rule.
+  - **The heading is the README's animation, not a still of it**, which costs a decision: 101 frames held at
+    the size it draws is ~35 MB for a decoration, and that is precisely what a `CAKeyframeAnimation` over
+    `contents` would have needed. So `Wordmark` decodes **one frame at a time** (~1 ms each) and chains the
+    next on the delay the asset declares — which it has to do anyway, the delays being 40 ms per stroke and
+    2.5 s for the rest at the end. ImageIO composites animated WebP frames whole, so nothing has to
+    interpret WebP's blend and dispose rules, and the alpha survives, so one asset carries both
+    appearances (its green was chosen for 4.35:1 either way).
+  - **The prompts are asked for one at a time, because two at once is one.** Firing the Accessibility and Screen
+    Recording requests together put up the Accessibility sheet and dropped the other on the floor, so the second grant
+    had no prompt behind it at all. The window asks for the first outstanding row only, and the next prompt goes up when
+    the previous grant lands — which is also when the user is already standing in System Settings. It follows that the
+    subprocess probe waits its turn too: a spawn every 300 ms for the whole of an Accessibility wait is a process per
+    tick for a grant nobody has been asked for yet.
+  - **Both grants are billed as required, and the waiver is deliberately unadvertised.** `smooth-transitions = false`
+    still removes the row and the requirement with it, but the window doesn't mention it: wanting the animations is the
+    overwhelming case, and a paragraph about the setting spends the reader's attention arguing against the thing they
+    installed. Anyone who does want it will find it in the config. Closing the window quits, because there is nothing
+    to run — and deliberately not a "start anyway" button, since a waiver granted to one session leaves no trace while
+    the config file is a record.
 
 ### Executables
 - **`emira-daemon`** — the long-running accessory app that hosts the Runtime and all subsystems; bundled as
