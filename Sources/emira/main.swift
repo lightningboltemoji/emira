@@ -1,8 +1,10 @@
 // The `emira` CLI: argv in, exit code out. Parses a `Command`, writes one JSON line to the daemon's
-// unix socket, prints the reply. Imports only EmiraCore and EmiraProtocol — no AppKit, no AX — so
-// launch is instant; the transport lives in `SocketClient` because an executable can't be unit-tested.
+// unix socket, prints the reply. Imports only EmiraCore, EmiraProtocol and EmiraConfig — no AppKit, no
+// AX — so launch is instant; the transport lives in `SocketClient` because an executable can't be
+// unit-tested, and `ConfigCommand`'s schema knowledge lives in `EmiraConfig` for the same reason.
 // Exit codes: 0 accepted, 2 usage error, 69 (`EX_UNAVAILABLE`) daemon unreachable, 1 anything else.
 import Foundation
+import EmiraConfig
 import EmiraCore
 import EmiraProtocol
 
@@ -26,7 +28,9 @@ func bundledVersion() -> String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
 }
 
-/// Help text. The verb list comes from `Command.usage`, so the vocabulary is defined in one place.
+/// Help text. The verb list comes from `Command.usage` and the config subcommands from
+/// `ConfigCommand.usage`, so each vocabulary is defined in exactly one place — and they stay two
+/// vocabularies, because one is sent to the daemon and the other is a file on disk.
 func help() -> String {
     """
     emira — scrollable tiling for macOS. Sends one command to the running daemon.
@@ -35,6 +39,9 @@ func help() -> String {
 
     Commands:
     \(Command.usage)
+
+    The config file, read and written here rather than sent:
+    \(ConfigCommand.usage)
 
     Options:
       --dry-run     Print the request that would be sent, and exit.
@@ -66,6 +73,17 @@ for argument in CommandLine.arguments.dropFirst() {
 guard !words.isEmpty else {
     print(help())
     exit(ExitCode.usage)
+}
+
+// `config` is local: it reads and writes a file and never dials the socket, so it branches off before
+// `Command.parse` sees a word of it. It is not a verb and must not become one — the config file is not
+// a thing you ask the daemon to do.
+if words.first == ConfigCommand.name {
+    guard !isDryRun else {
+        complain("--dry-run prints the request that would be sent, and '\(ConfigCommand.name)' sends none")
+        exit(ExitCode.usage)
+    }
+    exit(ConfigCommand.run(Array(words.dropFirst())))
 }
 
 // MARK: - argv → Command → Request → wire

@@ -48,7 +48,12 @@ public struct SpringParams: Sendable, Equatable, Codable {
     /// The default for viewport scrolling: critically damped at `k = 800`, i.e. ω = √800 ≈ 28.3. Turnable
     /// by calculation — remaining distance is `D(1 + ωt)e^(−ωt)`, so settle time is `u/ω` where `u` solves
     /// `(1 + u)e^(−u) = ε/D`; at `Motion`'s ε = 0.5 pt over a 600 pt column, ~334 ms.
-    public static let smooth = SpringParams.critical(frequency: 800.0.squareRoot())
+    ///
+    /// Spelled the way the config file spells a spring rather than as `critical(frequency: √800)`. The
+    /// two are the same spring and agree on `damping` to the bit, but routing `k` through a square root
+    /// and back lands on 800.0000000000001 — which the generated `emira.example.toml` would then print
+    /// as this key's default.
+    public static let smooth = SpringParams(stiffness: 800, dampingRatio: 1)
     /// Quick with a touch of life — a slight overshoot, and no production consumer: structural moves
     /// deliberately don't take it, because two columns trading places overshoot *through* each other and
     /// come back. Kept because the tests need few-frame settles and an underdamped spring to exercise

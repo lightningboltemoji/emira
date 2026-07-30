@@ -1,48 +1,21 @@
 import Foundation
-import EmiraMotion
+import EmiraCore
 
-// The schema of the config file — which keys exist, what they mean, and what a legal value is.
-// `TOML.swift` owns the grammar (how a line is written down); this file owns the vocabulary.
+// The reading of the config file — the half of the schema that runs. `ConfigSchema.swift` owns the
+// table of settings (which keys exist, what they mean, what a legal value is) and `TOML.swift` owns
+// the grammar (how a line is written down); this file turns a parsed document into a `Config` by
+// running the one against the other.
 //
 // **Unknown keys are errors, not shrugs**: a window manager that silently ignores `colum-gap` is one
 // the user believes is broken. The reader takes every key the schema knows and reports whatever is
-// left, so there is only one list of known keys and it is the reading code itself.
+// left, so there is only one list of known keys and it is the schema itself.
 //
-// The whole schema, at its `Config()` defaults:
+// The whole schema at its defaults is `ConfigSchema.document`, generated from that table and pinned
+// as `emira.example.toml`. It used to be a hand-written block here, which is a restatement of the
+// reader that can silently drift from it.
 //
-// ```toml
-// [layout]
-// column-gap = 0                        # points; likewise window-gap and outer-gap
-// outer-gap-top = 0                     # …and -left/-bottom/-right, overriding outer-gap per side
-// width-presets = [0.333, 0.5, 0.667]   # ≤ 1 is a fraction of the *content* width; > 1 is points
-// height-presets = [0.333, 0.5, 0.667]  # likewise, against the column height (`cycle-height`)
-// center-focused-column = false         # false = scroll the minimum that reveals the column
-//
-// [focus]
-// system-events = "respect"             # or "on-screen" / "ignore" — which focus changes emira did
-//                                       # not cause it honours
-//
-// [animation]
-// smooth-transitions = true             # false = always snap
-// hold-timeout = 1.0                    # seconds a cover may stay up waiting for AX to land
-// window = "stretch"                    # or "crop" — how a still is painted into a changing rect
-// cover = "exact"                       # or "immediate" — raise on the desktop alone, sharpen after
-//
-// [animation.scroll]                    # likewise [animation.resize] and [animation.movement]
-// stiffness = 800
-// damping-ratio = 1.0
-//
-// [keys]                                # empty by default
-// alt-h = "focus left"
-// cmd-alt-period = "center-column"      # punctuation is named — see `KeyChord.swift`
-// alt-space = "exec ghostty"            # …or hand the chord back to the system entirely
-//
-// [[window-rules]]                      # none by default; a list, so it repeats
-// app-id = "com.tinyspeck.slackmacgap"  # …or app-id-regex / title / title-regex, all AND'd
-// workspace = "3"                       # where a matching window *starts*
-// width = 0.5                           # …and how wide, on width-presets' scale
-// float = true                          # …or off the strip entirely, overriding the role
-// ```
+// Three sections the table deliberately does not describe are read below by a function named for
+// each, because forcing them into it would produce a worse table and a worse GUI both:
 //
 // `[keys]` is the one **open** table: its names are chords the user invents (`KeyChord.swift`) and
 // its values are commands spelled as `CommandSyntax.swift` spells them, both validated here so a typo
@@ -76,16 +49,21 @@ public enum ConfigSyntaxError: Error, Equatable, CustomStringConvertible {
     /// The key exists but the value is the wrong kind or outside the range it may take.
     case badValue(line: Int, key: String, message: String)
 
-    public var description: String {
+    public var description: String { "line \(line): \(message)" }
+
+    /// The complaint on its own, without the line it names. What a value that never came from a line
+    /// reads as: `emira config set` validates its argument through these very codecs, so the sentence
+    /// is the file's, and "line 0" would be a lie about where the number came from.
+    public var message: String {
         switch self {
-        case .syntax(let line, let message):
-            return "line \(line): \(message)"
-        case .duplicateKey(let line, let key):
-            return "line \(line): '\(key)' is set twice"
-        case .unknownKey(let line, let key):
-            return "line \(line): unknown setting '\(key)'"
-        case .badValue(let line, let key, let message):
-            return "line \(line): '\(key)' \(message)"
+        case .syntax(_, let message):
+            return message
+        case .duplicateKey(_, let key):
+            return "'\(key)' is set twice"
+        case .unknownKey(_, let key):
+            return "unknown setting '\(key)'"
+        case .badValue(_, let key, let message):
+            return "'\(key)' \(message)"
         }
     }
 
@@ -124,42 +102,32 @@ extension Config {
     /// - Throws: `ConfigSyntaxError`, whose `description` is already a printable diagnostic.
     public static func parse(_ text: String) throws -> Config {
         var table = try TOMLTable.parse(text)
+        return try Config(reading: &table)
+    }
+
+    /// The schema half of `parse`, over a table the grammar has already read. Split out so
+    /// `ConfigDocument` can parse a file once and read it twice — the values here, the spans from its
+    /// own uneaten copy — which is what makes the two readings the same reading by construction.
+    ///
+    /// Three passes: the settings table, the sections it deliberately doesn't describe, and then the
+    /// question that makes the whole file safe — what was left.
+    init(reading table: inout TOMLTable) throws {
         var config = Config()
 
-        table.acceptTable("layout")
-        if let gap = try table.number("layout.column-gap", atLeast: 0) { config.columnGap = gap }
-        if let gap = try table.number("layout.window-gap", atLeast: 0) { config.windowGap = gap }
+        // Every `[table]` the schema knows, accepted whether or not a key was written under it: a
+        // header declared and left empty is still a header, so `[layuot]` is caught having contributed
+        // no key to be left over.
+        for name in ConfigSchema.tables { table.acceptTable(name) }
+
+        for setting in ConfigSchema.settings {
+            guard let value = table.take(setting.key) else { continue }
+            try setting.apply(value, &config)
+        }
+
+        // The three the table can't hold, each read by a function named for it. Called out here rather
+        // than left as "whatever the loop didn't take", so the boundary is something you can see.
         if let gaps = try table.edgeInsets("layout.outer-gap", default: config.outerGaps) {
             config.outerGaps = gaps
-        }
-        if let flag = try table.bool("layout.center-focused-column") { config.centerFocusedColumn = flag }
-        if let presets = try table.presetCycle("layout.width-presets") { config.widthPresets = presets }
-        if let presets = try table.presetCycle("layout.height-presets") { config.heightPresets = presets }
-
-        table.acceptTable("focus")
-        if let mode: SystemFocusEvents = try table.word("focus.system-events") {
-            config.systemFocusEvents = mode
-        }
-
-        table.acceptTable("animation")
-        if let flag = try table.bool("animation.smooth-transitions") { config.smoothTransitions = flag }
-        if let seconds = try table.number("animation.hold-timeout", greaterThan: 0) {
-            config.holdTimeout = seconds
-        }
-        if let animation: WindowAnimation = try table.word("animation.window") {
-            config.windowAnimation = animation
-        }
-        if let cover: CoverMode = try table.word("animation.cover") {
-            config.coverMode = cover
-        }
-        if let spring = try table.spring("animation.scroll", default: config.scrollSpring) {
-            config.scrollSpring = spring
-        }
-        if let spring = try table.spring("animation.resize", default: config.resizeSpring) {
-            config.resizeSpring = spring
-        }
-        if let spring = try table.spring("animation.movement", default: config.moveSpring) {
-            config.moveSpring = spring
         }
 
         table.acceptTable("keys")
@@ -170,7 +138,7 @@ extension Config {
         if let leftover = table.leftovers.first {
             throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
         }
-        return config
+        self = config
     }
 }
 
@@ -178,11 +146,14 @@ extension Config {
 //
 // One reader per value kind, each producing the same shape of complaint: what was expected, on which
 // line, for which key.
+//
+// Each is a `static` over a value the caller has already taken, so a schema codec
+// (`ConfigSchema.swift`) and a bespoke section below run the same code and produce the same sentence.
+// The `mutating` wrappers are the bespoke sections' shorthand: take the key, then read it.
 
 extension TOMLTable {
 
-    fileprivate mutating func bool(_ key: String) throws -> Bool? {
-        guard let value = take(key) else { return nil }
+    static func bool(_ value: TOMLValue, key: String) throws -> Bool {
         guard case .bool(let flag) = value.payload else {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,
                                              message: "must be true or false, not \(value.kindName)")
@@ -190,12 +161,15 @@ extension TOMLTable {
         return flag
     }
 
+    fileprivate mutating func bool(_ key: String) throws -> Bool? {
+        try take(key).map { try Self.bool($0, key: key) }
+    }
+
     /// A quoted word drawn from a fixed vocabulary. Generic over the enum so the list of legal words
     /// *is* the type — a new case is accepted and named in the diagnostic with nothing here to update.
-    fileprivate mutating func word<T: RawRepresentable & CaseIterable>(
-        _ key: String
-    ) throws -> T? where T.RawValue == String {
-        guard let value = take(key) else { return nil }
+    static func word<T: RawRepresentable & CaseIterable>(
+        _ value: TOMLValue, key: String
+    ) throws -> T where T.RawValue == String {
         guard case .string(let text) = value.payload else {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,
                                              message: "must be a word in quotes, not \(value.kindName)")
@@ -217,7 +191,7 @@ extension TOMLTable {
         return try Self.number(value, key: key, atLeast: minimum, greaterThan: exclusive)
     }
 
-    private static func number(
+    static func number(
         _ value: TOMLValue, key: String, atLeast minimum: Double? = nil,
         greaterThan exclusive: Double? = nil
     ) throws -> Double {
@@ -227,11 +201,12 @@ extension TOMLTable {
         }
         if let minimum, number < minimum {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,
-                                             message: "must be at least \(Self.spell(minimum))")
+                                             message: "must be at least \(TOMLValue.spell(minimum))")
         }
         if let exclusive, number <= exclusive {
-            throw ConfigSyntaxError.badValue(line: value.line, key: key,
-                                             message: "must be greater than \(Self.spell(exclusive))")
+            throw ConfigSyntaxError.badValue(
+                line: value.line, key: key,
+                message: "must be greater than \(TOMLValue.spell(exclusive))")
         }
         return number
     }
@@ -266,13 +241,12 @@ extension TOMLTable {
     /// **A value ≤ 1 is a fraction of the content width; a value > 1 is a point count** — so `1.0` is a
     /// full-width column, not a one-point one. `PresetSize` models the two as distinct cases, so
     /// nothing is lost in translation.
-    private static func presetSize(_ number: Double) -> PresetSize {
+    static func presetSize(_ number: Double) -> PresetSize {
         number <= 1 ? .proportion(number) : .fixed(number)
     }
 
     /// The width cycle, each entry read on `presetSize`'s scale.
-    fileprivate mutating func presetCycle(_ key: String) throws -> PresetCycle? {
-        guard let value = take(key) else { return nil }
+    static func presetCycle(_ value: TOMLValue, key: String) throws -> PresetCycle {
         guard case .array(let elements) = value.payload else {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,
                                              message: "must be an array, not \(value.kindName)")
@@ -285,18 +259,6 @@ extension TOMLTable {
             Self.presetSize(try Self.number(element, key: key, greaterThan: 0))
         }
         return PresetCycle(sizes)
-    }
-
-    /// A `[table]` of spring constants (`stiffness`, `damping-ratio`). Returns `nil` only when the
-    /// table sets neither key, so a file overriding just the stiffness keeps the default damping ratio
-    /// rather than falling off a cliff to zero.
-    fileprivate mutating func spring(_ table: String, default fallback: SpringParams) throws -> SpringParams? {
-        acceptTable(table)
-        let stiffness = try number("\(table).stiffness", greaterThan: 0)
-        let ratio = try number("\(table).damping-ratio", atLeast: 0)
-        guard stiffness != nil || ratio != nil else { return nil }
-        return SpringParams(stiffness: stiffness ?? fallback.stiffness,
-                            dampingRatio: ratio ?? fallback.dampingRatio)
     }
 
     /// The `[keys]` table: chord → command, parsed by `KeyChord.parse` and `Command.parse(line:)`,
@@ -439,10 +401,5 @@ extension TOMLTable {
                 message: "must be a workspace name in quotes — \"1\"-\"9\", \"0\", then \"a\"-\"z\"")
         }
         return name
-    }
-
-    /// `8` rather than `8.0` in a diagnostic about an integral bound.
-    private static func spell(_ number: Double) -> String {
-        number == number.rounded() ? String(Int(number)) : String(number)
     }
 }

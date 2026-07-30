@@ -51,6 +51,13 @@ import Testing
                 "unparseable: \(spelled.subtracting(tabled).sorted()); dead: \(tabled.subtracting(spelled).sorted())")
     }
 
+    /// **`config` is not a verb.** The CLI branches on that word before `Command.parse` ever sees it —
+    /// the config file is a file it reads, not a thing the daemon is asked to do — so a verb spelled
+    /// that way would be unreachable, and unreachable *silently*.
+    @Test func noVerbIsSpelledConfig() {
+        #expect(!Command.verbs.contains { $0.matches("config") })
+    }
+
     // MARK: - Canonical spellings (pinned — they're a user-facing contract)
 
     @Test func canonicalSpellingsAreStable() {

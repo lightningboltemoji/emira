@@ -216,7 +216,7 @@ Continuous gestures (§9, M7) are the same session opened by gesture-begin and c
 
 ## 4. Module / target graph
 
-Four library targets and two executables. Dependencies point strictly upward; nothing below imports a framework.
+Five library targets and two executables. Dependencies point strictly upward; nothing below imports a framework.
 
 ```
 EmiraMotion     pure math — springs, easing curves, the scalar Animator.  (zero deps)
@@ -224,15 +224,16 @@ EmiraMotion     pure math — springs, easing curves, the scalar Animator.  (zer
 EmiraCore       pure — geometry, ids, Command/Event/Effect, State, layout engine,
     │           rules, Config values, the Engine reducer.        (deps: EmiraMotion)
     ▲
-EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.
-    │                                                            (deps: EmiraCore)
+   ├── EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.  (deps: EmiraCore)
+   └── EmiraConfig     pure — the TOML grammar and the config schema; text ⇄ `Config`.        (deps: EmiraCore)
     ▲
 EmiraShell      imperative — Runtime, Executor, AX, Capture, Compositor, DisplayLink,
     │           Hotkeys, ConfigLoader, IPC server, MenuBar, Permissions.
-    │           (deps: EmiraCore, EmiraProtocol; imports AppKit/QuartzCore/SCK/AX/Carbon)
+    │  (deps: EmiraCore, EmiraConfig, EmiraProtocol; imports AppKit/QuartzCore/SCK/AX/Carbon)
     ▲
    ├── emira-daemon   executable — NSApplication accessory host that runs the Runtime.
-   └── emira          executable — CLI; thin socket client.  (deps: EmiraProtocol + EmiraCore)
+   └── emira          executable — CLI; socket client, plus `emira config` over the file.
+                      (deps: EmiraProtocol + EmiraCore + EmiraConfig)
 ```
 
 **Why `EmiraMotion` is its own target and not a folder.** A spring/easing solver is genuinely generic — scalar in,
@@ -241,6 +242,14 @@ reach into reconciler state) and independently testable (feed ticks, assert conv
 tiny; if two targets ever feels like one too many we collapse it into `EmiraCore/Animation/`, but the seam is worth
 starting with.
 
+**Why `EmiraConfig` is its own target and not a folder.** The config *values* stay in `EmiraCore`, because the reducer
+reads them; what moved out is the file format — the grammar and the schema, `String ⇄ Config`. A folder would have
+been the same code in the same places, and it would not have stopped a settings window from importing the `Engine`.
+The target is the thing that makes "the GUI sees the config and nothing else" enforced rather than intended, and it
+does the same for the CLI in the other direction: `emira config` reaches the file format without reaching the shell.
+The naming precedent was already in the tree — `Command`/`CommandSyntax`, `Config`/`ConfigSyntax`; the package
+boundary is what makes that separation load-bearing.
+
 **Why the CLI stays at the bottom of the graph.** The CLI must be framework-free and trivially fast to launch. It
 parses `argv` into a `Command`, hands it to `SocketClient`, prints the reply. No AX, no CA, no AppKit — and no
 `EmiraShell`. Note that the *transport* lives in `EmiraProtocol`, not in the executable: an executable can't be
@@ -248,7 +257,11 @@ imported, so anything with logic in it is untested by construction, and partial 
 and version-mismatched answers are exactly the failures that need tests. It names `EmiraCore` as well as
 `EmiraProtocol` because it builds the *one* vocabulary directly (§2, `Command.parse`); `EmiraProtocol` already pulls
 `EmiraCore` in, so this adds nothing to launch cost, and the alternative — wrapping `Command` behind the envelope —
-would be the translation layer §2 exists to avoid.
+would be the translation layer §2 exists to avoid. It names `EmiraConfig` for `emira config`, which is **local**: it
+reads and writes the file and dials no socket, so it branches before `Command.parse` and is not a verb — the config
+file is not a thing you ask the daemon to do. The same rule about logic applies, so the schema knowledge (what a
+setting is, what a word from the command line means) is `EmiraConfig`'s and what is left in the executable is argv,
+exit codes and the disk.
 
 ---
 
@@ -311,11 +324,6 @@ emira/
 │   │   ├── KeyChord.swift           # the *other* surface spelling: `cmd-alt-h` ⇄ modifiers + a named
 │   │   │                            # `Key`. Exhaustive in the core so a bad chord is a config
 │   │   │                            # diagnostic with a line number, not a log line at bind time
-│   │   ├── TOML.swift               # the minimal TOML *grammar* the config file is written in —
-│   │   │                            # text → dotted keys + line numbers. Hand-rolled, no dependency
-│   │   ├── ConfigSyntax.swift       # the config *schema*: which keys exist, what they mean, what a
-│   │   │                            # legal value is. Stands to `Config.swift` as `CommandSyntax`
-│   │   │                            # stands to `Command`
 │   │   ├── Event.swift              # exhaustive input enum (commands + observations + tick)
 │   │   ├── Effect.swift             # exhaustive output enum (AX / CA / SCK / cover intents)
 │   │   ├── State/
@@ -348,6 +356,26 @@ emira/
 │   │   │   └── Park.swift           # deterministic unique corner nubs (park = target geometry)
 │   │   ├── Config.swift             # parsed config *values* (pure data; loading is in Shell)
 │   │   └── Engine.swift             # reduce(State, Event) -> (State, [Effect])
+│   ├── EmiraConfig/                 # the config file's *format*, and nothing that touches a disk
+│   │   ├── TOML.swift               # the minimal TOML *grammar* the config file is written in —
+│   │   │                            # text → dotted keys + line numbers + source spans, and one
+│   │   │                            # value spelled back. Hand-rolled, no dependency
+│   │   ├── ConfigSchema.swift       # the config *schema* as a table you can enumerate: one `Setting`
+│   │   │                            # per key — spelling, prose, legal values, presentation — and the
+│   │   │                            # codec that moves it between file and `Config`
+│   │   ├── ConfigSyntax.swift       # the *reading*: runs the table, then the three sections it
+│   │   │                            # doesn't describe, then "what was left". Stands to `Config.swift`
+│   │   │                            # as `CommandSyntax` stands to `Command`
+│   │   ├── ConfigExample.swift      # the schema rendered as a config file — `emira.example.toml`,
+│   │   │                            # generated and pinned by a golden test
+│   │   ├── ConfigExplain.swift      # the schema rendered as prose — one setting in full, or every
+│   │   │                            # setting beside what the file says now. `emira config explain`
+│   │   ├── ConfigDocument.swift     # text + parse held together: set/remove one value, splicing over
+│   │   │                            # the bytes it occupies and reformatting nothing. Renders a
+│   │   │                            # `String`; the caller writes it
+│   │   └── ConfigPath.swift         # `Config.defaultPath()` — `$EMIRA_CONFIG` or the XDG-style
+│   │                                # path. Where the file lives is a fact about the config, so
+│   │                                # both the daemon and the CLI read it from here
 │   ├── EmiraProtocol/
 │   │   ├── Request.swift            # Command + client metadata (pid) + version
 │   │   ├── Reply.swift              # ok / error / state dump (opaque JSON), + version
@@ -406,7 +434,7 @@ emira/
 │   │   │   ├── Hotkeys.swift        # the policy: `HotkeyBinder` seam + `HotkeyManager`. An event
 │   │   │   │                        # *source* like the socket server, not an Effect
 │   │   │   └── CarbonHotkeys.swift  # RegisterEventHotKey + the Key -> kVK_* table
-│   │   ├── Config/ConfigLoader.swift# the half that needs a disk: locate → read → watch → report.
+│   │   ├── Config/ConfigLoader.swift# the half that needs a disk: read → watch → report.
 │   │   │                            # The `FileWatcher` seam and `ConfigWatcher` — vnode sources on
 │   │   │                            # the file *and* its directory
 │   │   ├── Ipc/
@@ -451,11 +479,17 @@ emira/
 │   ├── emira-daemon/main.swift      # accessory NSApplication; wire up Runtime + subsystems. Also
 │   │                                # answers `--probe-capture` before any of that exists — one
 │   │                                # TCC read, one exit code, for onboarding's subprocess probe
-│   └── emira/main.swift             # argv -> Command -> Request -> socket; --dry-run, --help
+│   └── emira/
+│       ├── main.swift               # argv -> Command -> Request -> socket; --dry-run, --help
+│       └── ConfigCommand.swift      # `emira config` — check/explain/get/set, straight to the file.
+│                                    # No socket, no verb, and no sentence about a setting: argv,
+│                                    # exit codes and the atomic save, over `EmiraConfig`
 └── Tests/
     ├── EmiraMotionTests/            # spring convergence, retarget velocity carryover
-    ├── EmiraCoreTests/              # layout math, engine scenarios, golden replays, the grammar
-    │                                # and the schema (every diagnostic, by line number)
+    ├── EmiraCoreTests/              # layout math, engine scenarios, golden replays
+    ├── EmiraConfigTests/            # the grammar and the schema — every diagnostic, by line number;
+                                     # the document model — round-trip identity over a corpus; and the
+                                     # schema as text — every entry reads back whatever it prints
     ├── EmiraProtocolTests/          # envelope round-trips, framing, version-mismatch (both ways)
     └── EmiraShellTests/             # the pump: FIFO/non-re-entrancy, lifecycle, clock gating;
                                      # the IPC seam over a real socket + socket-path safety
@@ -1154,8 +1188,9 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     another user's socket, or a live daemon is refused **without deleting anything** — a second daemon must exit
     rather than steal the path.
 - **MenuBar StatusItem** — an accessory (`LSUIElement`, no Dock icon) menu-bar item showing the focused workspace's
-  address plus two menu items, **quit** and **open at login**. This *is* the GUI — no preferences window, and no
-  `reload-config` item, because reload is automatic and a button would advertise a step nobody has to take.
+  address plus two menu items, **quit** and **open at login**. This is the whole of the running GUI, and it carries no
+  `reload-config` item, because reload is automatic and a button would advertise a step nobody has to take. **Settings…**
+  joins it when the window does (§9's M6.5) — a menu item, not a second chrome.
   - **`!` exists because a hot reload's failure mode is silence.** A broken file changes nothing, deliberately — the
     desktop stays exactly as it was — which means a typo and a correct edit that happens to be a no-op are
     indistinguishable from the outside. In a terminal the diagnostic was on stderr; a bundled app has no stderr anyone
@@ -1294,15 +1329,27 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - The one thing given up is crash-respawn, and it is a real loss *here* specifically, since a respawn would rescue a
     desktop full of parked windows via the boot scan. It can be added later as a bundled `SMAppService.agent(…)`
     without changing any of the above.
-- **`emira`** — the CLI; `emira focus left`, `emira move-window right`, `emira debug` (pretty-prints the state dump).
+- **`emira`** — the CLI; `emira focus left`, `emira move-window right`, `emira debug` (pretty-prints the state dump),
+  and `emira config check | explain | get | set`, which is the one branch that talks to the *file* instead of the
+  daemon — `set` writes through `ConfigDocument` and hot reload does the rest, so there is no command afterwards.
   **It ships inside the bundle and nothing symlinks it**, so there is exactly one copy of the wire protocol on the
   machine — the version probe exists because skew is possible, and this makes it not happen. Putting it on `$PATH` is a
   packaging concern, answered by a Homebrew cask's `binary` stanza pointing into the bundle.
 
 ### Config (**TOML**, matching AeroSpace)
 `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`). The **parsed values** are a pure `Config` struct in
-`EmiraCore`, and so is the **parse** (`ConfigSyntax.swift` — a `String → Config` function is pure by construction);
-the shell owns **locating, reading and watching**. Covers: keybindings (`[keys]`, key → `Command`, including the
+`EmiraCore`, because the reducer reads them; the **format** is `EmiraConfig` — the grammar, the schema and the path
+(§4) — and a `String → Config` function is pure by construction. The shell owns only **reading and watching**.
+It goes the other way too, and **not by serializing**: `ConfigDocument` holds the text beside its parse and changes
+one value by splicing over the bytes that value occupies, so a file keeps its comments, its ordering and its blank
+lines through an edit. Rendering back is a `String`; the write is still the caller's, which is what keeps the package
+free of I/O and leaves the atomic save with the code that owns the path. §10's window is an editor of the file, so
+this is the seam it edits through — and it refuses to write a file it could not read. `emira config` is the same
+seam from a terminal, and the schema is what both of them read: the label, the sentence, the legal values and the
+default are printed by `explain` and laid out by the window off the one table, so nothing describing a setting is
+written down twice. A value typed as a *word* — `8`, `true`, `adopt`, `0.5 1` — goes through the same codec a line of
+the file does, so a bound is checked in one place and refused in one sentence.
+Covers: keybindings (`[keys]`, key → `Command`, including the
 `exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
 `center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through),
@@ -1333,6 +1380,22 @@ to vendor into a bundle.
 schema knows and then reports whatever is left, so "which keys are valid" is the reading code itself and cannot drift.
 A declared-but-empty `[layuot]` is caught too — leftover *keys* alone would miss it. Silence is the failure mode that
 matters here: a window manager that ignores `colum-gap` is one the user believes is broken.
+
+**The schema is a table, not a procedure.** `ConfigSchema.settings` is one `Setting` per key, each carrying its
+spelling, its sentence, what a legal value is, and a codec that moves the value between the file and a `Config` field.
+Reading is a loop over it; the example document is a render of it; `emira config` and the settings window are the two
+consumers still to come. Presentation metadata — section, order, advanced-or-not — sits on the entry because it
+describes the *setting*, and the alternative is a second list that drifts; nothing in the package imports a framework.
+
+Three sections stay hand-written and are named as such in the reader: **`outer-gap`** (one logical value with five
+spellings), **`[keys]`** (an open table whose names the user invents) and **`[[window-rules]]`** (repeating, ordered,
+cross-validated). They are exactly the three that get bespoke editors in the settings window, so forcing them into the
+table would buy a tidier list and a worse GUI. `struts` is not a key at all, and a test says so by name.
+
+Two properties are pinned rather than hoped for: the generated `emira.example.toml` matches a golden file (so the
+document cannot drift from the reader, and cannot change without someone reading the diff), and every stored property
+of `Config` is either covered by an entry, claimed by one of the three named sections, or on an explicit not-a-key
+list — so a new field cannot be added without a config story.
 
 **Three rules about a file that isn't what we hoped, and each is a decision:** a **missing** file is `Config()`, not an
 error (emira must run before it is configured); a **broken** file changes *nothing* and reports `path:line: message`
@@ -1512,6 +1575,7 @@ is fully trustworthy before a single real window moves.
 | **M4** | The signature scroll | Capture + Reconstruction + Transition; motion under cover; the cover that grows on a retarget; the animated resize | **done** |
 | **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated + the menu bar and the `.app` | **done — shippable here** |
 | **M6** | Full layout model | Virtual workspaces, per-monitor strips, window rules, monitor hotplug | the workspace model and its verbs are in, snapped; per-monitor strips and rules are not |
+| **M6.5** | Configuration surface | `EmiraConfig` as a target; a TOML document model that edits a file without reformatting it; the schema as data; `emira config`; the settings window (§10) | the target boundary, the document model, the schema table and `emira config` are in; the window is not |
 | **M7** | Deluxe *(optional)* | Continuous trackpad gestures, live-stream layers, focus-ring overlay, overview/zoom-out | later |
 
 **M5 is the line.** A complete emira is M0–M5: it tiles, scrolls smoothly, is keyboard-driven, configurable, and
@@ -1526,7 +1590,13 @@ have shipped the thing.
   first-sight binding → public `CGWindowID`, not `_AXUIElementGetWindow`). This is the charter, not a phase.
 - **No native Spaces / Mission Control integration.** Workspaces are emulated by off-screen parking (`PRINCIPLES.md` §3).
   We recommend users disable "Displays have separate Spaces," as AeroSpace does.
-- **No preferences GUI.** The config file is the UI; the menu bar is the only chrome.
+- **No setting the file cannot express, and no state the settings window owns.** A preferences window is *in* scope
+  (§4's `EmiraConfig`, §9's M6.5) — a window manager only a developer can configure is one most people never get to
+  try, and "the config file is the UI" cut off that audience on a premise about who the user is rather than about the
+  architecture. What does not change is which artifact is authoritative: the window is an **editor of the file**. It
+  writes `~/.config/emira/emira.toml` in place, preserving comments, ordering and grouping, and every control it
+  offers corresponds to a key someone can also type. So: no preferences database, no key reachable only through a
+  GUI, no settings that live in `UserDefaults`, and no import/export — the file *is* the export.
 - **No layout persistence across restart.** Re-tile from live window enumeration on launch. (Loose workspace-rule
   reassignment via config is enough.)
 - **No foreign-window resize smoothness beyond the app's own speed** — a hard floor (`PRINCIPLES.md` §6); we only cross-fade

@@ -75,8 +75,8 @@ app.setActivationPolicy(.accessory)
 // Must be read *before* the grant checks below: whether Screen Recording is required depends on
 // whether the user asked for the cover at all (`smooth-transitions`).
 
-let loader = ConfigLoader(path: ConfigLoader.defaultPath(),
-                          watcher: ConfigWatcher(watching: ConfigLoader.defaultPath()),
+let loader = ConfigLoader(path: Config.defaultPath(),
+                          watcher: ConfigWatcher(watching: Config.defaultPath()),
                           scheduler: DispatchScheduler())
 
 /// The config as the file spells it, before `applyEnvironment`. Kept separate because the grant check

@@ -1,7 +1,8 @@
 import Foundation
 import Testing
 import EmiraMotion
-@testable import EmiraCore
+import EmiraCore
+@testable import EmiraConfig
 
 // text → `Config`. Two layers, tested separately because they fail differently: `TOMLTable` (the
 // grammar — is this a line?) and `Config.parse` (the schema — is this a setting, and is that a legal
@@ -485,6 +486,18 @@ import EmiraMotion
                 == "line 2: 'layout.column-gap' must be at least 0")
         #expect(ConfigSyntaxError.syntax(line: 1, message: "unterminated string").description
                 == "line 1: unterminated string")
+    }
+
+    /// …and the same sentence without its line, for a value that never came from one — `emira config
+    /// set` validates an argument through these codecs, and there is no line to name.
+    @Test func aDiagnosticDropsTheLineItHasNoneToName() {
+        #expect(ConfigSyntaxError.unknownKey(line: 0, key: "layout.colum-gap").message
+                == "unknown setting 'layout.colum-gap'")
+        #expect(ConfigSyntaxError.badValue(line: 0, key: "layout.column-gap",
+                                           message: "must be at least 0").message
+                == "'layout.column-gap' must be at least 0")
+        #expect(ConfigSyntaxError.syntax(line: 1, message: "unterminated string").message
+                == "unterminated string")
     }
 
     /// The documented example in `ConfigSyntax.swift`'s header is the defaults written out — if it

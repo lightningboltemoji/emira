@@ -1,9 +1,10 @@
 import Dispatch
 import Foundation
+import EmiraConfig
 import EmiraCore
 
-// The imperative half of the config file: find it, read it, watch it. What a key means, and what the
-// diagnostic says, is pure and lives in `EmiraCore/ConfigSyntax.swift`.
+// The imperative half of the config file: read it, watch it. What a key means, what the diagnostic
+// says, and where the file lives are pure and belong to `EmiraConfig`.
 //
 // A missing file is not an error — it loads as `Config()`. A broken file changes nothing: falling back
 // to defaults on a syntax error would rearrange the whole desktop as the side effect of a typo.
@@ -28,16 +29,10 @@ public enum ConfigLoadError: Error, CustomStringConvertible {
         case .unreadable(let path, let reason):
             return "\(path): \(reason)"
         case .syntax(let path, let error):
-            return "\(path):\(error.line): \(Self.message(of: error))"
+            // `description` opens with "line N: " because `EmiraConfig` doesn't know the file. Here we
+            // do, so the line is hoisted into the path prefix and the complaint is asked for on its own.
+            return "\(path):\(error.line): \(error.message)"
         }
-    }
-
-    /// `ConfigSyntaxError.description` opens with "line N: " because the core doesn't know the file.
-    /// Here we do, so the line is hoisted into the path prefix and this drops it.
-    private static func message(of error: ConfigSyntaxError) -> String {
-        let text = error.description
-        guard let colon = text.firstIndex(of: ":"), text.hasPrefix("line ") else { return text }
-        return String(text[text.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -62,7 +57,7 @@ public final class ConfigLoader {
     private var lastLoaded: Config?
 
     /// A `nil` `watcher` disables hot reload; `coalesce` is the coalescing window in seconds.
-    public init(path: String = ConfigLoader.defaultPath(),
+    public init(path: String = Config.defaultPath(),
                 watcher: (any FileWatcher)? = nil,
                 scheduler: any DelayScheduler,
                 coalesce: TimeInterval = 0.08) {
@@ -70,14 +65,6 @@ public final class ConfigLoader {
         self.watcher = watcher
         self.scheduler = scheduler
         self.coalesce = coalesce
-    }
-
-    /// `$EMIRA_CONFIG`, or the XDG-style `~/.config/emira/emira.toml`.
-    public static func defaultPath() -> String {
-        if let override = ProcessInfo.processInfo.environment["EMIRA_CONFIG"], !override.isEmpty {
-            return override
-        }
-        return NSHomeDirectory() + "/.config/emira/emira.toml"
     }
 
     // MARK: - Reading

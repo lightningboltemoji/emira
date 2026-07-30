@@ -43,6 +43,20 @@ and even better, you can have as many strips of windows as you want, and swap be
 
 driven by `~/.config/emira/emira.toml`
 
+**[`emira.example.toml`](emira.example.toml) is every setting emira has, at its default** — so a file that says none of
+it says exactly that. write down only what you disagree with: an absent key keeps its default, and a key emira doesn't
+know is an error naming its line rather than a setting that quietly does nothing. it's generated from the schema and
+pinned by a test, so it can't drift from what actually reads your file.
+
+`emira config` reads and writes that file for you, if you'd rather not:
+
+```bash
+emira config explain              # every setting, and what your file says now
+emira config explain layout.column-gap
+emira config set layout.column-gap 12   # the running emira picks it up on its own
+emira config check                # says nothing when the file is fine
+```
+
 you can assign key binds to a number of commands:
 
 - window (`focus`, `grow`, `shrink`, `move-window`, `fullscreen`, `float`, `consume-or-expel`)

@@ -60,11 +60,13 @@ import Testing
         #expect(next.velocity == 0)
     }
 
-    /// The spelling a config file uses (`stiffness`/`damping-ratio`) has to agree exactly with
-    /// `critical(frequency:)` at ζ = 1, since `.smooth` is defined by the latter.
+    /// The spelling a config file uses (`stiffness`/`damping-ratio`) has to agree with
+    /// `critical(frequency:)` at ζ = 1. `.smooth` is defined by the former, so the agreement is exact
+    /// there and within a rounding of the square root here.
     @Test func theStiffnessAndRatioSpellingRoundTrips() {
         let spring = SpringParams(stiffness: 800, dampingRatio: 1.0)
-        #expect(abs(spring.stiffness - SpringParams.smooth.stiffness) < 1e-9)
+        #expect(spring == SpringParams.smooth)
+        #expect(abs(SpringParams.critical(frequency: 800.0.squareRoot()).stiffness - 800) < 1e-9)
         #expect(abs(spring.damping - SpringParams.smooth.damping) < 1e-9)
         #expect(abs(spring.dampingRatio - 1.0) < 1e-12)
 
