@@ -245,6 +245,26 @@ import EmiraCore
         #expect(reports.configs.map(\.columnGap) == [9])
     }
 
+    /// The daemon manages nothing until a parse succeeds, so the *first* success after a failed boot
+    /// read has to reach it — including when what finally parses is the default config. `lastLoaded`
+    /// is the suppression yardstick and a failed boot never sets it, which is what makes this hold.
+    @Test func theFirstParseAfterAFailedBootIsReportedEvenWhenItIsTheDefault() {
+        let scratch = Scratch()
+        scratch.write("[layout]\ncolum-gap = 4\n")
+        let watcher = ManualWatcher()
+        let scheduler = ManualScheduler()
+        let loader = Self.loader(scratch, watcher: watcher, scheduler: scheduler)
+        let reports = Reports()
+        guard case .failure = loader.load() else { return #expect(Bool(false)) }
+        reports.attach(to: loader)
+        loader.start()
+
+        scratch.write("# fixed, and back to saying nothing at all\n")
+        watcher.fire()
+        scheduler.fire()
+        #expect(reports.configs == [Config()])
+    }
+
     @Test func stoppingTearsTheWatchDown() {
         let scratch = Scratch()
         let watcher = ManualWatcher()

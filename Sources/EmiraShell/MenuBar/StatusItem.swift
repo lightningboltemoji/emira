@@ -4,9 +4,36 @@ import EmiraConfig
 import EmiraCore
 
 // The menu bar item — emira's entire GUI: the focused workspace's address, a way into the config
-// file, a quit and an open-at-login action, and a failure channel for hot reload, which is otherwise
-// silent (the title becomes `!` and the menu says what broke). `StatusModel` holds the policy as pure
-// data so it is testable without a status bar; `MenuBarItem` is the AppKit wiring.
+// file, a quit and an open-at-login action, and a failure channel for the config file, which is
+// otherwise silent (the title becomes `!` and the menu says what broke). `StatusModel` holds the
+// policy as pure data so it is testable without a status bar; `MenuBarItem` is the AppKit wiring.
+
+/// What the config file is doing to emira — the whole of what the menu bar has to say about it.
+///
+/// The two failures are not the same failure. A file that *stops* parsing leaves the settings that
+/// were already running in place, so emira carries on and the diagnostic is advice. A file that has
+/// *never* parsed leaves nothing behind it, so emira manages no windows at all and the diagnostic is
+/// the reason why.
+public enum ConfigStatus: Equatable, Sendable {
+
+    /// The file loads — or isn't there, which means the same thing.
+    case loaded
+
+    /// A reload failed, and the settings from before it broke are still running.
+    case broken(String)
+
+    /// The file was already broken when emira started, so there are no settings to fall back to and
+    /// the desktop is left alone until it parses.
+    case neverLoaded(String)
+
+    /// The diagnostic, when there is one.
+    public var error: String? {
+        switch self {
+        case .loaded:                                       return nil
+        case .broken(let error), .neverLoaded(let error):   return error
+        }
+    }
+}
 
 /// What the menu bar item displays, as pure data.
 public struct StatusModel: Equatable, Sendable {
@@ -14,29 +41,43 @@ public struct StatusModel: Equatable, Sendable {
     /// The workspace the viewport is looking at — `state.workspaces.focused`.
     public var workspace: WorkspaceName
 
-    /// The diagnostic from the last config load, or `nil` when the file is fine.
-    public var configError: String?
+    /// What the last config load left behind.
+    public var configStatus: ConfigStatus
 
-    public init(workspace: WorkspaceName = .first, configError: String? = nil) {
+    public init(workspace: WorkspaceName = .first, configStatus: ConfigStatus = .loaded) {
         self.workspace = workspace
-        self.configError = configError
+        self.configStatus = configStatus
     }
 
     /// The button's text: the workspace address normally, `!` when the config is broken. The address
     /// is replaced rather than annotated — a menu bar item has room for one character.
-    public var title: String { configError == nil ? workspace.description : "!" }
+    public var title: String { configStatus.error == nil ? workspace.description : "!" }
 
-    /// What hovering says — where the address goes when `!` has taken the title.
+    /// What hovering says — where the address goes when `!` has taken the title. An emira that never
+    /// loaded a config says that instead: the address of a workspace holding no windows is not the
+    /// fact the user is missing.
     public var tooltip: String {
-        configError == nil
-            ? "emira — workspace \(workspace)"
-            : "emira — config error (workspace \(workspace))"
+        switch configStatus {
+        case .loaded:       return "emira — workspace \(workspace)"
+        case .broken:       return "emira — config error (workspace \(workspace))"
+        case .neverLoaded:  return "emira — config error (not managing windows)"
+        }
+    }
+
+    /// What the failure means for the emira that is running, and `nil` when nothing is wrong — so
+    /// this is also the bit that decides whether the menu carries a diagnostic at all.
+    public var consequence: String? {
+        switch configStatus {
+        case .loaded:       return nil
+        case .broken:       return "emira is running with the last settings that loaded."
+        case .neverLoaded:  return "emira starts managing windows when it parses."
+        }
     }
 
     /// The diagnostic, wrapped so an absolute path can't make the menu wider than the screen.
     public func diagnosticLines(width: Int = 56) -> [String] {
-        guard let configError else { return [] }
-        return Self.wrap(configError, at: width)
+        guard let error = configStatus.error else { return [] }
+        return Self.wrap(error, at: width)
     }
 
     /// Greedy word wrap. A single word longer than `width` (a long path) is left over-long rather
@@ -130,10 +171,10 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         set { update { $0.workspace = newValue } }
     }
 
-    /// The config diagnostic, or `nil` when the file loads. Flips the title between address and `!`.
-    public var configError: String? {
-        get { model.configError }
-        set { update { $0.configError = newValue } }
+    /// What the config file is doing to emira. Flips the title between the address and `!`.
+    public var configStatus: ConfigStatus {
+        get { model.configStatus }
+        set { update { $0.configStatus = newValue } }
     }
 
     private func update(_ change: (inout StatusModel) -> Void) {
@@ -157,25 +198,16 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
     public func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        if model.configError != nil {
+        if let consequence = model.consequence {
             menu.addItem(disabled("config failed to parse"))
             let small = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize,
                                                     weight: .regular)
             for line in model.diagnosticLines() {
                 menu.addItem(disabled(line, font: small))
             }
-            menu.addItem(disabled("emira is running with the last settings that loaded."))
+            menu.addItem(disabled(consequence))
             menu.addItem(.separator())
         }
-
-        // Directly under the diagnostic, because a broken file is when this is most wanted. The path
-        // is the tooltip rather than the title: `$EMIRA_CONFIG` can make it long, and a menu bar item
-        // has no room for it.
-        let config = NSMenuItem(title: "open config file",
-                                action: #selector(openConfigFile), keyEquivalent: ",")
-        config.target = self
-        config.toolTip = configPath
-        menu.addItem(config)
 
         let login = NSMenuItem(title: "open at login",
                                action: #selector(toggleLoginItem), keyEquivalent: "")
@@ -195,8 +227,6 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         }
         menu.addItem(login)
 
-        // The path is the tooltip rather than the title: `$EMIRA_CONFIG` can make it long, and a menu
-        // bar item has no room for it.
         let config = NSMenuItem(title: "open config file",
                                 action: #selector(openConfigFile), keyEquivalent: ",")
         config.target = self

@@ -82,8 +82,8 @@ let loader = ConfigLoader(path: Config.defaultPath(),
 /// The config as the file spells it, before `applyEnvironment`. Kept separate because the grant check
 /// below reads the user's *intent*.
 var parsedConfig: Config
-/// The boot diagnostic, held until there is a menu bar item to show it on. A config broken at launch
-/// has no other trace — the daemon runs on defaults and the desktop looks plausible.
+/// The boot diagnostic, held until there is a menu bar item to show it on. It is also the bit that
+/// decides whether emira manages anything at all — see `startManaging`.
 var bootConfigError: String?
 switch loader.load() {
 case .success(let parsed):
@@ -94,7 +94,7 @@ case .success(let parsed):
 case .failure(let error):
     parsedConfig = Config()
     bootConfigError = "\(error)"
-    log("config: \(error) — using defaults")
+    log("config: \(error) — not managing windows until it parses")
 }
 
 // MARK: - Permissions
@@ -107,7 +107,11 @@ case .failure(let error):
 // it had to open a window: a grant given to a *running* emira is only half a grant, and the next launch
 // has the whole of it.
 
-let onboarding = OnboardingModel.live(wantsCover: parsedConfig.transitionMode.covers)
+// A file we couldn't parse is a file whose intent we don't have, so both grants are asked for rather
+// than the ones a `Config()` we invented happens to want: the config the user is about to fix may well
+// ask for the cover, and a grant is the one thing a later reload cannot go back and collect.
+let onboarding = OnboardingModel.live(
+    wantsCover: bootConfigError != nil || parsedConfig.transitionMode.covers)
 if !onboarding.isSatisfied {
     log("waiting for \(onboarding.missing.joined(separator: ", "))")
 }
@@ -186,7 +190,7 @@ var config = applyEnvironment(to: parsedConfig)
 // Created before the pump so a config already broken at boot has somewhere to say so.
 
 let menuBar = MenuBarItem(configPath: loader.path)
-menuBar.configError = bootConfigError
+menuBar.configStatus = bootConfigError.map { .neverLoaded($0) } ?? .loaded
 menuBar.onError = { log($0) }
 
 // MARK: - The pump
@@ -278,31 +282,16 @@ let hotkeys = HotkeyManager(binder: CarbonHotkeyBinder(), sink: EventSink { even
         : "keys: \(outcome.summary)")
 }
 
-applyKeys(config)
-
-// Only a successful parse becomes an event. The three subsystems told separately — reducer, hotkeys,
-// shell — must all read the *same* post-`applyEnvironment` value.
-loader.onLoad = { result in
-    switch result {
-    case .success(let parsed):
-        let live = applyEnvironment(to: parsed)
-        log("config: reloaded \(loader.path)")
-        runtime.dispatch(.configChanged(live))
-        applyKeys(live)
-        applyShellConfig(live)
-        menuBar.configError = nil
-    case .failure(let error):
-        log("config: \(error) — keeping the previous settings")
-        // A failed hot reload is otherwise silent, so this is the only signal the edit did nothing.
-        menuBar.configError = "\(error)"
-    }
-}
-loader.start()
+// The keyboard waits on the config for the same reason the desktop does (`startManaging`): the
+// bindings a broken file asks for are exactly the part we cannot read, and binding the empty set in
+// their place would report the keyboard's silence as something the user chose.
+if bootConfigError == nil { applyKeys(config) }
 
 // MARK: - The truth plane
 //
 // Launch is just events: `screensChanged`, then one `windowCreated` per window — the same path every
-// later observation takes as the user opens, closes, drags and Cmd-Tabs.
+// later observation takes as the user opens, closes, drags and Cmd-Tabs. *When* launch is, though, is
+// the config file's to say — see `startManaging`.
 
 let watcher = WorldWatcher(
     source: AXObservationSource(client: axClient, registry: registry),
@@ -318,15 +307,65 @@ watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
 }
 
-runtime.dispatch(.screensChanged(geometry.monitors(screens)))
-// Each app is scanned on its own AX lane, so boot costs the slowest app, not the sum. The report
-// lands back on the main actor after its windows have already been dispatched and placed.
-watcher.start { report in
-    log("enumerated \(report.summary)")
-    log("managing \(runtime.state.layout.columns.count) columns on workspace "
-        + "\(runtime.state.workspaces.focused) of \(runtime.state.workspaces.materialized.count), "
-        + "\(runtime.state.world.monitors.count) display(s)")
+/// Whether the desktop has been adopted. A latch: adoption happens once, and the only open question
+/// is when.
+var isManaging = false
+
+/// Adopt the desktop — the boot scan, and every observation after it.
+///
+/// Held back when the config file is already broken at launch, and started by the first save that
+/// makes it parse. A broken *reload* has the settings from before it broke to carry on with, which is
+/// why it changes nothing; a broken boot has nothing behind it, and the defaults emira would otherwise
+/// adopt the desktop under are settings nobody chose — every window snapped onto a gapless, full-width
+/// strip, with none of the user's own keys bound to undo it and no way to tell that apart from emira
+/// working as intended. So it waits, says so in the menu bar, and leaves the desktop as it found it.
+@MainActor func startManaging() {
+    guard !isManaging else { return }
+    isManaging = true
+    runtime.dispatch(.screensChanged(geometry.monitors(screens)))
+    // Each app is scanned on its own AX lane, so boot costs the slowest app, not the sum. The report
+    // lands back on the main actor after its windows have already been dispatched and placed.
+    watcher.start { report in
+        log("enumerated \(report.summary)")
+        log("managing \(runtime.state.layout.columns.count) columns on workspace "
+            + "\(runtime.state.workspaces.focused) of \(runtime.state.workspaces.materialized.count), "
+            + "\(runtime.state.world.monitors.count) display(s)")
+    }
 }
+
+if bootConfigError == nil { startManaging() }
+
+// MARK: - Hot reload
+//
+// Only a successful parse becomes an event. The three subsystems told separately — reducer, hotkeys,
+// shell — must all read the *same* post-`applyEnvironment` value.
+
+loader.onLoad = { result in
+    switch result {
+    case .success(let parsed):
+        let live = applyEnvironment(to: parsed)
+        log("config: reloaded \(loader.path)")
+        runtime.dispatch(.configChanged(live))
+        applyKeys(live)
+        applyShellConfig(live)
+        menuBar.configStatus = .loaded
+        // The parse a held emira has been waiting for. Last, so the boot scan places windows against a
+        // core that already holds the config it was waiting for; the latch makes every later one an
+        // ordinary reload.
+        startManaging()
+    case .failure(let error):
+        // A failed reload is otherwise silent, so the menu bar is the only signal the edit did
+        // nothing. A held emira stays held and says so: there are still no settings behind the file.
+        if isManaging {
+            log("config: \(error) — keeping the previous settings")
+            menuBar.configStatus = .broken("\(error)")
+        } else {
+            log("config: \(error) — still not managing windows")
+            menuBar.configStatus = .neverLoaded("\(error)")
+        }
+    }
+}
+loader.start()
 
 // MARK: - The CLI seam
 

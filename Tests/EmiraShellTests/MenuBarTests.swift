@@ -26,13 +26,38 @@ import EmiraCore
         var model = StatusModel(workspace: WorkspaceName("4")!)
         #expect(model.title == "4")
 
-        model.configError = "/tmp/emira.toml:3: unknown setting 'layout.colum-gap'"
+        model.configStatus = .broken("/tmp/emira.toml:3: unknown setting 'layout.colum-gap'")
         #expect(model.title == "!")
         // The address it displaced is still reachable, because the user still needs to know it.
         #expect(model.tooltip.contains("4"))
 
-        model.configError = nil
+        model.configStatus = .loaded
         #expect(model.title == "4")
+    }
+
+    /// A file that has never parsed takes the title on the same terms — but not the address with it.
+    /// Nothing is being managed, so the workspace it would name holds no windows.
+    @Test func aConfigThatNeverLoadedTakesTheTitleAndSaysWhy() {
+        let model = StatusModel(workspace: WorkspaceName("4")!,
+                                configStatus: .neverLoaded("/tmp/emira.toml:3: bad"))
+        #expect(model.title == "!")
+        #expect(!model.tooltip.contains("4"))
+        #expect(model.tooltip.contains("not managing"))
+    }
+
+    /// The two failures read differently because they *are* different: one has earlier settings
+    /// running and one has none, which is the whole reason emira manages nothing in the second.
+    @Test func theTwoFailuresSayDifferentThingsAboutTheSameDiagnostic() {
+        let error = "/tmp/emira.toml:3: bad"
+        let broken = StatusModel(configStatus: .broken(error)).consequence
+        let never = StatusModel(configStatus: .neverLoaded(error)).consequence
+
+        #expect(broken != nil && never != nil)
+        #expect(broken != never)
+        #expect(StatusModel(configStatus: .loaded).consequence == nil)
+        // Same diagnostic either way — only the sentence under it changes.
+        #expect(StatusModel(configStatus: .broken(error)).diagnosticLines()
+                == StatusModel(configStatus: .neverLoaded(error)).diagnosticLines())
     }
 
     // MARK: - The diagnostic
@@ -44,11 +69,11 @@ import EmiraCore
     @Test func theDiagnosticWrapsWithoutBreakingThePath() {
         let path = "/Users/someone/.config/emira/emira.toml:3"
         let model = StatusModel(workspace: .first,
-                                configError: "\(path): unknown setting 'layout.colum-gap'")
+                                configStatus: .broken("\(path): unknown setting 'layout.colum-gap'"))
         let lines = model.diagnosticLines(width: 40)
 
-        #expect(lines.count > 1)                              // it actually wrapped
-        #expect(lines.joined(separator: " ") == model.configError)  // and lost nothing
+        #expect(lines.count > 1)                                       // it actually wrapped
+        #expect(lines.joined(separator: " ") == model.configStatus.error)  // and lost nothing
         // A path longer than the wrap width is left over-long rather than cut: a truncated path
         // can't be pasted into a terminal, which is the only thing the user wants to do with it.
         #expect(lines.contains(path + ":"))

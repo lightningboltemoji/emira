@@ -1232,6 +1232,18 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     alert** on the two remaining fatal paths — no displays, a control socket that won't bind: an `.app` that exits
     silently is indistinguishable from a broken download. A missing grant *was* a third such path, and is now a window
     that waits instead of a message that gives up.
+  - **A file broken *at launch* is a different failure, and emira manages nothing until it parses.** "Change nothing"
+    works as a reload rule because there is something to change nothing *from* — the settings that were running before
+    the file broke. At boot there are none, and "keep what you had" degrades into adopting the whole desktop under
+    defaults nobody wrote: every window snapped onto a gapless full-width strip, none of the user's own keys bound to
+    undo it, and no way to tell that apart from emira working as intended. So the daemon goes as far as it can and
+    stops: it prompts for **both** grants — a file it cannot read is a file whose intent it does not have, and a grant
+    is the one thing a later reload cannot go back and collect — raises the `!` item, and leaves the truth plane
+    unstarted, the keyboard unbound and the desktop exactly as it found it. The first save that parses starts all
+    three, which is the ordinary boot arriving late; a save that is still broken keeps it waiting and says so. **A
+    missing file is not this case**: it parses to `Config()`, which is a config, and emira manages under it. The menu
+    says which of the two the user is in, since the sentence that follows the diagnostic is the whole difference —
+    running on the last settings that loaded, or waiting to start.
   - **On the launch that goes through the grant flow the item does not appear, and it is routed around rather than
     fixed.** Everything the item can be asked says it is fine — `isVisible` true, a button, a title, and even a child
     under `AXExtrasMenuBar` — while nothing is on screen; it is there on every launch afterwards, which is what
