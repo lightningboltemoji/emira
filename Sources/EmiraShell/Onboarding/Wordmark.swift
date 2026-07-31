@@ -31,7 +31,7 @@ final class Wordmark: NSView {
     /// `nil` when the asset is missing or unreadable, and the window opens without a heading — a
     /// decoration may not be the reason onboarding can't be shown.
     init?(scheduler: any DelayScheduler = DispatchScheduler()) {
-        guard let url = Bundle.module.url(forResource: "logo", withExtension: "webp"),
+        guard let url = Self.logoURL(),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               CGImageSourceGetCount(source) > 0 else { return nil }
         self.source = source
@@ -50,6 +50,28 @@ final class Wordmark: NSView {
     }
 
     required init?(coder: NSCoder) { return nil }     // never comes from a nib; there aren't any
+
+    // MARK: - Finding the asset
+
+    /// SwiftPM's name for a target's resources — the name `make app` copies it into the bundle under.
+    static let resourceBundleName = "Emira_EmiraShell.bundle"
+
+    /// Where to look, in order: the `.app`'s `Contents/Resources`, then beside the executable.
+    static var resourceRoots: [URL] {
+        [Bundle.main.resourceURL, Bundle.main.bundleURL].compactMap(\.self)
+    }
+
+    /// The wordmark asset, or `nil` if it isn't where the build put it.
+    ///
+    /// Not `Bundle.module`: which paths its generated accessor searches depends on the toolchain, and
+    /// it `fatalError`s on a miss. Resolution stays optional so `init?` can do what it promises.
+    static func logoURL(searching roots: [URL] = Wordmark.resourceRoots) -> URL? {
+        for root in roots {
+            guard let bundle = Bundle(url: root.appendingPathComponent(resourceBundleName)) else { continue }
+            if let url = bundle.url(forResource: "logo", withExtension: "webp") { return url }
+        }
+        return nil
+    }
 
     /// Each frame's delay in file order, from the WebP's own metadata — no decoding, so the whole list is
     /// cheap to take up front.
