@@ -12,7 +12,7 @@
     <b>tiling:</b> windows are arranged in a non-overlapping grid
   </p>
   <p align="center">
-    <img width="282" height="172" alt="tiling" src="https://github.com/user-attachments/assets/dd6f54a4-9ece-4ebf-9bb1-d762fb0b6805" />
+    <img width="141" height="86" alt="tiling" src="https://github.com/user-attachments/assets/dd6f54a4-9ece-4ebf-9bb1-d762fb0b6805" />
   </p>
 </td>
 <td>
@@ -20,7 +20,7 @@
     <b>scrolling</b>: your desktop is an infinite plane
   </p>
   <p align="center">
-    <img width="282" height="172" alt="scrolling" src="https://github.com/user-attachments/assets/85d7605c-17de-4f0f-a87f-08b01c17d355" />
+    <img width="141" height="86" alt="scrolling" src="https://github.com/user-attachments/assets/85d7605c-17de-4f0f-a87f-08b01c17d355" />
   </p>
 </td>
 </tr>
@@ -32,7 +32,7 @@ emira makes managing many windows less painful.
 
 imagine if your monitor extended infinitely to both sides. your windows are arranged for you along this infinite strip; you control what slice is in view. that's pretty much what it does!
 
-and even better, you can have as many strips of windows as you want, and swap between them at any time.
+and even better, you can have as many strips as you want, and swap between them at any time.
 
 <br />
 <p align="center">
@@ -41,23 +41,11 @@ and even better, you can have as many strips of windows as you want, and swap be
 
 ## config
 
-driven by `~/.config/emira/emira.toml`
+driven by `~/.config/emira/emira.toml`. schema @ [`emira.example.toml`](emira.example.toml).
 
-**[`emira.example.toml`](emira.example.toml) is every setting emira has, at its default** — so a file that says none of
-it says exactly that. write down only what you disagree with: an absent key keeps its default, and a key emira doesn't
-know is an error naming its line rather than a setting that quietly does nothing. it's generated from the schema and
-pinned by a test, so it can't drift from what actually reads your file.
+you can configure layout behaviors (like gaps), animations (snap or smooth, spring feel), and rules for specific apps. 
 
-`emira config` reads and writes that file for you, if you'd rather not:
-
-```bash
-emira config explain              # every setting, and what your file says now
-emira config explain layout.column-gap
-emira config set layout.column-gap 12   # the running emira picks it up on its own
-emira config check                # says nothing when the file is fine
-```
-
-you can assign key binds to a number of commands:
+key binds can we assigned to a number of commands:
 
 - window (`focus`, `grow`, `shrink`, `move-window`, `fullscreen`, `float`, `consume-or-expel`)
 - workspace (`focus-workspace`, `move-to-workspace`, `move-to-workspace-and-focus`)
