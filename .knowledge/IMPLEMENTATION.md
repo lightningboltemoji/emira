@@ -121,10 +121,12 @@ presentation plane does not exist. A cover/reconstruction is *ephemeral* — it 
 transition and comes down on cross-fade. The Runtime therefore has two modes, and the core drives the switch:
 
 - **Idle.** Commands that produce no motion (e.g. a focus change that doesn't scroll) are executed as direct AX sets —
-  snap, no cover. The core emits plain `setFrame` / `focus` effects. **Externally-initiated focus** (Cmd-Tab, Dock
-  click, an app activating itself — observed via `NSWorkspace` + AX) takes this same path: snap the viewport to reveal
-  the focused window. We made no motion, so we owe no animation.
-- **Transition.** A command (or a gesture) that produces motion opens a *transition session*: the core emits
+  snap, no cover. The core emits plain `setFrame` / `focus` effects. So does a change to the ground the strip stands
+  on — a display change, a config reload — where the geometry moved and nothing travelled.
+- **Transition.** Anything that moves the strip opens a *transition session* — including a move nobody asked emira
+  for, since **externally-initiated focus** (Cmd-Tab, Dock click, an app activating itself — observed via
+  `NSWorkspace` + AX) reveals its window exactly as the `focus` and `focus-workspace` commands do, scrolling to it
+  on the strip in view and switching to it across two. The core emits
   `beginTransition`, the shell captures + raises the reconstruction, real windows teleport behind it, and from then on
   every `tick(dt)` advances the core's animators and emits `setLayerFrame`. When all animators settle **and** the AX
   targets have landed (`axLanded`), the core emits `endTransition` → the shell cross-fades to the real desktop and
@@ -722,18 +724,67 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **The viewport clamps to the strip's extent, in two places because there are two ways in.**
     `Strip.offsetToReveal` clamps its *answer* rather than trusting its input — the stranding rides specifically the
     "already fully visible, don't move" branch, which hands the offset straight back, so a range check on the result
-    is what makes the bound an invariant of the answer instead of a property of the caller. And `emitPlacements`
+    is what makes the bound an invariant of the answer instead of a property of the caller. And `placeAtRest`
     re-clamps the resting offset, which is the half a reveal cannot reach: a strip can shrink with nothing asking to
     reveal anything (close a column left of the viewport, minimize one, narrow the presets). It deliberately stops at
     the **centering** path: `center-focused-column` is an instruction to put a column in the middle, and at the
     strip's ends honouring it *means* showing space past the last column, so clamping there would silently convert an
     explicit request into flush-left.
+  - **A re-place asks where the truth plane's authority is, not where the viewport looks.** `MotionPhase` is that
+    question made into a value — `TransitionSession.Phase` extended with the case a session cannot represent, its
+    own absence — and `reassertTruthPlane` switches over it exhaustively. **Idle** it is `placeAtRest` at
+    `viewportOffset.current`; **covered** it is `teleportBehindCover`, because the reals went to the scroll's *end*
+    when the cover went up and `.current` has stopped describing them — it is the number feeding the layers, so
+    placing at it drags the desktop to a position the animation invented, which the cross-fade then reveals as a
+    jump backwards; **capturing** it is nothing at all, no real window having moved yet, and the raise's own
+    teleport reads whatever this would have written. The routing is in the function rather than at its call sites
+    because the events that ask for a re-place arrive on their own schedule, and **the mouse-up is the proof**:
+    every click on a window is one, landing tens of milliseconds inside the reveal that same click started.
+    - **The phase is one value and not two booleans** because the three answers are otherwise an ordered guard
+      chain whose order is load-bearing and unwritten — ask `isTransitioning` before `isCovered` and every covered
+      re-place silently does nothing. `isTransitioning` and `isCovered` remain as its projections, for the gates
+      that genuinely ask one yes/no question.
+    - **The capturing answer is a deferral, so every way out of that phase owes a place**, and there are four:
+      the raise teleports; `coverUnavailable` aborts and re-places; `holdTimeout` closes and re-places; and
+      `abandonTransition` — a switch handed no before-geometry — closes, with `finishStructuralEdit` placing
+      behind it. Only the last belongs to somebody else, which is why it is written down: a head that exits
+      without placing is *silent*, leaving the strip claiming a scroll no window performed and nothing scheduled
+      to correct it.
+    - **`World.placedOnScreen` is the same fact for readers rather than writers**: which windows the last
+      placement put on the glass. `isOnScreen` reads it, so `[focus] system-events` judges a report against where
+      the windows *are* rather than where the viewport is headed — the two differ for the whole capture head of
+      every reveal, and a refusal is an AX write that would yank focus back off a click that landed on a window
+      still plainly on the glass. It is **recorded by the two writers, not derived**, because every way of aiming
+      runs ahead of the windows it aims: `.current` is the spring's under a raised cover, and `snap` aims by
+      writing *both* ends at the open, leaving a snapped capture head with no animator that still holds where the
+      windows are.
+      - **The record is the `setFrame`-vs-`park` decision, not the offset behind it**, because an offset means
+        nothing without the layout it was measured against, and a capture head is precisely where those two come
+        apart: it is the one phase that restructures the strip without re-placing anything. Close a column left
+        of the viewport mid-head and the last-written offset, read against the strip as it now is, points past
+        the end of it and reports an empty desktop — so the click on the window physically filling the display
+        is refused. Keeping the decision keeps both inputs frozen together, and it costs the predicate its
+        `metrics` read, its workspace test and its layout query: a pass parks everything off the focused strip,
+        so membership already says all three.
+      - What entitles anything to name it is being the reducer's only `setFrame`/`park`, so the two arms share
+        the one that is: **`writeTruthPlane(at:)`** emits the diffed sets, takes the optimistic `World` write,
+        and records the on-screen set, while `placeAtRest` and `teleportBehindCover` keep only what actually
+        distinguishes them — the resting clamp and which offset is the truth on the one side, arming the landing
+        wait on the other. Two copies of that loop is how the record starts drifting from the writes it claims
+        to describe. The record covers *every* managed window, including those already standing correctly, where
+        the effect stream is a diff and names only what moved.
   - **A new column opens immediately right of the focused one**, not at the far end of the strip. Appending made "the
     strip opens for a new window" untrue — an appended column displaces nothing, so the only motion was the viewport
     chasing the strip's new end. The anchor must be the window focused *before* the newcomer arrives, and it is
     `World.lastStripFocus` ("where was the user working") rather than live focus: an app focuses its brand-new window
     before emira has adopted it, so the observer resolves that element to no id and a `focusChanged(nil)` lands a
     moment *before* the creation. Anchoring on live focus passes a unit test and appends in reality every time.
+    - **`stripAnchor` is that fallback as a shared concept**, because an arrival is not the only decision needing a
+      *place on the strip* when focus rests on nothing: a refused system focus report needs somewhere to put focus
+      back, and meets the identical race. It is gated to the **focused** strip in both directions, since
+      `lastStripFocus` outlives its window being moved to another workspace and an anchor over there is not a place
+      this workspace can act — restoring focus to one would switch the desktop, which is the thing the refusal
+      exists to prevent, arriving through the guard meant to prevent it.
   - **Focus after a departure takes the neighbour** — a surviving stackmate in the same column, else whichever column
     slid into the departed one's place, right-then-left. "First window in layout order" silently re-framed the strip
     on column 1 on every close; under a snap that re-frame *was* the whole observable event, and animated it is a
@@ -752,14 +803,20 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     Apps move focus to themselves at moments nobody chose, and under `respect` the strip faithfully follows
     them across the desktop. The refusal is one `.focus` effect restoring the focus the core already believed in and
     **no state change at all**: no reveal, no workspace switch, no cover — the transition is precisely what the user
-    is trying to stop seeing. Three things are admitted whatever the mode: our own echo (the reducer wrote that focus
-    optimistically when it emitted the effect, so refusing it would make every focus command fight itself), a `nil`
-    report (it names no window, and refusing it breaks ⌘N — see the insertion anchor above), and a report with no
-    focus of ours to restore. **The predicate is "on screen", which is not "on the strip"**: a float is off the strip
-    and plainly visible while a minimized window is off the strip and in the Dock, so `isOnScreen` tests minimized
-    and `Cmd-H` first, then treats anything emira does not place as visible, then asks the `setFrame`-vs-`park`
-    question of the rest — at `viewportOffset.target`, since `teleportBehindCover` puts the real windows at the
-    destination's frames the moment a cover goes up.
+    is trying to stop seeing. Two things are admitted whatever the mode: our own echo (the reducer wrote that focus
+    optimistically when it emitted the effect, so refusing it would make every focus command fight itself), and a
+    `nil` report (it names no window, and refusing it breaks ⌘N — see the strip anchor above). **The predicate is
+    "on screen", which is not "on the strip"**: a float is off the strip and plainly visible while a minimized window
+    is off the strip and in the Dock, so `isOnScreen` tests minimized and `Cmd-H` first, then treats anything emira
+    does not place as visible, then asks `World.placedOnScreen` of the rest.
+    - **Having nothing to restore focus to is not consent.** With no anchor the refusal is *silent* rather than
+      absent — a refusal is at most one `.focus`, and nothing in the reducer can *un*focus a window, so declining to
+      act leaves macOS's own focus exactly where it was and cannot produce a keyless desktop. Reading the absent
+      anchor as "no grounds to refuse" instead is reachable two ordinary ways, both ending with the desktop switching
+      to a workspace nobody asked for: a `nil` report is handled *above* this guard, so it clears focus without the
+      policy ever seeing it and the next report finds the anchor gone; and an **empty workspace** has no anchor by
+      construction. Which is why the anchor is `stripAnchor`'s rather than `World.focusedWindow`'s — the question is
+      where the user *would be*, and focus is only a proxy for it.
   - **Provenance is a field of `focusChanged`, not a second event.** The shell is the only place that can tell a
     Cmd-Tab from the echo of our own `Effect.focus` (`FocusIntent`), and it already computes exactly that verdict; the
     origin carries it the rest of the way. Re-deriving it in the core would duplicate a ticket ordinal and a grace
@@ -784,6 +841,14 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     "Everything that is not the focused strip is parked" was already what `targetFrames` meant, and a park is a frame
     like any other — so the verbs needed no new `Effect` and nothing in `EmiraShell`. What they genuinely needed was
     *memory*: each strip's scroll offset and last-focused window, written on the way out and read on the way in.
+    - **Arriving somewhere empty focuses nothing, and the switch writes that** rather than skipping the write.
+      Leaving `World.focusedWindow` on the strip being *left* reads as the more truthful answer — emira asked AX for
+      nothing, so macOS really does still have that window focused — but the field is not a mirror of the system,
+      it is what every verb takes as its **subject**. Stranded, `close-window` asks an app to close a window on
+      another workspace that the user cannot see, and a refused system focus report restores focus over there,
+      switching the desktop back through the guard meant to hold it still. `nil` is a state the reducer already
+      supports everywhere — the verbs decline to act and `handleFocus` treats it as an entry condition — which is
+      what makes it safe to say.
   - **The vertical term is a *sign*, not a distance** (`Workspaces.verticalOffset`). Every unfocused workspace sits
     exactly one screen away, so `1 → z` animates the same one screen as `1 → 2`. Taken as a distance the address space
     would be a 36-screen ribbon, a jump across it would sweep thirty-four workspaces nobody asked to see, and the
@@ -820,8 +885,10 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     nothing.
   - **Cross-workspace `focusChanged` is the path only the product produces.** Cmd-Tab, a Dock click or an app raising
     its own window can name a window on a workspace nobody is looking at, and the reveal promise is about the
-    *window*. It **snaps** — we made no motion, so we owe no animation — spelled by handing the shared path no
-    before-geometry, so there is one animate-or-snap guard rather than a second code path. Two orderings are
+    *window*. It is the **same switch `focus-workspace` performs**, handed the same before-geometry — one call, not
+    a second code path, and therefore the same vertical transition. Who initiated the motion is not the axis: emira
+    animates that span on demand, so cutting across it for arriving by Cmd-Tab is the two-window-managers complaint
+    that retired the rule on the horizontal axis, one axis over. Two orderings are
     load-bearing: focus is recorded **inside** the switch (setting it first would make the outgoing record read `nil`
     and wipe the memory of the workspace being left), and **no focus effect is emitted**, which makes the echo loop
     unrepresentable rather than merely unlikely.
@@ -969,8 +1036,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   (`AXEnumerator`), write (`AXExecutor`), watch (`AXObservationSource` + `WorldWatcher`). Per-app serial queues,
   messaging timeout, enhanced-UI toggle, the clamping dance, window-level-only enumeration (AX hygiene,
   `PRINCIPLES.md` §5). The same source watches `NSWorkspace` activation so externally-initiated focus becomes an Event
-  (snap-reveal), and holds a global mouse-up monitor (allowed under the AX grant) marking drag-end so a user-dragged
-  tiled window re-tiles on release.
+  (which reveals by scrolling), and holds a global mouse-up monitor (allowed under the AX grant) marking drag-end so a
+  user-dragged tiled window re-tiles on release.
   - **A match must be unique or it is not a match.** Exactly one candidate within a 2 pt tolerance, checked in *both*
     directions (no window may see two entries; no entry may be claimed by two windows), and everything else is
     rejected *with a reason* the daemon logs. A nearest-position match is right for a prototype and wrong here,
@@ -1013,7 +1080,7 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **Move notifications are coalesced to at most one read in flight per window**, because AX emits them at the
     refresh rate during a drag and each answer queues on the *same serial lane* our placement writes use.
   - **A focus report is not self-describing, so the watcher asks before passing it on.** `Event.focusChanged` has
-    exactly one meaning in the reducer — focus moved and we did not move it, so snap to reveal it — and macOS produces
+    exactly one meaning in the reducer — focus moved and we did not move it, so scroll to reveal it — and macOS produces
     the identical notification for something that is not intent at all: an app whose key window closes picks a
     replacement and announces it. A report means "the user moved focus" if the window it **displaced** is still alive,
     and "macOS filled a hole" if it is not. That cannot come from the notification stream, because the difficulty is
@@ -1022,6 +1089,9 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     **before** the destroy. So `ObservationSource` gained an `isAlive` probe — one attribute read (`role`, the
     cheapest with an answer) on that app's own serial lane. The other notification order costs nothing at all: once
     the departure has been handled the registry has already forgotten the window, which answers the question for free.
+    A probe is a majority and not a proof — it can be answered before the element is invalidated — so what makes the
+    filter's misses tolerable is that the reveal is a *transition*: the destroy a beat behind it retargets the session
+    it finds open rather than arriving at a viewport already standing where it wanted to travel.
     - **Both failure directions were chosen.** A busy app can time out and answer "dead" for a live window, and the
       cost is one dropped reveal. Reading that same timeout as "the window is gone" would drop a real window off the
       strip, which is why this asks about *focus* and never synthesises a departure from what it learns — the destroy
@@ -1626,7 +1696,7 @@ is fully trustworthy before a single real window moves.
 | **M0** | Skeleton | `Package.swift`, five targets + two executables compiling; one green test | **done** |
 | **M1** | The brain | `EmiraMotion`, geometry, layout engine, `Command`/`Event`/`Effect`, `Engine`; scenario + replay tests | **done** |
 | **M2** | End-to-end pipe | daemon loop + IPC + CLI + DisplayLink + Overlay driving layers from the core | **done** |
-| **M3** | Truth plane | AXClient/enumerator/writer/observers + WindowRegistry + WorldWatcher; instant, correct tiling of **real** windows; snap-reveal on external focus; taxonomy defaults; drag-end re-tile | **done** — AeroSpace parity |
+| **M3** | Truth plane | AXClient/enumerator/writer/observers + WindowRegistry + WorldWatcher; instant, correct tiling of **real** windows; reveal on external focus; taxonomy defaults; drag-end re-tile | **done** — AeroSpace parity |
 | **M4** | The signature scroll | Capture + Reconstruction + Transition; motion under cover; the cover that grows on a retarget; the animated resize | **done** |
 | **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated + the menu bar and the `.app` | **done — shippable here** |
 | **M6** | Full layout model | Virtual workspaces, per-monitor strips, window rules, monitor hotplug | the workspace model and its verbs are in, snapped; per-monitor strips and rules are not |

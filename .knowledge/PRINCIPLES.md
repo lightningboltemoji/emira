@@ -158,16 +158,26 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
     living on another workspace does.
 - **Externally-initiated focus is first-class.** Cmd-Tab, a Dock click, or an app activating itself can land focus on
   a parked window — the user must never be "focused" on something they can't see. We observe activation
-  (`NSWorkspace`) and AX focus changes, and **snap** the viewport to reveal the newly focused window. No cover, no
-  animation: we didn't initiate the motion, so there's no smoothness promise to keep. (An animated-reveal toggle can
-  come later.)
+  (`NSWorkspace`) and AX focus changes, and **move** the viewport to reveal the newly focused window, under the same
+  cover a `focus` command moves under. Not because the motion is owed — nobody asked emira for it — but because it
+  is a move of the strip either way, and a strip that jumps for one kind and glides for the other reads as two
+  window managers. It also has to *compose*: a focus report is routinely the first half of a structural change — the
+  window that closes hands key status on before it dies (below) — and a snap spends the motion the second half is
+  about to ask for.
+  - **On both axes, because "who initiated it" was never the axis.** A window on the strip in view is scrolled to;
+    one on another workspace is revealed by the *same* switch `focus-workspace` performs, handed the same
+    before-geometry. A span emira animates when asked cannot become a cut for being arrived at by Cmd-Tab — that is
+    the two-window-managers complaint again, one axis over, and the vertical distance is not what decides it.
   - **But *external* is not the same as *intended*.** An app that loses its key window picks a replacement of its own
     and announces it with the identical notification, and its pick is arbitrary — closing the tenth Ghostty window can
     land focus on the first, and the strip snaps across the desktop to reveal a window nobody asked for. emira already
     decides where focus goes when a window leaves (the surviving stackmate, else the column that slid into its place);
     it was being outvoted by macOS's guess. The two are told apart by the one fact that separates them — **whether the
     window the report displaced still exists** — which is readable and never observable, because the whole difficulty
-    is that the destroy notification has not arrived yet.
+    is that the destroy notification has not arrived yet: the probe that asks can be answered before it does. So the
+    filter is a majority rather than a proof, and the report that gets through has to be *survivable*. It is, because
+    the reveal is a transition and not a snap: the `windowDestroyed` a beat behind it retargets the session it finds
+    open, and both orderings come out as one scroll to one destination.
   - **And *external* is not the same as *ours*.** Asking for focus provokes the identical notification, and the round
     trip that returns it is **unordered**: the app's own notification, the read an `NSWorkspace` activation costs, and
     the liveness probe above all cross *per-app serial lanes* with nothing sequencing one against another — the same
@@ -179,6 +189,15 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
     racing the current one, and its echo is swallowed rather than passed on, because the reducer wrote that focus
     optimistically when it emitted the effect and a late echo can only confirm it or corrupt it. The record is bounded
     in time and kept *per window*, so a Cmd-Tab arriving mid-burst is still the user and still reveals.
+  - **Focused on nothing is a resting state, and refusing needs no permission from it.** An empty strip focuses
+    nothing; so does an unmanaged panel taking a keystroke, and so does an app focusing a window before emira has
+    adopted it. Every verb reads that and declines to act, which is right — but two decisions need a *place on the
+    strip* rather than a subject, and neither may be defeated by the absence of one: a new window needs a column to
+    open beside, and a refused focus report needs somewhere to put focus back. Both fall back to the last strip
+    window that held focus, on **this** strip. What must not follow is treating a missing answer as consent: emira
+    declining to move cannot leave the desktop keyless, because nothing here can *un*focus a window — macOS's focus
+    simply stands. Reading it the other way lets any app take the desktop to another workspace by clearing focus
+    first, and strands the user who has merely stepped onto an empty workspace.
 
 ### 4b. The smoothness layer: a layered desktop reconstruction
 

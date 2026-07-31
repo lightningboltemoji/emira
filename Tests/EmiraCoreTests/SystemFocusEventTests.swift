@@ -275,15 +275,97 @@ import Testing
         #expect(after.world.focusedWindow == WindowId(3))
     }
 
-    /// With no focus of our own there is nothing to answer with, and a desktop with no key window at all
-    /// is worse than a focus we did not want. Reachable: `focusChanged(nil)` is admitted by the rule
-    /// above, which is exactly how the core arrives here.
-    @Test func aReportIsAdmittedWhenThereIsNoFocusToPutBack() {
+    /// A clear does not spend the policy. `focusChanged(nil)` is legitimate and routine — an app focuses
+    /// a window before emira adopts it, an unmanaged panel takes a keystroke — and it clears focus without
+    /// ever consulting `[focus] system-events`, being handled above the guard. So a report arriving behind
+    /// one finds `World.focusedWindow` already gone, and reading *that* as "nothing to answer with" would
+    /// let any app bypass the whole feature by clearing focus first. The anchor outlives the clear.
+    @Test func aReportBehindAFocusClearIsStillRefused() {
         var s = world(3, .ignore, Self.oneColumn)
+        let anchor = WindowId(3)
+        #expect(s.world.focusedWindow == anchor)
+
         s = run(s, [systemEvent(nil)]).0
+        #expect(s.world.focusedWindow == nil, "the clear is honoured — focus really is on nothing")
+        #expect(s.world.lastStripFocus == anchor, "but where the user was is not forgotten")
+
+        let (after, fx) = Engine.reduce(s, systemEvent(WindowId(1)))
+        #expect(fx == [.focus(anchor)], "refused, and focus goes back where the user was")
+        #expect(after == s, "a refusal changed the state")
+    }
+
+    /// **Sitting on an empty workspace, a refusal is silent** — and it is still a refusal. There is no
+    /// anchor to restore to, which used to be read as no grounds to refuse, admitting the report and
+    /// taking the desktop to a workspace the user had just navigated away from. Nothing here can leave
+    /// the desktop keyless: emitting no `.focus` is emira declining to move, and macOS's own focus stands.
+    ///
+    /// This also proves the anchor's **focused-strip gate**. `lastStripFocus` outlives its window being
+    /// moved to another workspace, so here it names one two strips away. Ungated it would answer, and the
+    /// `.focus` a refusal emits comes back as our own echo — which reveals, and reveals *across
+    /// workspaces*. Restoring focus to a stale anchor is the desktop-switch this guard exists to prevent,
+    /// arriving through the guard itself.
+    @Test func aRefusalOnAnEmptyWorkspaceIsSilentButStillARefusal() {
+        var s = world(2, .ignore, Self.oneColumn)
+        s = run(s, [moveToWorkspace("3"), moveToWorkspace("3")]).0   // both leave; this strip is empty
+        let home = s.workspaces.focused
+        #expect(s.layout.columns.isEmpty, "nothing on the focused strip to anchor to")
+        #expect(s.world.focusedWindow == nil)
+        #expect(s.world.lastStripFocus == WindowId(1), "a stale anchor, now two strips away")
+
+        // A report naming the *other* window over there, so the stale anchor is not simply the subject.
+        let (after, fx) = Engine.reduce(s, systemEvent(WindowId(2)))
+        #expect(fx.isEmpty, "nothing to restore to is not consent")
+        #expect(after.workspaces.focused == home)
+        #expect(after == s)
+    }
+
+    /// The bug as reported, in its own shape: two windows on workspace 1, switch to an empty workspace 2,
+    /// Dock-click one of them. Both the window that *was* focused and the other one must be refused —
+    /// the first used to slip through `restore != id` on a focus stranded by the switch, the second
+    /// through the anchor being absent.
+    @Test func aDockClickFromAnEmptyWorkspaceStaysPut() {
+        var s = world(2, .onScreen, Self.oneColumn)
+        s = run(s, [.command(.focusWorkspace(.name(WorkspaceName("2")!)))]).0
+        let home = s.workspaces.focused
+        #expect(s.layout.columns.isEmpty)
         #expect(s.world.focusedWindow == nil)
 
-        expectAdmitted(s, systemEvent(WindowId(1)), WindowId(1))
+        for clicked in [WindowId(1), WindowId(2)] {
+            let (after, fx) = Engine.reduce(s, systemEvent(clicked))
+            #expect(fx.isEmpty, "clicking \(clicked) emitted \(fx)")
+            #expect(after.workspaces.focused == home, "clicking \(clicked) moved the desktop")
+            #expect(after == s)
+        }
+    }
+
+    /// …and `respect` still follows it across, because that setting *is* macOS's own behaviour.
+    @Test func theSameDockClickUnderRespectStillFollows() {
+        var s = world(2, .respect, Self.oneColumn)
+        s = run(s, [.command(.focusWorkspace(.name(WorkspaceName("2")!)))]).0
+
+        let (after, _) = Engine.reduce(s, systemEvent(WindowId(1)))
+        #expect(after.workspaces.focused == .first)
+        #expect(after.world.focusedWindow == WindowId(1))
+    }
+
+    /// The reported bug, end to end: on one workspace, Dock-click an app whose window lives on another.
+    /// macOS activates it and the watcher reports the clear *then* the window, and the pair used to walk
+    /// straight through `on-screen` — switching the desktop to a workspace nobody asked for, and emitting
+    /// no `.focus` while doing it (the cross-workspace path leaves that to the shell), so the app you
+    /// clicked was not focused either. Both halves are one guard.
+    @Test func aDockClickOntoAnotherWorkspaceDoesNotDragTheDesktop() {
+        var s = world(2, .onScreen, Self.oneColumn)
+        s = run(s, [moveToWorkspace("3")]).0             // window 2 goes away; focus falls to window 1
+        let away = WindowId(2)
+        let home = s.workspaces.focused
+        #expect(s.world.focusedWindow == WindowId(1))
+
+        s = run(s, [systemEvent(nil)]).0                 // the clear the activation rides in on
+        let (after, fx) = Engine.reduce(s, systemEvent(away))
+
+        #expect(after.workspaces.focused == home, "the desktop followed a report it had refused")
+        #expect(fx == [.focus(WindowId(1))])
+        #expect(after == s)
     }
 
     /// A report naming the window that already holds focus. Nothing to restore it to but itself, and
@@ -310,10 +392,10 @@ import Testing
 
     // MARK: - Mid-transition
 
-    /// The predicate reads `viewportOffset.target`, not `.current`, because `teleportBehindCover` moves
-    /// the real windows to the destination's frames the moment a cover goes up. Mid-scroll the target is
-    /// where they actually are — so a window the scroll is travelling *to* is on screen, and refusing it
-    /// would fight a reveal already in flight.
+    /// The predicate reads `World.placedOnScreen`. **Under a raised cover** that is the destination's set,
+    /// because `teleportBehindCover` moved the real windows there the moment the cover went up — so a
+    /// window the scroll is travelling *to* is already on screen, and refusing it would fight a reveal in
+    /// flight.
     @Test func aWindowTheLiveScrollIsHeadedForCountsAsOnScreen() {
         var config = Self.policy(.onScreen, EngineTests.fullWidth)
         config.transitionMode = .smooth
@@ -332,5 +414,72 @@ import Testing
         #expect(!onScreen(s).contains(target), "the viewport has not arrived yet")
 
         expectAdmitted(s, systemEvent(target), target)
+    }
+
+    /// And the other half, which the cover has not reached: **through the capture head** no real window
+    /// has moved, so the record is still the scroll's *start*. Every reveal opens a session, which puts
+    /// this head in front of a great many reports — and a refusal is not passive, it is an AX write.
+    /// Reading the destination here refuses the window still on the glass and yanks focus back off the
+    /// click that landed on it.
+    @Test func aWindowStillOnScreenThroughTheCaptureHeadIsNotRefused() {
+        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        config.transitionMode = .smooth
+        var s = EngineTests.world(3, config: config)
+        #expect(s.world.focusedWindow == WindowId(3))
+        #expect(onScreen(s) == [WindowId(3)])
+
+        // `focus left` opens a session aimed a screen away. No capture has answered, so the cover is not
+        // up, nothing has been teleported, and window 3 is still the one the user is looking at.
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.phase == .capturing)
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(s.motion.viewportOffset.target != s.motion.viewportOffset.current)
+
+        // Changing your mind and clicking straight back onto window 3 must be honoured.
+        expectAdmitted(s, systemEvent(WindowId(3)), WindowId(3))
+    }
+
+    /// The same head under `snap`, which is where reading the viewport at all breaks down: `snap` aims by
+    /// writing *both* ends of the offset, so there is no animator left holding where the windows are. Only
+    /// the placement's own record survives that, and the reals do not move until the raise either way.
+    @Test func aWindowStillOnScreenThroughASnappedCaptureHeadIsNotRefused() {
+        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        config.transitionMode = .snap
+        var s = EngineTests.world(3, config: config)
+        #expect(onScreen(s) == [WindowId(3)])
+        let placed = s.world.placedOnScreen
+
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.phase == .capturing)
+        #expect(s.motion.viewportOffset.current == s.motion.viewportOffset.target, "snap aims by arriving")
+        #expect(s.world.placedOnScreen == placed, "but no window has been asked to go anywhere")
+
+        expectAdmitted(s, systemEvent(WindowId(3)), WindowId(3))
+    }
+
+    /// Why the record is the `setFrame`-vs-`park` decision and not the offset behind it. An offset needs
+    /// the layout it was measured against to mean anything, and the capture head is exactly where the two
+    /// come apart: it is the one phase that can restructure the strip without re-placing a single window
+    /// (`reassertTruthPlane` routes a capturing re-place to nothing). Closing a column left of the viewport
+    /// slides every remaining column a screen to the left *on the layout* while the reals stand still — so
+    /// the offset the last placement wrote, read against the strip as it is now, points past the end of it
+    /// and reports an empty desktop. Judged that way, a click on the window physically filling the display
+    /// is refused, and the refusal is an AX write that takes focus off it.
+    @Test func aStructuralEditInTheCaptureHeadDoesNotStrandTheRecord() {
+        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        config.transitionMode = .smooth
+        var s = EngineTests.world(3, config: config)
+        #expect(onScreen(s) == [WindowId(3)])       // three full-width columns; w3 fills the screen
+
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.phase == .capturing)
+
+        // The leftmost column closes while the head is still open: -1000 pt of strip, nothing teleported.
+        (s, _) = Engine.reduce(s, .windowDestroyed(WindowId(1)))
+        #expect(s.motion.phase == .capturing, "still no cover, so still nothing has been asked to move")
+        #expect(onScreen(s).isEmpty, "the offset now points past the end of the strip it was measured on")
+        #expect(s.world.placedOnScreen == [WindowId(3)], "but w3 is where the placement left it")
+
+        expectAdmitted(s, systemEvent(WindowId(3)), WindowId(3))
     }
 }

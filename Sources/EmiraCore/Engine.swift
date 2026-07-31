@@ -4,8 +4,9 @@ import EmiraMotion
 // The reducer: `reduce(State, Event) -> (State, [Effect])`. Pure and framework-free — AX / Core
 // Animation / ScreenCaptureKit are only named, through `Effect` — and total over `Event`.
 //
-// A change we did not initiate (new window, close, display change, external focus) snaps every window to
-// its target frame. A change the user asked for (scroll, resize, structural edit, workspace switch) runs
+// A change to the ground the strip stands on (a display change, a config reload) snaps every window to its
+// target frame: nothing travelled, so there is nothing to animate. Anything that moves the strip — scroll,
+// resize, structural edit, workspace switch, a window arriving or leaving, a focus we did not cause — runs
 // a covered transition: capture the scoped windows, raise a layered cover, teleport the reals behind it,
 // animate the layers, drop the cover when everything settles.
 
@@ -106,7 +107,7 @@ public enum Engine {
         case .windowCreated(let snapshot):
             let before = strandedGeometry(&s)
             // Read before focus moves: the new column opens beside whatever had focus.
-            let beside = insertionAnchor(s)
+            let beside = stripAnchor(s)
             s.world.insert(snapshot)
             // Read once, and *before* the guard below: `float` decides that guard's answer in both
             // directions — it can take a standard window off the strip and put a dialog on it.
@@ -139,17 +140,17 @@ public enum Engine {
             return (s, [])
 
         case .dragEnded:
-            let effects = emitPlacements(&s)   // a window dragged off its target snaps back
+            let effects = reassertTruthPlane(&s)   // a window dragged off its target snaps back
             return (s, effects)
 
         case .focusChanged(let id, let origin):
             // Externally-initiated focus (Cmd-Tab, Dock click, self-activation) and the echo of our own
-            // `focus` effect. Snap to reveal it; we made no motion, so we owe no animation and no `focus`.
+            // `focus` effect. Reveal it under a cover, and emit no `focus`: we did not move it.
             guard let id else {
                 s.world.setFocus(nil)              // focus left every managed window
                 return (s, [])
             }
-            if let refusal = refuseSystemFocusEvent(&s, id, origin) { return (s, refusal) }
+            if let refusal = refuseSystemFocusEvent(s, id, origin) { return (s, refusal) }
             let effects = revealAcrossWorkspaces(&s, id)
             return (s, effects)
 
@@ -164,10 +165,10 @@ public enum Engine {
         case .windowDeminimized(let id):
             // An arrival — the reverse of `windowMinimized`'s departure.
             let before = strandedGeometry(&s)
-            let beside = insertionAnchor(s)
+            let beside = stripAnchor(s)
             s.world.setMinimized(id, false)
             guard s.world.participatesInStrip(id) else {
-                let effects = emitPlacements(&s)
+                let effects = reassertTruthPlane(&s)
                 return (s, effects)
             }
             s.world.setFocus(id)            // restoring re-focuses, like a fresh window
@@ -189,7 +190,7 @@ public enum Engine {
                 let effects = reveal(&s, focused, center: config.centerFocusedColumn)
                 return (s, effects)
             }
-            let effects = emitPlacements(&s)
+            let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         case .screensChanged(let infos):
@@ -198,7 +199,7 @@ public enum Engine {
                 let effects = reveal(&s, focused, center: s.config.centerFocusedColumn)
                 return (s, effects)
             }
-            let effects = emitPlacements(&s)
+            let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         // MARK: Effect feedback — every effect's result is just another event
@@ -240,7 +241,7 @@ public enum Engine {
             // moved yet, so abandon and snap.
             guard s.motion.isTransitioning, !s.motion.isCovered else { return (s, []) }
             s.motion.abortTransition()          // snaps the viewport to its target
-            let effects = emitPlacements(&s)
+            let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         case .axLanded(let id):
@@ -265,7 +266,11 @@ public enum Engine {
             // Bound the wait: close regardless, letting unlanded AX sets finish in the open.
             guard s.motion.isTransitioning else { return (s, []) }
             s.motion.closeTransition()
-            return (s, [.endTransition])
+            // A session that timed out *before* its cover went up never moved a window, and closing it
+            // snapped the viewport to a destination nothing has travelled to. Free for a covered session,
+            // which teleported at the raise and is already there.
+            let effects = reassertTruthPlane(&s)
+            return (s, [.endTransition] + effects)
 
         case .crossfadeDone:
             // The cover is fully down; steady state resumed at `endTransition`.
@@ -510,7 +515,7 @@ public enum Engine {
                                              framedAt: Double? = nil) -> [Effect] {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
-        guard let metrics = s.metrics() else { return emitPlacements(&s) }
+        guard let metrics = s.metrics() else { return reassertTruthPlane(&s) }
 
         // Re-read, not carried in the snapshot: for a workspace switch it must *not* be the number the
         // snapshot was taken at, since switching snaps the offset to the incoming strip's remembered
@@ -527,7 +532,7 @@ public enum Engine {
 
         guard let old else {                    // not animating this one — land it at once
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
 
         let scope = scopeUnion(s.workspaces, old.departing,
@@ -535,7 +540,7 @@ public enum Engine {
 
         guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
 
         // The second half of the difference: the new geometry, at the live offset and the *same* widths.
@@ -559,7 +564,7 @@ public enum Engine {
         let scrolls = !approximatelyEqualScalar(end, start)
         guard !moves.isEmpty || scrolls || s.motion.isTransitioning else {
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
 
         var effects = driveTransition(&s, to: end, scope: scope)
@@ -655,12 +660,12 @@ public enum Engine {
         s.workspaces.focus(destination)
         s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: destination])
 
-        // An empty workspace focuses nothing; focus rests off the strip, which `handleFocus` recovers from.
+        // An empty workspace focuses nothing, written rather than skipped: focus is every verb's subject,
+        // so leaving it on the strip being left aims them at a window the user cannot see. `handleFocus`
+        // treats the `nil` as an entry condition.
         let target = wanted ?? s.workspaces[lastFocusOf: destination] ?? s.layout.allWindowIds.first
-        if let target {
-            s.world.setFocus(target)
-            s.workspaces[lastFocusOf: destination] = target
-        }
+        s.world.setFocus(target)
+        if let target { s.workspaces[lastFocusOf: destination] = target }
 
         effects += finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
                                         focused: target, mover: mover, animatingFrom: old)
@@ -673,27 +678,41 @@ public enum Engine {
     /// Whether `[focus] system-events` refuses this focus report — and if so, the whole of the response.
     ///
     /// `nil` admits, and the caller carries on as if the policy did not exist. A refusal is one `.focus`
-    /// effect and **no state change at all**: the core's belief about focus never moved, so re-asserting
-    /// it is the entire undo. Nothing reveals, no workspace switches, no cover goes up — which is the
-    /// point, since the transition is exactly what the user did not want to watch.
+    /// effect and **no state change at all** — which the signature says, taking `State` by value: the
+    /// core's belief about focus never moved, so re-asserting it is the entire undo. Nothing reveals, no
+    /// workspace switches, no cover goes up — which is the point, since the transition is exactly what
+    /// the user did not want to watch.
     ///
-    /// Two things are always admitted, in every mode. **Our own echo**, because the reducer wrote that
-    /// focus optimistically when it emitted the effect, so refusing it would leave the core arguing with
-    /// itself. And a report we have **nothing to answer with** — no focus of our own, or one already on
-    /// the window in question — because a desktop with no key window at all is worse than a focus we did
-    /// not want. Before the first `screensChanged` there is no geometry to judge against either, and no
-    /// grounds to refuse is not a refusal.
-    private static func refuseSystemFocusEvent(_ s: inout State, _ id: WindowId,
+    /// **Our own echo** is always admitted, in every mode, because the reducer wrote that focus
+    /// optimistically when it emitted the effect, so refusing it would leave the core arguing with itself.
+    /// Before the first `screensChanged` there is no geometry to judge against either, and no grounds to
+    /// refuse is not a refusal.
+    ///
+    /// **Having nothing to restore to is not consent.** A refusal is at most one `.focus`, so with no
+    /// anchor it is simply silent — emira declines to move and macOS's own focus stands, which cannot
+    /// leave the desktop keyless because nothing here can unfocus a window. Admitting instead was the
+    /// rule this replaces, and it is reachable in two ordinary ways that both end with the desktop
+    /// switching to a workspace nobody asked for: a `focusChanged` naming no window (routine, legitimate,
+    /// and handled above this guard, so it clears focus without ever consulting the policy), and sitting
+    /// on an **empty** workspace, where there is no anchor to be had.
+    ///
+    /// The anchor is `stripAnchor`'s and not `World.focusedWindow` alone, because this asks *where the
+    /// user would be if this report had not arrived* and focus is only a proxy for that.
+    private static func refuseSystemFocusEvent(_ s: State, _ id: WindowId,
                                                _ origin: FocusOrigin) -> [Effect]? {
         // `.respect` is redundant with `admitsSystemFocusEvent` and tested here anyway, so the default
-        // policy pays nothing below — not the reconcile, and not a layout query per focus report.
+        // policy pays nothing below. `metrics` is the witness that a placement has ever run — nothing can
+        // be placed without it, and the first `screensChanged` places — so there is no record to judge a
+        // boot-time report against, and no grounds to refuse is not a refusal.
         guard origin == .system, s.config.systemFocusEvents != .respect,
               s.metrics() != nil else { return nil }
-        // The predicate reads a window's workspace, which is derived from the strips — so the strips
-        // must already account for every window `World` knows about, as every other reader here ensures.
-        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard !admitsSystemFocusEvent(s, id) else { return nil }
-        guard let restore = s.world.focusedWindow, restore != id else { return nil }
+        // Focus first when there is one — a float holds focus and has no column, so `stripAnchor`
+        // declines it, and it is still plainly what the user was looking at.
+        guard let restore = s.world.focusedWindow ?? stripAnchor(s) else { return [] }
+        // Already ours: nothing to undo, and the reveal is the promise that a focused window is one the
+        // user can see. Never reached from another workspace, where focus is `nil` rather than stale.
+        guard restore != id else { return nil }
         return [.focus(restore)]
     }
 
@@ -716,36 +735,49 @@ public enum Engine {
     /// difference is the whole of this function: **off the strip and off the screen are different sets.**
     /// A float is off the strip and plainly visible; a minimized window is off the strip and in the Dock.
     ///
-    /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch — on the focused
-    /// workspace, in a column the viewport overlaps — read at `viewportOffset.target` rather than
-    /// `.current`, because `teleportBehindCover` moves the real windows to the destination's frames the
-    /// moment a cover goes up. Mid-scroll, the target is where they actually are.
+    /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch, and the last
+    /// placement pass already made it: `World.placedOnScreen` is that decision, kept. Asking it rather
+    /// than re-deriving it is what keeps the question "where is this window" from being answered with
+    /// where it is *going* — the viewport describes the destination for the whole of a reveal — or with
+    /// where it would be under a strip that has been restructured since it was last placed. Membership
+    /// subsumes the workspace test too: a pass parks everything off the focused strip.
     private static func isOnScreen(_ s: State, _ id: WindowId) -> Bool {
         guard let window = s.world.windows[id] else { return false }
         // Nowhere on the screen for a reason that has nothing to do with the strip.
         guard !window.isMinimized, !s.world.isAppHidden(of: id) else { return false }
         // A window emira does not place is wherever its app put it, which is in view.
         guard s.world.participatesInStrip(id) else { return true }
-        guard let metrics = s.metrics(), s.workspaces.workspace(of: id) == s.workspaces.focused
-        else { return false }
-        return s.layout
-            .visibleWindowIds(scrollOffset: s.motion.viewportOffset.target, metrics: metrics)
-            .contains(id)
+        return s.world.placedOnScreen.contains(id)
     }
 
     /// Reveal an externally-focused window (Cmd-Tab, a Dock click, an app raising itself), switching
-    /// workspaces first if it lives on another one; that switch snaps. Focus must be recorded *inside*
-    /// the switch, which stores the outgoing workspace's remembered focus — setting `World.focusedWindow`
-    /// to a window on another strip first would make that read `nil` and wipe it. No `.focus` effect is
-    /// emitted, which makes a feedback loop unrepresentable.
+    /// workspaces first if it lives on another one. Focus must be recorded *inside* the switch, which
+    /// stores the outgoing workspace's remembered focus — setting `World.focusedWindow` to a window on
+    /// another strip first would make that read `nil` and wipe it. No `.focus` effect is emitted, which
+    /// makes a feedback loop unrepresentable.
+    ///
+    /// Both axes animate, and for one reason: a reveal is a move of the strip whoever asked for it. On one
+    /// strip that is `scrollReveal`'s cover, and across two it is the *same* switch `focus-workspace`
+    /// performs — handed the same before-geometry, since a span emira animates on demand cannot become a
+    /// cut for arriving at it by Cmd-Tab. An app also hands key status to a survivor *before* it destroys
+    /// the window it is closing, so a focus report is routinely the first half of a structural edit — and
+    /// a transition is what the second half can ride.
     private static func revealAcrossWorkspaces(_ s: inout State, _ id: WindowId) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         if let home = s.workspaces.workspace(of: id), home != s.workspaces.focused {
-            return switchWorkspace(&s, to: home, focusing: id, animatingFrom: nil,
+            // Read before `focused` moves, exactly as `handleFocusWorkspace` does: the geometry the
+            // switch is about to stop being true.
+            let old = s.metrics().map { structuralSnapshot(s, $0) }
+            return switchWorkspace(&s, to: home, focusing: id, animatingFrom: old,
                                    announcingFocus: false)
         }
         s.world.setFocus(id)
-        return reveal(&s, id, center: s.config.centerFocusedColumn)
+        // Off the strip — a float, a dialog, a sheet — there is no column to frame on and nowhere to
+        // scroll, so the placement pass is the whole answer.
+        guard s.layout.columnIndex(ofWindow: id) != nil else {
+            return reveal(&s, id, center: s.config.centerFocusedColumn)
+        }
+        return scrollReveal(&s, to: id, center: s.config.centerFocusedColumn)
     }
 
     /// Drop an in-flight transition before something rearranges the world it pictures — one caller, the
@@ -779,10 +811,10 @@ public enum Engine {
 
         guard !current else {                       // floating → tiled: an arrival, like a de-minimize
             let before = strandedGeometry(&s)
-            let beside = insertionAnchor(s)
+            let beside = stripAnchor(s)
             s.world.setFloating(focused, false)
             // Still off the strip (its app is hidden, or it is minimized): nothing to animate into.
-            guard s.world.participatesInStrip(focused), let before else { return emitPlacements(&s) }
+            guard s.world.participatesInStrip(focused), let before else { return reassertTruthPlane(&s) }
             // No `.focus`: it already holds focus, and re-asserting it is an AX set that can make an
             // app raise a *different* window forward.
             return arriveOnStrip(&s, focused, beside: beside, old: before, announcingFocus: false)
@@ -797,10 +829,11 @@ public enum Engine {
     // MARK: - Placement (the instant-correct core)
 
     /// Snap the viewport to reveal `id`'s column (centered, or minimally revealed per config) and re-place
-    /// every window — the no-animation reveal: new window, close/retile, display change, external focus.
-    /// Reconciles first, so a just-inserted window is on the strip before its offset is computed. A
-    /// snap-path event arriving mid-scroll is redirected through `driveTransition` instead, so it cannot
-    /// snap the viewport out from under a raised cover.
+    /// every window — the no-animation reveal: a display change, a config reload, a focus landing off the
+    /// strip. The geometry changed under the strip with nothing travelling anywhere, so there is no motion
+    /// to make. Reconciles first, so the strip accounts for every window before an offset is computed
+    /// against it. A snap-path event arriving mid-scroll is redirected through `driveTransition`, so it
+    /// cannot snap the viewport out from under a raised cover.
     private static func reveal(_ s: inout State, _ id: WindowId, center: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
@@ -815,16 +848,16 @@ public enum Engine {
                                    scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
         }
         if let offset { s.motion.snapViewport(to: offset) }
-        return emitPlacements(&s)
+        return reassertTruthPlane(&s)
     }
 
     // MARK: - The animated scroll (the transition session)
 
     /// Reveal `id`'s column with a transition under a layered cover — the counterpart to `reveal`'s bare
-    /// snap, driven by the user-initiated scroll commands. An open transition is retargeted; no motion, or
-    /// no cover to make (`transition = off`, which a missing Screen Recording grant forces), degrades to
-    /// a snap-place; otherwise a fresh session is scoped to every window the viewport sweeps between start
-    /// and end.
+    /// snap, and where every scroll of the strip goes: the focus commands, and the focus reports emira did
+    /// not cause. An open transition is retargeted; no motion, or no cover to make (`transition = off`,
+    /// which a missing Screen Recording grant forces), degrades to a snap-place; otherwise a fresh session
+    /// is scoped to every window the viewport sweeps between start and end.
     private static func scrollReveal(_ s: inout State, to id: WindowId, center: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
@@ -840,19 +873,19 @@ public enum Engine {
         }
 
         if approximatelyEqualScalar(end, start) {
-            return emitPlacements(&s)               // already in view → snap, no cover
+            return reassertTruthPlane(&s)               // already in view → snap, no cover
         }
 
         // No capture capability ⇒ no cover worth raising. Checked *before* the scope is computed.
         guard s.config.transitionMode.covers else {
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
 
         let scope = s.layout.sweptWindowIds(from: start, to: end, metrics: metrics)
         guard !scope.isEmpty else {                 // defensive: nothing to cover → snap
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
         return driveTransition(&s, to: end, scope: scope)
     }
@@ -1050,7 +1083,7 @@ public enum Engine {
 
     /// The offset that puts `anchor`'s column back the same distance from the content area's left edge —
     /// or `nil` if that column has gone, which leaves the caller's ordinary reveal in charge. Clamped
-    /// here and not by `emitPlacements`, which the animated path never reaches: with what the distance
+    /// here and not by `reassertTruthPlane`, which the animated path never reaches: with what the distance
     /// was measured across now gone it asks to look past the strip's origin, and a scroll aimed there
     /// travels there.
     private static func restoredOffset(_ s: State, _ anchor: Fullscreen.Anchor?,
@@ -1097,11 +1130,11 @@ public enum Engine {
         // intent where it was. The stored intent still moved, so a later press acts at once. `framedAt`
         // is skipped with it: a column reaching here at one width is already at 100%, and a content-width
         // column rests flush under both reveal and center, so its anchor is the offset it already has.
-        guard !approximatelyEqualScalar(fromWidth, toWidth) else { return emitPlacements(&s) }
+        guard !approximatelyEqualScalar(fromWidth, toWidth) else { return reassertTruthPlane(&s) }
 
         // The user asked again, so ask the app again: limits track what a window is currently showing.
         s.world.forgetCorrections(of: column.windowIds)
-        guard let asked = s.metrics() else { return emitPlacements(&s) }
+        guard let asked = s.metrics() else { return reassertTruthPlane(&s) }
 
         // A resize scrolls too: a column that just grew may no longer fit where it was.
         let revealed = s.config.centerFocusedColumn
@@ -1115,7 +1148,7 @@ public enum Engine {
         // No cover to make, or an empty scope: resize at once, on the same final width.
         guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
             s.motion.snapViewport(to: end)
-            return emitPlacements(&s)
+            return reassertTruthPlane(&s)
         }
 
         // Under `snap` the width is left out of `Motion` entirely, and an absent animator resolves to the
@@ -1137,30 +1170,18 @@ public enum Engine {
 
     /// Teleport the real windows to their frames at the scroll's end (`viewportOffset.target`) behind the
     /// raised cover, and re-arm the landing wait to the scoped windows that moved. All strip windows are
-    /// repositioned but only scoped moves are waited on, park→park motion being invisible.
+    /// repositioned — `writeTruthPlane` is indifferent to the session — but only scoped moves are waited
+    /// on, park→park motion being invisible.
     ///
     /// - Parameter initial: the teleport at the cover's raise, which *replaces* the scope-wide landing
     ///   wait the session was born with. Later re-teleports only add to it — earlier sets may be in flight.
     private static func teleportBehindCover(_ s: inout State, initial: Bool = false) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics(), let scope = s.motion.transition?.windows else { return [] }
-        let offset = s.motion.viewportOffset.target
-        let frames = s.workspaces.targetFrames(scrollOffset: offset, metrics: metrics)
-        let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
-        let questions = s.workspaces.uncorrectedSizes(metrics: metrics)
         let scopeSet = Set(scope)
-
-        var effects: [Effect] = []
-        var moved: [WindowId] = []
-        for id in s.workspaces.allWindowIds {
-            guard let target = frames[id] else { continue }
-            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
-            effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
-            s.world.updateFrame(id, to: target)     // optimistic: AX will land here (or axFailed)
-            if scopeSet.contains(id) { moved.append(id) }
-        }
-        s.motion.armLandings(moved, replacing: initial)   // wait on the scoped windows that moved
-        return effects
+        let write = writeTruthPlane(&s, at: s.motion.viewportOffset.target, metrics: metrics)
+        s.motion.armLandings(write.moved.filter(scopeSet.contains), replacing: initial)
+        return write.effects
     }
 
     /// Blit one `setLayerFrame` per reconstruction layer this frame — the cover's stand-ins sliding to
@@ -1188,11 +1209,22 @@ public enum Engine {
         return [.endTransition]
     }
 
-    /// The column a newly arriving window opens beside: whatever holds focus if it has a column, else the
-    /// last strip window that did. The fallback is load-bearing — an app focuses a new window before emira
-    /// adopts it, so `focusChanged(nil)` clears focus just *before* `windowCreated` arrives and every ⌘N
-    /// would otherwise append at the far end of the strip.
-    private static func insertionAnchor(_ s: State) -> WindowId? {
+    /// The window on the focused strip a decision falls back to when focus is on nothing that has a
+    /// column: whatever holds focus if it has one, else the last strip window that did.
+    ///
+    /// **Focus on nothing is a legitimate resting state, not a gap** — an empty strip focuses nothing,
+    /// an unmanaged panel taking a keystroke focuses nothing, and every verb in the reducer reads that
+    /// `nil` correctly and declines to act. What is *not* legitimate is a decision that needs a **place
+    /// on the strip** being defeated by it, and two of them are: an arrival needs a column to open beside,
+    /// and a refused focus report needs somewhere to put focus back. Both meet the same race — an app
+    /// focuses a window before emira adopts it, so `focusChanged(nil)` lands just ahead of the event that
+    /// wanted the answer. Without the fallback every ⌘N appends at the far end of the strip, and every
+    /// report arriving behind a clear is admitted whatever `[focus] system-events` says.
+    ///
+    /// Constrained to the focused strip in both directions, because `lastStripFocus` outlives its window
+    /// being moved to another workspace: an anchor over there is not a place this workspace can act, and
+    /// restoring focus to it would switch the desktop — the very thing the refusal exists to prevent.
+    private static func stripAnchor(_ s: State) -> WindowId? {
         for candidate in [s.world.focusedWindow, s.world.lastStripFocus] {
             if let candidate, s.layout.columnIndex(ofWindow: candidate) != nil { return candidate }
         }
@@ -1224,7 +1256,7 @@ public enum Engine {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, insertingAfter: anchor)
         let announce: [Effect] = announcingFocus ? [.focus(id)] : []
         // A window that didn't join a column has nothing to animate; ordinary placement still runs.
-        guard s.layout.columnIndex(ofWindow: id) != nil else { return emitPlacements(&s) + announce }
+        guard s.layout.columnIndex(ofWindow: id) != nil else { return reassertTruthPlane(&s) + announce }
         // Before the geometry below is read, so an adopted window travels to its place on the strip
         // rather than also resizing on the way.
         seedWidth(&s, id, to: width, keepingExisting: keepingWidth)
@@ -1273,7 +1305,7 @@ public enum Engine {
         s.workspaces.move(window: snapshot.id, to: destination,
                           insertingAfter: s.workspaces[lastFocusOf: destination])
 
-        guard !snapshot.wasAlreadyOpen else { return emitPlacements(&s) }
+        guard !snapshot.wasAlreadyOpen else { return reassertTruthPlane(&s) }
         // Focus is set *inside* the switch, never before it: `switchWorkspace` reads the current focus
         // to record what the outgoing workspace should return to, and a window on another strip reads
         // as nothing and wipes it.
@@ -1334,7 +1366,7 @@ public enum Engine {
         }
 
         guard let old, let column, let focused = s.world.focusedWindow else {
-            return emitPlacements(&s) + refocus
+            return reassertTruthPlane(&s) + refocus
         }
         let destroyed = s.layout.columnIndex(withId: column) == nil ? column : nil
         let edit = LayoutEdit(moved: true, destroyedColumn: destroyed)
@@ -1346,7 +1378,7 @@ public enum Engine {
 
     /// Fold a tiled landing that came back a different size than we asked for: record the truth, remember
     /// the answer, re-place. The guards below decline to learn from a stale report and from position-only
-    /// drift; staleness is compared on *size* alone, since `emitPlacements` writes at
+    /// drift; staleness is compared on *size* alone, since `placeAtRest` writes at
     /// `viewportOffset.current` and `teleportBehindCover` at `.target`. Keying the record on the question
     /// makes it self-invalidating.
     private static func handlePlacementCorrected(_ s: inout State, _ id: WindowId,
@@ -1389,9 +1421,7 @@ public enum Engine {
             return reaimViewport(&s, corrected)
         }
 
-        // Mid-capture nothing has moved yet; the raise's own teleport will read the correction.
-        if s.motion.isCovered { return teleportBehindCover(&s) }
-        return s.motion.isTransitioning ? [] : emitPlacements(&s)
+        return reassertTruthPlane(&s)
     }
 
     /// Carry a learned *height* across a raised cover, for the reason the width branch below it exists:
@@ -1420,12 +1450,10 @@ public enum Engine {
 
     /// Re-derive where an open transition is travelling to, after something changed the geometry its
     /// destination came from — `resizeFocusedColumn`'s opening arithmetic, applied again when the answer
-    /// changes what the resize meant. With nothing focused there is no column to frame on, so it falls
-    /// back to a plain re-teleport.
+    /// changes what the resize meant. With nothing focused there is no column to frame on, so the
+    /// destination stands and only the truth plane is re-asserted against it.
     private static func reaimViewport(_ s: inout State, _ metrics: LayoutMetrics) -> [Effect] {
-        guard let focused = s.world.focusedWindow else {
-            return s.motion.isCovered ? teleportBehindCover(&s) : []
-        }
+        guard let focused = s.world.focusedWindow else { return reassertTruthPlane(&s) }
         let start = s.motion.viewportOffset.current
         let end = (s.config.centerFocusedColumn
             ? s.layout.scrollOffsetToCenter(window: focused, metrics: metrics)
@@ -1453,39 +1481,75 @@ public enum Engine {
             && approximatelyEqualScalar(known.minY, target.minY)
     }
 
-    /// Emit the `setFrame`/`park` sets that bring every managed window to its target frame at the current
-    /// scroll offset. A window whose column overlaps the viewport is `setFrame`d to its tiled frame; one
-    /// scrolled off-view is `park`ed at its sliver slot. Only windows that need to move are emitted,
-    /// diffed within a sub-pixel tolerance; reconciles first. `World` frames are updated optimistically —
-    /// a failure comes back as `axFailed` — which keeps a repeated idle event from re-emitting forever.
-    private static func emitPlacements(_ s: inout State) -> [Effect] {
+    /// Re-place every managed window, through whichever writer the truth plane currently answers to — the
+    /// one entry point, since a re-place is asked for by events that arrive on their own schedule.
+    ///
+    /// Only **idle** places at `viewportOffset.current`. **Covered**, that number is the spring's, fed to
+    /// the layers; the reals went to the scroll's end at the raise, so `teleportBehindCover` is the caller
+    /// that knows where they belong (and is idempotent — usually it emits nothing). **Capturing**, no real
+    /// window has moved yet and none may: the raise's own teleport reads whatever this would have written.
+    private static func reassertTruthPlane(_ s: inout State) -> [Effect] {
+        switch s.motion.phase {
+        case .idle:       return placeAtRest(&s)
+        case .capturing:  return []
+        case .covered:    return teleportBehindCover(&s)
+        }
+    }
+
+    /// The idle placement pass: re-place every window at the *resting* scroll offset, having first brought
+    /// that offset back inside a strip that may have shrunk. Reconciles first.
+    private static func placeAtRest(_ s: inout State) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
 
-        // Bring the resting viewport back inside the strip, which can shrink with nothing asking to reveal
-        // anything. Not mid-transition (snapping would tear the animation), not when centering (a column
-        // in the middle at the strip's end *means* showing space past it).
-        if !s.motion.isTransitioning, !s.config.centerFocusedColumn {
+        // The strip can shrink with nothing asking to reveal anything (close a column left of the viewport,
+        // minimize one, narrow the presets). There is no transition to tear here; `reassertTruthPlane`
+        // routes one away. Not when centering: a column in the middle at the strip's end *means* showing
+        // space past it.
+        if !s.config.centerFocusedColumn {
             let clamped = s.layout.clampScrollOffset(s.motion.viewportOffset.current, metrics: metrics)
             if !approximatelyEqualScalar(clamped, s.motion.viewportOffset.current) {
                 s.motion.snapViewport(to: clamped)
             }
         }
+        return writeTruthPlane(&s, at: s.motion.viewportOffset.current, metrics: metrics).effects
+    }
 
-        let offset = s.motion.viewportOffset.current
+    /// Write the truth plane at `offset`: the `setFrame`/`park` sets that bring every managed window to the
+    /// frame it has there, and the record of which of them that put on the glass. A window whose column
+    /// overlaps the viewport is `setFrame`d to its tiled frame; one scrolled off-view is `park`ed at its
+    /// sliver slot. Only windows that need to move are emitted, diffed within a sub-pixel tolerance, and
+    /// they are what `moved` returns. `World` frames are updated optimistically — a failure comes back as
+    /// `axFailed` — which keeps a repeated idle event from re-emitting forever.
+    ///
+    /// The reducer's **only** `setFrame`/`park`, which is what entitles it to call `notePlaced` — a second
+    /// place that moved a real window would make `World.placedOnScreen` a lie by omission. The record is
+    /// the `setFrame`-vs-`park` switch itself rather than the offset behind it, because a reader asking
+    /// "can the user see this window" would otherwise have to re-derive that switch against a *live*
+    /// layout, and the two inputs come apart: a structural edit in a capture head restructures the strip
+    /// with no real window moving. The two callers differ over which offset is the truth (`placeAtRest`
+    /// the resting one, `teleportBehindCover` the scroll's end) and over what they do with `moved`, and
+    /// over nothing here.
+    private static func writeTruthPlane(_ s: inout State, at offset: Double,
+                                        metrics: LayoutMetrics) -> (effects: [Effect], moved: [WindowId]) {
         let frames = s.workspaces.targetFrames(scrollOffset: offset, metrics: metrics)
         let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
         let questions = s.workspaces.uncorrectedSizes(metrics: metrics)
 
         var effects: [Effect] = []
+        var moved: [WindowId] = []
         // `visible` is the focused strip's on-screen set and nothing else's: the rest are parked.
         for id in s.workspaces.allWindowIds {
             guard let target = frames[id] else { continue }
             if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
             effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
             s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
+            moved.append(id)
         }
-        return effects
+        // Every managed window was just answered for, including the ones already standing correctly, so
+        // this describes the whole desktop rather than the subset that needed a set.
+        s.world.notePlaced(onScreen: visible)
+        return (effects, moved)
     }
 
     /// Frames within half a point on every edge are "already there" — a placement no-op, so sub-pixel

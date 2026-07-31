@@ -213,6 +213,85 @@ import EmiraMotion
         #expect(Self.approx(placed!, Rect(x: 0, y: 0, width: 1000.0 / 3.0, height: 800)))
     }
 
+    /// **Every click is a mouse-up**, so `dragEnded` routinely lands inside the reveal that same click
+    /// started — and a placement pass there writes the *truth* plane at `viewportOffset.current`, the
+    /// number the spring is feeding the layers. The reals would be dragged to a position the animation
+    /// invented and the cross-fade would reveal it as a jump backwards.
+    @Test func aMouseUpMidTransitionDoesNotDragTheRealsToTheSpringsOffset() {
+        var s = Self.midScroll()
+        let mid = s.motion.viewportOffset.current
+        #expect(mid > 0 && mid < 1000, "the spring is between the two columns")
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .dragEnded)
+        #expect(fx.isEmpty, "the reals are already where the cover is taking them")
+        #expect(s.motion.viewportOffset.current == mid, "and the animation is untouched")
+    }
+
+    /// The other half: a window genuinely dragged off-target mid-transition still snaps back — to the
+    /// frame it has at the scroll's *end*, which is where the cover already put every other window.
+    @Test func aDragEndingMidTransitionSnapsBackToTheDestinationFrame() {
+        var s = Self.midScroll()
+        (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(2), Rect(x: 640, y: 480, width: 300, height: 300)))
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .dragEnded)
+        let placed = Self.placement(of: WindowId(2), in: fx)
+        #expect(placed != nil)
+        #expect(Self.approx(placed!, Rect(x: 0, y: 0, width: 1000, height: 800)),
+                "w2's frame at the destination offset, not at the spring's")
+    }
+
+    /// The third of `reassertTruthPlane`'s answers, and the one with no cover to forgive it: mid-*capture*
+    /// nothing is over the desktop, so a placement pass here is a write in the open — and it would write
+    /// at the offset the scroll is leaving, dragging the window backwards a frame before the raise takes
+    /// it forward. The raise's own teleport is what reads the drag instead.
+    @Test func aMouseUpInTheCaptureHeadDefersToTheRaisesTeleport() {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+        ])
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))      // aimed at w1; cover not up yet
+        #expect(s.motion.phase == .capturing)
+        let scope = s.motion.transition?.windows ?? []
+
+        // A drag lands w2 somewhere of its own, and the mouse-up arrives before the stills do.
+        (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(2), Rect(x: 640, y: 480, width: 300, height: 300)))
+        let dragFx: [Effect]
+        (s, dragFx) = Engine.reduce(s, .dragEnded)
+        #expect(dragFx.isEmpty, "no cover to write under: the raise owns the next move")
+
+        var raised: [Effect] = []
+        for w in scope { let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; raised += f }
+        #expect(s.motion.phase == .covered)
+        // w2 belongs off-view at the destination, so the teleport parks it — carrying the drag with it.
+        let parked = Self.placement(of: WindowId(2), in: raised)
+        #expect(parked != nil, "the raise picked the drag up; the deferral lost nothing")
+
+        let done = Self.settle(s, raised)
+        #expect(Self.approxScalar(done.motion.viewportOffset.current, 0))
+        #expect(done.world.windows[WindowId(2)]?.frame == parked, "and w2 came to rest there")
+    }
+
+    /// Two full-width columns with a cover up and the scroll part-way from w1 to w2 — the state a click
+    /// on the neighbouring window puts the strip in, halfway through the reveal it asked for.
+    static func midScroll() -> State {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+        ])
+        var fx: [Effect]
+        (s, fx) = Engine.reduce(s, .command(.focus(.left)))     // back to w1, at rest
+        s = Self.settle(s, fx)
+
+        (s, fx) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))
+        for effect in fx {                                      // raise the cover
+            if case .capture(let w, _) = effect { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        }
+        for _ in 0..<8 { (s, _) = Engine.reduce(s, .tick(dt: 1.0 / 120)) }
+        return s
+    }
+
     @Test func windowFrameChangedRecordsDriftButDoesNotRetile() {
         var (s, _) = Self.run(Self.booted(), [.windowCreated(Self.snapshot(1))])
         let drifted = Rect(x: 700, y: 500, width: 200, height: 200)
@@ -427,11 +506,11 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, -250))
     }
 
-    // MARK: - External focus (snap-reveal)
+    // MARK: - External focus (the reveal we did not ask for)
 
-    @Test func externalFocusRevealsWithoutEmittingFocus() {
-        // A window that scrolled off-view regains focus via Cmd-Tab — we snap to it, but don't
-        // re-issue a focus effect (the shell already moved focus).
+    @Test func externalFocusRevealsUnderACoverWithoutEmittingFocus() {
+        // A window that scrolled off-view regains focus via Cmd-Tab — the strip scrolls to it like it
+        // would for `focus left`, and we don't re-issue a focus effect (the shell already moved focus).
         var (s, _) = Self.run(Self.booted(config: Self.halfWidth), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -440,9 +519,38 @@ import EmiraMotion
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         #expect(s.world.focusedWindow == WindowId(1))
-        #expect(s.motion.viewportOffset.current == 0)   // snapped back to reveal w1
+        #expect(s.motion.isTransitioning)
+        #expect(s.motion.viewportOffset.target == 0)     // aimed back at w1
+        #expect(s.motion.viewportOffset.current == 500)  // and has not jumped there
         #expect(!fx.contains(.focus(WindowId(1))))       // shell-initiated: no focus effect
-        #expect(fx.contains { if case .setFrame(WindowId(1), _) = $0 { return true }; return false })
+        #expect(fx.contains { if case .capture = $0 { return true }; return false })
+        #expect(Self.settle(s, fx).motion.viewportOffset.current == 0)
+    }
+
+    /// The order macOS actually produces when the focused window closes: the app hands key status to a
+    /// survivor *before* it destroys the closing element, so the focus report arrives a beat ahead of the
+    /// destroy. The reveal it asks for and the ranks the destroy closes are one scroll to one place, and
+    /// it has to survive being delivered in two halves — a snapped reveal would spend the whole of it
+    /// before the destroy that owes it ever arrives.
+    @Test func aFocusBackfilledAheadOfTheDestroyLeavesTheCloseInMotion() {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),   // focus w2, scrolled to offset 1000
+        ])
+        #expect(s.motion.viewportOffset.current == 1000)
+
+        var fx: [Effect]
+        (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
+        var pending = fx                                   // the session's captures are still owed
+        #expect(s.motion.isTransitioning)
+        #expect(s.motion.viewportOffset.current == 1000)   // aimed at w1, not standing on it
+
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
+        pending += fx
+        #expect(s.motion.isTransitioning, "the close rides the session it found open")
+        #expect(s.motion.viewportOffset.target == 0)
+        #expect(s.motion.viewportOffset.current == 1000, "and still nothing has jumped")
+        #expect(Self.settle(s, pending).motion.viewportOffset.current == 0)
     }
 
     @Test func externalFocusToNilJustClearsFocus() {
@@ -2083,7 +2191,7 @@ import EmiraMotion
         #expect(s.world.focusedWindow == WindowId(3))
         #expect(s.motion.viewportOffset.current == 0)      // …so the anchor's dx is a full column, 500
 
-        // Animated, deliberately: the snap path re-clamps the resting offset in `emitPlacements`, so
+        // Animated, deliberately: the snap path re-clamps the resting offset in `placeAtRest`, so
         // only a transition can tell whether the *restore itself* clamps. Aimed past the origin, the
         // scroll would travel there and sit there — `closeTransition` snaps to the target it was given.
         (s, _) = Engine.reduce(s, .configChanged(Self.halfWidth))
@@ -2288,6 +2396,58 @@ import EmiraMotion
         // Snapped to the target so resting truth matches the reveal, even though we bailed mid-flight.
         #expect(done.motion.viewportOffset.current == done.motion.viewportOffset.target)
         #expect(Self.approxScalar(done.motion.viewportOffset.current, 1000))
+    }
+
+    /// The same timeout one phase earlier, where the close is not free. A session that dies in its capture
+    /// head never raised a cover and so never teleported anything, but closing it still snaps the viewport
+    /// to the destination — leaving the strip claiming a scroll no window performed. The placement pass is
+    /// what settles that, and it is the whole difference between the two phases.
+    @Test func aHoldTimeoutInTheCaptureHeadStillPlacesTheWindows() {
+        var (s, _) = Self.run(Self.booted(config: Self.fullWidth), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+        ])
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))      // aimed at offset 0; no still ever lands
+        #expect(s.motion.phase == .capturing)
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .holdTimeout)
+        #expect(s.motion.phase == .idle)
+        #expect(fx.contains(.endTransition))
+        #expect(Self.approxScalar(s.motion.viewportOffset.current, 0))
+        // w1 comes into view and w2 leaves it — the moves the abandoned transition owed.
+        #expect(Self.placement(of: WindowId(1), in: fx) != nil)
+        #expect(Self.placement(of: WindowId(2), in: fx) != nil)
+    }
+
+    /// The fourth and last way out of a capture head, and the one whose re-place belongs to somebody else:
+    /// `abandonTransition`, reached when a switch is handed no before-geometry. `switchWorkspace` closes
+    /// the session and `finishStructuralEdit` places behind it, so the deferral `reassertTruthPlane` makes
+    /// while capturing — emit nothing, the raise will read it — is still honoured by a raise that never
+    /// comes. Enumerated because the branch is *silent* when it breaks: a head that exits without placing
+    /// leaves the strip claiming a scroll no window performed, and nothing scheduled to correct it.
+    @Test func aWorkspaceSwitchAbandoningTheCaptureHeadStillPlacesTheWindows() {
+        var config = Self.fullWidth
+        config.windowRules = [WindowRule(appId: "com.other.app", workspace: WorkspaceName("3")!)]
+        var (s, _) = Self.run(Self.booted(config: config), [
+            .windowCreated(Self.snapshot(1)),
+            .windowCreated(Self.snapshot(2)),
+        ])
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.phase == .capturing)
+
+        // A rule-assigned window opens on "3" and takes the user with it — a switch with nothing to
+        // animate from, which abandons the head rather than retargeting it.
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowCreated(Self.snapshot(3, bundle: "com.other.app")))
+        #expect(s.motion.phase == .idle)
+        #expect(fx.contains(.endTransition))
+        #expect(s.workspaces.focused == WorkspaceName("3")!)
+        // Every window answered for: the newcomer on the glass, the strip left behind parked. The stream
+        // is a diff, so it names w2 leaving the glass and w3 arriving; w1 was already at its park slot.
+        #expect(s.world.placedOnScreen == [WindowId(3)])
+        #expect(Self.placement(of: WindowId(2), in: fx) != nil)
+        #expect(Self.placement(of: WindowId(3), in: fx) != nil)
     }
 
     @Test func axFailedDoesNotWedgeTheTransition() {
@@ -3408,7 +3568,7 @@ import EmiraMotion
 
     /// The placement effects for a settled four-column world scrolled to its origin. Focuses the first
     /// window, because creating windows leaves focus on the newest and the margin is only interesting at
-    /// a known offset; and perturbs every frame first, because `emitPlacements` skips windows already
+    /// a known offset; and perturbs every frame first, because `placeAtRest` skips windows already
     /// where they belong, so a settled world would answer with a trivially-satisfying empty batch.
     private static func placements() -> (placed: [WindowId: Rect], parked: [WindowId], display: Rect) {
         var s = EngineTests.settle(EngineTests.world(4, config: config))

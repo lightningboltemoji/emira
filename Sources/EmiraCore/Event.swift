@@ -28,9 +28,9 @@ public enum Event: Sendable, Equatable, Codable {
     case windowFrameChanged(WindowId, Rect)
 
     /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
-    /// commands *and* external ones — Cmd-Tab, a Dock click. The core snaps rather than animates to
-    /// reveal it: we made no motion, so we owe no animation. `origin` is what `[focus] system-events`
-    /// judges.
+    /// commands *and* external ones — Cmd-Tab, a Dock click. The core reveals it under a cover, exactly as
+    /// `focus left` and `focus-workspace` do: a reveal is a move of the strip whoever asked for it.
+    /// `origin` is what `[focus] system-events` judges.
     case focusChanged(WindowId?, origin: FocusOrigin)
 
     /// A window was minimized: it leaves the strip, animated out like a close, its position remembered.

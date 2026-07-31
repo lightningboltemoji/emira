@@ -131,6 +131,12 @@ public struct World: Sendable, Equatable, Codable {
     /// a timed-out write usually can't be read back — so without this mark that guess stands as truth and
     /// `Engine.isAlreadyPlaced` skips the window forever. Not a retry: nothing here schedules anything.
     public private(set) var unverified: Set<WindowId>
+    /// The windows the last placement pass put **on the glass** — every other window it placed is parked
+    /// at its sliver. Recorded by `Engine.writeTruthPlane` rather than derived, because deriving it needs
+    /// both a scroll offset and the layout it was measured against, and the two come apart: through a
+    /// transition's capture head the strip can be restructured with no real window moving. `isOnScreen`
+    /// reads it, which is how `[focus] system-events` judges a report against where the windows *are*.
+    public private(set) var placedOnScreen: Set<WindowId>
     /// The user's explicit float/tile answer per window, where they have given one — `Command.float`.
     /// A side table rather than a field on `WindowState` for the same reason `corrections` is one:
     /// `insert` rebuilds the whole record (a re-scan overwrites it), and an answer the user gave should
@@ -149,6 +155,7 @@ public struct World: Sendable, Equatable, Codable {
         self.focusedWindow = nil
         self.corrections = [:]
         self.unverified = []
+        self.placedOnScreen = []
         self.floating = [:]
         self.lastStripFocus = nil
     }
@@ -174,6 +181,7 @@ public struct World: Sendable, Equatable, Codable {
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
         unverified.remove(id)
+        placedOnScreen.remove(id)
         floating[id] = nil
         if lastStripFocus == id { lastStripFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
@@ -181,13 +189,21 @@ public struct World: Sendable, Equatable, Codable {
         }
     }
 
-    /// Fold `Event.windowFrameChanged`, and also the optimistic write from `Engine.emitPlacements`.
+    /// Fold `Event.windowFrameChanged`, and also the optimistic write from `Engine.writeTruthPlane`.
     /// Either way the recorded frame is now the freshest answer we have, so it clears `unverified`.
     public mutating func updateFrame(_ id: WindowId, to frame: Rect) {
         guard windows[id] != nil else { return }
         windows[id]?.frame = frame
         unverified.remove(id)
     }
+
+    /// Record which windows a placement pass just put on the glass. Called by `Engine.writeTruthPlane`
+    /// and nowhere else — it is the reducer's only `setFrame`/`park`, and a second place that moved a real
+    /// window would make this a lie by omission. `internal`, unlike its neighbours, so that "nowhere else"
+    /// is as structural as this can make it: the shell only ever *reads* core state, and every other
+    /// mutator here folds an `Event` the shell has to be able to construct. Replaced wholesale, never
+    /// merged: a pass places every managed window, so what it does not name it parked.
+    mutating func notePlaced(onScreen ids: Set<WindowId>) { placedOnScreen = ids }
 
     /// Fold `Event.axFailed`: what `windows` holds for this id is a guess we've been told is wrong.
     public mutating func markUnverified(_ id: WindowId) {

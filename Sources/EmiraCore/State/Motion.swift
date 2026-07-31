@@ -22,6 +22,19 @@ public struct LayerBinding: Sendable, Equatable, Codable {
     }
 }
 
+/// Where the authority over the real windows sits right now — `TransitionSession.Phase` extended with the
+/// case a session cannot represent, its own absence. The reducer routes every re-place on this.
+public enum MotionPhase: Sendable, Equatable {
+    /// No session, so a placement pass owns the reals and writes them at `viewportOffset.current`.
+    case idle
+    /// A session is open and its cover is not up. No real window has moved, and none may: nothing is
+    /// over the desktop to hide a write.
+    case capturing
+    /// The cover is up, so `teleportBehindCover` owns the reals and writes them at the scroll's end;
+    /// `viewportOffset.current` is the spring's, feeding the layers.
+    case covered
+}
+
 /// The ephemeral cover lifecycle for one transition. Data + narrow mutators (all total); the reducer
 /// drives the phase progression `.capturing` (captures requested, cover not raised, so no real window has
 /// moved) → `.covered` (cover up, reals teleported behind it, layers sliding each tick until the animators
@@ -51,8 +64,6 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     /// what makes a swap read as a swap when two columns pass through each other. `nil` for a scroll or
     /// resize. Re-applied after every `extendCover`, since additions land on top.
     public private(set) var elevated: WindowId?
-    /// Whether the hold-timeout fired before a clean settle, so the reducer retries any unlanded AX set.
-    public private(set) var didTimeout: Bool
 
     init(windows: [WindowId], elevated: WindowId? = nil) {
         self.phase = .capturing
@@ -61,7 +72,6 @@ public struct TransitionSession: Sendable, Equatable, Codable {
         self.awaitingLanding = Set(windows)
         self.layerIds = [:]
         self.elevated = elevated
-        self.didTimeout = false
     }
 
     mutating func markCaptured(_ id: WindowId) { pendingCaptures.remove(id) }
@@ -107,8 +117,6 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     mutating func setLandings<S: Sequence>(_ moved: S) where S.Element == WindowId {
         awaitingLanding = Set(moved)
     }
-
-    mutating func markTimedOut() { didTimeout = true }
 
     mutating func raiseCover(layerIds: [WindowId: LayerId]) {
         guard phase == .capturing else { return }
@@ -220,8 +228,8 @@ public struct Motion: Sendable, Equatable, Codable {
         viewportOffset.retarget(to: offset)
     }
 
-    /// Jump the scroll instantly to `offset`, killing motion — the no-animation reveal of an
-    /// externally-focused window: we made no motion, so we owe no animation.
+    /// Jump the scroll instantly to `offset`, killing motion — the no-animation reveal, and what `snap`
+    /// mode does with every aim it is given.
     public mutating func snapViewport(to offset: Double) {
         retargetGeneration &+= 1
         viewportOffset.snap(to: offset)
@@ -289,12 +297,22 @@ public struct Motion: Sendable, Equatable, Codable {
 
     // MARK: - Transition session (the ephemeral cover lifecycle)
 
+    /// Which of the three the truth plane is in. Every question about where the real windows are — and
+    /// therefore which writer owns them — resolves here.
+    public var phase: MotionPhase {
+        switch transition?.phase {
+        case .none:       return .idle
+        case .capturing:  return .capturing
+        case .covered:    return .covered
+        }
+    }
+
     /// Whether a transition session is open (cover in flight). `false` ⇒ idle steady state.
-    public var isTransitioning: Bool { transition != nil }
+    public var isTransitioning: Bool { phase != .idle }
 
     /// Whether the cover is *raised*, as distinct from the brief pre-cover `.capturing`. The reducer gates
     /// the per-frame layer animation and the interrupt re-teleport on this: no cover ⇒ nothing to blit.
-    public var isCovered: Bool { transition?.phase == .covered }
+    public var isCovered: Bool { phase == .covered }
 
     /// Open a transition over the scoped, ordered window set. One session at a time — an interrupt
     /// retargets the open one rather than opening a second. `elevated` names the window to draw on top.
@@ -360,9 +378,6 @@ public struct Motion: Sendable, Equatable, Codable {
     public mutating func armLandings<S: Sequence>(_ moved: S, replacing: Bool = false) where S.Element == WindowId {
         if replacing { transition?.setLandings(moved) } else { transition?.armLandings(moved) }
     }
-
-    /// The hold-timeout fired — record it before closing, so the reducer keeps reconciling the unlanded set.
-    public mutating func markTimedOut() { transition?.markTimedOut() }
 
     /// Tear down the session, drop all independent animators, and snap the viewport to its target so
     /// resting state matches the revealed truth. Widths and displacements are *dropped*, not snapped:

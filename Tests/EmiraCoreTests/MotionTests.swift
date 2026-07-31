@@ -427,24 +427,10 @@ import EmiraMotion
         #expect(m.isSettled)
     }
 
-    @Test func timeoutFlagRecordsWhyTheSessionClosed() {
-        var m = Motion()
-        m.openTransition(scope: Self.scope)
-        for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
-        m.markLanded(WindowId(1))                 // only one of three lands
-        m.markTimedOut()
-
-        let t = try! #require(m.transition)
-        #expect(t.didTimeout)
-        #expect(t.awaitingLanding == Set([WindowId(2), WindowId(3)]))   // reducer reconciles these
-    }
-
     @Test func markingWithNoSessionIsTotal() {
         var m = Motion()
         m.markCaptured(WindowId(1))               // all no-op with no open session
         m.markLanded(WindowId(1))
-        m.markTimedOut()
         m.closeTransition()
         #expect(!m.isTransitioning)
         #expect(!m.isReadyToRaise)

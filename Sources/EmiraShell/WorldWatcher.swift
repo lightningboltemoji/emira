@@ -431,7 +431,7 @@ public final class WorldWatcher {
     /// Pass a focus report to the core — unless it is our own stale echo, or macOS backfilling the
     /// window that just died.
     ///
-    /// `Event.focusChanged` means "focus moved, so snap the viewport to reveal it", and carries whether
+    /// `Event.focusChanged` means "focus moved, so scroll the viewport to reveal it", and carries whether
     /// *we* moved it — the fact `[focus] system-events` judges, and one only this file holds. Two other
     /// things post the identical notification, and each is filtered by the same record that answers that.
     ///

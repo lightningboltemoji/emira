@@ -211,18 +211,21 @@ import Testing
         #expect(focused(in: fx) == [WindowId(2)])
     }
 
-    /// An empty workspace has nothing to focus, so focus is left resting off the strip — an already-
-    /// supported state, not a case wanting a rule of its own: the next `focus left|right` recovers.
-    @Test func anEmptyWorkspaceLeavesFocusOffTheStripAndTheNextFocusRecovers() {
+    /// An empty workspace focuses **nothing**, and says so. Leaving `World.focusedWindow` on the window
+    /// of the strip being left reads as the more honest answer — emira asked AX for nothing, so macOS
+    /// really does still have that window focused — but the field is not a mirror of the system, it is
+    /// what every verb takes as its subject. Stranded, `close-window` asks an app to close a window on
+    /// another workspace that the user cannot see, and a refused system focus report restores focus over
+    /// there, switching the desktop back. `nil` is an already-supported state and the next
+    /// `focus left|right` recovers from it, which is what makes it safe to say.
+    @Test func anEmptyWorkspaceFocusesNothingAndTheNextFocusRecovers() {
         var s = world(2)
         let (switched, fx) = run(s, [focusWorkspace(other)])
         s = switched
         #expect(focused(in: fx).isEmpty)
-        // `World.focusedWindow` still names whatever the *system* has focused — we asked AX for
-        // nothing, so claiming otherwise would be a fiction. What matters is that it has no column on
-        // the strip in front of the user, which is the state `handleFocus` treats as an entry point.
-        #expect(s.world.focusedWindow != nil)
-        #expect(s.layout.columnIndex(ofWindow: s.world.focusedWindow!) == nil)
+        #expect(s.world.focusedWindow == nil)
+        // The destructive verb is the one that makes this more than bookkeeping.
+        #expect(run(s, [.command(.closeWindow)]).1.isEmpty, "close-window reached across the switch")
 
         // Back home the long way: `focus right` re-enters *this* (empty) strip and finds nothing…
         #expect(run(s, [.command(.focus(.right))]).1.isEmpty)
@@ -427,8 +430,9 @@ import Testing
         #expect(s.workspaces[lastFocusOf: name("5")] == WindowId(2))
     }
 
-    /// External focus on a window of the *focused* workspace is unchanged — the plain snap-reveal it
-    /// has always been. Only the cross-workspace case is new.
+    /// External focus on a window of the *focused* workspace reveals it in place — the cross-workspace
+    /// switch below is this file's subject, and this is the case it must not become. It comes back as
+    /// placements rather than a cover because the suite snaps; on the strip a reveal is a transition.
     @Test func externalFocusOnThisWorkspaceStillJustReveals() {
         let s = world(3)
         let (after, fx) = run(s, [.focusChanged(WindowId(1), origin: .system)])
@@ -478,10 +482,12 @@ import Testing
         #expect(run(s, [.dragEnded]).1.isEmpty)
     }
 
-    /// The externally-focused switch snaps whatever the config says: the rule is about who initiated the
-    /// motion, and a Cmd-Tab is not us. Asserted against a *smooth* config, so the absent cover means
-    /// something.
-    @Test func externalCrossWorkspaceFocusSnapsEvenWithACoverAvailable() {
+    /// The externally-focused switch animates, and it is the *same* switch `focus-workspace` performs —
+    /// which is the whole argument. Who initiated the motion is not the axis: emira animates this span on
+    /// demand, so a strip that cuts across it for arriving by Cmd-Tab reads as two window managers, the
+    /// complaint that retired the rule on the horizontal axis. Asserted against a *smooth* config, and
+    /// beside the command it must match.
+    @Test func externalCrossWorkspaceFocusAnimatesLikeTheWorkspaceVerbDoes() {
         let s = WorkspaceMotionTests.settled(
             WorkspaceMotionTests.smoothWorld(2, config: WorkspaceMotionTests.twoUp),
             .moveToWorkspace(.name(other)))
@@ -491,10 +497,19 @@ import Testing
 
         let (after, fx) = Engine.reduce(s, .focusChanged(away, origin: .system))
         #expect(after.workspaces.focused == other)
-        #expect(!after.motion.isTransitioning, "an external focus raised a cover")
-        #expect(!EngineTests.hasEffect(fx) { if case .capture = $0 { return true }; return false })
-        #expect(tiled(in: fx) == [away])
-        #expect(parked(in: fx) == [WindowId(1)])
+        #expect(after.motion.isTransitioning, "an external focus cut across the switch")
+        #expect(EngineTests.hasEffect(fx) { if case .capture = $0 { return true }; return false })
+
+        // The command form of the identical move, from the identical state.
+        let (byVerb, verbFx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
+        #expect(byVerb.motion.isTransitioning)
+        #expect(EngineTests.capturedIds(in: verbFx) == EngineTests.capturedIds(in: fx),
+                "the same span, so the same cover")
+
+        // And it still lands where the snap landed — the motion is the only thing that changed.
+        let rested = EngineTests.settle(after, fx)
+        #expect(rested.world.placedOnScreen == [away])
+        #expect(rested.workspaces.focused == other)
     }
 }
 
