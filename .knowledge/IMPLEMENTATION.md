@@ -449,9 +449,12 @@ emira/
 │   │   │   ├── Hotkeys.swift        # the policy: `HotkeyBinder` seam + `HotkeyManager`. An event
 │   │   │   │                        # *source* like the socket server, not an Effect
 │   │   │   └── CarbonHotkeys.swift  # RegisterEventHotKey + the Key -> kVK_* table
-│   │   ├── Config/ConfigLoader.swift# the half that needs a disk: read → watch → report.
-│   │   │                            # The `FileWatcher` seam and `ConfigWatcher` — vnode sources on
-│   │   │                            # the file *and* its directory
+│   │   ├── Config/
+│   │   │   ├── ConfigLoader.swift   # the half that needs a disk: read → watch → report.
+│   │   │   │                        # The `FileWatcher` seam and `ConfigWatcher` — vnode sources on
+│   │   │   │                        # the file *and* its directory
+│   │   │   └── ConfigFile.swift     # the third thing done with it: hand it to the user's editor,
+│   │   │                            # creating it first — a file that isn't there has no handler
 │   │   ├── Ipc/
 │   │   │   ├── SocketServer.swift   # unix-domain socket, JSON-lines, dispatch to Runtime
 │   │   │   └── RequestRouter.swift  # Request -> Reply: commands are writes, dumpState is a read
@@ -460,7 +463,8 @@ emira/
 │   │   │                            # workspace's address, `!` when the config won't parse.
 │   │   │                            # `StatusModel` is the pure title/diagnostic policy;
 │   │   │                            # `LoginItem` wraps SMAppService; `MenuBarItem` is the
-│   │   │                            # AppKit wiring. Quit and open-at-login are the menu
+│   │   │                            # AppKit wiring. Open-at-login, open-config-file and quit
+│   │   │                            # are the menu
 │   │   ├── Onboarding/              # the *other* GUI, and it only ever runs once: the first
 │   │   │   ├── Onboarding.swift     # launch. `OnboardingModel` is the policy — which grants
 │   │   │   │                        # are asked for, the copy, when boot may proceed — and
@@ -1209,9 +1213,18 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     another user's socket, or a live daemon is refused **without deleting anything** — a second daemon must exit
     rather than steal the path.
 - **MenuBar StatusItem** — an accessory (`LSUIElement`, no Dock icon) menu-bar item showing the focused workspace's
-  address plus two menu items, **quit** and **open at login**. This is the whole of the running GUI, and it carries no
-  `reload-config` item, because reload is automatic and a button would advertise a step nobody has to take. **Settings…**
-  joins it when the window does (§9's M6.5) — a menu item, not a second chrome.
+  address plus three menu items, **open at login**, **open config file** and **quit**. This is the whole of the running
+  GUI, and it carries no `reload-config` item, because reload is automatic and a button would advertise a step nobody
+  has to take. **Settings…** joins it when the window does (§9's M6.5) — a menu item, not a second chrome.
+  - **Opening the file needs no editor setting, and there is no `$EDITOR` to read** — a daemon launched by launchd
+    doesn't have one. macOS types `.toml` as `public.toml`, which conforms to plain text, so LaunchServices always
+    answers: whatever the user opens TOML with, and TextEdit when they have never said. A `false` from
+    `NSWorkspace.open` means nothing claimed it, and Finder is the fallback — the file gets selected, `Open With` is a
+    right-click away. **The file is created first if it isn't there**, because emira runs perfectly well without one:
+    the absent file is every setting at its default, and it is exactly the machine where someone wants to start
+    editing. What is written into it is a comment pointing at `emira config explain`, never `ConfigSchema.document` —
+    a file that writes a default down pins it — and it parses to the `Config()` the missing file already meant, so the
+    watcher sees the new file and reloads nothing.
   - **`!` exists because a hot reload's failure mode is silence.** A broken file changes nothing, deliberately — the
     desktop stays exactly as it was — which means a typo and a correct edit that happens to be a no-op are
     indistinguishable from the outside. In a terminal the diagnostic was on stderr; a bundled app has no stderr anyone

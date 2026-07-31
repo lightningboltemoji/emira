@@ -185,7 +185,7 @@ var config = applyEnvironment(to: parsedConfig)
 //
 // Created before the pump so a config already broken at boot has somewhere to say so.
 
-let menuBar = MenuBarItem()
+let menuBar = MenuBarItem(configPath: loader.path)
 menuBar.configError = bootConfigError
 menuBar.onError = { log($0) }
 

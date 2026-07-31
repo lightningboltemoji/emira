@@ -264,4 +264,54 @@ import EmiraCore
         guard case .success(let config) = loader.load() else { return #expect(Bool(false)) }
         #expect(config.columnGap == 6)
     }
+
+    // MARK: - Opening
+    //
+    // Handing the file to an editor is a `NSWorkspace.open` that a unit test must not make. What is
+    // testable — and what the menu item actually needs — is that there is a file there to open.
+
+    @Test func openingAFileThatIsntThereCreatesIt() throws {
+        let scratch = Scratch()
+        scratch.remove()
+        try ConfigFile.create(at: scratch.path)
+        let text = try String(contentsOfFile: scratch.path, encoding: .utf8)
+        #expect(text == Config.starter)
+        // The file emira creates has to be one emira reads, and it has to mean what no file meant.
+        #expect(try Config.parse(text) == Config())
+    }
+
+    @Test func aFileThatIsntThereBecauseItsDirectoryIsntEither() throws {
+        let scratch = Scratch()
+        let nested = scratch.directory.appendingPathComponent("nested/deeper/emira.toml").path
+        try ConfigFile.create(at: nested)
+        #expect(FileManager.default.fileExists(atPath: nested))
+    }
+
+    /// Including a broken one, which is the file most worth opening: creation must never be a write
+    /// over work the user is in the middle of.
+    @Test func anExistingFileIsLeftExactlyAsItIs() throws {
+        let scratch = Scratch()
+        scratch.write("[layout]\ncolum-gap = ")
+        try ConfigFile.create(at: scratch.path)
+        #expect(try String(contentsOfFile: scratch.path, encoding: .utf8) == "[layout]\ncolum-gap = ")
+    }
+
+    /// The file appearing is a filesystem event like any other, and it parses to what the absent file
+    /// already meant — so a running daemon reloads nothing when the menu item creates one.
+    @Test func creatingTheFileIsNotAReload() throws {
+        let scratch = Scratch()
+        scratch.remove()
+        let watcher = ManualWatcher()
+        let scheduler = ManualScheduler()
+        let loader = Self.loader(scratch, watcher: watcher, scheduler: scheduler)
+        let reports = Reports()
+        _ = loader.load()
+        reports.attach(to: loader)
+        loader.start()
+
+        try ConfigFile.create(at: scratch.path)
+        watcher.fire()
+        scheduler.fire()
+        #expect(reports.count == 0)
+    }
 }

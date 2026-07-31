@@ -1,11 +1,12 @@
 import AppKit
 import ServiceManagement
+import EmiraConfig
 import EmiraCore
 
-// The menu bar item — emira's entire GUI: the focused workspace's address, a quit and an
-// open-at-login action, and a failure channel for hot reload, which is otherwise silent (the title
-// becomes `!` and the menu says what broke). `StatusModel` holds the policy as pure data so it is
-// testable without a status bar; `MenuBarItem` is the AppKit wiring.
+// The menu bar item — emira's entire GUI: the focused workspace's address, a way into the config
+// file, a quit and an open-at-login action, and a failure channel for hot reload, which is otherwise
+// silent (the title becomes `!` and the menu says what broke). `StatusModel` holds the policy as pure
+// data so it is testable without a status bar; `MenuBarItem` is the AppKit wiring.
 
 /// What the menu bar item displays, as pure data.
 public struct StatusModel: Equatable, Sendable {
@@ -107,10 +108,13 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
 
     private let item: NSStatusItem
     private var model: StatusModel
+    /// The file the daemon actually loaded, which `$EMIRA_CONFIG` may have moved.
+    private let configPath: String
 
-    public init(model: StatusModel = StatusModel()) {
+    public init(model: StatusModel = StatusModel(), configPath: String = Config.defaultPath()) {
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.model = model
+        self.configPath = configPath
         super.init()
         let menu = NSMenu()
         // Diagnostic lines are disabled items with no action; automatic enabling would fight us.
@@ -164,6 +168,15 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
+        // Directly under the diagnostic, because a broken file is when this is most wanted. The path
+        // is the tooltip rather than the title: `$EMIRA_CONFIG` can make it long, and a menu bar item
+        // has no room for it.
+        let config = NSMenuItem(title: "open config file",
+                                action: #selector(openConfigFile), keyEquivalent: ",")
+        config.target = self
+        config.toolTip = configPath
+        menu.addItem(config)
+
         let login = NSMenuItem(title: "open at login",
                                action: #selector(toggleLoginItem), keyEquivalent: "")
         login.target = self
@@ -182,6 +195,14 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         }
         menu.addItem(login)
 
+        // The path is the tooltip rather than the title: `$EMIRA_CONFIG` can make it long, and a menu
+        // bar item has no room for it.
+        let config = NSMenuItem(title: "open config file",
+                                action: #selector(openConfigFile), keyEquivalent: ",")
+        config.target = self
+        config.toolTip = configPath
+        menu.addItem(config)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "quit emira", action: #selector(quit), keyEquivalent: "q")
@@ -196,6 +217,14 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
             item.attributedTitle = NSAttributedString(string: title, attributes: [.font: font])
         }
         return item
+    }
+
+    @objc private func openConfigFile() {
+        do {
+            try ConfigFile.open(at: configPath)
+        } catch {
+            onError?("config file: \(error.localizedDescription)")
+        }
     }
 
     @objc private func toggleLoginItem() {
