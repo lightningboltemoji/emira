@@ -93,7 +93,7 @@ public struct OnboardingModel: Equatable, Sendable {
         self.rows = rows
     }
 
-    /// The live model. `wantsCover` is `Config.smoothTransitions` *as the file spells it*: asking for the
+    /// The live model. `wantsCover` is `Config.transitionMode.covers` *as the file spells it*: asking for the
     /// cover is what makes Screen Recording required, so a config that turned it off is never asked for
     /// it. The window doesn't advertise that — both grants are billed as required.
     public static func live(wantsCover: Bool) -> OnboardingModel {

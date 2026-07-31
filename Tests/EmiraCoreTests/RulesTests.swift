@@ -111,7 +111,7 @@ import Testing
 
     /// Slack goes to `"3"`; everything else is left alone.
     private static func config(_ rules: [WindowRule]) -> Config {
-        Config(widthPresets: PresetCycle([.proportion(0.5)]), smoothTransitions: false,
+        Config(widthPresets: PresetCycle([.proportion(0.5)]), transitionMode: .off,
                windowRules: rules)
     }
 

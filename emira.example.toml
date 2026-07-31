@@ -45,8 +45,9 @@ system-events = "respect"
 
 [animation]
 
-# Animate a transition under a cover rather than snapping.
-smooth-transitions = true
+# Whether a cover is used during window transitions, and if so, what style.
+# One of "off", "snap", "smooth".
+transition = "smooth"
 
 # Seconds a cover may stay up waiting for a window to land.
 # In seconds, must be greater than 0.

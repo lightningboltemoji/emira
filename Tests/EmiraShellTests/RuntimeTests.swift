@@ -64,7 +64,7 @@ import EmiraCore
         // Unsmoothed, so the arrival places in the same batch it reduces in: this test is about the
         // pump (one event, one batch), and a cover would put the placement a round trip away.
         let executor = MockExecutor()
-        let runtime = Runtime(state: Self.booted(config: Config(smoothTransitions: false)),
+        let runtime = Runtime(state: Self.booted(config: Config(transitionMode: .off)),
                               executor: executor)
 
         runtime.dispatch(.windowCreated(Self.snapshot(1)))

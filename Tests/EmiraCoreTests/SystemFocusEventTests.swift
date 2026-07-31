@@ -10,7 +10,7 @@ import Testing
 // the viewport, switched a workspace or raised a cover would be the transition the user is trying to
 // stop seeing.
 //
-// Everything snaps (`smoothTransitions: false`) for `EngineTests.halfWidthSnap`'s reason, except where
+// Everything snaps (`transitionMode: .off`) for `EngineTests.halfWidthSnap`'s reason, except where
 // a raised cover is the thing under test.
 
 @Suite struct SystemFocusEventTests {
@@ -23,7 +23,7 @@ import Testing
 
     /// One full-width column *is* the viewport, so column *n* is on screen only at offset 1000*n*.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
-                                  smoothTransitions: false)
+                                  transitionMode: .off)
 
     private static func policy(_ mode: SystemFocusEvents, _ base: Config) -> Config {
         var config = base
@@ -316,7 +316,7 @@ import Testing
     /// would fight a reveal already in flight.
     @Test func aWindowTheLiveScrollIsHeadedForCountsAsOnScreen() {
         var config = Self.policy(.onScreen, EngineTests.fullWidth)
-        config.smoothTransitions = true
+        config.transitionMode = .smooth
         var s = EngineTests.world(3, config: config)
         #expect(s.world.focusedWindow == WindowId(3))
 

@@ -10,9 +10,9 @@ import Foundation
 //
 // Screen Recording is only needed for the cover's pixels; `CGWindowListCopyWindowInfo`'s numbers, pids
 // and bounds are unprivileged (only `kCGWindowName` is gated, and titles come from AX). Denied mid-
-// session, `Config.smoothTransitions` goes false and scrolls snap rather than killing the daemon and
-// stranding every parked window at its sliver. `emira-daemon` still requires both grants to *start* —
-// which answer is fatal is its policy, not this file's.
+// session, `Config.transitionMode` clamps to `off` and scrolls place uncovered rather than killing the
+// daemon and stranding every parked window at its sliver. `emira-daemon` still requires both grants to
+// *start* — which answer is fatal is its policy, not this file's.
 //
 // Nor are the two equally *readable*: an Accessibility grant lands in a running process, a Screen
 // Recording grant does not, which is what `probeScreenRecording` is for.

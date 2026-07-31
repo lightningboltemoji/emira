@@ -75,9 +75,11 @@ import Testing
         let asking = Self.model([.accessibility(.denied), .screenRecording(.denied)]).paragraphs
         #expect(asking.count == 2)
         #expect(asking[0].contains("**Accessibility**"))
-        // Both grants are billed as required; the config waiver is deliberately unadvertised.
+        // Both grants are billed as required; the config waiver is deliberately unadvertised. Asserted on
+        // the key as a file spells it, not on the bare word: the paragraph says "during transitions" as
+        // prose, and it is naming the setting that would be the leak.
         #expect(asking[1].contains("**Screen Recording**"))
-        #expect(!asking.contains { $0.contains("smooth-transitions") })
+        #expect(!asking.contains { $0.contains("animation.transition") || $0.contains("transition =") })
 
         // A grant emira isn't asking for gets no paragraph.
         #expect(Self.model([.accessibility(.denied)]).paragraphs.count == 1)

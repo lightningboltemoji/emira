@@ -21,7 +21,7 @@ import EmiraMotion
     /// `halfWidth`, but snapping — for tests about *where* windows end up, not how they get there:
     /// under the animated path the reals teleport at the cover's raise, not in the command's own batch.
     static let halfWidthSnap = Config(widthPresets: PresetCycle([.proportion(0.5)]),
-                                      smoothTransitions: false)
+                                      transitionMode: .off)
 
     /// Config with a single full-width preset — one column *is* the viewport, so every focus change
     /// across columns genuinely scrolls (each column exactly fills, the neighbours are off-view). This
@@ -167,7 +167,7 @@ import EmiraMotion
     @Test func newStandardWindowIsFocusedAndPlaced() {
         // No capture capability ⇒ no cover, so the window is placed in the same batch. (With a cover
         // available the same arrival animates — see `GhostWindowTests`.)
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let (s, fx) = Engine.reduce(Self.booted(config: snap), .windowCreated(Self.snapshot(1)))
         // One column, one window, focused, placed to a ⅓-width tile at the working-area origin.
         #expect(s.world.focusedWindow == WindowId(1))
@@ -230,7 +230,7 @@ import EmiraMotion
 
     /// A window emira met already open is tiled at its own width, not at ⅓.
     @Test func aWindowAdoptedAtBootKeepsTheWidthItAlreadyHad() {
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let adopted = Self.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500),
                                     wasAlreadyOpen: true)
         let (s, fx) = Engine.reduce(Self.booted(config: snap), .windowCreated(adopted))
@@ -248,7 +248,7 @@ import EmiraMotion
     /// own, so an adopted window is brought to the edge of it rather than greeting the user with its
     /// right edge cut off.
     @Test func anAdoptedWindowWiderThanTheScreenIsClampedToOneHundredPercent() {
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let huge = Self.snapshot(1, frame: Rect(x: -200, y: 0, width: 1400, height: 900),
                                  wasAlreadyOpen: true)
         let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(huge))
@@ -260,7 +260,7 @@ import EmiraMotion
     /// The seed is a *fraction*, like every other width on the strip — which is what makes the clamp
     /// survive the display changing under it.
     @Test func anAdoptedWidthTracksTheMonitorTheWayAPresetDoes() {
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let half = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 500, height: 800),
                                  wasAlreadyOpen: true)
         var (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(half))
@@ -274,7 +274,7 @@ import EmiraMotion
     /// A window born under a running daemon has no arrangement to preserve: its width is whatever its
     /// app defaults to, and the ladder is where it belongs.
     @Test func aWindowOpenedAfterBootStillTakesTheFirstPreset() {
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let born = Self.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500))
         let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(born))
 
@@ -285,7 +285,7 @@ import EmiraMotion
     /// The seed is an ordinary `widthOverride`: `cycle-width` clears it and resumes the ladder exactly
     /// as it does after a `grow`.
     @Test func cycleWidthClearsAnAdoptedWidthLikeAnyOtherOverride() {
-        let config = Config(smoothTransitions: false)                    // ⅓ / ½ / ⅔
+        let config = Config(transitionMode: .off)                    // ⅓ / ½ / ⅔
         let adopted = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 640, height: 500),
                                     wasAlreadyOpen: true)
         var (s, _) = Engine.reduce(Self.booted(config: config), .windowCreated(adopted))
@@ -298,7 +298,7 @@ import EmiraMotion
 
     /// Total against a window with no width to keep — the preset answers.
     @Test func anAdoptedWindowWithNoWidthFallsBackToThePreset() {
-        let snap = Config(smoothTransitions: false)
+        let snap = Config(transitionMode: .off)
         let empty = Self.snapshot(1, frame: Rect(x: 0, y: 0, width: 0, height: 0), wasAlreadyOpen: true)
         let (s, _) = Engine.reduce(Self.booted(config: snap), .windowCreated(empty))
 
@@ -794,12 +794,12 @@ import EmiraMotion
         #expect(Self.approxScalar(done.motion.viewportOffset.current, 1000))
     }
 
-    /// The degradation path for a machine with no Screen Recording grant (`Config.smoothTransitions`):
+    /// The degradation path for a machine with no Screen Recording grant (`transition = off`):
     /// with no pixels to cover with, the scroll becomes a plain snap-place. What must survive is the
     /// *placement* — the window ends up exactly where the smooth path would have put it.
-    @Test func withoutSmoothTransitionsAScrollSnapsAndCapturesNothing() {
+    @Test func withTransitionOffAScrollSnapsAndCapturesNothing() {
         var config = Self.fullWidth
-        config.smoothTransitions = false
+        config.transitionMode = .off
         var (s, _) = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -819,9 +819,9 @@ import EmiraMotion
 
     /// The gate is on *motion*, not on focus: a focus change that doesn't scroll took the snap path
     /// already, and must be unaffected by the flag either way.
-    @Test func withoutSmoothTransitionsAnInViewFocusIsUnchanged() {
+    @Test func withTransitionOffAnInViewFocusIsUnchanged() {
         var config = Self.halfWidth
-        config.smoothTransitions = false
+        config.transitionMode = .off
         var (s, _) = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -1330,9 +1330,9 @@ import EmiraMotion
 
     /// With no Screen Recording grant the resize still happens, at once: the column ends up exactly the
     /// width the animated path would have converged on.
-    @Test func withoutSmoothTransitionsAResizeHappensAtOnce() {
+    @Test func withTransitionOffAResizeHappensAtOnce() {
         var config = Config()
-        config.smoothTransitions = false
+        config.transitionMode = .off
         var (s, _) = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -1351,7 +1351,7 @@ import EmiraMotion
     /// Snapping because these tests are about *what* width results, not how it gets there.
     static func oneThirdSnap() -> State {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
-                            smoothTransitions: false)
+                            transitionMode: .off)
         return Self.run(Self.booted(config: config),
                         [.windowCreated(Self.snapshot(1))]).0
     }
@@ -1451,7 +1451,7 @@ import EmiraMotion
     /// columns wider than the screen (`width-presets = [1.5]`) is honored by `Presets`, so a `grow` that
     /// clamped to the working width would answer "wider, please" with a sudden 500 pt *shrink*.
     @Test func aClampNeverMovesAColumnTheWayItWasNotAsked() {
-        let config = Config(widthPresets: PresetCycle([.proportion(1.5)]), smoothTransitions: false)
+        let config = Config(widthPresets: PresetCycle([.proportion(1.5)]), transitionMode: .off)
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
         #expect(Self.width(s) == 1500)
 
@@ -1527,7 +1527,7 @@ import EmiraMotion
     /// ladder: it clears the override and takes the next rung after wherever the ladder was left — not a
     /// guess at which rung the grown width was nearest.
     @Test func cycleWidthClearsAGrowAndResumesTheLadder() {
-        let config = Config(smoothTransitions: false)            // ⅓ / ½ / ⅔
+        let config = Config(transitionMode: .off)            // ⅓ / ½ / ⅔
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
 
         (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
@@ -1543,7 +1543,7 @@ import EmiraMotion
     /// An expelled window keeps the width it is on screen at, override included — otherwise a grown
     /// column would silently snap back to its ladder rung as a side effect of a structural edit.
     @Test func anExpelledWindowCarriesItsGrownWidthIntoItsNewColumn() {
-        let config = Config(smoothTransitions: false)
+        let config = Config(transitionMode: .off)
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
         (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
         (s, _) = Engine.reduce(s, .windowCreated(Self.snapshot(2)))
@@ -1629,7 +1629,7 @@ import EmiraMotion
     /// The same round trip from a ladder rung: the preset is never touched, so a config reload or a
     /// display change under a fullscreen column still uncovers the right width.
     @Test func fullscreenUncoversALadderRungEvenAfterThePresetsChange() {
-        let config = Config(smoothTransitions: false)             // ⅓ / ½ / ⅔ of 1000
+        let config = Config(transitionMode: .off)             // ⅓ / ½ / ⅔ of 1000
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
         (s, _) = Engine.reduce(s, .command(.cycleWidth))          // ⅓ → ½
         #expect(Self.width(s) == 500)
@@ -1639,7 +1639,7 @@ import EmiraMotion
 
         // The presets change *while* the column is fullscreen. It stays full-width…
         let rewritten = Config(widthPresets: PresetCycle([.proportion(0.25), .proportion(0.75)]),
-                               smoothTransitions: false)
+                               transitionMode: .off)
         (s, _) = Engine.reduce(s, .configChanged(rewritten))
         #expect(Self.width(s) == 1000)
         // …and uncovers the rung it was on, resolved against the *new* ladder. A stored 500 would have
@@ -1675,7 +1675,7 @@ import EmiraMotion
     /// departing one's right edge, and which side of "visible" that falls on comes down to the last bit
     /// of a `Double`.
     @Test func fullscreenPushesTheNeighbouringColumnOffTheViewportAndBack() {
-        let config = Config(columnGap: 8, smoothTransitions: false)
+        let config = Config(columnGap: 8, transitionMode: .off)
         var s = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),                     // focused, column 1
@@ -1704,7 +1704,7 @@ import EmiraMotion
         #expect(Self.width(s) == 900)                             // 100% − 10%, on the first press
 
         // …and the ladder resumes the same way it does after a `grow`, with no nearest-rung guess.
-        let laddered = Config(smoothTransitions: false)           // ⅓ / ½ / ⅔
+        let laddered = Config(transitionMode: .off)           // ⅓ / ½ / ⅔
         var t = Self.run(Self.booted(config: laddered), [.windowCreated(Self.snapshot(1))]).0
         (t, _) = Engine.reduce(t, .command(.fullscreen(.on)))
         (t, _) = Engine.reduce(t, .command(.cycleWidth))
@@ -1716,7 +1716,7 @@ import EmiraMotion
     /// A column already at the full width has nothing to animate, so the command is silent — but the
     /// *state* still moved, which is what makes the next press restore rather than do nothing twice.
     @Test func fullscreenOnAnAlreadyFullWidthColumnIsSilentAndStillToggles() {
-        let config = Config(widthPresets: PresetCycle([.proportion(1.0)]), smoothTransitions: false)
+        let config = Config(widthPresets: PresetCycle([.proportion(1.0)]), transitionMode: .off)
         var s = Self.run(Self.booted(config: config), [.windowCreated(Self.snapshot(1))]).0
         #expect(Self.width(s) == 1000)
 
@@ -1750,7 +1750,7 @@ import EmiraMotion
     /// but this quiets the re-ask a scroll would otherwise trigger, once per scroll, forever.
     @Test func aWindowThatRefusedToGrowIsNotAskedAgainOnEveryScroll() {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
-                            columnGap: 8, smoothTransitions: false)
+                            columnGap: 8, transitionMode: .off)
         var s = Self.run(Self.booted(config: config), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -2869,7 +2869,7 @@ import EmiraMotion
     /// The reason the placement tests above can keep asserting what they assert: with no Screen
     /// Recording grant the strip rearranges instantly, with no cover, no captures and no displacement
     /// animators — across all twelve command cases.
-    @Test func withoutSmoothTransitionsAStructuralEditSnaps() {
+    @Test func withTransitionOffAStructuralEditSnaps() {
         let (s, _) = Self.run(Self.booted(config: Self.halfWidthSnap), [
             .windowCreated(Self.snapshot(1)),
             .windowCreated(Self.snapshot(2)),
@@ -3310,7 +3310,7 @@ import EmiraMotion
     /// display, and the fourth is past it entirely.
     private static let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                        outerGaps: EdgeInsets(uniform: 50),
-                                       smoothTransitions: false)
+                                       transitionMode: .off)
 
     /// The placement effects for a settled four-column world scrolled to its origin. Focuses the first
     /// window, because creating windows leaves focus on the newest and the margin is only interesting at

@@ -89,6 +89,13 @@ public enum Engine {
         // Ticks fire only while a transition is open, and are inert until the cover is raised.
         case .tick(let dt):
             guard s.motion.isCovered else { return (s, []) }
+            // Settled already ⇒ advancing moves nothing and the frame would repeat the last one. That is
+            // every tick of a `snap` transition, which has no animator to advance, and the tail of a
+            // `smooth` one still waiting on an AX set after its motion is over.
+            guard !s.motion.isSettled else {
+                let effects = maybeCloseTransition(&s)      // local first — the `.command` trap above
+                return (s, effects)
+            }
             s.motion.advance(by: dt)
             var effects = emitLayerFrames(s)
             effects += maybeCloseTransition(&s)
@@ -526,25 +533,31 @@ public enum Engine {
         let scope = scopeUnion(s.workspaces, old.departing,
                                s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
 
-        guard s.motion.isTransitioning || (s.config.smoothTransitions && !scope.isEmpty) else {
+        guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
             s.motion.snapViewport(to: end)
             return emitPlacements(&s)
         }
 
         // The second half of the difference: the new geometry, at the live offset and the *same* widths.
         let new = s.workspaces.naturalFrames(scrollOffset: start, metrics: metrics, widths: old.widths)
-        var displaced = 0
-        for id in scope {           // scoped only: a window with no layer has nothing to lag behind
+        // What the edit moves where someone could see it — scoped only, since a window with no layer has
+        // nothing to lag behind. A fact about the layout, so no mode changes it; only whether it is put
+        // in motion below.
+        let moves: [(id: WindowId, delta: Rect)] = scope.compactMap { id in
             guard let was = old.frames[id], let now = new[id],
-                  !approximatelyEqual(was, now) else { continue }
-            s.motion.displaceWindow(id, by: was.delta(from: now), params: s.config.moveSpring)
-            displaced += 1
+                  !approximatelyEqual(was, now) else { return nil }
+            return (id, was.delta(from: now))
+        }
+        if s.config.transitionMode.animates {
+            for move in moves {
+                s.motion.displaceWindow(move.id, by: move.delta, params: s.config.moveSpring)
+            }
         }
 
         // An edit nothing on screen can see needs no cover. The viewport is asked separately because
         // closing the strip's *last* column displaces nobody.
         let scrolls = !approximatelyEqualScalar(end, start)
-        guard displaced > 0 || scrolls || s.motion.isTransitioning else {
+        guard !moves.isEmpty || scrolls || s.motion.isTransitioning else {
             s.motion.snapViewport(to: end)
             return emitPlacements(&s)
         }
@@ -807,10 +820,11 @@ public enum Engine {
 
     // MARK: - The animated scroll (the transition session)
 
-    /// Reveal `id`'s column with an animated transition under a layered cover — the counterpart to
-    /// `reveal`'s snap, driven by the user-initiated scroll commands. An open transition is retargeted; no
-    /// motion, or no Screen Recording grant, degrades to a snap-place; otherwise a fresh session is scoped
-    /// to every window the viewport sweeps between start and end.
+    /// Reveal `id`'s column with a transition under a layered cover — the counterpart to `reveal`'s bare
+    /// snap, driven by the user-initiated scroll commands. An open transition is retargeted; no motion, or
+    /// no cover to make (`transition = off`, which a missing Screen Recording grant forces), degrades to
+    /// a snap-place; otherwise a fresh session is scoped to every window the viewport sweeps between start
+    /// and end.
     private static func scrollReveal(_ s: inout State, to id: WindowId, center: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
         guard let metrics = s.metrics() else { return [] }
@@ -830,7 +844,7 @@ public enum Engine {
         }
 
         // No capture capability ⇒ no cover worth raising. Checked *before* the scope is computed.
-        guard s.config.smoothTransitions else {
+        guard s.config.transitionMode.covers else {
             s.motion.snapViewport(to: end)
             return emitPlacements(&s)
         }
@@ -850,14 +864,25 @@ public enum Engine {
     private static func driveTransition(_ s: inout State, to end: Double, scope: [WindowId]) -> [Effect] {
         guard s.motion.isTransitioning else {
             s.motion.openTransition(scope: scope)
-            s.motion.retargetViewport(to: end)
+            aimViewport(&s, at: end)
             return captures(s, scope)
         }
-        s.motion.retargetViewport(to: end)
+        aimViewport(&s, at: end)
         let newcomers = s.motion.extendTransition(scope: scope)
         var effects: [Effect] = captures(s, newcomers)
         if s.motion.isCovered { effects += teleportBehindCover(&s) }
         return effects
+    }
+
+    /// Aim the scroll at `end` — in motion under `smooth`, already arrived under `snap`, which is what puts
+    /// a snapped cover's first blit at the finished geometry (`emitLayerFrames` reads `.current`). Both
+    /// paths bump `retargetGeneration`, so a redirect re-arms the hold timer under either.
+    private static func aimViewport(_ s: inout State, at end: Double) {
+        if s.config.transitionMode.animates {
+            s.motion.retargetViewport(to: end)
+        } else {
+            s.motion.snapViewport(to: end)
+        }
     }
 
     /// Ask the capture plane for each of `ids`, carrying the size the world currently records for it —
@@ -1072,13 +1097,18 @@ public enum Engine {
         let scope = scopeUnion(s.workspaces, departing,
                                s.layout.sweptWindowIds(from: start, to: end, metrics: asked))
 
-        // No Screen Recording grant or an empty scope: resize at once, on the same final width.
-        guard s.motion.isTransitioning || (s.config.smoothTransitions && !scope.isEmpty) else {
+        // No cover to make, or an empty scope: resize at once, on the same final width.
+        guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
             s.motion.snapViewport(to: end)
             return emitPlacements(&s)
         }
 
-        s.motion.animateColumnWidth(column.id, from: fromWidth, to: toWidth, params: s.config.resizeSpring)
+        // Under `snap` the width is left out of `Motion` entirely, and an absent animator resolves to the
+        // preset the layout now holds — the finished width, from the cover's first frame.
+        if s.config.transitionMode.animates {
+            s.motion.animateColumnWidth(column.id, from: fromWidth, to: toWidth,
+                                        params: s.config.resizeSpring)
+        }
         return driveTransition(&s, to: end, scope: scope)
     }
 

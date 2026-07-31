@@ -125,7 +125,12 @@ import EmiraCore
         func refreshLayer(_ layer: LayerId) {
             timeline.record("refresh(\(layer.raw))")
         }
-        func dismiss(completion: @escaping @MainActor () -> Void) {
+        /// How long the last dismissal was asked to take — the number, where the timeline only keeps the
+        /// fact that something left the screen.
+        private(set) var dismissedOver: TimeInterval?
+
+        func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
+            dismissedOver = duration
             timeline.record("dismiss")
             if completesDismissal { completion() } else { heldCompletion = completion }
         }
@@ -411,6 +416,40 @@ import EmiraCore
         // opens a new cover with its own base. Only the release waits for the fade.
         #expect(timeline.entries == ["beginFrame", "endFrame", "closeCover", "dismiss", "discard"])
         #expect(store.discarded.count == 1)     // …with the token this cover's close minted
+    }
+
+    /// Each mode's exit is a length rather than a yes-or-no: `smooth` takes the tail of its own motion and
+    /// `snap` a couple of frames. `off` raises no cover of its own — it can only price one whose transition
+    /// outlived a reload, and takes `snap`'s length because at two frames there is nothing to tell apart.
+    /// Every length is safe, a cover coming down only onto a desktop that already matches it.
+    @Test func eachModeLeavesOverItsOwnLength() {
+        let expected: [TransitionMode: TimeInterval] = [
+            .smooth: CompositingExecutor.smoothFade,
+            .snap: CompositingExecutor.snapFade,
+            .off: CompositingExecutor.snapFade,
+        ]
+        for mode in TransitionMode.allCases {
+            let (executor, surface, _, _, log) = Self.harness()
+            executor.transitionMode = mode
+            executor.execute([.endTransition], feedback: log.sink)
+            #expect(surface.dismissedOver == expected[mode], "\(mode) left over the wrong length")
+        }
+        // The one calibration worth pinning as a number: two frames at 60 Hz, give or take, which is
+        // what makes it read as a seam rather than as motion.
+        #expect(CompositingExecutor.snapFade <= 0.05)
+        #expect(CompositingExecutor.snapFade < CompositingExecutor.smoothFade)
+    }
+
+    /// A snapped dismissal is an ordinary one, not a skipped one: the same teardown runs in the same
+    /// order, so the stills are released and `crossfadeDone` is acked exactly as `smooth`'s is.
+    @Test func aSnappedDismissalTearsTheCoverDownLikeAnyOther() {
+        let (executor, _, _, store, timeline, log) = Self.fullHarness()
+        executor.transitionMode = .snap
+        executor.execute([.endTransition], feedback: log.sink)
+
+        #expect(timeline.entries == ["beginFrame", "endFrame", "closeCover", "dismiss", "discard"])
+        #expect(store.discards == 1)
+        #expect(log.events.contains(.crossfadeDone))
     }
 
     @Test func theCrossFadeStartsOnlyAfterTheFinalFrameIsCommitted() {

@@ -37,9 +37,10 @@ public protocol CoverSurface: AnyObject {
     /// elevated — which window slides *over* the one it trades places with. No-op for an absent layer.
     func elevate(_ layer: LayerId)
 
-    /// Cross-fade the cover away and drop the reconstruction. Runs *outside* the frame — a
-    /// window-alpha animation, not a layer blit.
-    func dismiss(completion: @escaping @MainActor () -> Void)
+    /// Take the cover away and drop the reconstruction. Runs *outside* the frame — a window-alpha
+    /// animation, not a layer blit. `duration` is how long the dissolve lasts; every length reveals the
+    /// same desktop, since a cover is only ever taken down once the reals have landed under it.
+    func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void)
 }
 
 /// The `Executor` that splits an effect batch across the two planes.
@@ -60,6 +61,25 @@ public final class CompositingExecutor: Executor {
     /// measurement there is: `Spring` is analytic, so a six-frame lurch and a seventy-six-frame glide
     /// trace the same offset-vs-wall-clock curve and no state dump separates them.
     public var onCoverDismissed: (@MainActor (_ framesBlitted: Int, _ duration: TimeInterval) -> Void)?
+
+    /// The mode a cover being taken down was raised under, read for one decision: how long it takes to
+    /// leave. What a mode does to the *geometry* is settled in the core.
+    public var transitionMode: TransitionMode = .smooth
+
+    /// A cover's exit, per mode — long enough to carry a window that redrew underneath it, short enough
+    /// not to be the slowest thing in the transition it ends. Calibrated by eye, and free to be: a cover
+    /// comes down only onto a desktop that already matches it, so no length hides a geometry difference.
+    static let smoothFade: TimeInterval = 0.22
+    static let snapFade: TimeInterval = 0.04
+
+    var dismissalDuration: TimeInterval {
+        switch transitionMode {
+        case .smooth:     Self.smoothFade
+        // `off` raises no cover of its own; it can only price the exit of one whose transition outlived a
+        // reload, where two frames and the cut it would otherwise get are the same thing to look at.
+        case .snap, .off: Self.snapFade
+        }
+    }
 
     private let surface: any CoverSurface
     private let store: any CaptureStore
@@ -132,9 +152,9 @@ public final class CompositingExecutor: Executor {
         }
     }
 
-    /// Every blit inside a single frame, then — if the batch closed the transition — the cross-fade,
+    /// Every blit inside a single frame, then — if the batch closed the transition — the dismissal,
     /// *after* the frame is committed. The last tick of a scroll emits its final blits and
-    /// `endTransition` together, so fading first would cross-fade away from a stale frame.
+    /// `endTransition` together, so dismissing first would fade away from, or cut to, a stale frame.
     private func present(_ effects: [Effect], feedback: EventSink) {
         surface.beginFrame()
         var dismissing = false
@@ -173,7 +193,7 @@ public final class CompositingExecutor: Executor {
         // Closed at `endTransition`, not when the fade lands: a command arriving during the cross-fade
         // opens a *new* cover and must take its own base, not inherit the fading one's desktop.
         let token = store.closeCover()
-        surface.dismiss { [onCoverDismissed, store] in
+        surface.dismiss(over: dismissalDuration) { [onCoverDismissed, store] in
             // Released only once the cover is *down* — `CALayer.contents` holds the stills for the
             // whole cross-fade. And only *these* stills: `discard` ignores a superseded token.
             store.discard(token)

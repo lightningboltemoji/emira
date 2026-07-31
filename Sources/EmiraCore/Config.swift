@@ -8,6 +8,26 @@ import EmiraMotion
 // **Lengths are in points; width presets are proportions of the content width.** A zero-config
 // `Config()` lays out a sensible strip, which is also what a missing config file produces.
 
+/// Whether a transition is covered, and whether it animates under the cover — two independent questions
+/// on one ladder, `off` ⊂ `snap` ⊂ `smooth` in what each asks of the machine. Both upper rungs ask for the
+/// same thing, captured pixels, which is why a missing grant collapses the whole ladder rather than a rung.
+public enum TransitionMode: String, Sendable, Equatable, Codable, CaseIterable {
+    /// No cover. Windows are placed by AX and arrive when they arrive, which is emira's motion with the
+    /// graphics thesis removed — and the honest behaviour with no Screen Recording grant to make it from.
+    case off
+    /// Cover, with no motion under it: one capture round-trip at the head buys atomicity, the strip being
+    /// seen in its two resting states and never in the half-arranged interval between them.
+    case snap
+    /// Cover, with the springs running under it: the transition emira is for.
+    case smooth
+
+    /// Whether a cover is raised at all — the gate on opening a session.
+    public var covers: Bool { self != .off }
+    /// Whether the quantities a transition moves are put in motion rather than snapped to their targets.
+    /// The reducer's question alone — the compositor reads the mode itself, for the exit's length.
+    public var animates: Bool { self == .smooth }
+}
+
 /// When a cover may go up: once every window in it is exact, or the moment the desktop behind it is.
 /// The question `WindowAnimation` answers in space — what to paint where the pixels aren't there yet —
 /// asked in time. Neither mode changes a frame of emitted geometry.
@@ -93,10 +113,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// When a cover may be raised. Read by the capture plane, never the reducer: what changes is when a
     /// window is deemed to *have* pixels, not what the core does once every scoped one does.
     public var coverMode: CoverMode
-    /// Whether a scroll animates under a layered cover or simply snaps. Also a capability bit: the
-    /// cover is made of captured pixels, so the shell clears this when the Screen Recording grant is
-    /// missing, which degrades emira to instant, correct placement rather than a blank rectangle.
-    public var smoothTransitions: Bool
+    /// Whether a transition covers, and whether it animates under the cover. Also a capability bit: the
+    /// cover is made of captured pixels, so the shell clamps this to `off` when the Screen Recording
+    /// grant is missing, which degrades emira to instant, correct placement rather than a blank rectangle.
+    public var transitionMode: TransitionMode
     /// Seconds a transition may stay under its cover before the truth is revealed regardless. Read by
     /// the shell's hold timer, not the reducer — the core owns no wall clock.
     public var holdTimeout: Double
@@ -123,7 +143,7 @@ public struct Config: Sendable, Equatable, Codable {
         systemFocusEvents: SystemFocusEvents = .respect,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
-        smoothTransitions: Bool = true,
+        transitionMode: TransitionMode = .smooth,
         holdTimeout: Double = 1.0,
         keys: [KeyBinding] = [],
         windowRules: [WindowRule] = []
@@ -141,7 +161,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.systemFocusEvents = systemFocusEvents
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
-        self.smoothTransitions = smoothTransitions
+        self.transitionMode = transitionMode
         self.holdTimeout = holdTimeout
         self.keys = keys
         self.windowRules = windowRules

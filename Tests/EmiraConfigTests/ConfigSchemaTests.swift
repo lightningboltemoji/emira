@@ -203,9 +203,11 @@ import EmiraCore
 
     // MARK: - The table's own shape
 
-    /// The pitfall the task named: a `Kind` case that serves one setting is a table that has stopped
-    /// paying for itself, and the cheapest place to notice is here.
-    @Test func noKindCaseExistsForASingleSetting() {
+    /// A `Kind` case nothing spells is a shape the table carries for free — the cases are the forms a TOML
+    /// value comes in, so *used at all* is the test and a census of the settings is not. The four are
+    /// listed by hand, `Kind` having associated values and so no `CaseIterable`: **a fifth case must be
+    /// added to the list as well as to the switch, or it goes unchecked.**
+    @Test func everyKindCaseServesASetting() {
         var uses: [String: Int] = [:]
         for setting in ConfigSchema.settings {
             let name: String
@@ -217,8 +219,8 @@ import EmiraCore
             }
             uses[name, default: 0] += 1
         }
-        for (kind, count) in uses {
-            #expect(count > 1, "\(kind) serves only one setting — it should be that setting's own read")
+        for kind in ["toggle", "number", "choice", "sizeList"] {
+            #expect(uses[kind, default: 0] > 0, "\(kind) serves no setting — it is a shape nothing spells")
         }
     }
 

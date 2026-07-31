@@ -14,7 +14,7 @@ import EmiraMotion
     /// `half`, but snapping — the supported configuration on a machine with no Screen Recording grant.
     /// Used where the assertion is about *where* the strip lands, not how it gets there.
     static let halfSnap = Config(widthPresets: PresetCycle([.proportion(0.5)]),
-                                 smoothTransitions: false)
+                                 transitionMode: .off)
 
     static func booted(_ config: Config = half) -> State {
         let (s, _) = Engine.reduce(State(config: config),

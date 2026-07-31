@@ -138,6 +138,21 @@ The core decides *whether a command warrants a transition* (motion vs snap) and 
 shell owns the mechanics of cover/capture/cross-fade. This is the clean seam between "policy" (pure) and "mechanism"
 (native).
 
+**`snap` is the cover without the clock.** Under `transition = "snap"` the same session runs with **no animator created
+at all**: an absent animator already resolves to the value `Layout` derives, so the settle half of the close gate is
+answered from the session's first instant, the cover's first blit is the finished strip, and the close waits on
+`axLanded` alone. Ticks still arrive — the session is open, so the shell runs the frame clock — and the reducer drops
+them, having no new frame to emit.
+
+**A cover's exit is a length, not a yes-or-no**, and each mode has its own: `smooth` dissolves over 220 ms, the tail of
+its own motion; `snap` over 40 ms, roughly two frames, enough to be a seam rather than a jump and not enough to be the
+most conspicuous motion in a transition whose claim is that it has none; `off` takes `snap`'s length, raising no
+cover of its own and so only ever pricing one whose transition outlived a reload. Every length is safe, and this is
+why: a cover is dismissed only once its animators have settled *and* its
+reals have landed, so it always comes off a desktop that already matches it — what a dissolve hides is a window whose
+*content* went stale under the cover, never its geometry. The numbers therefore live in `CompositingExecutor`, above
+the test seam, rather than in `Overlay` or `Reconstruction` below it.
+
 **A scope grows and never shrinks.** A retarget aims the scroll somewhere the session was not scoped for, and a
 window sliding in with no layer shows the base — i.e. wallpaper — through the gap. So a redirect **widens** the
 scope over the newly-swept interval, captures what that adds, and **grows the raised cover** (`Effect.extendCover`)
@@ -1238,9 +1253,10 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   there would strand every parked window at its 1 px nub with nothing to put them back. As a *first launch* it is a
   quiet failure: the user installed a scrollable-tiling window manager, received a permanently snappier AeroSpace, and
   the explanation went to a stderr a bundled app has nowhere to print. **Asking for the cover is what makes the grant
-  required** (`smooth-transitions = false` waives it — demanding a screen-recording permission to power a feature the
+  required** (`transition = "off"` waives it — demanding a screen-recording permission to power a feature the
   user disabled is both obnoxious and a privacy smell), so the waived grant is not a row in the window rather than a
-  row marked optional, and "satisfied" stays "all of them".
+  row marked optional, and "satisfied" stays "all of them". `snap` is on the asking side of that line with `smooth`:
+  it animates nothing, but a cover it cannot make of pixels is not a cover.
   - **One window, and every grant in it, because the alternative is a queue of prompts.** A grant apiece meant an alert
     apiece, each naming one pane and each ending in "then launch emira again" — and the count is the tell: two grants
     that must both be in place before anything works is *one* piece of setup, so it gets one surface. The rows carry
@@ -1305,7 +1321,7 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     the previous grant lands — which is also when the user is already standing in System Settings. It follows that the
     subprocess probe waits its turn too: a spawn every 300 ms for the whole of an Accessibility wait is a process per
     tick for a grant nobody has been asked for yet.
-  - **Both grants are billed as required, and the waiver is deliberately unadvertised.** `smooth-transitions = false`
+  - **Both grants are billed as required, and the waiver is deliberately unadvertised.** `transition = "off"`
     still removes the row and the requirement with it, but the window doesn't mention it: wanting the animations is the
     overwhelming case, and a paragraph about the setting spends the reader's attention arguing against the thing they
     installed. Anyone who does want it will find it in the config. Closing the window quits, because there is nothing
@@ -1353,11 +1369,13 @@ Covers: keybindings (`[keys]`, key → `Command`, including the
 `exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
 `center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through),
-`focus.system-events` (`"respect"` / `"on-screen"` / `"ignore"` — which focus changes emira did not cause it honours), and
-animation params (spring stiffness/damping, durations, and the two word-valued keys that reach the *shell* rather
-than the reducer — `animation.window`, `"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`;
-one says what to paint where a still no longer fits the rect, the other what to paint before it has arrived, and the
-core's emitted geometry is identical under both settings of both). Struts are
+`focus.system-events` (`"respect"` / `"on-screen"` / `"ignore"` — which focus changes emira did not cause it honours),
+`animation.transition` (`"off"` / `"snap"` / `"smooth"` — the one key **both** planes read: the reducer for whether
+to cover and whether to animate, the shell for how long the finished cover takes to leave), and animation params (spring stiffness/damping,
+durations, and the two word-valued keys that reach the *shell* alone rather than the reducer — `animation.window`,
+`"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`; one says what to paint where a still no
+longer fits the rect, the other what to paint before it has arrived, and the core's emitted geometry is identical
+under both settings of both). Struts are
 deliberately *not* a
 key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with
 them and measured inside them. Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.
@@ -1410,9 +1428,15 @@ wakes on *any* activity in that directory, what is reported is a change in the *
 the file: the file changing is a guess, the config changing is the fact.
 
 **The daemon owns the two values a file may not decide.** `struts` come from `NSScreen.visibleFrame` and the same
-number must reach the core and the overlay; `smooth-transitions` is a *preference* ANDed with the Screen Recording
-*capability*. Both are re-applied on every reload, which also makes a reload the first thing that notices macOS
-revoking the grant mid-session.
+number must reach the core and the overlay; `transitionMode` is a *preference* answerable to the Screen Recording
+*capability* — no grant sends it to `off` outright, both covered rungs being made of the same pixels, so `snap` is out
+of reach exactly as `smooth` is. Both are re-applied on every reload (`applyEnvironment`), which also makes a reload
+the first thing that notices macOS revoking the grant mid-session.
+
+**Boot and reload apply the same config the same way.** The three values that reach the shell rather than the reducer
+(`windowAnimation`, `coverMode`, `transitionMode`) are pushed onto their subsystems by one `applyShellConfig`, called
+at launch and again from `ConfigLoader.onLoad`. Two call sites assigning three properties each is where "the reducer
+and the shell read the same post-`applyEnvironment` value" goes quietly false.
 
 ---
 

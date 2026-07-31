@@ -73,7 +73,7 @@ app.setActivationPolicy(.accessory)
 // MARK: - The config file
 //
 // Must be read *before* the grant checks below: whether Screen Recording is required depends on
-// whether the user asked for the cover at all (`smooth-transitions`).
+// whether the user asked for the cover at all (`transition`).
 
 let loader = ConfigLoader(path: Config.defaultPath(),
                           watcher: ConfigWatcher(watching: Config.defaultPath()),
@@ -107,7 +107,7 @@ case .failure(let error):
 // it had to open a window: a grant given to a *running* emira is only half a grant, and the next launch
 // has the whole of it.
 
-let onboarding = OnboardingModel.live(wantsCover: parsedConfig.smoothTransitions)
+let onboarding = OnboardingModel.live(wantsCover: parsedConfig.transitionMode.covers)
 if !onboarding.isSatisfied {
     log("waiting for \(onboarding.missing.joined(separator: ", "))")
 }
@@ -173,17 +173,13 @@ let reconstruction = Reconstruction(overlay: overlay, store: capture)
 func applyEnvironment(to config: Config) -> Config {
     var config = config
     config.struts = struts
-    config.smoothTransitions = config.smoothTransitions && Permissions.screenRecording.isGranted
+    // The whole ladder above `off`, not just `smooth`: a cover is captured pixels under either, so `snap`
+    // needs the grant exactly as much. What runs under the cover is the core's own arithmetic and free.
+    if !Permissions.screenRecording.isGranted { config.transitionMode = .off }
     return config
 }
 
 var config = applyEnvironment(to: parsedConfig)
-
-// The two config values that reach the shell rather than the reducer: how a still is painted into a
-// rect that no longer matches it, and when a cover may go up at all. The core can't carry either — its
-// emitted geometry is identical under both settings of both.
-reconstruction.animation = config.windowAnimation
-capture.mode = config.coverMode
 
 // MARK: - The GUI
 //
@@ -206,6 +202,20 @@ launcher.onOutcome = { log("exec: \($0)") }
 
 let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
                                    launcher: launcher)
+
+/// The three config values that reach the shell rather than the reducer — the core's emitted geometry is
+/// identical under every setting of all three. One function, called at boot and again on every reload, so
+/// that the shell and the reducer read the same post-`applyEnvironment` value by construction.
+@MainActor func applyShellConfig(_ config: Config) {
+    reconstruction.animation = config.windowAnimation
+    capture.mode = config.coverMode
+    executor.transitionMode = config.transitionMode
+    // Leaving `.immediate` retires the stills it kept, which would otherwise sit there until the budget
+    // collected them. A no-op at boot, where there is nothing kept yet.
+    if config.coverMode == .exact { surfaceCache.removeAll() }
+}
+
+applyShellConfig(config)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below.
@@ -271,7 +281,7 @@ let hotkeys = HotkeyManager(binder: CarbonHotkeyBinder(), sink: EventSink { even
 applyKeys(config)
 
 // Only a successful parse becomes an event. The three subsystems told separately — reducer, hotkeys,
-// compositor — must all read the *same* post-`applyEnvironment` value.
+// shell — must all read the *same* post-`applyEnvironment` value.
 loader.onLoad = { result in
     switch result {
     case .success(let parsed):
@@ -279,11 +289,7 @@ loader.onLoad = { result in
         log("config: reloaded \(loader.path)")
         runtime.dispatch(.configChanged(live))
         applyKeys(live)
-        reconstruction.animation = live.windowAnimation
-        capture.mode = live.coverMode
-        // Leaving `.immediate` retires the stills it kept, which would otherwise sit there until the
-        // budget collected them.
-        if live.coverMode == .exact { surfaceCache.removeAll() }
+        applyShellConfig(live)
         menuBar.configError = nil
     case .failure(let error):
         log("config: \(error) — keeping the previous settings")

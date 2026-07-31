@@ -116,11 +116,13 @@ public final class Overlay {
         window.orderFrontRegardless()
     }
 
-    /// Cross-fade the cover away. `completion` runs exactly once per call, always — it acks
+    /// Cross-fade the cover away over `duration`, which must be positive — `completion` releases the
+    /// stills and tears down the layer tree, and that must not ride on whether AppKit schedules a handler
+    /// for an animation with no work to do. It runs exactly once per call, always: it acks
     /// `Event.crossfadeDone` back into the pump, so a fade with nothing raised resolves immediately.
-    /// `completed == false` means a newer transition raised the overlay mid-fade and owns the layer
-    /// tree now: the caller must **not** tear it down.
-    public func fadeOut(duration: TimeInterval = 0.22,
+    /// `completed == false` means a newer transition raised the overlay mid-fade and owns the layer tree
+    /// now — the caller must **not** tear it down.
+    public func fadeOut(duration: TimeInterval,
                         completion: @escaping @MainActor (_ completed: Bool) -> Void) {
         guard isRaised else { return completion(true) }
         generation &+= 1

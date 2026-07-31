@@ -333,10 +333,17 @@ Much of the "slow AX" pain is self-inflicted and controllable:
   onboarding prompt. macOS also **periodically re-prompts** users to keep allowing screen capture, mid-session and
   while capture is already working; under our charter nothing can be done about it — accept it, set expectations in
   onboarding copy, and treat the grant as a value that can change under a running daemon rather than one read at boot.
-  Without it, the honest behaviour is **not to raise a cover at all**: `Config.smoothTransitions` degrades emira to
-  §4a — instant, correct placement, i.e. AeroSpace parity — and every window still lands exactly where the smooth path
-  would have put it. A coloured rectangle sliding where a window should be is worse than no animation, which is why
-  there is no placeholder fallback anywhere in the daemon.
+  Without it, the honest behaviour is **not to raise a cover at all**: `Config.transitionMode` clamps to `off` and
+  degrades emira to §4a — instant, correct placement, i.e. AeroSpace parity — and every window still lands exactly
+  where the smooth path would have put it. A coloured rectangle sliding where a window should be is worse than no
+  animation, which is why there is no placeholder fallback anywhere in the daemon.
+- **Covering and animating are separate goods, and the middle one is worth having on its own.** `transition` is a
+  three-rung ladder — `off`, `snap`, `smooth` — because the cover answers the AX API's *unreliability* while the
+  springs answer its *feel*, and a user can want the first without the second. `snap` raises the cover, teleports the
+  reals behind it and takes it down the moment they land: no motion plays, and the strip is never seen half-arranged.
+  What it buys over `off` is atomicity rather than speed, and what it costs against `smooth` is the capture round-trip
+  at the head, which under `off` is not paid at all. Both upper rungs are made of the same captured pixels, so the
+  capability question is not which rung to fall to but whether any of them is reachable at all.
 - **A screenshot costs per call, not per pixel, and the window server takes them one at a time.** ~10 ms each,
   unchanged by the requested dimensions (a window captured at 1/32 of its pixel size costs the same as at native), and
   `withTaskGroup` buys partial overlap rather than parallelism. So the head of every covered transition is *linear in

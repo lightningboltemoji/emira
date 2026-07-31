@@ -107,8 +107,8 @@ public final class Reconstruction: CoverSurface {
         // either from these pixels could only move a hard edge by a rounding error.
     }
 
-    public func dismiss(completion: @escaping @MainActor () -> Void) {
-        overlay.fadeOut { [weak self] completed in
+    public func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
+        overlay.fadeOut(duration: duration) { [weak self] completed in
             // `completed == false` ⇒ a newer transition owns the layer tree; tearing it down here
             // would delete *its* layers.
             if completed { self?.discardLayers() }

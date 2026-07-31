@@ -76,7 +76,7 @@ import EmiraCore
         center-focused-column = true
 
         [animation]
-        smooth-transitions = false
+        transition = "off"
         hold-timeout = 2.5
 
         [animation.scroll]
@@ -92,7 +92,7 @@ import EmiraCore
         #expect(config.windowGap == 4)
         #expect(config.outerGaps == EdgeInsets(top: 16, left: 24, bottom: 16, right: 16))
         #expect(config.centerFocusedColumn)
-        #expect(!config.smoothTransitions)
+        #expect(config.transitionMode == .off)
         #expect(config.holdTimeout == 2.5)
         #expect(config.scrollSpring.stiffness == 400)
         #expect(abs(config.scrollSpring.dampingRatio - 1.0) < 1e-9)
@@ -511,7 +511,7 @@ import EmiraCore
         center-focused-column = false
 
         [animation]
-        smooth-transitions = true
+        transition = "smooth"
         hold-timeout = 1.0
 
         [animation.scroll]
@@ -527,7 +527,7 @@ import EmiraCore
         #expect(config.columnGap == defaults.columnGap)
         #expect(config.windowGap == defaults.windowGap)
         #expect(config.centerFocusedColumn == defaults.centerFocusedColumn)
-        #expect(config.smoothTransitions == defaults.smoothTransitions)
+        #expect(config.transitionMode == defaults.transitionMode)
         #expect(config.holdTimeout == defaults.holdTimeout)
         #expect(abs(config.scrollSpring.stiffness - defaults.scrollSpring.stiffness) < 1e-9)
         #expect(abs(config.scrollSpring.damping - defaults.scrollSpring.damping) < 1e-9)

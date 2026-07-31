@@ -6,7 +6,7 @@ import Testing
 // ways to name an address, per-workspace scroll and focus memory, and the cross-workspace focus a real
 // desktop produces.
 //
-// Everything here snaps (`smoothTransitions: false`), for `EngineTests.halfWidthSnap`'s reason: these
+// Everything here snaps (`transitionMode: .off`), for `EngineTests.halfWidthSnap`'s reason: these
 // tests are about *where windows end up*, and under the animated path the reals teleport at the cover's
 // raise rather than in the command's own batch. The motion is `WorkspaceMotionTests`, below.
 
@@ -78,7 +78,7 @@ import Testing
     /// One full-width preset on a 1000-pt display: one column *is* the viewport, so column *n* sits at
     /// strip offset `1000n` and every scroll number below is readable at a glance.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
-                                  smoothTransitions: false)
+                                  transitionMode: .off)
 
     /// Two half-width columns fill the 1000-pt viewport exactly, so a two-window workspace is entirely
     /// on screen at offset 0. Used where the test is about *tiled versus parked*: the whole strip then

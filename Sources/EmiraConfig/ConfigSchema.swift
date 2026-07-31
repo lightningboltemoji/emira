@@ -374,9 +374,10 @@ public enum ConfigSchema {
     ]
 
     private static let animation: [Setting] = [
-        Setting("animation.smooth-transitions", \.smoothTransitions, .toggle,
-                label: "Smooth transitions",
-                help: "Animate a transition under a cover rather than snapping.", section: .animation),
+        Setting("animation.transition", \.transitionMode, .word,
+                label: "Transition mode",
+                help: "Whether a cover is used during window transitions, and if so, what style.",
+                section: .animation),
 
         Setting("animation.hold-timeout", \.holdTimeout, .number(greaterThan: 0, unit: .seconds),
                 label: "Hold timeout",
