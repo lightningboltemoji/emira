@@ -17,6 +17,9 @@ window-gap = 0
 # Centre a focused column rather than scrolling the least that reveals it.
 center-focused-column = false
 
+# Stop a grow or shrink where the columns on screen sit flush; press again to push past.
+resize-detent = false
+
 # The widths cycle-width steps through.
 # A list of sizes — 1 or less is a fraction of the extent it is resolved against, anything
 # larger is a point count.

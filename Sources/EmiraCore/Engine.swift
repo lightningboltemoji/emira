@@ -942,14 +942,29 @@ public enum Engine {
     /// stored intent: measuring from the intent opens a dead zone wherever an app refused to be as narrow
     /// as we asked. The clamp (content width, `minimumColumnWidth`) can stop a resize but never reverses
     /// one — each bound widens to the current width when the column is already outside it.
+    ///
+    /// Under `resizeDetent` the delta is cut short where the strip goes flush with a viewport edge
+    /// (`Strip.resizeDetent`), and a press made *from* that notch takes the delta it asked for. The
+    /// ladder is deliberately exempt: a preset is an exact intent, and ½ has to stay ½.
     private static func handleResizeColumn(_ s: inout State, by delta: SizeDelta,
                                            sign: Double) -> [Effect] {
-        resizeFocusedColumn(&s) { layout, column, metrics, from in
+        // The resting offset, to pair with the resting widths `layout` still holds: mid-flight the two
+        // describe different strips, and the notch is a fact about the one being left.
+        let offset = s.motion.viewportOffset.target
+        let detent = s.config.resizeDetent
+        let centered = s.config.centerFocusedColumn
+        return resizeFocusedColumn(&s) { layout, column, metrics, from in
             let available = metrics.contentArea.width
             let ceiling = Swift.max(available, from)
             let floor = Swift.min(minimumColumnWidth, from)
-            let width = Swift.min(Swift.max(from + sign * delta.resolved(available: available), floor),
-                                  ceiling)
+            var travel = delta.resolved(available: available)
+            if detent, let index = layout.columnIndex(withId: column.id),
+               let notch = layout.strip(metrics: metrics)
+                   .resizeDetent(ofColumn: index, growing: sign > 0, viewportWidth: available,
+                                 offset: offset, centered: centered) {
+                travel = Swift.min(travel, notch)     // only ever shorter: a detent catches, it never pulls
+            }
+            let width = Swift.min(Swift.max(from + sign * travel, floor), ceiling)
             // Stored in the unit the user typed: a percentage leaves a proportion, points leave points.
             let intent: PresetSize
             switch delta {

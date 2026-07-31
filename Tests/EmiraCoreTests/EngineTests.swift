@@ -1462,6 +1462,100 @@ import EmiraMotion
         #expect(Self.width(s) == 1400)                           // …while the other way still moves
     }
 
+    // MARK: - The resize detent (`layout.resize-detent`)
+
+    /// Two columns, 500 + 450 in a 1000-wide viewport, the left one focused: 50 pt of slack at the right
+    /// edge, so one `grow 10%` is three times what it takes to go flush.
+    static func detentPair(detent: Bool = true) -> State {
+        let config = Config(widthPresets: PresetCycle([.proportion(0.5)]), resizeDetent: detent,
+                            transitionMode: .off)
+        var s = Self.world(2, config: config)
+        s.layout.setWidthOverride(.proportion(0.45), ofColumn: s.layout.columns[1].id)
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
+        return Self.settle(s)
+    }
+
+    /// Whether the strip shows column `i` whole, where the viewport is coming to rest.
+    static func showsWhole(_ s: State, _ i: Int) -> Bool {
+        s.layout.strip(metrics: s.metrics()!)
+            .isFullyVisible(i, viewportWidth: 1000, offset: s.motion.viewportOffset.target)
+    }
+
+    /// The press that would evict a neighbour stops where it goes flush; the next one means it, and
+    /// spends the whole delta. Nothing is remembered between the two — the first press left the strip
+    /// *in* the notch, and that is what the second one reads.
+    @Test func growCatchesAtFlushAndTheNextPressPushesPast() {
+        var s = Self.detentPair()
+        #expect(Self.showsWhole(s, 1))
+
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        #expect(Self.approxScalar(Self.width(s, 0), 550))         // 50 of the 100 asked for
+        #expect(Self.showsWhole(s, 1))                            // …the neighbour kept, exactly flush
+
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        #expect(Self.approxScalar(Self.width(s, 0), 650))         // …and now the whole 100
+        #expect(!Self.showsWhole(s, 1))                           // 100 pt of it off screen
+    }
+
+    /// The way back in, on the same notch: a shrink stops where the column it cut comes back whole. Without
+    /// it the packed strip would be a configuration you can only pass through, never land on.
+    @Test func shrinkCatchesWhereTheCutColumnComesBackWhole() {
+        var s = Self.detentPair()
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        #expect(Self.approxScalar(Self.width(s, 0), 650))
+
+        (s, _) = Engine.reduce(s, .command(.shrink(.percent(20))))
+        #expect(Self.approxScalar(Self.width(s, 0), 550))         // 100 of the 200 asked for
+        #expect(Self.showsWhole(s, 1))
+
+        (s, _) = Engine.reduce(s, .command(.shrink(.percent(20))))
+        #expect(Self.approxScalar(Self.width(s, 0), 350))         // …and past it, the whole 200
+    }
+
+    /// Off — the default — a delta is the delta, and the neighbour goes off screen on the first press.
+    @Test func withoutTheDetentAGrowSpendsTheWholeDelta() {
+        var s = Self.detentPair(detent: false)
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(10))))
+        #expect(Self.approxScalar(Self.width(s, 0), 600))
+        #expect(!Self.showsWhole(s, 1))
+    }
+
+    /// The ladder is exempt. A preset is an exact intent — ½ has to stay ½ — so `cycleWidth` steps past
+    /// the notch the continuous knob would have caught on.
+    @Test func theWidthLadderIgnoresTheDetent() {
+        let config = Config(widthPresets: PresetCycle([.proportion(0.5), .proportion(0.9)]),
+                            resizeDetent: true, transitionMode: .off)
+        var s = Self.world(2, config: config)
+        s.layout.setWidthOverride(.proportion(0.45), ofColumn: s.layout.columns[1].id)
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
+
+        (s, _) = Engine.reduce(Self.settle(s), .command(.cycleWidth))
+        #expect(Self.approxScalar(Self.width(s, 0), 900))          // not 550
+    }
+
+    /// Centred, the viewport travels half the width with the column, so both its edges close in at half
+    /// speed and the nearer one decides. 320 + 320 + 200 with a 10 pt gap leaves 140 at the right edge but
+    /// only 10 at the left once the middle column is centred — a notch the uncentred strip doesn't have.
+    @Test func aCentredResizeCatchesOnTheEdgeTheUncentredOneNeverReaches() {
+        func trio(centered: Bool) -> State {
+            let config = Config(widthPresets: PresetCycle([.proportion(0.32)]), columnGap: 10,
+                                centerFocusedColumn: centered, resizeDetent: true,
+                                transitionMode: .off)
+            var s = Self.world(3, config: config)
+            s.layout.setWidthOverride(.proportion(0.20), ofColumn: s.layout.columns[2].id)
+            (s, _) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))
+            return Self.settle(s)
+        }
+
+        var (centred, plain) = (trio(centered: true), trio(centered: false))
+        (centred, _) = Engine.reduce(centred, .command(.grow(.percent(10))))
+        (plain, _) = Engine.reduce(plain, .command(.grow(.percent(10))))
+
+        #expect(Self.approxScalar(Self.width(centred, 1), 340))    // caught by the left edge, at 2 × 10
+        #expect(Self.approxScalar(Self.width(plain, 1), 420))      // 140 of room to the right: uncaught
+    }
+
     /// A failed shrink stops at the app's own floor and converges there. There is no public attribute for
     /// a minimum, so all we have is what the app answered to the question we asked; taking each delta
     /// from the *resolved* width rather than the stored intent makes that a fixed point, not a dead zone.

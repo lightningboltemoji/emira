@@ -103,6 +103,10 @@ public struct Config: Sendable, Equatable, Codable {
     public var moveSpring: SpringParams
     /// Whether a focus change centers the focused column or does the minimal scroll that reveals it.
     public var centerFocusedColumn: Bool
+    /// Whether `grow` and `shrink` catch where the columns on screen sit flush with the viewport, a
+    /// second press pushing past. Nothing is remembered between presses: being *in* the notch is what
+    /// the second press reads, so the geometry carries the intent the way a stored flag would.
+    public var resizeDetent: Bool
     /// Which focus changes emira did not cause it honours. `respect` is every one of them, which is
     /// macOS's own behaviour and the only setting under which an app can move the viewport by itself.
     public var systemFocusEvents: SystemFocusEvents
@@ -140,6 +144,7 @@ public struct Config: Sendable, Equatable, Codable {
         resizeSpring: SpringParams = .smooth,
         moveSpring: SpringParams = .smooth,
         centerFocusedColumn: Bool = false,
+        resizeDetent: Bool = false,
         systemFocusEvents: SystemFocusEvents = .respect,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
@@ -158,6 +163,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.resizeSpring = resizeSpring
         self.moveSpring = moveSpring
         self.centerFocusedColumn = centerFocusedColumn
+        self.resizeDetent = resizeDetent
         self.systemFocusEvents = systemFocusEvents
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode

@@ -130,4 +130,41 @@ public struct Strip: Sendable, Equatable {
         if last < count - 1 { result.append(last + 1) }
         return result
     }
+
+    // MARK: Detents — the edge a resize catches on
+
+    /// How far column `i`'s width may travel before a viewport edge crosses a column edge, or `nil`
+    /// where the sweep crosses none — including from an edge already flush with one, the notch a second
+    /// press passes through. Only columns at or after `i` move with its width.
+    public func resizeDetent(ofColumn i: Int, growing: Bool, viewportWidth: Double, offset: Double,
+                             centered: Bool) -> Double? {
+        guard i >= 0, i < count else { return nil }
+        let viewMax = offset + viewportWidth
+        // The right viewport edge sweeps the right edges of the columns from `i` on. Under `centered`
+        // the left edge sweeps the left edges of those up to `i`, in the opposite direction; otherwise
+        // it is never the first crossed, a reveal only scrolling once the focused column is flush.
+        let rights = (i..<count).map { leftEdge(of: $0) + columnWidths[$0] }
+        let lefts = (0...i).map { leftEdge(of: $0) }
+        guard !Self.isFlush(rights, viewMax) else { return nil }
+        guard !centered || !Self.isFlush(lefts, offset) else { return nil }
+
+        // Growing carries the right edge inward, over the last column shown whole; shrinking carries it
+        // outward, over the first one cut.
+        let swept = growing ? rights.last(where: { $0 < viewMax })
+                            : rights.first(where: { $0 > viewMax })
+        let reach = swept.map { abs($0 - viewMax) }
+        guard centered else { return reach }
+
+        // Centred, the viewport travels half the width with the column, so each edge closes at half
+        // speed — the nearer notch, twice as far off.
+        let mirrored = (growing ? lefts.first(where: { $0 > offset })
+                                : lefts.last(where: { $0 < offset })).map { abs($0 - offset) }
+        return [reach, mirrored].compactMap { $0 }.min().map { 2 * $0 }
+    }
+
+    /// Whether `bound` already sits on one of `edges` — within the tolerance a placement is diffed at,
+    /// since a detent is reached by arithmetic that has to land on it exactly to be left again.
+    private static func isFlush(_ edges: [Double], _ bound: Double) -> Bool {
+        edges.contains { abs($0 - bound) <= visibilityTolerance }
+    }
 }

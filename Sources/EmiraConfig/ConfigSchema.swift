@@ -357,6 +357,11 @@ public enum ConfigSchema {
                 help: "Centre a focused column rather than scrolling the least that reveals it.",
                 section: .layout),
 
+        Setting("layout.resize-detent", \.resizeDetent, .toggle,
+                label: "Resize detent",
+                help: "Stop a grow or shrink where the columns on screen sit flush; press again to push past.",
+                section: .layout),
+
         Setting("layout.width-presets", \.widthPresets, .sizeList,
                 label: "Column widths", help: "The widths cycle-width steps through.",
                 section: .layout),

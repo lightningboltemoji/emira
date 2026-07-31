@@ -598,6 +598,12 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **The clamp can stop a resize; it may never reverse one.** The ceiling is the working width and the floor is a
     bare minimum, but each is widened to the current width when the column is already outside it — so a `grow` on a
     column a config deliberately made wider than the screen is a no-op rather than a sudden shrink to fit.
+  - **`resize-detent` catches the knob where the strip goes flush, and a second press pushes past.** A delta that
+    would carry a viewport edge across a column edge is cut short at that edge (`Strip.resizeDetent`); a delta
+    starting *from* one spends in full, because a sweep beginning on an edge crosses none. **The geometry is the
+    memory** — nothing records that the last press was clamped, so nothing has to invalidate it when a focus change,
+    a new window or an app's `SizeCorrection` moves the strip underneath. Only the continuous verbs catch: a preset
+    is an exact intent and ½ has to stay ½, so the ladder and `fullscreen` step past the notch.
   - **`fullscreen` is a third layer *shadowing* both, not a fourth way of writing a width.** It takes the focused
     window to 100% of the content area — the strip's fullscreen, not the system's: no Space, nothing hidden, the
     neighbours simply park and scroll back. Because the flag shadows the override, which shadows the preset, **the

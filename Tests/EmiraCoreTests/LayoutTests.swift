@@ -116,6 +116,76 @@ import Testing
         #expect(strip.visibleColumnIndices(viewportWidth: 100, offset: 99) == [0, 1])
         #expect(strip.visibleColumnIndices(viewportWidth: 111, offset: 0) == [0, 1])
     }
+
+    // MARK: Detents
+
+    // 500 + 450 in a 1000-wide viewport: 50 pt of slack at the right edge.
+    private let pair = Strip(columnWidths: [500, 450], gap: 0)
+
+    @Test func growCatchesWhereTheLastWholeColumnGoesFlush() {
+        #expect(pair.resizeDetent(ofColumn: 0, growing: true, viewportWidth: 1000, offset: 0,
+                                  centered: false) == 50)
+    }
+
+    /// The notch is left by being *in* it: flush, the sweep starts on an edge and crosses none, which is
+    /// what lets a second press push a column off screen without anything being remembered.
+    @Test func aFlushStripHasNoDetentInEitherDirection() {
+        let flush = Strip(columnWidths: [550, 450], gap: 0)
+        #expect(flush.resizeDetent(ofColumn: 0, growing: true, viewportWidth: 1000, offset: 0,
+                                   centered: false) == nil)
+        #expect(flush.resizeDetent(ofColumn: 0, growing: false, viewportWidth: 1000, offset: 0,
+                                   centered: false) == nil)
+    }
+
+    /// Grow and shrink catch on different columns: one protects what is whole, the other collects what
+    /// is cut. col1 [500,950) is whole with 50 to spare, col2 [950,1250) hangs 250 over the edge.
+    @Test func theTwoDirectionsCatchOnOppositeSidesOfTheViewportEdge() {
+        let three = Strip(columnWidths: [500, 450, 300], gap: 0)
+        #expect(three.resizeDetent(ofColumn: 0, growing: true, viewportWidth: 1000, offset: 0,
+                                   centered: false) == 50)
+        #expect(three.resizeDetent(ofColumn: 0, growing: false, viewportWidth: 1000, offset: 0,
+                                   centered: false) == 250)
+    }
+
+    /// A column with nothing but slack ahead of it catches going up and never going down — there is no
+    /// edge out there to collect.
+    @Test func shrinkingWithNothingCutCrossesNoEdge() {
+        #expect(pair.resizeDetent(ofColumn: 1, growing: false, viewportWidth: 1000, offset: 0,
+                                  centered: false) == nil)
+        #expect(pair.resizeDetent(ofColumn: 1, growing: true, viewportWidth: 1000, offset: 0,
+                                  centered: false) == 50)
+    }
+
+    /// Only the columns from `i` on move with its width, so a strip whose focused column is already cut
+    /// has nothing left to protect: the edges behind it are fixed, and growing crosses none of them.
+    @Test func growingAnAlreadyCutColumnCrossesNoEdge() {
+        // col1 [500,1450) runs 450 past a 1000-wide viewport.
+        let cut = Strip(columnWidths: [500, 950], gap: 0)
+        #expect(cut.resizeDetent(ofColumn: 1, growing: true, viewportWidth: 1000, offset: 0,
+                                 centered: false) == nil)
+        #expect(cut.resizeDetent(ofColumn: 1, growing: false, viewportWidth: 1000, offset: 0,
+                                 centered: false) == 450)   // …back to whole
+    }
+
+    /// Centred, both viewport edges sweep at half the width's speed, so the notch is the nearer of the
+    /// two, doubled. col1 [200,600) centred in 1000 looks from −100: col0's left edge is 100 away, col2's
+    /// right edge 40 past the far side and so already cut — col0 is what the press protects.
+    @Test func centredResizeCatchesOnTheNearerEdgeAtHalfSpeed() {
+        let centred = Strip(columnWidths: [200, 400, 340], gap: 0)
+        #expect(centred.resizeDetent(ofColumn: 1, growing: true, viewportWidth: 1000, offset: -100,
+                                     centered: true) == 200)
+        // Uncentred, the same strip only ever asks about its right edge, where col1's own is 300 short.
+        #expect(centred.resizeDetent(ofColumn: 1, growing: true, viewportWidth: 1000, offset: -100,
+                                     centered: false) == 300)
+    }
+
+    @Test func detentIsNilOffTheEndsOfTheStrip() {
+        #expect(pair.resizeDetent(ofColumn: 2, growing: true, viewportWidth: 1000, offset: 0,
+                                  centered: false) == nil)
+        #expect(Strip(columnWidths: [], gap: 0).resizeDetent(ofColumn: 0, growing: true,
+                                                             viewportWidth: 1000, offset: 0,
+                                                             centered: false) == nil)
+    }
 }
 
 /// Cyclable width/height presets — resolution against a working extent and wrap-around cycling.
