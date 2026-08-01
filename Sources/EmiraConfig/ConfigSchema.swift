@@ -160,7 +160,7 @@ extension Setting {
     /// no entries on purpose: they are the two sections the table cannot describe, and naming them here
     /// is what keeps a window's list of sections one list rather than "the schema's, plus two".
     public enum Section: String, CaseIterable, Sendable {
-        case layout, focus, animation, springs, keys, windowRules
+        case layout, focus, animation, springs, guide, keys, windowRules
 
         public var title: String {
             switch self {
@@ -168,6 +168,7 @@ extension Setting {
             case .focus:       return "Focus"
             case .animation:   return "Animation"
             case .springs:     return "Springs"
+            case .guide:       return "Guide"
             case .keys:        return "Keys"
             case .windowRules: return "Window rules"
             }
@@ -330,7 +331,7 @@ extension Setting.Kind {
 /// Every setting emira has, in the order it is read and the order it is shown.
 public enum ConfigSchema {
 
-    public static let settings: [Setting] = layout + focus + animation + springs
+    public static let settings: [Setting] = layout + focus + animation + springs + guide
 
     /// The setting spelled `key`, or `nil` when the schema has no such key — which the three sections
     /// it doesn't describe are also on the wrong side of: `[keys]` and `[[window-rules]]` are edited
@@ -398,6 +399,40 @@ public enum ConfigSchema {
                 label: "Cover mode",
                 help: "Whether a cover waits for every window's still, or goes up on the desktop's.",
                 section: .animation),
+    ]
+
+    /// The guide — six keys, of which the reducer reads one. `width` is a fraction and nothing else,
+    /// deliberately not `sizeList`'s dual "≤ 1 is a fraction, more is points" reading: a scalar version
+    /// of that unit would need a `Kind` case serving exactly one key, which the note on `Kind` names as
+    /// the sign the table has stopped paying for itself. `Bound` has floors and no ceilings, so a width
+    /// over 1 is clamped by the geometry rather than refused here — a stop, not a reversal.
+    private static let guide: [Setting] = [
+        Setting("guide.style", \.guide.style, .word,
+                label: "Guide style", help: "What the guide draws for each window, or off.",
+                section: .guide),
+
+        Setting("guide.position", \.guide.position, .word,
+                label: "Guide position",
+                help: "Which corner or edge of the working area the guide sits at.", section: .guide),
+
+        Setting("guide.width", \.guide.width, .number(greaterThan: 0, unit: .bare),
+                label: "Guide width",
+                help: "How wide the guide is at its longest, as a fraction of the working width.",
+                section: .guide),
+
+        Setting("guide.span", \.guide.span, .number(greaterThan: 0, unit: .bare),
+                label: "Guide span",
+                help: "The most screens of strip it shows at once; a shorter strip shrinks it.",
+                section: .guide),
+
+        Setting("guide.gap", \.guide.gap, .number(atLeast: 0, unit: .points),
+                label: "Guide gap",
+                help: "Points held clear between the guide and the working area's edge.",
+                section: .guide),
+
+        Setting("guide.duration", \.guide.duration, .number(atLeast: 0, unit: .seconds),
+                label: "Guide duration",
+                help: "Seconds the guide stays up after the last thing that moved.", section: .guide),
     ]
 
     /// The three spring tables, one sub-schema: they differ in which motion they drive and in nothing

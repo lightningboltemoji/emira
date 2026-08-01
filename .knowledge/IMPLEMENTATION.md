@@ -443,6 +443,17 @@ emira/
 │   │   │   │                        # synthesized shadow (CoverSurface)
 │   │   │   └── CompositingExecutor.swift # CoverSurface protocol + Executor routing by plane —
 │   │   │                            # three of them (presentation / capture / truth)
+│   │   ├── Guide/                   # the transient minimap: `emitLayerFrames`' projection at another
+│   │   │   ├── GuideModel.swift     # scale, drawn by a peripheral that *reads* state rather than
+│   │   │   │                        # receiving effects. `GuideModel` is the arithmetic — the
+│   │   │   │                        # projection, the nine anchors, the diffed trigger, the rounding
+│   │   │   │                        # and padding rules — with no AppKit in it; `GuidePanel` is a
+│   │   │   ├── GuidePanel.swift     # sibling of `Overlay`, one level above it, small and translucent,
+│   │   │   │                        # with its tile layers pooled by WindowId; `RoundedLayer` is the
+│   │   │   ├── RoundedLayer.swift   # four-radius shape those tiles are made of; `GuideIcons` is
+│   │   │   │                        # bundleId → CGImage for the daemon's life; `Guide` is the
+│   │   │   ├── GuideIcons.swift     # trigger, the dwell and the fade. The same split `MenuBar` keeps,
+│   │   │   └── Guide.swift          # so the interesting half is testable with no window server
 │   │   ├── Display/
 │   │   │   ├── FrameClock.swift     # tick-source protocol the Runtime gates (the testable seam)
 │   │   │   ├── DisplayLinkDriver.swift  # CADisplayLink (NSScreen.displayLink) -> Event.tick(dt)
@@ -523,9 +534,10 @@ emira/
 Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lightweight core.
 
 ### Pure core (`EmiraMotion` + `EmiraCore`)
-- **Motion: three animated quantities, and never three authorities on one number.** A critically-damped spring plus
+- **Motion: four animated quantities, and never two authorities on one number.** A critically-damped spring plus
   easing curves, and a scalar `Animator` whose `retarget()` preserves velocity and whose `nudge()` says "the thing
-  this is measured against jumped".
+  this is measured against jumped". Three of the four are the strip; the fourth is the guide's, and is the only one
+  nothing else derives from.
   - A **scroll** animates the viewport offset — one scalar, with every layer frame derived from it, so lockstep is
     structural rather than maintained, settle-detection is trivial and a retarget is one number. It is also the natural
     handle for continuous trackpad gestures (M7): the finger drives it directly.
@@ -552,6 +564,16 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
       of the edit so the scroll cancels out of them, which means a scroll can never show up as one. A departure at the
       far end of the strip displaces nobody — every survivor keeps its strip position, and the only thing that changed
       is that the strip is now a column shorter than the offset the viewport rests at.
+  - The **guide's focus ring** animates the fourth, and it is a structural edit's quantity used for something that is
+    not the strip: focus moves between two *different* windows, so there is no shared number to interpolate, and what
+    goes under the spring is a **displacement from the focused window's own frame**, decaying to zero
+    (`Motion.focusRing`). What makes it the odd one is that nothing derives from it, and three consequences follow, all
+    load-bearing. It is **not in `Motion.isSettled`**, which is the transition's close gate — a ring still travelling
+    would hold the cover up, a decoration blocking a cross-fade. It **never bumps `retargetGeneration`**, which arms the
+    shell's hold deadline — a focus change must not be able to extend a hung transition's hold. And it **survives
+    `closeTransition()`**, which drops the widths and the displacements, because the guide outlives the cover by design.
+    So the clock needs a second question: `Motion.needsFrames` is `isTransitioning || !isFocusRingSettled`, and the
+    `syncHold` half of the Runtime deliberately keeps reading the first term alone.
 - **Geometry & the strip:** infinite-axis coordinates, column widths/heights, inner gaps (`column-gap`,
   `window-gap`), **outer gaps** at the edges of the working area, and **struts** (reserve the menu-bar/notch region so
   tiled windows never sit under it).
@@ -1033,9 +1055,12 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     wrapping a `@MainActor` closure with a weak capture. Every event source — executor ack, AX observer, display link,
     socket — holds a sink, so nothing in the shell owns or outlives the pump, and the "cross a thread to get here,
     deliver on the main actor" AX boundary is expressed once, in one type.
-  - **The frame clock is gated on `motion.isTransitioning`, not on the cover being up** — start it when the session
+  - **The frame clock is gated on `motion.needsFrames`, not on the cover being up** — start it when the session
     opens, a few ms before the cover is raised, so the display link's spin-up overlaps the captures; the pre-cover
     ticks are inert in the reducer. `FrameClock` is a protocol so the pump stays framework-free and headless-testable.
+    The other term of `needsFrames` is the guide's focus ring, which travels with no cover and no session at all: a
+    focus change that scrolls nothing opens no transition, and the dwell outlives the cover. With the guide off no ring
+    is ever created, so the gate is the one it always was.
   - **The executor splits by plane, joined by a router.** `CompositingExecutor` sends the cover lifecycle to a
     `CoverSurface` and everything else onward, because the planes share no machinery — Core Animation on our own
     layers, main-thread and instant, versus AX Mach IPC into other processes, off-thread and slow. A batch is split
@@ -1351,6 +1376,79 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     rather than on a change, because `State` is large and comparing all of it at 120 Hz to save the observer a
     comparison is the wrong trade; **the observer diffs its own projection**, which is the file watcher's rule again —
     report a change in the *value*, not in the thing carrying it.
+- **Guide** — the transient minimap of the strip: a window rectangle per tile, drawn as its app's icon or as a kept
+  still, with an animating border tracking the focused window. Off by default; it appears above the cover, outlives
+  it, and fades on its own clock.
+  - **It is `Engine.emitLayerFrames`' projection at another scale**, and that is the whole design. The content is the
+    *same expression* the cover blits from — `workspaces.naturalFrames(scrollOffset:metrics:widths:)` at the live
+    offset and the live widths, unmodified — so three things arrive at no cost: off-screen columns (it is un-parked
+    geometry), workspace switches sliding vertically through the panel (`verticalOffset` is already in there), and
+    animated resizes and structural edits moving in lockstep with the real ones. The core gains no `Effect`, no
+    `Event` and no `Command` for any of it; the one thing it does gain is the ring's travel, which is a number no
+    existing quantity can carry.
+  - **The projection is one dimensionless number and one window of screen space.** `k = min(width, 1) / span`, clamped
+    so the ribbon fits one working area; the panel is `k · shown.width` across and `k · working.height` tall, so its
+    height is **derived, never configured** — the ribbon is exactly as tall as one desktop at scale `k`.
+  - **`span` is a ceiling, not a frame**, and that is the difference between a minimap and a viewfinder. The shown
+    window is the *focused strip's own extent*, unioned with the viewport so the screen you are on always fits inside
+    it, and only capped at `span` screens once the strip is longer than that. Two consequences, both the point: the
+    guide **shrinks** to what is actually on the strip rather than drawing a fixed frame with the ends empty, and it is
+    the **viewport indicator that travels** — at either end of a long strip the window pins to the content's edge and
+    the indicator slides to that end, while in the middle it centres and the tiles slide past it instead. A frame fixed
+    on the viewport can only ever show you the middle of itself, which at the ends of the strip is a ribbon that is
+    half empty on one side. The two regimes meet continuously, being a `min` inside a `max` rather than a branch.
+    The extent is the **focused** strip's, not every workspace's: a long strip on a workspace you cannot see would
+    otherwise size the guide for one you can.
+  - **Separation is a paint-time inset in guide points**, applied *after* projection, so it is constant whatever `k`
+    is and whatever the user's gaps are. `column-gap` defaults to 0, which would otherwise draw the minimap as one
+    undifferentiated bar — and re-deriving the frames with a second set of gaps would be a second geometry authority.
+  - **A tile carries no edge of its own; the boundary between two of them does.** Bordering each tile draws every
+    division twice and makes the guide a heap of chips rather than a picture of a strip. So the divisions are drawn
+    once each, as **separators** on the boundary itself — the midpoint of the gap, which is the shared edge exactly
+    when `column-gap` is 0 — and each runs the whole length of what it divides: a column boundary the full height of
+    the two columns it parts, a stack boundary the full width of its column. That length is the part a gap cannot
+    say. A gap between two stacked windows and a gap between two columns look identical; a rule that runs top to
+    bottom versus one that stops at a column's edge does not, so the set reads as the strip's structure rather than as
+    a row of ticks. They are derived from the focused strip's `ColumnLayout`s and the same `frames` everything else
+    comes from, and drawn as plain layers pooled by *count* — a boundary has no identity to key a pool on, and nothing
+    about a rectangle a fraction of a point wide wants a path.
+  - **A tile approaching the ribbon's corner rounds concentric with it.** The ribbon's curve is generous — that is what
+    makes the guide read as one object rather than as a rectangle with rectangles in it — and a tile pushed into the
+    end of the strip would otherwise be sliced square by the clip. So a corner `d` points inside the ribbon's is drawn
+    at `outer − d`, the one curve that holds a constant gap from it, decaying back to the tile's own radius and
+    expiring there; `d` is the *larger* of the two offsets, so being flush with an edge is not being in a corner. The
+    ring and the viewport go through the same rule, which makes a focused corner tile, its ring and the ribbon three
+    concentric curves. `CALayer.cornerRadius` is one number for all four corners, so everything inside the ribbon is a
+    path (`RoundedLayer`) — one path serving fill and stroke, inset by half the line width so the stroke lands inside
+    the bounds where a `borderWidth` would have been, and rebuilt only when the shape changes rather than when the tile
+    moves. The ribbon itself keeps its `cornerRadius`: its four corners are always equal, and `masksToBounds` is what
+    clips the tiles running off its ends.
+  - **A placeholder icon is padded by how much room its tile has for it.** Fitting a square icon by aspect alone hands
+    it the tile's whole short side, which in a tile anywhere near square is an icon at full height — a button, not a
+    hint of what the window is. The padding therefore tracks the tile's *squareness*: three fifths of the short side at
+    square, 85% of it at 2:1 or thinner, linear between. What is crunched is the aspect and not an axis, so a narrow
+    column and a window stacked in one are the same tile turned sideways. It is a fraction rather than a fixed inset
+    because tiles span an order of magnitude in size across `span`'s range.
+  - **It reads state rather than receiving effects**, so it hangs off `onStateChanged` beside the menu bar item and
+    diffs its own projection: `{ focused window, workspace, ordered column ids + their window ids, scroll *target* }`.
+    A target moves once per command where a current value moves 120 times a second, and an `axLanded` or a title change
+    must not summon a HUD. During a transition — and while the ring travels — that observer fires once per tick, which
+    is a free frame clock with no timer of the guide's own. The dwell re-arms on the same bit the clock runs on, so it
+    starts counting when everything stops; `DelayScheduler` has no cancellation, so it uses the generation-token idiom
+    `Overlay.fadeOut` already uses rather than growing a seam.
+  - **`preview` costs zero captures.** It draws the stills a cover already leaves behind (`SurfaceCache`), which is why
+    `keepsStills` is a settable bit rather than a second reading of `CoverMode`: two features want those stills and
+    neither is the other's. It reads them **size-agnostically**, where a cover may not — at a few percent of scale a
+    stale still is invisible and a hole is not, which is the exact reverse of the trade `CoverMode.immediate` makes.
+    A window nothing has filmed falls back to the icon placeholder, per tile.
+  - **It is made of our own windows, so the z-order is ours** — one level above the cover's `.floating`, and excluded
+    from every capture for free, since `SCKCapturer` filters the base by owning process rather than by naming the
+    overlay. Unlike the cover it is a translucent HUD, so it goes up at full alpha: a non-opaque window that covers
+    nothing whole can neither mark anything behind it occluded nor need the thousandth `Overlay` stops short by.
+  - **The ribbon is a layer, not the window's frame.** The guide's width follows the strip's, which changes once per
+    frame through an animated resize; a window resizing at 120 Hz spends a window-server round trip and a
+    backing-store reallocation on each one, where a layer frame is an assignment inside the `CATransaction` the blit
+    already opens. So the window is the working area and never moves, and everything that moves is inside it.
 - **Teardown** — the exit path. Silence every event source, place the whole desktop into the **quit cascade**
   (`PRINCIPLES.md` §4a), wait for the AX sets to land under a 1.5 s bound, then exit. One path, reached three ways
   (Ctrl-C, `kill`, the menu item), and one-shot — a second Ctrl-C must not cascade a cascade.
@@ -1497,7 +1595,15 @@ to cover and whether to animate, the shell for how long the finished cover takes
 durations, and the two word-valued keys that reach the *shell* alone rather than the reducer — `animation.window`,
 `"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`; one says what to paint where a still no
 longer fits the rect, the other what to paint before it has arrived, and the core's emitted geometry is identical
-under both settings of both). Struts are
+under both settings of both), and `[guide]` — `style` (`"off"` / `"placeholder"` / `"preview"`), `position` (nine
+anchors, since the guide is a wide short ribbon and an edge midpoint is as natural a rest as a corner), `width`,
+`span`, `gap` and `duration`. `guide.style` is the only one of the six the reducer reads, and it reads one bit of it:
+whether a focus change seeds a ring at all. `span` is a **ceiling** — the most strip the guide shows at once, not the
+amount it always shows — so `width` is how wide it is at that ceiling and a shorter strip draws a narrower ribbon.
+`width` is a **fraction only**, not the dual "≤ 1 is a fraction, more is
+points" reading `width-presets` has — a scalar version of that unit would need a `Kind` case serving exactly one key,
+which is the sign the table has stopped paying for itself — and since `Bound` has floors and no ceilings, an
+over-wide `width` is clamped by the geometry at render time rather than refused by the parser. Struts are
 deliberately *not* a
 key — they are read off `NSScreen.visibleFrame`; a user who wants a margin wants `outer-gap`, which is additive with
 them and measured inside them. Hot-reload emits `Event.configChanged(Config)` — the reducer re-lays-out in place.
@@ -1722,7 +1828,7 @@ is fully trustworthy before a single real window moves.
 | **M5** | Ergonomics → **lightweight-complete** | ConfigLoader + Hotkeys + Permissions onboarding + the structural commands (`move-window`, `consume-or-expel`), animated + the menu bar and the `.app` | **done — shippable here** |
 | **M6** | Full layout model | Virtual workspaces, per-monitor strips, window rules, monitor hotplug | the workspace model and its verbs are in, snapped; per-monitor strips and rules are not |
 | **M6.5** | Configuration surface | `EmiraConfig` as a target; a TOML document model that edits a file without reformatting it; the schema as data; `emira config`; the settings window (§10) | the target boundary, the document model, the schema table and `emira config` are in; the window is not |
-| **M7** | Deluxe *(optional)* | Continuous trackpad gestures, live-stream layers, focus-ring overlay, overview/zoom-out | later |
+| **M7** | Deluxe *(optional)* | Continuous trackpad gestures, live-stream layers, focus-ring overlay, overview/zoom-out | the guide is in — the focus ring and the overview are one thing at one scale, so both halves landed together, off by default; gestures and live layers are not |
 
 **M5 is the line.** A complete emira is M0–M5: it tiles, scrolls smoothly, is keyboard-driven, configurable, and
 installs cleanly. M6 makes it a daily driver; M7 is where we chase the last 10% of the feel. If we stop at M5 we still

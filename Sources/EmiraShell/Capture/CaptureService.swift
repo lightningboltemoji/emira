@@ -232,6 +232,15 @@ public final class CaptureService: CaptureStore {
     /// applies to `WindowAnimation`.
     public var mode: CoverMode
 
+    /// Whether a cover's stills are reduced and kept when it comes down. Two features want them and
+    /// neither is the other's: `CoverMode.immediate` raises over them, and `GuideStyle.preview` draws
+    /// its tiles from them. A settable bit rather than a second read of `mode`, so the daemon can name
+    /// the union of the two conditions in one place (`applyShellConfig`).
+    ///
+    /// Costs no captures either way — what it changes is whether a still is reduced on its way to being
+    /// freed, or simply freed.
+    public var keepsStills: Bool
+
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
 
@@ -294,12 +303,14 @@ public final class CaptureService: CaptureStore {
                 scheduler: any DelayScheduler,
                 cache: SurfaceCache = SurfaceCache(),
                 mode: CoverMode = .exact,
+                keepsStills: Bool = false,
                 deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.registry = registry
         self.capturer = capturer
         self.scheduler = scheduler
         self.cache = cache
         self.mode = mode
+        self.keepsStills = keepsStills
         self.deadline = deadline
     }
 
@@ -494,7 +505,7 @@ public final class CaptureService: CaptureStore {
     /// Detached: the reduction is Core Graphics work proportional to the scope, and a cover comes down
     /// during the next transition's animation whenever a key is held.
     private func keep(_ captures: [WindowId: CapturedSurface]) {
-        guard mode == .immediate, !captures.isEmpty else { return }
+        guard keepsStills, !captures.isEmpty else { return }
         let cache = self.cache
         Task.detached(priority: .utility) {
             let reduced = captures.compactMapValues { SurfaceCache.reduced($0) }

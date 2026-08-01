@@ -94,6 +94,33 @@ stiffness = 800
 # Must be at least 0.
 damping-ratio = 1
 
+[guide]
+
+# What the guide draws for each window, or off.
+# One of "off", "placeholder", "preview".
+style = "off"
+
+# Which corner or edge of the working area the guide sits at.
+# One of "top-left", "top-center", "top-right", "center-left", "center", "center-right",
+# "bottom-left", "bottom-center", "bottom-right".
+position = "top-right"
+
+# How wide the guide is at its longest, as a fraction of the working width.
+# Must be greater than 0.
+width = 0.2
+
+# The most screens of strip it shows at once; a shorter strip shrinks it.
+# Must be greater than 0.
+span = 3
+
+# Points held clear between the guide and the working area's edge.
+# In points, must be at least 0.
+gap = 24
+
+# Seconds the guide stays up after the last thing that moved.
+# In seconds, must be at least 0.
+duration = 0.7
+
 # The one open table: its names are chords you invent, and its values are commands spelled exactly
 # as the CLI spells them. Nothing is bound by default — registering a hotkey takes that chord from
 # every other app on the machine, which is also why `exec` is in the vocabulary: emira has to be

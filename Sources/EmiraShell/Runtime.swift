@@ -129,12 +129,14 @@ public final class Runtime {
     /// Start or stop the frame clock. The display link is the only always-on cost a window manager can
     /// accidentally pay, and an idle emira pays none of it.
     ///
-    /// Gated on `isTransitioning`, not `isCovered`: the session opens a few milliseconds before the cover
+    /// Gated on `needsFrames`, not `isCovered`: the session opens a few milliseconds before the cover
     /// is up and those first ticks are inert in the reducer, so starting early buys the display link its
-    /// spin-up time and the first covered frame lands on the next refresh.
+    /// spin-up time and the first covered frame lands on the next refresh. The other half of
+    /// `needsFrames` is the guide's focus ring, which travels with no cover at all and no session to
+    /// open — with the guide off no ring is ever created, so this is the gate it always was.
     private func syncClock() {
         guard let clock else { return }
-        let wanted = state.motion.isTransitioning
+        let wanted = state.motion.needsFrames
         guard wanted != clockRunning else { return }
         clockRunning = wanted                   // set first: a synchronous tick from `start` re-enters
         if wanted { clock.start(sink: sink) } else { clock.stop() }
@@ -146,7 +148,9 @@ public final class Runtime {
     /// genuinely stuck transition receives no commands, so re-arming weakens nothing.
     ///
     /// A redirect is `Motion.retargetGeneration`, not the scroll's destination — a resize or a structural
-    /// edit re-aims a live transition without moving the offset by a point.
+    /// edit re-aims a live transition without moving the offset by a point. Deliberately still
+    /// `isTransitioning` where the clock reads `needsFrames`: a focus ring must not be able to arm a
+    /// deadline, or a focus change would extend a hung transition's hold.
     private func syncHold() {
         guard let hold else { return }
         guard state.motion.isTransitioning else {

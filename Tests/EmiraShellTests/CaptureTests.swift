@@ -47,9 +47,11 @@ import EmiraCore
         }
 
         /// Hand batch `batch` one window's still, leaving it open. `size` is what the still was filmed
-        /// at, which is what a later stand-in has to match.
-        func send(_ id: WindowId, size: Size = Size(width: 100, height: 100), batch: Int? = nil) {
-            sink(batch)?.piece(.window(id, Self.surface(id, size)))
+        /// at, which is what a later stand-in has to match. `pixels` is how big the *image* is, which
+        /// almost nothing cares about — only the cache, which will not keep a still it cannot shrink.
+        func send(_ id: WindowId, size: Size = Size(width: 100, height: 100), pixels: Int = 1,
+                  batch: Int? = nil) {
+            sink(batch)?.piece(.window(id, Self.surface(id, size, pixels: pixels)))
         }
 
         /// Close batch `batch`: nothing further is coming.
@@ -77,17 +79,20 @@ import EmiraCore
 
         /// A distinct image per call, on purpose: a stand-in and the capture that replaces it are
         /// otherwise indistinguishable, and telling them apart is the whole of what `.immediate` does.
-        static func surface(_ id: WindowId, _ size: Size = Size(width: 100, height: 100))
-            -> CapturedSurface {
-            CapturedSurface(image: makeImage(), frame: Rect(x: Double(id.raw), y: 0,
-                                                           width: size.width, height: size.height))
+        static func surface(_ id: WindowId, _ size: Size = Size(width: 100, height: 100),
+                            pixels: Int = 1) -> CapturedSurface {
+            CapturedSurface(image: makeImage(side: pixels),
+                            frame: Rect(x: Double(id.raw), y: 0,
+                                        width: size.width, height: size.height))
         }
 
         static let image: CGImage = makeImage()
 
-        static func makeImage() -> CGImage {
-            let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8,
-                                    bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
+        /// One pixel by default: nothing in the capture plane reads these, and a still that cannot be
+        /// shrunk is one the cache declines to keep — which is the point for every test but one.
+        static func makeImage(side: Int = 1) -> CGImage {
+            let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
+                                    bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
             return context.makeImage()!
         }
@@ -782,6 +787,45 @@ import EmiraCore
         return CapturedSurface(image: context.makeImage()!,
                                frame: Rect(x: 0, y: 0, width: Double(width), height: Double(height)),
                                cornerRadius: radius)
+    }
+
+    // MARK: - Who wants a still kept
+
+    /// `keepsStills` is the union of the two features that want them — `CoverMode.immediate` raises
+    /// over them, `GuideStyle.preview` draws from them — and neither is the other's, so the bit is
+    /// settable rather than a second read of `mode`. Off, a cover's stills are simply freed.
+    @Test func aCoverKeepsItsStillsOnlyWhenSomethingWantsThem() async throws {
+        func kept(_ keepsStills: Bool) async throws -> Int {
+            let cache = SurfaceCache()
+            let (service, capturer, _, log) = CaptureServiceTests.service([1], cache: cache)
+            service.keepsStills = keepsStills
+            service.capture(windows: [WindowId(1)], feedback: log.sink)
+            capturer.sendBase()
+            capturer.send(WindowId(1), pixels: 40)       // big enough to survive the reduction
+            capturer.close()
+            service.discard(service.closeCover())        // the cross-fade landed; the pixels are freed
+            // The reduction is detached Core Graphics work, so this is the one wait in the suite: poll
+            // until the still lands, and give the negative case its own grace before concluding that
+            // nothing ever will.
+            for _ in 0..<(keepsStills ? 200 : 20) where cache.count == 0 {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            return cache.count
+        }
+        #expect(try await kept(true) == 1)
+        #expect(try await kept(false) == 0)
+    }
+
+    /// The guide asks for a still *whatever* size it was filmed at, where a cover may not. At a few
+    /// percent of scale staleness is invisible and a hole is not, so the trade the size match makes for
+    /// `CoverMode.immediate` reverses.
+    @Test func theSizeAgnosticReadIgnoresAMatchTheCoverWouldRefuse() {
+        let cache = SurfaceCache()
+        cache.keep([WindowId(1): Capturer.surface(WindowId(1), Size(width: 800, height: 600))])
+
+        #expect(cache.surface(for: WindowId(1), at: Size(width: 400, height: 600)) == nil)
+        #expect(cache.anySurface(for: WindowId(1)) != nil)
+        #expect(cache.anySurface(for: WindowId(2)) == nil)
     }
 
     // MARK: - Matching

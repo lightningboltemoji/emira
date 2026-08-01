@@ -56,6 +56,13 @@ public final class SurfaceCache {
         return kept
     }
 
+    /// The still kept for `id` whatever size it was filmed at — what the guide draws a `preview` tile
+    /// from. Deliberately *not* `surface(for:at:)`: that method's size match is load-bearing for
+    /// `CoverMode.immediate`, where a stale still stands in for the window at full size and must not be
+    /// allowed to pass for it. In a minimap at a few percent of scale the trade reverses — staleness is
+    /// invisible and a hole is not.
+    public func anySurface(for id: WindowId) -> CapturedSurface? { entries[id] }
+
     /// Take these stills — already reduced by `reduced(_:)` — as the stand-ins later covers may raise
     /// over, evicting oldest-first back under budget.
     public func keep(_ surfaces: [WindowId: CapturedSurface]) {

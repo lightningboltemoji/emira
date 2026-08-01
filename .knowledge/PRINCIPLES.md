@@ -273,7 +273,39 @@ frozen for the transition's duration (~150–400ms). Two ways to handle it:
   drag. Cost: one live stream per visible window (keep it to a handful) plus ~1 frame of stream latency — invisible
   under motion, erased on cross-fade. This is the true have-cake-and-eat-it path.
 
-### 4c. Interactive/continuous gestures
+### 4c. The guide: the same geometry, at another scale
+
+The strip is infinite and the screen is not, so the one thing the design owes the user is an answer to _where am I_.
+The guide is that answer, and it is deliberately not a new picture of the desktop: it is **the cover's own projection
+at another scale** — the same `naturalFrames` expression, at the same live scroll offset and the same in-flight column
+widths, drawn small. Nothing about it is a second model of the strip, which is why an off-screen column, a workspace
+switch and an animated resize all appear in it without any of them being implemented twice.
+
+**It shows the strip, and the marker is what moves.** A minimap whose frame is fixed on the viewport answers the wrong
+question — it can only ever show you the middle of itself, so walking to either end of the strip leaves a ribbon half
+empty on one side, and the thing you are trying to locate never moves. So the guide is as long as the strip is: its
+configured span is a **ceiling**, a strip shorter than it draws a shorter guide, and a longer one is followed with the
+viewport marker travelling to whichever end you are at. The two are the same rule — the shown window is the strip's
+extent, clamped — and it is the marker, not the guide, that tells you where you are.
+
+Three further things it is, stated in the order they matter:
+
+1. **It lives _above_ the cover, and outside it.** A cover is pixels of the desktop as it was; the guide is a
+   statement about where the desktop is going, so it must not be captured into the thing it describes. It is made of
+   **our own windows**, so the z-order is ours to assert — one level above the cover — and the base capture excludes
+   every window this process owns, so being left out of the picture costs nothing.
+2. **It outlives the transition and fades on its own clock.** A focus change that scrolls nothing raises no cover at
+   all, and the guide still has something to say about it; a dwell that ended with the cross-fade would be a HUD that
+   is only ever visible while something else is moving. So its lifetime is its own, and the only thing it takes from
+   the core is a fourth animated quantity — the focus ring's travel, which is a number no existing one can carry.
+3. **It is a peripheral that reads state, never one that receives effects.** Nothing about drawing a minimap changes
+   what the desktop is, so it must not enter the effect vocabulary — the same judgement the menu bar item and
+   `dumpState` got. What it costs the core is a config field it reads one bit of, and a clock gate widened to admit a
+   ring travelling with no cover up.
+
+Off by default, because a window manager must not put a HUD on somebody's screen they did not ask for.
+
+### 4d. Interactive/continuous gestures
 
 The layered reconstruction (§4b) makes continuous trackpad scrolling tractable: raise it on gesture-begin, move the
 window layers with the finger, reconcile the real windows on release, cross-fade back. Motion is always smooth; the
@@ -288,7 +320,7 @@ only open question is content freshness during the drag:
 
 Start with **static layers, reconcile-on-release**; escalate to live layers if the freeze is noticeable.
 
-### 4d. Resize
+### 4e. Resize
 
 Real size is app-bound. Set it via AX; if the reflow is visibly janky, cross-fade a scaled screenshot over it until
 the app redraws. Accept a brief soft frame on heavy apps.

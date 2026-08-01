@@ -74,7 +74,36 @@ public struct State: Sendable, Equatable, Codable {
 public enum Engine {
 
     /// Fold one `Event` into a new `State`, emitting the `Effect`s the shell should run.
+    ///
+    /// The fold itself is `fold(_:_:)`; this wraps it with the one thing focus cannot report for
+    /// itself. Focus reaches `World.setFocus` from a dozen paths — a command, a system event, a
+    /// workspace switch, a departure's refocus, an arrival, boot — and the ring's travel is a
+    /// *difference between two states*, which no single one of those paths can see.
     public static func reduce(_ state: State, _ event: Event) -> (State, [Effect]) {
+        var (next, effects) = fold(state, event)
+        trackFocusRing(from: state, into: &next)
+        return (next, effects)
+    }
+
+    /// Seed the guide's focus ring when focus moved between two windows on the strip.
+    ///
+    /// Both frames are read at `scrollOffset: 0`, so the scroll cancels out of the delta — the same
+    /// two-reads-one-offset rule `finishStructuralEdit` runs on. The `!=` comparison comes first, so the
+    /// two `naturalFrames` calls happen only when focus actually moved, never per tick.
+    private static func trackFocusRing(from before: State, into after: inout State) {
+        guard after.config.guide.style != .off else { return after.motion.clearFocusRing() }
+        guard before.world.focusedWindow != after.world.focusedWindow else { return }
+        guard after.world.focusedWindow != nil else { return after.motion.clearFocusRing() }
+        guard let metrics = after.metrics(), let old = before.metrics() else { return }
+        let now = after.workspaces.naturalFrames(scrollOffset: 0, metrics: metrics)
+        // A float, or a window off the strip entirely, has no frame to ring and nothing to travel to.
+        guard let arriving = after.world.focusedWindow.flatMap({ now[$0] }) else { return }
+        let was = before.workspaces.naturalFrames(scrollOffset: 0, metrics: old)
+        guard let leaving = before.world.focusedWindow.flatMap({ was[$0] }) else { return }
+        after.motion.nudgeFocusRing(by: leaving.delta(from: arriving), params: after.config.moveSpring)
+    }
+
+    private static func fold(_ state: State, _ event: Event) -> (State, [Effect]) {
         var s = state
         switch event {
 
@@ -88,8 +117,13 @@ public enum Engine {
 
         // MARK: The frame clock
         //
-        // Ticks fire only while a transition is open, and are inert until the cover is raised.
+        // Ticks fire while a transition is open *or* the guide's focus ring is travelling, and are
+        // inert for the strip until the cover is raised.
         case .tick(let dt):
+            // The ring runs outside a cover, so it advances ahead of the gate that makes a pre-cover
+            // tick inert — and never inside `advance`, which must not move the strip during a capture
+            // head.
+            s.motion.advanceFocusRing(by: dt)
             guard s.motion.isCovered else { return (s, []) }
             // Settled already ⇒ advancing moves nothing and the frame would repeat the last one. That is
             // every tick of a `snap` transition, which has no animator to advance, and the tail of a

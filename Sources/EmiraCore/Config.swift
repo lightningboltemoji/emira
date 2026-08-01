@@ -68,6 +68,83 @@ public enum SystemFocusEvents: String, Sendable, Equatable, Codable, CaseIterabl
     case ignore
 }
 
+/// What the guide draws for each window on the strip, or nothing at all. A ladder like
+/// `TransitionMode`'s: each rung asks the machine for strictly more, and the top one asks for the same
+/// thing a cover does — captured pixels — at a cost of zero extra captures, since it only keeps what a
+/// cover was going to discard.
+public enum GuideStyle: String, Sendable, Equatable, Codable, CaseIterable {
+    /// No guide. Nothing is drawn, no panel is shown, and no focus ring is ever created.
+    case off
+    /// A rectangle per window carrying its app's icon — the arrangement, with no window content.
+    case placeholder
+    /// The window's own last still where there is one, the icon placeholder where there isn't.
+    case preview
+}
+
+/// Which corner or edge of the working area the guide sits at. Nine anchors rather than four corners:
+/// the guide is a wide, short ribbon, so the edge midpoints are as natural a resting place as a corner.
+public enum GuidePosition: String, Sendable, Equatable, Codable, CaseIterable {
+    case topLeft = "top-left", topCenter = "top-center", topRight = "top-right"
+    case centerLeft = "center-left", center, centerRight = "center-right"
+    case bottomLeft = "bottom-left", bottomCenter = "bottom-center", bottomRight = "bottom-right"
+
+    /// Where along each axis, as a fraction of the free space: 0 is the leading edge, 1 the trailing.
+    public var fractions: (x: Double, y: Double) {
+        switch self {
+        case .topLeft:      return (0, 0)
+        case .topCenter:    return (0.5, 0)
+        case .topRight:     return (1, 0)
+        case .centerLeft:   return (0, 0.5)
+        case .center:       return (0.5, 0.5)
+        case .centerRight:  return (1, 0.5)
+        case .bottomLeft:   return (0, 1)
+        case .bottomCenter: return (0.5, 1)
+        case .bottomRight:  return (1, 1)
+        }
+    }
+}
+
+/// The guide's settings. Pure data, read by the shell — the reducer reads exactly one field of it,
+/// `style != .off`, which decides whether a focus ring is created at all; the other five never enter
+/// `reduce`, so no setting here can change a frame of emitted geometry.
+public struct GuideSettings: Sendable, Equatable, Codable {
+    /// What the guide draws for each window, or off.
+    public var style: GuideStyle
+    /// Which corner or edge of the working area it sits at.
+    public var position: GuidePosition
+    /// How wide the guide is when it is showing its full `span`, as a fraction of the working width. A
+    /// shorter strip draws a proportionally narrower ribbon. Its *height* is derived, never configured
+    /// — the ribbon is exactly as tall as one desktop at the scale `width`/`span` implies.
+    public var width: Double
+    /// The most screens of strip the guide shows at once — a ceiling, not a frame. A strip shorter than
+    /// this is drawn whole and the guide shrinks to it; a longer one is followed, the viewport
+    /// indicator travelling to either end rather than the guide's middle standing in for the screen.
+    public var span: Double
+    /// Points held clear between the guide and the working area's edge.
+    public var gap: Double
+    /// Seconds the guide stays up after the last thing that moved.
+    public var duration: Double
+
+    public init(style: GuideStyle = .off, position: GuidePosition = .topRight, width: Double = 0.2,
+                span: Double = 3, gap: Double = 24, duration: Double = 0.7) {
+        self.style = style
+        self.position = position
+        self.width = width
+        self.span = span
+        self.gap = gap
+        self.duration = duration
+    }
+
+    /// The projection's whole scale factor: guide points per strip point, and the only number the
+    /// geometry needs. Clamped so the ribbon is never wider or taller than one working area — the
+    /// schema's bounds are floors only, so an over-wide `width` or an under-one `span` is stopped here
+    /// by the geometry rather than refused by the parser. A stop, not a reversal.
+    public var scale: Double {
+        guard span > 0 else { return 0 }
+        return min(min(width, 1) / span, 1)
+    }
+}
+
 /// The pure configuration values the reducer reads.
 public struct Config: Sendable, Equatable, Codable {
     /// The column width presets `cycleWidth` steps through. A column stores an *index* into this
@@ -124,6 +201,9 @@ public struct Config: Sendable, Equatable, Codable {
     /// Seconds a transition may stay under its cover before the truth is revealed regardless. Read by
     /// the shell's hold timer, not the reducer — the core owns no wall clock.
     public var holdTimeout: Double
+    /// The transient minimap of the strip. The reducer reads `style != .off` and nothing else: that one
+    /// bit decides whether a focus change seeds `Motion.focusRing`, and the rest is the shell's.
+    public var guide: GuideSettings
     /// The key combinations bound to commands (`[keys]` in the file). Read by the shell's hotkey
     /// source, not the reducer; what reaches the core is `Event.command`, identical to the CLI's.
     /// Empty by default: a window manager must not confiscate a keystroke nobody asked it to.
@@ -150,6 +230,7 @@ public struct Config: Sendable, Equatable, Codable {
         coverMode: CoverMode = .exact,
         transitionMode: TransitionMode = .smooth,
         holdTimeout: Double = 1.0,
+        guide: GuideSettings = GuideSettings(),
         keys: [KeyBinding] = [],
         windowRules: [WindowRule] = []
     ) {
@@ -169,6 +250,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.coverMode = coverMode
         self.transitionMode = transitionMode
         self.holdTimeout = holdTimeout
+        self.guide = guide
         self.keys = keys
         self.windowRules = windowRules
     }

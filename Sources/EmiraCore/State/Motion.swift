@@ -154,6 +154,10 @@ public struct Motion: Sendable, Equatable, Codable {
     /// width, not four rects per window, is what keeps every column to its right sliding in lockstep by
     /// derivation. Presentation plane only: only the owning app can make resized pixels.
     public private(set) var columnWidths: [ColumnId: Animator]
+    /// The guide's focus ring, as a displacement from the focused window's frame, decaying to zero. The
+    /// fourth animated quantity, and the only one nothing else derives from — so it is deliberately
+    /// outside `isSettled` and never touches `retargetGeneration`.
+    public private(set) var focusRing: RectAnimator?
     /// The in-flight transition, or `nil` in idle steady state (no cover, no ticks).
     public private(set) var transition: TransitionSession?
     /// Monotonic `LayerId` watermark — the next raw id to mint. Never rewinds.
@@ -167,6 +171,7 @@ public struct Motion: Sendable, Equatable, Codable {
         self.viewportOffset = Animator(value: viewportOffset, params: params)
         self.windowAnimators = [:]
         self.columnWidths = [:]
+        self.focusRing = nil
         self.transition = nil
         self.nextLayerRaw = 1
         self.retargetGeneration = 0
@@ -219,6 +224,11 @@ public struct Motion: Sendable, Equatable, Codable {
             && windowAnimators.values.allSatisfy(arrived)
             && columnWidths.values.allSatisfy(arrived)
     }
+
+    /// Whether the frame clock should run: a transition to animate, or a focus ring still travelling
+    /// with no cover up. Not `isSettled`, which answers the different question `isReadyToClose` asks —
+    /// a ring is a guide decoration and must never hold a cover in the air.
+    public var needsFrames: Bool { isTransitioning || !isFocusRingSettled }
 
     // MARK: - Viewport scroll
 
@@ -294,6 +304,41 @@ public struct Motion: Sendable, Equatable, Codable {
     /// away mid-resize) and nothing will mention that `ColumnId` again, which is why
     /// `LayoutEdit.destroyedColumn` is reported at all. Same hygiene as `removeWindowAnimator`.
     public mutating func removeColumnWidthAnimator(_ id: ColumnId) { columnWidths[id] = nil }
+
+    // MARK: - The focus ring (the guide's travel, in flight)
+    //
+    // Structurally `windowAnimators`, and for the identical reason: focus moves between two *different*
+    // windows, so there is no shared number to interpolate and the destination must stay derived. Three
+    // things keep it out of everything else's way — it is not in `isSettled` (the transition's close
+    // gate), it never bumps `retargetGeneration` (the shell's hold deadline), and `closeTransition`
+    // leaves it alone, because it outlives the cover by design.
+
+    /// Displace the ring by `delta` and let it decay back to the focused window's own frame — or add to
+    /// an in-flight displacement, keeping its velocity, since a refocus lands mid-flight routinely.
+    public mutating func nudgeFocusRing(by delta: Rect, params: SpringParams) {
+        if focusRing != nil {
+            focusRing?.nudge(by: delta)
+        } else {
+            focusRing = RectAnimator(displacement: delta, params: params)
+        }
+    }
+
+    /// Advance the ring alone, off `Event.tick`. Separate from `advance(by:)`, which must not move the
+    /// strip during a transition's capture head — where the ring is nonetheless travelling.
+    public mutating func advanceFocusRing(by dt: Double) { focusRing?.advance(by: dt) }
+
+    /// Drop the ring: the guide is off, or focus has left the strip and there is nothing to ring.
+    public mutating func clearFocusRing() { focusRing = nil }
+
+    /// The ring's offset from the focused window's frame at this instant, or `.zero` — so the guide can
+    /// add it blindly.
+    public var focusRingDisplacement: Rect { focusRing?.current ?? .zero }
+
+    /// Whether the ring has arrived and stopped. Deliberately *not* part of `isSettled`.
+    var isFocusRingSettled: Bool {
+        focusRing?.isSettled(epsilon: Self.settleEpsilon,
+                             velocityEpsilon: Self.settleVelocityEpsilon) ?? true
+    }
 
     // MARK: - Transition session (the ephemeral cover lifecycle)
 
@@ -382,6 +427,7 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Tear down the session, drop all independent animators, and snap the viewport to its target so
     /// resting state matches the revealed truth. Widths and displacements are *dropped*, not snapped:
     /// their resting values are what `Layout` already derives, so keeping either is a staler authority.
+    /// The focus ring is neither — it belongs to the guide, which outlives the cover.
     public mutating func closeTransition() {
         guard transition != nil else { return }
         viewportOffset.snap(to: viewportOffset.target)

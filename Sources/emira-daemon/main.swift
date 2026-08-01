@@ -169,6 +169,18 @@ let capture = CaptureService(
     cache: surfaceCache)
 let reconstruction = Reconstruction(overlay: overlay, store: capture)
 
+// MARK: - The guide
+//
+// The same display the overlay and the strip use — it reads the core's own projection at another scale,
+// so a second display would need a second strip before it needed a second guide.
+
+let guide = Guide(panel: GuidePanel(screen: screen, geometry: geometry, insets: struts),
+                  icons: GuideIcons(),
+                  scheduler: DispatchScheduler(),
+                  // A `preview` tile draws whatever a cover last left behind, at any size — see
+                  // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to its icon.
+                  still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
+
 // MARK: - The config, finished
 
 /// The two values a config file may not decide: the struts (the same number must reach the core and
@@ -207,16 +219,20 @@ launcher.onOutcome = { log("exec: \($0)") }
 let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
                                    launcher: launcher)
 
-/// The three config values that reach the shell rather than the reducer — the core's emitted geometry is
-/// identical under every setting of all three. One function, called at boot and again on every reload, so
+/// The config values that reach the shell rather than the reducer — the core's emitted geometry is
+/// identical under every setting of them. One function, called at boot and again on every reload, so
 /// that the shell and the reducer read the same post-`applyEnvironment` value by construction.
 @MainActor func applyShellConfig(_ config: Config) {
     reconstruction.animation = config.windowAnimation
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
-    // Leaving `.immediate` retires the stills it kept, which would otherwise sit there until the budget
-    // collected them. A no-op at boot, where there is nothing kept yet.
-    if config.coverMode == .exact { surfaceCache.removeAll() }
+    // Two features want the stills a cover leaves behind and neither is the other's: `immediate` raises
+    // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
+    let keepsStills = config.coverMode == .immediate || config.guide.style == .preview
+    capture.keepsStills = keepsStills
+    // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte
+    // budget collects them. A no-op at boot, where there is nothing kept yet.
+    if !keepsStills { surfaceCache.removeAll() }
 }
 
 applyShellConfig(config)
@@ -254,9 +270,16 @@ let runtime = Runtime(
     // An AX write's landing depends on another process's run loop; this bounds the wait.
     hold: DispatchHoldTimer())
 
-// Once per drain, not once per event; `MenuBarItem` diffs, so a scroll costs no redraws.
+// Once per drain, not once per event, and one closure for both peripherals: they display state rather
+// than change it, and a per-event observer would show them states the user never sees. `MenuBarItem`
+// diffs and `Guide` diffs its own trigger, so a scroll costs neither of them a redraw.
 menuBar.workspace = runtime.state.workspaces.focused
-runtime.onStateChanged = { state in menuBar.workspace = state.workspaces.focused }
+// Primed, not shown: the guide's first reaction should be the boot scan's arrivals, not its own birth.
+guide.prime(runtime.state)
+runtime.onStateChanged = { state in
+    menuBar.workspace = state.workspaces.focused
+    guide.stateChanged(state)
+}
 
 // MARK: - The keyboard
 //
