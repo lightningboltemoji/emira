@@ -60,13 +60,13 @@ public final class Reconstruction: CoverSurface {
         CATransaction.commit()
     }
 
-    public func raiseCover(_ bindings: [LayerBinding]) {
+    public func raiseCover(_ bindings: [LayerBinding], onScreen: @escaping @MainActor () -> Void) {
         discardLayers()
         overlay.setBase(store.base)
         // The raise must be atomic — base swap, layer creation and initial placement reach the window
         // server together, inside the transaction `CompositingExecutor` has already opened.
         addLayers(bindings)                          // array order is z-order, bottom→top
-        overlay.raise()
+        overlay.raise(onScreen: onScreen)
     }
 
     public func extendCover(_ bindings: [LayerBinding]) {

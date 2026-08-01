@@ -248,10 +248,9 @@ public enum Engine {
                 guard let session = s.motion.transition else { return (s, []) }
                 var effects: [Effect] = [.beginTransition(session.bindings)]
                 effects += elevationEffects(s)      // z-order the bindings alone can't express
-                // Blit before teleporting (one `CATransaction`): a layer starts at its capture-time
-                // frame, which is wrong for a column captured at its park sliver.
+                // A layer starts at its capture-time frame, which is wrong for a column captured at its
+                // park sliver. Presentation only: the reals move at `coverOnScreen`.
                 effects += emitLayerFrames(s)
-                effects += teleportBehindCover(&s, initial: true)
                 return (s, effects)
             }
             if s.motion.isReadyToExtend {
@@ -271,10 +270,19 @@ public enum Engine {
             guard let layer = s.motion.layerId(for: id) else { return (s, []) }
             return (s, [.refreshLayer(layer)])
 
+        case .coverOnScreen:
+            // The cover is where the eye can see it, so the reals may move. Gated on the phase
+            // advancing rather than on `isCovered`: this teleport *replaces* the landing wait, so a
+            // repeated report would free sets still in flight.
+            guard s.motion.phase == .raising else { return (s, []) }
+            s.motion.confirmCover()
+            let effects = teleportBehindCover(&s, initial: true)
+            return (s, effects)
+
         case .coverUnavailable:
             // No pixels from the capture plane; raising anyway would black out the display. Nothing has
             // moved yet, so abandon and snap.
-            guard s.motion.isTransitioning, !s.motion.isCovered else { return (s, []) }
+            guard s.motion.phase == .capturing else { return (s, []) }
             s.motion.abortTransition()          // snaps the viewport to its target
             let effects = reassertTruthPlane(&s)
             return (s, effects)
@@ -305,9 +313,9 @@ public enum Engine {
             // Bound the wait: close regardless, letting unlanded AX sets finish in the open.
             guard s.motion.isTransitioning else { return (s, []) }
             s.motion.closeTransition()
-            // A session that timed out *before* its cover went up never moved a window, and closing it
-            // snapped the viewport to a destination nothing has travelled to. Free for a covered session,
-            // which teleported at the raise and is already there.
+            // A session that timed out *before* its cover reached the glass never moved a window, and
+            // closing it snapped the viewport to a destination nothing has travelled to. Free for a
+            // covered session, which teleported at `coverOnScreen` and is already there.
             let effects = reassertTruthPlane(&s)
             return (s, [.endTransition] + effects)
 
@@ -1555,14 +1563,15 @@ public enum Engine {
     /// one entry point, since a re-place is asked for by events that arrive on their own schedule.
     ///
     /// Only **idle** places at `viewportOffset.current`. **Covered**, that number is the spring's, fed to
-    /// the layers; the reals went to the scroll's end at the raise, so `teleportBehindCover` is the caller
-    /// that knows where they belong (and is idempotent — usually it emits nothing). **Capturing**, no real
-    /// window has moved yet and none may: the raise's own teleport reads whatever this would have written.
+    /// the layers; the reals went to the scroll's end at `coverOnScreen`, so `teleportBehindCover` is the
+    /// caller that knows where they belong (and is idempotent — usually it emits nothing). **Capturing**
+    /// and **raising**, no real window has moved yet and none may — there is nothing on the glass to hide
+    /// a write — so the wait's own teleport reads whatever this would have written.
     private static func reassertTruthPlane(_ s: inout State) -> [Effect] {
         switch s.motion.phase {
-        case .idle:       return placeAtRest(&s)
-        case .capturing:  return []
-        case .covered:    return teleportBehindCover(&s)
+        case .idle:                  return placeAtRest(&s)
+        case .capturing, .raising:   return []
+        case .covered:               return teleportBehindCover(&s)
         }
     }
 

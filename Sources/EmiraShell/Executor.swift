@@ -100,17 +100,20 @@ public final class MockExecutor: Executor {
         case .focus(let id):
             feedback(.focusChanged(id, origin: .ours))
 
+        // The cover is on the glass, instantly — a display an infinitely fast system composes on.
+        case .beginTransition:
+            feedback(.coverOnScreen)
+
         // The cross-fade finished and the cover is down.
         case .endTransition:
             feedback(.crossfadeDone)
 
-        // No reply by contract: raising the cover is synchronous, layer blits are writes the core already
-        // knows it made, and a raise has no observable completion. `closeWindow` is unacked for a
-        // different reason — a real app may refuse, so simulating a destroy here would be inventing the
-        // one fact only the app can supply. `exec` for a third: a child process is not a desktop fact,
-        // and this being a *record* is what keeps a replayed session log from spawning anything.
-        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise,
-             .closeWindow, .exec:
+        // No reply by contract: layer blits are writes the core already knows it made, and growing or
+        // re-stacking a cover has no observable completion. `closeWindow` is unacked for a different
+        // reason — a real app may refuse, so simulating a destroy here would be inventing the one fact
+        // only the app can supply. `exec` for a third: a child process is not a desktop fact, and this
+        // being a *record* is what keeps a replayed session log from spawning anything.
+        case .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise, .closeWindow, .exec:
             break
         }
     }

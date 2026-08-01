@@ -17,9 +17,11 @@ public protocol CoverSurface: AnyObject {
 
     func endFrame()
 
-    /// Build the reconstruction from the core's ordered bindings (z-order bottom→top) and show it.
-    /// The cover is opaque from this moment, so the real windows may teleport behind it.
-    func raiseCover(_ bindings: [LayerBinding])
+    /// Build the reconstruction from the core's ordered bindings (z-order bottom→top) and show it. The
+    /// cover is opaque from this moment but not yet *visible*: `onScreen` is the report that the display
+    /// has shown it, which is what entitles the real windows to teleport behind it. At most once per
+    /// raise, and never for a cover replaced or faded before it arrives.
+    func raiseCover(_ bindings: [LayerBinding], onScreen: @escaping @MainActor () -> Void)
 
     /// Add layers to a cover that is already up, for windows a retarget pulled into scope — above
     /// everything already there. No-op for a binding already present.
@@ -162,7 +164,7 @@ public final class CompositingExecutor: Executor {
         for effect in effects {
             switch effect {
             case .beginTransition(let bindings):
-                surface.raiseCover(bindings)
+                surface.raiseCover(bindings) { feedback(.coverOnScreen) }
                 framesBlitted = 0
                 coverRaisedAt = Date()
             case .extendCover(let bindings):

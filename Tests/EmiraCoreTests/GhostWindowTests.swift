@@ -37,6 +37,7 @@ import EmiraMotion
             for effect in queue {
                 switch effect {
                 case .capture(let w, _): feedback.append(.captureReady(w))
+                case .beginTransition: feedback.append(.coverOnScreen)
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 default: continue
                 }
@@ -334,10 +335,12 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .command(.focus(.left)))
         #expect(s.motion.isTransitioning, "a scroll transition is open")
 
-        // Raise the cover so the session is past `.capturing` — the state a real ⌘N lands in.
+        // Raise the cover and put it on screen, so the session is past `.capturing` and `.raising` —
+        // the state a real ⌘N lands in.
         for id in fx.compactMap({ if case .capture(let w, _) = $0 { return w }; return nil }) {
             (s, _) = Engine.reduce(s, .captureReady(id))
         }
+        (s, _) = Engine.reduce(s, .coverOnScreen)
         #expect(s.motion.isCovered)
 
         // A new window is adopted while it runs.

@@ -27,24 +27,30 @@ public struct LayerBinding: Sendable, Equatable, Codable {
 public enum MotionPhase: Sendable, Equatable {
     /// No session, so a placement pass owns the reals and writes them at `viewportOffset.current`.
     case idle
-    /// A session is open and its cover is not up. No real window has moved, and none may: nothing is
+    /// A session is open and no cover has been built. No real window has moved, and none may: nothing is
     /// over the desktop to hide a write.
     case capturing
-    /// The cover is up, so `teleportBehindCover` owns the reals and writes them at the scroll's end;
-    /// `viewportOffset.current` is the spring's, feeding the layers.
+    /// The cover has been handed to the shell and is on its way to the glass. Still nothing may move —
+    /// a committed cover is not a visible one (see `confirmCover`).
+    case raising
+    /// The cover is up *on screen*, so `teleportBehindCover` owns the reals and writes them at the
+    /// scroll's end; `viewportOffset.current` is the spring's, feeding the layers.
     case covered
 }
 
 /// The ephemeral cover lifecycle for one transition. Data + narrow mutators (all total); the reducer
-/// drives the phase progression `.capturing` (captures requested, cover not raised, so no real window has
-/// moved) → `.covered` (cover up, reals teleported behind it, layers sliding each tick until the animators
-/// settle *and* the scoped `axLanded`s arrive). The scoped set `windows` is the union of "start *or* end
-/// frame intersects the viewport": exactly the windows that must be captured and whose AX landing gates
-/// the close. Park→park moves never come into view, so they are out of scope and block nothing.
+/// drives the phase progression `.capturing` (captures requested, no cover built, so no real window has
+/// moved) → `.raising` (cover built and handed over, still nothing moved) → `.covered` (cover on the
+/// glass, reals teleported behind it, layers sliding each tick until the animators settle *and* the
+/// scoped `axLanded`s arrive). The scoped set `windows` is the union of "start *or* end frame intersects
+/// the viewport": exactly the windows that must be captured and whose AX landing gates the close.
+/// Park→park moves never come into view, so they are out of scope and block nothing.
 public struct TransitionSession: Sendable, Equatable, Codable {
-    /// Which lifecycle phase the session is in; advances `.capturing → .covered` once, at `raiseCover`.
+    /// Which lifecycle phase the session is in; advances `.capturing → .raising` at `raiseCover` and
+    /// `.raising → .covered` at `confirmCover`, each once.
     public enum Phase: Sendable, Equatable, Codable {
         case capturing
+        case raising
         case covered
     }
 
@@ -99,7 +105,7 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     }
 
     mutating func bindLayers(_ ids: [WindowId: LayerId]) {
-        guard phase == .covered else { return }
+        guard hasLayers else { return }
         layerIds.merge(ids) { _, new in new }
     }
 
@@ -121,13 +127,22 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     mutating func raiseCover(layerIds: [WindowId: LayerId]) {
         guard phase == .capturing else { return }
         self.layerIds = layerIds
-        self.phase = .covered
+        self.phase = .raising
+    }
+
+    mutating func confirmCover() {
+        guard phase == .raising else { return }
+        phase = .covered
     }
 
     /// Every capture is in — the gate for raising the cover.
     public var captureComplete: Bool { pendingCaptures.isEmpty }
     /// Every scoped AX set landed — the settle-gated gate for closing the transition.
     public var landingComplete: Bool { awaitingLanding.isEmpty }
+    /// Whether the layer tree exists — the presentation plane's half of the phase, and the one gate the
+    /// cover's *growth* reads. Spelled as the phases that have a tree rather than as "not `.capturing`",
+    /// so a phase added later has to say for itself which side it is on.
+    public var hasLayers: Bool { phase == .raising || phase == .covered }
 
     /// The ordered bindings the cover is built from. Empty until `raiseCover`; z-order follows `windows`.
     public var bindings: [LayerBinding] {
@@ -348,6 +363,7 @@ public struct Motion: Sendable, Equatable, Codable {
         switch transition?.phase {
         case .none:       return .idle
         case .capturing:  return .capturing
+        case .raising:    return .raising
         case .covered:    return .covered
         }
     }
@@ -355,9 +371,15 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Whether a transition session is open (cover in flight). `false` ⇒ idle steady state.
     public var isTransitioning: Bool { phase != .idle }
 
-    /// Whether the cover is *raised*, as distinct from the brief pre-cover `.capturing`. The reducer gates
-    /// the per-frame layer animation and the interrupt re-teleport on this: no cover ⇒ nothing to blit.
+    /// Whether the cover is up **on screen**. The reducer gates the per-frame layer animation and every
+    /// teleport on this: a cover that has been built but not yet presented hides nothing, so a window
+    /// moved under it moves in the open.
     public var isCovered: Bool { phase == .covered }
+
+    /// Whether the cover's layers exist — `.raising` or `.covered`. What the *presentation* plane asks,
+    /// as against `isCovered`'s question about the truth plane: a newcomer swept in during the raise owes
+    /// its layer either way, and there is no later event that would come back for it.
+    public var hasLayers: Bool { transition?.hasLayers ?? false }
 
     /// Open a transition over the scoped, ordered window set. One session at a time — an interrupt
     /// retargets the open one rather than opening a second. `elevated` names the window to draw on top.
@@ -387,7 +409,7 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Mint a `LayerId` for every scoped window a raised cover still lacks one for, and return the new
     /// bindings for `Effect.extendCover`.
     public mutating func extendCover() -> [LayerBinding] {
-        guard var t = transition, t.phase == .covered else { return [] }
+        guard var t = transition, t.hasLayers else { return [] }
         let unbound = t.unboundWindows
         guard !unbound.isEmpty else { return [] }
         var ids: [WindowId: LayerId] = [:]
@@ -404,8 +426,8 @@ public struct Motion: Sendable, Equatable, Codable {
         closeTransition()
     }
 
-    /// Raise the cover: mint a `LayerId` per scoped window (in z-order) and advance to `.covered`. Called
-    /// once `isReadyToRaise`, followed by `Effect.beginTransition(bindings)` and the teleports.
+    /// Raise the cover: mint a `LayerId` per scoped window (in z-order) and advance to `.raising`. Called
+    /// once `isReadyToRaise`, followed by `Effect.beginTransition(bindings)` and the cover's first blits.
     public mutating func raiseCover() {
         guard var t = transition, t.phase == .capturing else { return }
         var ids: [WindowId: LayerId] = [:]
@@ -413,6 +435,11 @@ public struct Motion: Sendable, Equatable, Codable {
         t.raiseCover(layerIds: ids)
         transition = t
     }
+
+    /// The cover the shell was handed is now on the glass (`Event.coverOnScreen`): advance to `.covered`,
+    /// which is what entitles the reducer to teleport the reals. Total, so a report arriving for a cover
+    /// that has already been taken down — or replaced by a newer one — is the no-op it should be.
+    public mutating func confirmCover() { transition?.confirmCover() }
 
     /// A scoped window's real AX set landed (`Event.axLanded`).
     public mutating func markLanded(_ id: WindowId) { transition?.markLanded(id) }
@@ -443,11 +470,12 @@ public struct Motion: Sendable, Equatable, Codable {
         return t.phase == .capturing && t.captureComplete
     }
 
-    /// Ready to *grow* the cover: raised, with a scoped window whose still has landed but has no layer.
-    /// Deliberately not gated on `captureComplete` — see `TransitionSession.unboundWindows`.
+    /// Ready to *grow* the cover: built, with a scoped window whose still has landed but has no layer.
+    /// Deliberately not gated on `captureComplete` — see `TransitionSession.unboundWindows` — nor on the
+    /// cover being on screen, since a layer is owed from the moment the layer tree exists.
     public var isReadyToExtend: Bool {
         guard let t = transition else { return false }
-        return t.phase == .covered && !t.unboundWindows.isEmpty
+        return t.hasLayers && !t.unboundWindows.isEmpty
     }
 
     public var isReadyToClose: Bool {

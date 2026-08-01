@@ -126,8 +126,8 @@ transition and comes down on cross-fade. The Runtime therefore has two modes, an
 - **Transition.** Anything that moves the strip opens a *transition session* — including a move nobody asked emira
   for, since **externally-initiated focus** (Cmd-Tab, Dock click, an app activating itself — observed via
   `NSWorkspace` + AX) reveals its window exactly as the `focus` and `focus-workspace` commands do, scrolling to it
-  on the strip in view and switching to it across two. The core emits
-  `beginTransition`, the shell captures + raises the reconstruction, real windows teleport behind it, and from then on
+  on the strip in view and switching to it across two. The core emits `beginTransition`, the shell captures + raises
+  the reconstruction and reports it on screen (`coverOnScreen`), real windows teleport behind it, and from then on
   every `tick(dt)` advances the core's animators and emits `setLayerFrame`. When all animators settle **and** the AX
   targets have landed (`axLanded`), the core emits `endTransition` → the shell cross-fades to the real desktop and
   drops the cover. The `axLanded` wait is **scoped and bounded**: scoped — wait on every window the viewport **sweeps**
@@ -139,6 +139,19 @@ transition and comes down on cross-fade. The Runtime therefore has two modes, an
 The core decides *whether a command warrants a transition* (motion vs snap) and *when the transition is done*; the
 shell owns the mechanics of cover/capture/cross-fade. This is the clean seam between "policy" (pure) and "mechanism"
 (native).
+
+**A raise is two steps, because a committed cover is not a visible one.** The session phase is
+`.capturing → .raising → .covered`, and only the last of the three lets a real window move. `beginTransition` reaches
+the window server synchronously — the alpha flip and the layer transaction both — but the display composes on its own
+schedule, and an app fast enough to answer an AX set inside that interval moves in the open. **Emission order cannot
+close that**, which is the whole reason the phase exists: ordering our own calls says nothing about whose pixels the
+window server has ready, and a cover carrying a full-screen base plus a still per window is the slower of the two to
+compose against a geometry change on a surface that already exists. So the shell fences the raise against the display
+itself — `CADisplayLink.targetTimestamp`, two callbacks, 12–16 ms on a 120 Hz panel (`Overlay.raise(onScreen:)`) — and
+reports `Event.coverOnScreen`, which is the only thing that advances the phase and the only batch a teleport rides in.
+`.raising` answers the truth plane exactly as `.capturing` does (`reassertTruthPlane` writes nothing), so an unrelated
+event landing inside the window cannot write there either. The cost is invisible: the cover's first frames are
+pixel-identical to the desktop they replace, so nothing on screen is early or late, and only the AX writes wait.
 
 **`snap` is the cover without the clock.** Under `transition = "snap"` the same session runs with **no animator created
 at all**: an absent animator already resolves to the value `Layout` derives, so the settle half of the close gate is
@@ -437,7 +450,8 @@ emira/
 │   │   │   └── LiveStream.swift     # SCK live layers (deluxe; M7)
 │   │   ├── Compositor/
 │   │   │   ├── ScreenGeometry.swift # THE Y-flip: core top-left ↔ Cocoa bottom-left (one number)
-│   │   │   ├── Overlay.swift        # borderless click-through NSWindow per display; raise/cross-fade
+│   │   │   ├── Overlay.swift        # borderless click-through NSWindow per display; raise (fenced on
+│   │   │   │                        # the display link until composed) / cross-fade
 │   │   │   ├── Reconstruction.swift # captured desktop base + one CALayer per window carrying that
 │   │   │   │                        # window's still, placed at its *capture-time* frame, with a
 │   │   │   │                        # synthesized shadow (CoverSurface)
@@ -724,8 +738,8 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **A correction under a raised cover springs rather than jumps.** Every layer frame is re-derived from the strip's
     geometry each tick, so a column that changes width between two frames pops. The change goes under the same width
     animator `cycle-width` uses, retargeted in place — which is also *required* during a resize, since the layers must
-    converge on the width the reals were teleported to. Mid-*capture*, the correction is recorded and nothing is
-    placed: the raise's own teleport is moments away and reads it.
+    converge on the width the reals were teleported to. Before the cover is on screen, the correction is recorded and
+    nothing is placed: the teleport is moments away and reads it.
   - **Heights are the same fact on the other axis, and the bound is *signed*.** `Column` runs a **water-fill**: an
     auto window whose bound rules its share out takes the bound and the others re-divide, to a fixpoint (≤ n passes,
     since the bounded set only grows). It pins in **both** directions — a floor above its share takes the floor and
@@ -769,16 +783,18 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     `viewportOffset.current`; **covered** it is `teleportBehindCover`, because the reals went to the scroll's *end*
     when the cover went up and `.current` has stopped describing them — it is the number feeding the layers, so
     placing at it drags the desktop to a position the animation invented, which the cross-fade then reveals as a
-    jump backwards; **capturing** it is nothing at all, no real window having moved yet, and the raise's own
-    teleport reads whatever this would have written. The routing is in the function rather than at its call sites
-    because the events that ask for a re-place arrive on their own schedule, and **the mouse-up is the proof**:
-    every click on a window is one, landing tens of milliseconds inside the reveal that same click started.
-    - **The phase is one value and not two booleans** because the three answers are otherwise an ordered guard
+    jump backwards; **capturing** and **raising** it is nothing at all, no real window having moved yet and none
+    permitted to — the desktop is still what the eye is looking at — and the teleport `coverOnScreen` carries reads
+    whatever this would have written. The routing is in the function rather than at its call sites because the events
+    that ask for a re-place arrive on their own schedule, and **the mouse-up is the proof**: every click on a window
+    is one, landing tens of milliseconds inside the reveal that same click started.
+    - **The phase is one value and not a set of booleans** because the answers are otherwise an ordered guard
       chain whose order is load-bearing and unwritten — ask `isTransitioning` before `isCovered` and every covered
-      re-place silently does nothing. `isTransitioning` and `isCovered` remain as its projections, for the gates
-      that genuinely ask one yes/no question.
-    - **The capturing answer is a deferral, so every way out of that phase owes a place**, and there are four:
-      the raise teleports; `coverUnavailable` aborts and re-places; `holdTimeout` closes and re-places; and
+      re-place silently does nothing. `isTransitioning`, `isCovered` and `hasLayers` remain as its projections, for
+      the gates that genuinely ask one yes/no question — and the last two come apart in `.raising`, where the layer
+      tree exists (so the cover may still be *grown*) but the truth plane is frozen.
+    - **The deferral spans two phases, so every way out of them owes a place**, and there are four:
+      `coverOnScreen` teleports; `coverUnavailable` aborts and re-places; `holdTimeout` closes and re-places; and
       `abandonTransition` — a switch handed no before-geometry — closes, with `finishStructuralEdit` placing
       behind it. Only the last belongs to somebody else, which is why it is written down: a head that exits
       without placing is *silent*, leaving the strip claiming a scroll no window performed and nothing scheduled
@@ -1064,8 +1080,10 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   - **The executor splits by plane, joined by a router.** `CompositingExecutor` sends the cover lifecycle to a
     `CoverSurface` and everything else onward, because the planes share no machinery — Core Animation on our own
     layers, main-thread and instant, versus AX Mach IPC into other processes, off-thread and slow. A batch is split
-    into **maximal contiguous same-plane runs**, never partitioned: "cover before teleport" is the reducer's policy to
-    emit, and the executor's job is only to be faithful to the order.
+    into **maximal contiguous same-plane runs**, never partitioned: emission order is the reducer's to decide, and the
+    executor's job is only to be faithful to it. What the router cannot supply is "cover before teleport" — that is a
+    fact about the *display*, not about emission order, so it is a phase in the core fenced by `coverOnScreen` and the
+    two never share a batch at all.
     - **There are four planes, and `exec`'s is its own rather than a corner of the truth plane.** A spawn has no
       window, no per-app lane, no enhanced-UI toggle and no ack, so the only thing it would share with AX is the file
       it was routed in. `plane(of:)` is exhaustive on purpose — a new `Effect` must be *assigned* a home rather than
@@ -1370,9 +1388,9 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     which is not "the user can see it", and two probes were built on that misreading before a real launch disproved it.
   - **It is a *display* seam, so `Runtime` grew an `onStateChanged` observer rather than an `Effect`.** Nothing about
     the status item changes state, so it must not be in the effect vocabulary — the same judgement `dumpState` got. It
-    fires **once per drain**, not once per event: a single command cascades through capture → raise → teleport →
-    landings, and an observer that saw each step would see states the user never does. Firing after the drain means an
-    observer only ever sees a settled state, which is invariant 4 paying out a second time. It fires unconditionally
+    fires **once per drain**, not once per event: a single command cascades through capture → raise → on-screen →
+    teleport → landings, and an observer that saw each step would see states the user never does. Firing after the
+    drain means an observer only ever sees a settled state, which is invariant 4 paying out a second time. It fires unconditionally
     rather than on a change, because `State` is large and comparing all of it at 120 Hz to save the observer a
     comparison is the wrong trade; **the observer diffs its own projection**, which is the file watcher's rule again —
     report a change in the *value*, not in the thing carrying it.

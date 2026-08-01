@@ -548,6 +548,7 @@ import Testing
     private let other = WorkspaceName("2")!
 
     /// Drive a command and stop the instant the cover is up — the moment every claim below is about.
+    /// "Up" means on screen: the raise and the teleports are two batches, a refresh apart in the daemon.
     private func raiseCover(_ s: State, _ command: Command) -> (State, [Effect]) {
         var (next, fx) = Engine.reduce(s, .command(command))
         #expect(next.motion.isTransitioning, "\(command) opened no transition")
@@ -557,6 +558,9 @@ import Testing
             next = after
             raiseFx += out
         }
+        let (onScreen, teleports) = Engine.reduce(next, .coverOnScreen)
+        next = onScreen
+        raiseFx += teleports
         fx += raiseFx
         #expect(next.motion.isCovered, "\(command) never raised a cover")
         return (next, fx)
@@ -713,6 +717,7 @@ import Testing
         for id in EngineTests.capturedIds(in: fx) {
             (scrolling, _) = Engine.reduce(scrolling, .captureReady(id))
         }
+        (scrolling, _) = Engine.reduce(scrolling, .coverOnScreen)
         #expect(scrolling.motion.isCovered, "the fixture never raised a cover to interrupt")
         let before = Set(scrolling.motion.transition!.windows)
 
@@ -817,8 +822,9 @@ import Testing
 
     /// A layer starts at its capture-time frame, and for a switch that is a screen away from where it
     /// belongs: the incoming workspace's windows are captured at their 1 px park slivers. So the raise
-    /// must place every layer as well as create it, inside the same presentation run and before any real
-    /// window moves, or the first frame shows the arriving strip stacked in the corner.
+    /// must place every layer as well as create it, inside the same presentation run, or the first frame
+    /// shows the arriving strip stacked in the corner. And it must move nothing real: the batch that
+    /// builds the cover reaches the window server a compose pass before the cover does.
     @Test func theRaiseBlitsEveryLayerBeforeAnyRealWindowMoves() {
         let s = twoPopulatedWorkspaces()
         var (next, fx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
@@ -828,7 +834,7 @@ import Testing
             next = after
             if !out.isEmpty { raise = out }
         }
-        #expect(next.motion.isCovered)
+        #expect(next.motion.phase == .raising)
 
         // Every binding is placed…
         let bindings = next.motion.transition!.bindings
@@ -836,13 +842,15 @@ import Testing
             #expect(EngineTests.layerFrame(of: binding.layer, in: raise) != nil,
                     "\(binding.window) was raised without being placed")
         }
-        // …and the whole presentation run precedes the first `setFrame`/`park`, so the shell wraps it
-        // in one `CATransaction` and no real window has moved when it lands.
-        let lastBlit = raise.lastIndex { if case .setLayerFrame = $0 { return true }; return false }
-        let firstMove = raise.firstIndex {
-            switch $0 { case .setFrame, .park: return true; default: return false }
-        }
-        #expect(lastBlit != nil && firstMove != nil && lastBlit! < firstMove!)
+        // …and the batch is presentation-only, so nothing has been asked to move by the time it lands.
+        #expect(!raise.contains { switch $0 { case .setFrame, .park: true; default: false } },
+                "the raise moved a real window before the cover could reach the glass")
+
+        // The teleports arrive with the report that it did.
+        let teleports: [Effect]
+        (next, teleports) = Engine.reduce(next, .coverOnScreen)
+        #expect(next.motion.isCovered)
+        #expect(teleports.contains { switch $0 { case .setFrame, .park: true; default: false } })
 
         // And the placement is the *old* geometry exactly, so the raise cannot pop: the arriving strip
         // sits one screen below, where the eye has not seen it yet.

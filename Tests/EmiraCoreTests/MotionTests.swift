@@ -282,13 +282,44 @@ import EmiraMotion
         m.raiseCover()
 
         let t = try! #require(m.transition)
-        #expect(t.phase == .covered)
-        #expect(!m.isReadyToRaise)                // already covered
+        #expect(t.phase == .raising)              // built and handed over; not yet on the glass
+        #expect(!m.isReadyToRaise)                // already raised
         // Deterministic minting from a fresh Motion: L1, L2, L3 in window z-order.
         #expect(t.bindings.map(\.window) == Self.scope)
         #expect(t.bindings.map(\.layer) == [LayerId(1), LayerId(2), LayerId(3)])
         #expect(m.layerId(for: WindowId(2)) == LayerId(2))
         #expect(m.layerId(for: WindowId(42)) == nil)   // not scoped
+    }
+
+    /// The raise is two steps, and only the second one lets a real window move. Between them the layers
+    /// exist — the cover is real, just not composed yet — which is what `hasLayers` separates out.
+    @Test func theCoverOwnsTheRealsOnlyOnceItIsOnScreen() {
+        var m = Motion()
+        m.openTransition(scope: Self.scope)
+        for w in Self.scope { m.markCaptured(w) }
+        m.raiseCover()
+
+        #expect(!m.isCovered)                     // committed is not composed
+        #expect(m.hasLayers)                      // …but the layer tree is up and can be extended
+        m.confirmCover()
+        #expect(m.isCovered)
+        #expect(m.phase == .covered)
+    }
+
+    @Test func confirmingIsANoOpOutsideTheRaise() {
+        var m = Motion()
+        m.confirmCover()                          // no session at all
+        #expect(!m.isTransitioning)
+
+        m.openTransition(scope: Self.scope)
+        m.confirmCover()                          // still capturing — no cover to confirm
+        #expect(m.phase == .capturing)
+
+        for w in Self.scope { m.markCaptured(w) }
+        m.raiseCover()
+        m.confirmCover()
+        m.confirmCover()                          // a second report changes nothing
+        #expect(m.phase == .covered)
     }
 
     @Test func raiseCoverBeforeAnOpenSessionIsANoOp() {
@@ -392,6 +423,10 @@ import EmiraMotion
         m.raiseCover()
 
         m.abortTransition()
+        #expect(m.phase == .raising, "a cover on its way to the glass is still a cover")
+
+        m.confirmCover()
+        m.abortTransition()
         #expect(m.isCovered)
     }
 
@@ -400,6 +435,7 @@ import EmiraMotion
         m.openTransition(scope: Self.scope)
         for w in Self.scope { m.markCaptured(w) }
         m.raiseCover()
+        m.confirmCover()
         m.retargetViewport(to: 400)               // the strip is scrolling under the cover
         advance(&m, frames: 5)
 

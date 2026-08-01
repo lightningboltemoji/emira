@@ -11,11 +11,14 @@ import EmiraCore
 // area*, not the display: the real menu bar (`.mainMenu`, level 24) composites above our `.floating`
 // window and would double with the base capture's own copy of it. The base is still the whole
 // display, at a negative local origin, clipped.
+//
+// A raise is not done when it returns: it is on the glass a refresh later, and `raise(onScreen:)` is
+// what says so.
 
 /// A borderless click-through overlay window covering one display, with a layer host for the
 /// reconstruction. Created once at launch — a transition raises and fades it, never builds it.
 @MainActor
-public final class Overlay {
+public final class Overlay: NSObject {
 
     /// The whole display in core (top-left) coordinates — where the desktop *base* capture is placed.
     public let displayFrame: Rect
@@ -27,6 +30,7 @@ public final class Overlay {
     /// Stamped onto every layer so the reconstruction rasterizes at native resolution.
     public let backingScale: CGFloat
 
+    private let screen: NSScreen
     private let geometry: ScreenGeometry
     private let window: NSWindow
     /// Clipped, so a window layer sliding off the strip's edge is cut at the screen boundary.
@@ -44,6 +48,7 @@ public final class Overlay {
     /// `insets` must be the *same* struts the core lays the strip out with (`Config.struts`): leaving
     /// the chrome bands unpainted is safe only while no managed window can be outside the working area.
     public init(screen: NSScreen, geometry: ScreenGeometry, insets: EdgeInsets = .zero) {
+        self.screen = screen
         self.geometry = geometry
         self.displayFrame = geometry.core(screen.frame)
         self.coverFrame = displayFrame.inset(by: insets)
@@ -77,6 +82,8 @@ public final class Overlay {
         base.backgroundColor = NSColor.black.cgColor
         host.addSublayer(base)
 
+        super.init()
+
         window.contentView = view
         // Ordered in now and left in forever, or the system's show-animation pops on the first raise.
         window.orderFrontRegardless()
@@ -109,10 +116,11 @@ public final class Overlay {
     /// bites. Any alpha under 1 disqualifies it, and a thousandth is below one 8-bit level.
     private static let raisedAlpha: CGFloat = 0.999
 
-    /// Show the cover instantly. Written through the animator at zero duration, not as a bare
-    /// assignment: a direct one would be overwritten by the next frame of a cross-fade still in
-    /// flight, where a zero-duration animation replaces that fade outright.
-    public func raise() {
+    /// Show the cover; `onScreen` fires a refresh later, when the display has shown it. Written through
+    /// the animator at zero duration, not as a bare assignment: a direct one would be overwritten by the
+    /// next frame of a cross-fade still in flight, where a zero-duration animation replaces that fade
+    /// outright. `onScreen` fires at most once, and not at all for a cover replaced or faded first.
+    public func raise(onScreen: @escaping @MainActor () -> Void) {
         generation &+= 1
         isRaised = true
         NSAnimationContext.runAnimationGroup { context in
@@ -120,6 +128,55 @@ public final class Overlay {
             window.animator().alphaValue = Self.raisedAlpha
         }
         window.orderFrontRegardless()
+        armFence(onScreen)
+    }
+
+    // MARK: - The presentation fence
+    //
+    // Nothing in AppKit or Core Animation reports a commit reaching the glass, so the display is asked
+    // instead. `CADisplayLink.targetTimestamp` is when the frame being composed at this callback will be
+    // shown, and a commit made before the callback is in that frame or an earlier one — so the cover has
+    // been displayed once the clock passes it. Two callbacks, one refresh.
+
+    /// Fired at most once per raise, then cleared. Non-`nil` ⇒ a fence is armed.
+    private var fence: (@MainActor () -> Void)?
+
+    /// When the frame carrying the raise reaches the display, latched at the first callback after it.
+    /// `nil` while the fence is armed but that callback has yet to arrive.
+    private var presentedBy: CFTimeInterval?
+
+    /// Paused between fences, never invalidated — same reasoning as the pump's clock.
+    private var fenceLink: CADisplayLink?
+
+    private func armFence(_ onScreen: @escaping @MainActor () -> Void) {
+        fence = onScreen
+        presentedBy = nil
+        let link = fenceLink ?? {
+            let made = screen.displayLink(target: self, selector: #selector(fenceStep(_:)))
+            // `.common` for the same reason the pump's clock uses it: a transition begun during event
+            // tracking must not stall until the tracking ends.
+            made.add(to: .main, forMode: .common)
+            fenceLink = made
+            return made
+        }()
+        link.isPaused = false
+    }
+
+    private func cancelFence() {
+        fence = nil
+        presentedBy = nil
+        fenceLink?.isPaused = true
+    }
+
+    @objc private func fenceStep(_ link: CADisplayLink) {
+        guard let fence else { return cancelFence() }        // paused between callbacks
+        guard let deadline = presentedBy else {
+            presentedBy = link.targetTimestamp
+            return
+        }
+        guard link.timestamp >= deadline else { return }
+        cancelFence()
+        fence()
     }
 
     /// Cross-fade the cover away over `duration`, which must be positive — `completion` releases the
@@ -130,6 +187,9 @@ public final class Overlay {
     /// now — the caller must **not** tear it down.
     public func fadeOut(duration: TimeInterval,
                         completion: @escaping @MainActor (_ completed: Bool) -> Void) {
+        // A cover on its way down has nothing left to report having arrived. Dropping the fence rather
+        // than firing it keeps `coverOnScreen` a fact about a live cover; the core tolerates either.
+        cancelFence()
         guard isRaised else { return completion(true) }
         generation &+= 1
         let mine = generation

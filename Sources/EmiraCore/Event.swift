@@ -87,6 +87,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// `captureReady`, so this asks for a content swap and changes no geometry.
     case captureRefreshed(WindowId)
 
+    /// The cover a `beginTransition` built is on the glass — committing a frame is not displaying one,
+    /// and until this arrives nothing is hiding the desktop. The gate on every teleport, reported once
+    /// per raise.
+    case coverOnScreen
+
     /// The capture plane could not produce a cover at all. Arrives *instead of* that batch's
     /// `captureReady` acks, so the core never counts down to a raise it has no pixels for.
     case coverUnavailable

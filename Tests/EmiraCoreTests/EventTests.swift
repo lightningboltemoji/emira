@@ -30,6 +30,7 @@ import Testing
         .axLanded(WindowId(6)),
         .axFailed(WindowId(7)),
         .captureReady(WindowId(8)),
+        .coverOnScreen,
         .coverUnavailable,
         .crossfadeDone,
         .holdTimeout,

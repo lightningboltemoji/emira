@@ -34,7 +34,8 @@ import Testing
         return s
     }
 
-    /// Answer every capture the session is waiting on — the step that raises the cover.
+    /// Answer every capture the session is waiting on and report the cover on screen — the two steps
+    /// that put a cover up and the reals behind it.
     static func completeCaptures(_ s: State) -> (State, [Effect]) {
         var s = s
         var fx: [Effect] = []
@@ -43,7 +44,8 @@ import Testing
             s = next
             fx += out
         }
-        return (s, fx)
+        let (onScreen, teleports) = Engine.reduce(s, .coverOnScreen)
+        return (onScreen, fx + teleports)
     }
 
     // MARK: - The cover goes up

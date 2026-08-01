@@ -105,13 +105,17 @@ import EmiraCore
         /// Hold the dismissal open instead of completing it, to model a cross-fade in flight.
         var completesDismissal = true
         private(set) var heldCompletion: (@MainActor () -> Void)?
+        /// The last raise's presentation fence, always held: a real one is a refresh away, so firing it
+        /// from inside `raiseCover` would model the very thing the fence exists to prevent.
+        private(set) var heldFence: (@MainActor () -> Void)?
 
         init(_ timeline: Timeline) { self.timeline = timeline }
 
         func beginFrame() { timeline.record("beginFrame") }
         func endFrame() { timeline.record("endFrame") }
-        func raiseCover(_ bindings: [LayerBinding]) {
+        func raiseCover(_ bindings: [LayerBinding], onScreen: @escaping @MainActor () -> Void) {
             timeline.record("raise(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
+            heldFence = onScreen
         }
         func extendCover(_ bindings: [LayerBinding]) {
             timeline.record("extend(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
@@ -300,14 +304,26 @@ import EmiraCore
     // MARK: Ordering
 
     @Test func theCoverIsRaisedBeforeTheRealWindowsTeleport() {
-        // The reducer's cover-raise batch: begin, then the teleports behind it. Nothing may reach the
-        // truth plane before the raise — that ordering is the zero-exposure rule.
+        // Emission order across a plane change, asked of a batch the reducer does not build — it holds
+        // the teleports for `coverOnScreen`. The routing rule stands on its own: nothing may reach the
+        // truth plane ahead of a presentation effect that precedes it.
         let (executor, _, _, timeline, log) = Self.harness()
         executor.execute([.beginTransition(Self.bindings),
                           .setFrame(WindowId(1), Self.rect(0)),
                           .park(WindowId(2), Self.rect(9999))], feedback: log.sink)
 
         #expect(timeline.entries == ["beginFrame", "raise(1,2)", "endFrame", "truth[setFrame1,park2]"])
+    }
+
+    /// The raise is handed a fence, and only the fence acks: a cover that has been committed but not
+    /// composed hides nothing, so the call itself is not the report.
+    @Test func theRaiseAcksOnlyWhenTheCoverReachesTheScreen() {
+        let (executor, surface, _, _, log) = Self.harness()
+        executor.execute([.beginTransition(Self.bindings)], feedback: log.sink)
+
+        #expect(log.events.isEmpty)             // committed, not composed — nothing may move yet
+        surface.heldFence?()
+        #expect(log.events == [.coverOnScreen])
     }
 
     @Test func emissionOrderSurvivesAPlaneChangeInEitherDirection() {

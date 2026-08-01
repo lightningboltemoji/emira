@@ -339,7 +339,7 @@ import EmiraCore
         writer.defersCompletion = true              // the truth plane answers when we say so
         let clock = ManualFrameClock()
         let runtime = Runtime(state: state,
-                              executor: InstantCaptures(AXExecutor(registry: registry, writer: writer)),
+                              executor: InstantCover(AXExecutor(registry: registry, writer: writer)),
                               clock: clock)
 
         runtime.dispatch(.command(.focus(.left)))
@@ -359,7 +359,7 @@ import EmiraCore
         let registry = WindowRegistry()
         let state = Self.boot(registry, apps: [100, 200])
         let writer = ScriptedWriter()
-        let executor = TeeExecutor(InstantCaptures(AXExecutor(registry: registry, writer: writer)))
+        let executor = TeeExecutor(InstantCover(AXExecutor(registry: registry, writer: writer)))
         let runtime = Runtime(state: state, executor: executor, clock: ManualFrameClock())
 
         runtime.dispatch(.command(.focus(.left)))
@@ -417,7 +417,7 @@ import EmiraCore
         writer.defersCompletion = true              // the app never answers
         let hold = ManualHoldTimer()
         let clock = ManualFrameClock()
-        let executor = TeeExecutor(InstantCaptures(AXExecutor(registry: registry, writer: writer)))
+        let executor = TeeExecutor(InstantCover(AXExecutor(registry: registry, writer: writer)))
         let runtime = Runtime(state: Self.boot(registry, apps: [100, 200]),
                               executor: executor, clock: clock, hold: hold)
 
@@ -563,18 +563,25 @@ final class ScriptedWriter: WindowWriter {
     }
 }
 
-/// Answers `Effect.capture` instantly and forwards everything else — `CaptureService`'s part, played
-/// by a stub. A transition raises no cover, and so teleports no real window, until every scoped
-/// `captureReady` is in, so tests driving whole transitions must supply the capture plane themselves.
+/// Answers the two planes `AXExecutor` does not own, instantly, and forwards everything else — the
+/// stub that lets a test drive a whole transition through the pump. A transition raises no cover until
+/// every scoped `captureReady` is in, and teleports no real window until the cover reports itself on
+/// screen; a test with neither plane wired up would sit in `.capturing` forever.
 @MainActor
-final class InstantCaptures: Executor {
+final class InstantCover: Executor {
     private let inner: any Executor
 
     init(_ inner: any Executor) { self.inner = inner }
 
     func execute(_ effects: [Effect], feedback: EventSink) {
         inner.execute(effects, feedback: feedback)
-        for case .capture(let id, _) in effects { feedback(.captureReady(id)) }
+        for effect in effects {
+            switch effect {
+            case .capture(let id, _):  feedback(.captureReady(id))
+            case .beginTransition:     feedback(.coverOnScreen)
+            default:                   continue
+            }
+        }
     }
 }
 

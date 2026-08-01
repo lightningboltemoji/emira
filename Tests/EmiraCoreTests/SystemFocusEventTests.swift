@@ -408,6 +408,7 @@ import Testing
         for id in EngineTests.capturedIds(in: fx) {
             (moving, _) = Engine.reduce(moving, .captureReady(id))
         }
+        (moving, _) = Engine.reduce(moving, .coverOnScreen)
         s = moving
         #expect(s.motion.isTransitioning)
         let target = WindowId(1)

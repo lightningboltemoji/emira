@@ -218,9 +218,12 @@ mini-compositor, animate in it, and cross-fade back to the real desktop.
 2. **Build the reconstruction.** In a borderless overlay we own (per display), composite: wallpaper layer at the
    bottom, one `CALayer` per window on top, each positioned to match reality _exactly_ (backing scale, color space,
    frame). Raise it — it's now a pixel-identical, fully opaque, gap-free stand-in for the desktop.
-3. **Rearrange the real windows behind it, freely.** Because the reconstruction hides _everything_, we can teleport
-   all real windows to their new AX positions with **zero exposure** — no per-window flight problem, no ordering
-   dance.
+3. **Rearrange the real windows behind it, freely — once it is actually on the glass.** Because the reconstruction
+   hides _everything_, we can teleport all real windows to their new AX positions with **zero exposure** — no
+   per-window flight problem, no ordering dance. "Hides everything" is a claim about the *display*, though, not about
+   our own call stack: the raise reaches the window server synchronously and is composed a refresh later, and an app
+   quick enough to answer an AX set inside that interval moves in the open. So the teleport waits on the display
+   itself saying the cover has been shown, not on the raise having been made (`IMPLEMENTATION.md` §3).
 4. **Animate the layers, however we like.** Slide the window layers to scroll the strip, at independent rates, with
    easing, on a `CADisplayLink`. Real per-window motion, not a sliding photograph.
 5. **Wait for truth to land, then cross-fade out.** Hold the reconstruction until the real windows have actually
