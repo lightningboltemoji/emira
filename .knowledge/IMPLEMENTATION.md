@@ -1217,6 +1217,14 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     parked — and it is why the daemon reads the struts *once* and hands the same value to both the core and the
     overlay: the invariant holds only while the two agree. The desktop base is still the whole display, placed at the
     display's rect in local coordinates and clipped by the host layer, so the wallpaper stays where it was captured.
+  - **A raised cover holds `alpha 0.999`, and the missing thousandth is the whole point.** A window at full alpha
+    marks everything beneath it **occluded**, and an occluded app is entitled to stop feeding a separately-composited
+    plane — a playing video is the case that bites, because the plane comes back dark for the first frame of the
+    dissolve and the cover reads duller than the window it stood for. The disagreement is a property of *what the
+    cover does to the windows underneath*, not of the pixels in it, which is why nothing in the capture path reaches
+    it: the still is exact, and the profile `SCStreamConfiguration()` already returns is the display's own wide-gamut
+    one, not sRGB. Any alpha below 1 disqualifies a window from occluding, and a thousandth is under one 8-bit level
+    — the largest hole that cannot be seen and the smallest that closes this.
   - **`Reconstruction` is the only place `Config.windowAnimation` means anything, and it is one animation with two
     renderers.** The obvious shape — a window-animation protocol with two conformers — is wrong, because the two modes
     emit a **byte-identical `Effect` stream**: `setLayerFrame` says *where a window is*, never how to paint one, so

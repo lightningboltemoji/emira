@@ -237,10 +237,11 @@ mini-compositor, animate in it, and cross-fade back to the real desktop.
 > window-shaped holes for the layers to sit in. The one gap a reconstruction has is the **window shadow**, which macOS
 > does not put in a window's surface, so we synthesize a per-layer `CALayer` drop shadow that travels with it. Overlay
 > appear-pop is killed with `animationBehavior = .none` plus keeping the overlay ordered-in at `alpha 0`, so a raise is
-> a pure alpha flip. Judged the only way it can be judged — mid-transition screenshots — it is indistinguishable from
-> native, and visibly smoother than AeroSpace, whose window-switch **flashing** is exactly the artifact the cover
-> eliminates: AeroSpace teleports the raw window with nothing in front of it, and we never let the eye touch the
-> transition.
+> a pure alpha flip — to `0.999`, because a cover at *full* alpha marks what it hides as occluded and an occluded app
+> may stop drawing (`IMPLEMENTATION.md` §6). Judged the only way it can be judged — mid-transition screenshots — it is
+> indistinguishable from native, and visibly smoother than AeroSpace, whose window-switch **flashing** is exactly the
+> artifact the cover eliminates: AeroSpace teleports the raw window with nothing in front of it, and we never let the
+> eye touch the transition.
 
 > **Why this beats both a flat cover and per-window overlays.** A flat cover can't do per-window motion (it's one
 > photo). Gappy per-window overlays expose the real windows (we can't hide them without SkyLight). A **full, opaque,

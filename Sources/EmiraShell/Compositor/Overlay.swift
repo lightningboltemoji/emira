@@ -5,8 +5,9 @@ import EmiraCore
 // The cover's substrate: one borderless, click-through `NSWindow` per display, hosting the layers
 // `Reconstruction` builds. Three things are load-bearing. `animationBehavior = .none` with the window
 // permanently ordered-in at `alpha 0` — a window ordered front for the first time gets a system
-// show-animation, so a raise must be a pure alpha flip. Opacity — any transparency is a hole in the
-// guarantee that nothing behind shows while the real windows teleport. And the cover is the *working
+// show-animation, so a raise must be a pure alpha flip. Opacity — any transparency the eye can reach
+// is a hole in the guarantee that nothing behind shows while the real windows teleport, so a raise
+// stops one thousandth short of it and no further (`raisedAlpha`). And the cover is the *working
 // area*, not the display: the real menu bar (`.mainMenu`, level 24) composites above our `.floating`
 // window and would double with the base capture's own copy of it. The base is still the whole
 // display, at a negative local origin, clipped.
@@ -103,15 +104,20 @@ public final class Overlay {
         geometry.local(rect, within: parent)
     }
 
+    /// What a raised cover holds. A window at *full* alpha marks everything beneath it occluded, and an
+    /// occluded app may stop feeding a separately-composited plane — a playing video is the case that
+    /// bites. Any alpha under 1 disqualifies it, and a thousandth is below one 8-bit level.
+    private static let raisedAlpha: CGFloat = 0.999
+
     /// Show the cover instantly. Written through the animator at zero duration, not as a bare
-    /// `alphaValue = 1`: a direct assignment would be overwritten by the next frame of a cross-fade
-    /// still in flight, where a zero-duration animation replaces that fade outright.
+    /// assignment: a direct one would be overwritten by the next frame of a cross-fade still in
+    /// flight, where a zero-duration animation replaces that fade outright.
     public func raise() {
         generation &+= 1
         isRaised = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
-            window.animator().alphaValue = 1
+            window.animator().alphaValue = Self.raisedAlpha
         }
         window.orderFrontRegardless()
     }
