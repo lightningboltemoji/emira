@@ -2625,6 +2625,112 @@ import EmiraMotion
         #expect(s.world.corrections.isEmpty)   // a stale answer must not greet the next window to reuse
     }
 
+    // MARK: - Windows that refuse the nub we park them behind
+
+    /// A world with one window parked at a nub, plus that window and the slot it was sent to. Four
+    /// ⅓-width columns on a 1000 pt viewport: three fit, the fourth is scrolled off and parks.
+    static func parkedWorld() -> (State, WindowId, Rect) {
+        let s = Self.world(4)
+        let frames = s.workspaces.targetFrames(scrollOffset: s.motion.viewportOffset.current,
+                                               metrics: s.metrics()!)
+        let parked = s.workspaces.allWindowIds.first { !s.world.placedOnScreen.contains($0) }
+        let id = try! #require(parked, "the fixture is meant to leave a window parked")
+        return (s, id, try! #require(frames[id]))
+    }
+
+    /// A window that keeps `chrome` points of itself on screen, whatever the slot asked for.
+    static func clamped(_ slot: Rect, keeping chrome: Double, in s: State) -> Rect {
+        Rect(x: slot.minX, y: s.metrics()!.workingArea.maxY - chrome,
+             width: slot.width, height: slot.height)
+    }
+
+    @Test func aClampedParkTeachesTheChromeTheWindowKept() {
+        // Safari will not keep less than its toolbar on screen: sent to a 40 pt nub it lands showing 52,
+        // and the slot it refused is the one every later placement would ask for again.
+        var (s, id, slot) = Self.parkedWorld()
+        let refused = Self.clamped(slot, keeping: 52, in: s)
+
+        let (next, fx) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: refused))
+        s = next
+
+        #expect(s.world.parkFloors[id] == 52)
+        // Re-parked at once, at a slot that clears the floor — rounded up onto the stagger lattice, so
+        // 56 rather than the 52 it asked for.
+        let reparked = try! #require(Self.placement(of: id, in: fx))
+        #expect(reparked.minY == s.metrics()!.workingArea.maxY - 56)
+        #expect(reparked.size == slot.size)                 // a park still never resizes
+    }
+
+    @Test func aSlotThatClearsTheFloorIsNeverAskedForTwice() {
+        // The defect, stated as the property that kills it: a park the app clamps used to be re-issued
+        // on *every* placement pass — a `dragEnded`, a focus change, an arrival — because the window was
+        // never where the layout said and nothing recorded why. One session logged 27 identical parks
+        // of one Safari window.
+        var (s, id, slot) = Self.parkedWorld()
+        var fx: [Effect] = []
+        (s, fx) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: Self.clamped(slot, keeping: 52, in: s)))
+
+        // The app accepts the taller nub, and the world holds it.
+        let reparked = try! #require(Self.placement(of: id, in: fx))
+        (s, _) = Engine.reduce(s, .axLanded(id))
+        #expect(s.world.windows[id]?.frame == reparked)
+
+        // Every later pass is silent about it.
+        for _ in 0..<3 {
+            let (next, quiet) = Engine.reduce(s, .dragEnded)
+            s = next
+            #expect(Self.placement(of: id, in: quiet) == nil)
+        }
+    }
+
+    @Test func theSameRefusalTwiceDoesNotTradeWritesWithTheApp() {
+        // An app that lands where it likes however tall a nub we offer would otherwise have us re-place
+        // on every report of the same news. The floor is already recorded; asking again asks the
+        // identical question.
+        var (s, id, slot) = Self.parkedWorld()
+        let refused = Self.clamped(slot, keeping: 52, in: s)
+        (s, _) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: refused))
+
+        let (next, fx) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: refused))
+        #expect(fx.isEmpty)
+        #expect(next.world.windows[id]?.frame == refused)   // truth is still recorded
+    }
+
+    @Test func aParkAnswerIsNeverAFactAboutSize() {
+        // The other half of "a park teaches nothing": a window can refuse a resize at its sliver that it
+        // accepts once scrolled back into view, so recording the size would freeze the column at
+        // whatever width it happened to be parked at.
+        var (s, id, slot) = Self.parkedWorld()
+        let refused = Rect(x: slot.minX, y: slot.minY - 12, width: slot.width - 90, height: slot.height)
+
+        (s, _) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: refused))
+
+        #expect(s.world.corrections.isEmpty)
+        #expect(s.world.parkFloors[id] == 52)               // the chrome half is still evidence
+    }
+
+    @Test func aWindowThatMovedSidewaysIsNotStatingAFloor() {
+        // An app that put itself somewhere else entirely is refusing to park rather than answering how
+        // much of itself it keeps on screen, and a lot that only allocates chrome has nothing to learn
+        // from it.
+        var (s, id, slot) = Self.parkedWorld()
+        let elsewhere = Rect(x: 200, y: 300, width: slot.width, height: slot.height)
+
+        (s, _) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: elsewhere))
+
+        #expect(s.world.parkFloors.isEmpty)
+        #expect(s.world.windows[id]?.frame == elsewhere)    // truth first, as ever
+    }
+
+    @Test func aParkFloorIsForgottenWithItsWindow() {
+        var (s, id, slot) = Self.parkedWorld()
+        (s, _) = Engine.reduce(s, .parkCorrected(id, requested: slot, actual: Self.clamped(slot, keeping: 52, in: s)))
+        #expect(s.world.parkFloors.count == 1)
+
+        (s, _) = Engine.reduce(s, .windowDestroyed(id))
+        #expect(s.world.parkFloors.isEmpty)   // a stale answer must not greet the next window to reuse
+    }
+
     @Test func aCorrectionUnderARaisedCoverSpringsTheColumnRatherThanJumpingIt() {
         // Every layer frame is re-derived from the strip's geometry each tick, so a column that
         // changes width between two frames *jumps*. Under a cover the change goes under the resize
@@ -2731,8 +2837,10 @@ import EmiraMotion
             actual: Rect(x: 0, y: 0, width: Self.third, height: 200)))
         let metrics = s.metrics()!
 
+        var cursor = 0
         let tiled = try! #require(s.layout.targetFrames(scrollOffset: 0, metrics: metrics)[WindowId(1)])
-        let parked = try! #require(s.layout.parkedFrames(metrics: metrics, parkingFrom: 0)[WindowId(1)])
+        let parked = try! #require(s.layout.parkedFrames(metrics: metrics,
+                                                         parkingFrom: &cursor)[WindowId(1)])
         #expect(tiled.size == parked.size)
         #expect(parked.size == Size(width: Self.third, height: 200))
     }

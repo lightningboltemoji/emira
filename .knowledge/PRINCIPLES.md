@@ -115,6 +115,13 @@ _immediate and correct_. This is the floor of the product and it must be rock-so
     the ±2 pt frame tolerance identity binding uses — 1 pt apart would make two parked windows of one app ambiguous at
     rebind, which costs both of them (§7). A tail of the window one point wide does cross the Dock band on its way off
     the display, which is the one place a parked window is not under the cover.
+  - **40 is where the run starts, not what every window gets.** Some apps refuse to keep that little of themselves on
+    screen — a Safari window whose toolbar is 52 pt lands showing 52 however far down it is sent — and a slot the app
+    refuses is a slot re-asked on every placement pass, forever, since the window is never where the layout says it
+    is. So the chrome a window kept is *learned* and its next slot is the first one **up the same lattice** that
+    clears it. Two windows refusing the same short nub is the case that makes this a correctness matter rather than a
+    tidiness one: they would clamp to the *identical* frame, which is exactly the ambiguity the stagger exists to
+    prevent.
   - **Right edge, not left.** The nub is a **grab handle**: a user rescuing a parked window by hand throws the pointer
     at the screen edge, where it stops. Against the right edge that lands on the window's own top-left corner — title
     bar, draggable anywhere. Against the left it lands on the window's *far* edge, which is whatever toolbar control
@@ -347,7 +354,9 @@ Much of the "slow AX" pain is self-inflicted and controllable:
   about a window.
 - **macOS will not let a window go fully off-screen.** Extreme coordinates clamp to a ~40 px sliver; precise ones
   leave as little as ~1 px. The consequence is §4a's sliver park, and the compensation is that a window which cannot
-  hide cannot be throttled for being hidden.
+  hide cannot be throttled for being hidden. **How little is per app**, and only observable by asking: a window keeps
+  its own chrome on screen — 52 pt for a Safari window with a toolbar — and honors any position leaving at least that
+  much, silently taking a different one otherwise.
 - **ScreenCaptureKit needs Screen Recording permission** (TCC) — a normal user grant, no SIP change. Budget for the
   onboarding prompt. macOS also **periodically re-prompts** users to keep allowing screen capture, mid-session and
   while capture is already working; under our charter nothing can be done about it — accept it, set expectations in

@@ -667,11 +667,18 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     because a `targetFrames` that widened a column while the visibility, sweep and scroll queries kept the preset
     would accumulate different left edges and place windows at the wrong x. The same argument the Y-flip makes:
     something that cannot break beats something that must be maintained.
-  - **A park teaches nothing.** A park slot is a 1 px sliver at the working area's edge, and a window will refuse a
-    resize there that it accepts the moment it scrolls back into view — so an answer given at a park describes
-    off-viewport geometry, not the window, and recording it would freeze the column at whatever width it was parked
-    at. Hence a drifted **tile** is a placement correction that carries its request along (an answer is only evidence
-    in relation to its question), while a drifted **park** is ordinary external drift.
+  - **A park teaches nothing about size, and one thing about itself.** A park slot is a 1 px sliver at the working
+    area's edge, and a window will refuse a resize there that it accepts the moment it scrolls back into view — so the
+    *size* an answer gives at a park describes off-viewport geometry, not the window, and recording it would freeze
+    the column at whatever width it was parked at. How much of itself the window kept on screen is the opposite: a
+    fact about its chrome, true wherever it is parked. Both are carried by `parkCorrected`, a sibling of
+    `placementCorrected` that also states its request (an answer is only evidence in relation to its question), and
+    the reducer reads only the chrome out of it — into `World.parkFloors`, never `corrections`.
+  - **A floor is a scalar, not the answer to a slot.** Keyed to the slot it was refused at, a park answer would be
+    re-learned every time the ordinal run renumbers, which is every column that opens or closes; keyed as *chrome*, it
+    is asked once per window. It is read where every other per-window geometry answer is read — `LayoutMetrics`, so a
+    call site cannot forget it — and it moves the run's **cursor** rather than that one window: a floor that only
+    displaced its own window would let two windows refusing the same nub land on identical frames.
   - **The downward direction can recurse, and is bounded where the evidence is.** Narrowing means the column follows
     the answer down, so the *next* request is the answer rather than the question — and an app that always returns
     slightly less than asked would walk the column toward nothing. So a **narrower** answer is learned only when the
@@ -711,7 +718,11 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
   **park-slot assignment** — deterministic, unique, staggered ~1 × 40 pt nubs in the working area's **bottom-right**
   corner, the window's own title bar left on screen as a grab handle and the nub's *height* carrying the stagger
   (`PRINCIPLES.md` §4a). A park slot is just target geometry, so placement is core-owned: one geometry authority,
-  replay-testable, and unique frames keep identity rebinding unambiguous (`PRINCIPLES.md` §7).
+  replay-testable, and unique frames keep identity rebinding unambiguous (`PRINCIPLES.md` §7). Slots are handed out by
+  a **run**, not computed per window: a window that has refused a short nub takes the first ordinal at or after the
+  cursor whose nub clears its floor, and the windows behind it follow from there. Rounded *up* onto the stagger
+  lattice rather than placed at the floor exactly, so distinctness stays a property of the lattice instead of
+  something each app's answer has to re-argue.
   - **`Layout` gained four editing primitives, not four verbs** — `moveColumn`, `moveWindowWithinColumn`,
     `move(window:toColumn:at:)`, `extract(window:toNewColumnAt:)`. Twelve command cases compose out of them, and the
     decision tree — *alone in its column ⇒ the column moves or it consumes; with stackmates ⇒ it pops out* — stays in
@@ -829,9 +840,11 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     column #1 on workspace `3` the *same* id — and `Motion.columnWidths` is keyed by a bare one, so an in-flight
     resize on one workspace would re-aim a column on another. The allocator lives on `Workspaces` and is passed
     `inout` to the two mutators that mint, so the compiler asks for it at every call site.
-  - **One park-ordinal run across the whole set.** With every window on every unfocused workspace parked, per-strip
-    ordinals would give two windows the same nub — breaking both the ±2 pt first-sight identity join and the
-    no-overlap invariant, silently, one of them permanently.
+  - **One park-ordinal run across the whole set, threaded as a cursor.** With every window on every unfocused
+    workspace parked, per-strip ordinals would give two windows the same nub — breaking both the ±2 pt first-sight
+    identity join and the no-overlap invariant, silently, one of them permanently. The cursor comes back *out* of each
+    strip rather than being advanced by counting its windows from outside, because a window with a park floor skips
+    the ordinals whose nubs are too short for it, and only the run knows how far it went.
   - **`State.layout` is a settable computed projection** of the focused strip — single storage, not a second
     authority. Nearly every question the reducer asks *is* about one strip; only the handful that genuinely span
     workspaces (reconcile, `targetFrames`, placement emission, the teleport behind a cover, and a placement
@@ -1044,9 +1057,9 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     because nearest always answers and a wrong answer is forever.
   - **`axFailed` means the app said no, not "the window ended up somewhere else."** An AX set has two independent
     outcomes — whether the writes were accepted, and where the window actually is afterwards — and collapsing them
-    loses the one that matters. A window that lands off-target reports `windowFrameChanged` *and* `axLanded`; only a
-    refused or timed-out write is `axFailed`. The alternative would call a terminal quantizing to character cells a
-    failure on every placement.
+    loses the one that matters. A window that lands off-target reports its drift (`placementCorrected` tiled,
+    `parkCorrected` parked) *and* `axLanded`; only a refused or timed-out write is `axFailed`. The alternative would
+    call a terminal quantizing to character cells a failure on every placement.
   - **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
     order, which interleaves apps, and per-app grouping collapses N lane hops and N enhanced-UI toggles into one (each
     toggle makes Chromium/JVM apps rebuild their accessibility tree). **The enhanced-UI flag is read before it is

@@ -287,14 +287,16 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// anywhere share a nub — a shared park frame would silently break both the ±2 pt first-sight
     /// identity join a daemon restart depends on and the no-overlap invariant.
     public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId: Rect] {
-        var frames = focusedStrip.targetFrames(scrollOffset: scrollOffset, metrics: metrics)
-        var ordinal = focusedStrip.parkedWindowIds(scrollOffset: scrollOffset, metrics: metrics).count
+        // One cursor, carried through every strip: a window with a park floor takes the first slot tall
+        // enough for it and leaves the skipped ones unused, so how far a strip advanced the run is
+        // something only the run knows — counting its windows from out here would hand out a slot twice.
+        var cursor = 0
+        var frames = focusedStrip.targetFrames(scrollOffset: scrollOffset, metrics: metrics,
+                                               parkingFrom: &cursor)
         for name in placementOrder.dropFirst() {
-            let strip = self[name]
             // Disjoint by construction — a window is on exactly one strip — so the merge rule is
             // unreachable, not a policy.
-            frames.merge(strip.parkedFrames(metrics: metrics, parkingFrom: ordinal)) { existing, _ in existing }
-            ordinal += strip.allWindowIds.count
+            frames.merge(self[name].parkedFrames(metrics: metrics, parkingFrom: &cursor)) { existing, _ in existing }
         }
         return frames
     }

@@ -519,6 +519,55 @@ import Testing
         #expect(s.width == 400 && s.height == 300)              // reposition, never resize
         #expect(s.intersects(lot.frame))                        // a nub is genuinely on-screen
     }
+
+    // MARK: Windows that refuse a short nub
+
+    @Test func aFloorTakesTheFirstSlotOnTheLatticeThatClearsIt() {
+        // 52 pt of chrome sits between rows 1 (48) and 2 (56), and the answer is row 2: rounding *up*
+        // onto the lattice is what keeps distinctness a property of the lattice rather than something
+        // each app's answer has to re-argue.
+        #expect(lot.ordinal(atLeast: 0, clearing: 52) == 2)
+        #expect(lot.slot(ordinal: 2, size: size).minY == 844)   // 56 pt showing, not 52
+        // Exactly on a row is that row, not the next one.
+        #expect(lot.ordinal(atLeast: 0, clearing: 56) == 2)
+    }
+
+    @Test func aFloorTheBareNubAlreadyClearsChangesNothing() {
+        #expect(lot.ordinal(atLeast: 0, clearing: 40) == 0)
+        #expect(lot.ordinal(atLeast: 0, clearing: 0) == 0)
+        #expect(lot.ordinal(atLeast: 7, clearing: 40) == 7)     // row 7 already shows 96
+    }
+
+    @Test func aRunOnlyEverMovesForward() {
+        // The cursor is what makes a run unique, so a floor may push it on and may never pull it back —
+        // a slot behind the cursor has already been handed to another window.
+        for cursor in 0..<12 {
+            #expect(lot.ordinal(atLeast: cursor, clearing: 52) >= cursor)
+        }
+        #expect(lot.ordinal(atLeast: 9, clearing: 52) == 9)     // past the floor already: unchanged
+    }
+
+    @Test func aFloorPastTheLastRowTakesTheTallestNubThereIs() {
+        // A window asking for more of itself than a nub can show — an app that refuses to park at all,
+        // rather than one stating a chrome. It gets the tallest slot in the lane and no more, so one
+        // window's refusal cannot walk the whole run off the working area.
+        let last = lot.ordinal(atLeast: 0, clearing: 100_000)
+        #expect(lot.slot(ordinal: last, size: size).minY >= lot.frame.minY)
+        #expect(lot.ordinal(atLeast: 0, clearing: 100_000) == lot.ordinal(atLeast: 0, clearing: 99_000))
+    }
+
+    @Test func twoWindowsWithTheSameFloorStillGetDistinctNubs() {
+        // The identity consequence, and the reason the floor moves a *cursor* instead of just clamping
+        // each window on its own: two windows that refuse the same short nub would otherwise land on
+        // byte-identical frames, which `WindowRegistry.bind` calls ambiguous and refuses both of.
+        var cursor = 0
+        let first = lot.ordinal(atLeast: cursor, clearing: 52)
+        cursor = first + 1
+        let second = lot.ordinal(atLeast: cursor, clearing: 52)
+        #expect(first != second)
+        #expect(abs(lot.slot(ordinal: first, size: size).minY
+                    - lot.slot(ordinal: second, size: size).minY) > 2)
+    }
 }
 
 /// The layout assembler: structure (`reconcile`, columns, width presets) and `targetFrames` turning

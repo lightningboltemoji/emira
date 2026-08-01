@@ -126,6 +126,12 @@ public struct World: Sendable, Equatable, Codable {
     /// What each window answered the last time we asked it to be a size. A dictionary rather than a field
     /// on `WindowState` because `State.metrics()` hands it to `LayoutMetrics` on every display-link tick.
     public private(set) var corrections: [WindowId: SizeCorrection]
+    /// The least chrome each window has been observed to accept at a park, in points — the answer a
+    /// window gives by refusing to sit as far off the bottom edge as it was asked to. A side table for
+    /// the reason `corrections` is one, and a *scalar* rather than the whole answer because a floor is a
+    /// fact about the window (its title bar, its toolbar) rather than about the slot it was asked for:
+    /// keyed to one slot it would have to be re-learned every time the ordinal run renumbers.
+    public private(set) var parkFloors: [WindowId: Double]
     /// Windows whose recorded frame is a guess we know to be wrong. Placement writes its target into
     /// `windows` *optimistically* (which stops a repeated idle event re-emitting the same set forever) and
     /// a timed-out write usually can't be read back — so without this mark that guess stands as truth and
@@ -154,6 +160,7 @@ public struct World: Sendable, Equatable, Codable {
         self.monitors = []
         self.focusedWindow = nil
         self.corrections = [:]
+        self.parkFloors = [:]
         self.unverified = []
         self.placedOnScreen = []
         self.floating = [:]
@@ -180,6 +187,7 @@ public struct World: Sendable, Equatable, Codable {
         guard let window = windows.removeValue(forKey: id) else { return }
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
+        parkFloors[id] = nil
         unverified.remove(id)
         placedOnScreen.remove(id)
         floating[id] = nil
@@ -216,6 +224,14 @@ public struct World: Sendable, Equatable, Codable {
     public mutating func noteCorrection(_ id: WindowId, wanted: Size, actual: Size) {
         guard windows[id] != nil else { return }
         corrections[id] = SizeCorrection(wanted: wanted, actual: actual)
+    }
+
+    /// Fold `Event.parkCorrected`: record that this window keeps at least `chrome` points of itself on
+    /// screen at a park. Last-writer-wins, like `noteCorrection` — and monotone in practice without
+    /// saying so, since a window only ever answers by showing *more* of itself than we asked for.
+    public mutating func noteParkFloor(_ id: WindowId, chrome: Double) {
+        guard windows[id] != nil else { return }
+        parkFloors[id] = chrome
     }
 
     /// Forget what these windows last answered, so the next placement asks afresh. A resize command is a

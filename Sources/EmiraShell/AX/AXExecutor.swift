@@ -86,9 +86,10 @@ public final class AXExecutor: Executor {
     ///
     ///  · `placementCorrected` when a *tiled* window landed elsewhere. Carries the request alongside the
     ///    reality, which lets the core stop building a column around a width the app refuses.
-    ///  · `windowFrameChanged` when a *parked* window drifted. Same truth, no lesson: a window can refuse
-    ///    a resize at its 1 px sliver that it accepts once scrolled back into view, and recording that as
-    ///    a constraint would freeze the column at its parked width.
+    ///  · `parkCorrected` when a *parked* one did. Also carries the request, and the core reads only the
+    ///    chrome out of it: a window can refuse a resize at its 1 px sliver that it accepts once scrolled
+    ///    back into view, so the size half would freeze the column at its parked width — but how far off
+    ///    the bottom edge the app will go is a fact about the window, and re-asking is a write per pass.
     ///  · `axLanded`/`axFailed` for the *write*, not the geometry. A terminal that quantizes to character
     ///    cells accepts every set and lands short every time; `axFailed` means the app said no.
     ///
@@ -102,7 +103,7 @@ public final class AXExecutor: Executor {
             if let actual = landing.frame, let move = requested[landing.id],
                !approximatelyEqual(actual, move.target) {
                 feedback(move.isPark
-                    ? .windowFrameChanged(landing.id, actual)
+                    ? .parkCorrected(landing.id, requested: move.target, actual: actual)
                     : .placementCorrected(landing.id, requested: move.target, actual: actual))
             }
             feedback(landing.accepted ? .axLanded(landing.id) : .axFailed(landing.id))

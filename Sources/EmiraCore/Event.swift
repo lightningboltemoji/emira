@@ -24,7 +24,8 @@ public enum Event: Sendable, Equatable, Codable {
     case windowDestroyed(WindowId)
 
     /// A window's frame changed externally — most often a user drag or resize; a tiled window re-asserts
-    /// its layout on `dragEnded`. A drifted *tiled* landing is `placementCorrected` instead.
+    /// its layout on `dragEnded`. A drifted landing of our own is not this: it is `placementCorrected`
+    /// when tiled and `parkCorrected` when parked, both of which know what was asked for.
     case windowFrameChanged(WindowId, Rect)
 
     /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
@@ -64,6 +65,13 @@ public enum Event: Sendable, Equatable, Codable {
     /// evidence: the core records it in `World.corrections` and widens the column instead of overlapping
     /// its neighbour.
     case placementCorrected(WindowId, requested: Rect, actual: Rect)
+
+    /// A `park` landed showing more of its window than the slot asked for — the app refuses to keep less
+    /// than that much of itself on screen. Evidence about the *nub*, and only about the nub: the core
+    /// records the chrome in `World.parkFloors` and allocates a taller slot, rather than re-asking for a
+    /// slot the app has already declined on every placement pass. A park says nothing about *size*
+    /// (`Effect.park`), so this is not a `placementCorrected` and never becomes a `SizeCorrection`.
+    case parkCorrected(WindowId, requested: Rect, actual: Rect)
 
     /// A `setFrame`/`park` was refused or timed out — the write did not happen at all.
     case axFailed(WindowId)

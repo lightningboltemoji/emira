@@ -115,6 +115,11 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// forgotten at a call site: it must reach every geometry query, or they accumulate different left
     /// edges and place windows at the wrong x.
     public var corrections: [WindowId: SizeCorrection]
+    /// The least chrome each window has been observed to accept at a park (`World.parkFloors`) — a
+    /// window that will not hide behind a 40 pt nub gets a taller one. Rides here for the same reason
+    /// `corrections` does, and for a sharper version of it: a park slot allocated without the floors
+    /// would be a slot the app refuses, and the refusal would be re-issued on every placement pass.
+    public var parkFloors: [WindowId: Double]
 
     public init(
         workingArea: Rect,
@@ -124,7 +129,8 @@ public struct LayoutMetrics: Sendable, Equatable {
         columnGap: Double = 0,
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
-        corrections: [WindowId: SizeCorrection] = [:]
+        corrections: [WindowId: SizeCorrection] = [:],
+        parkFloors: [WindowId: Double] = [:]
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
@@ -134,6 +140,7 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.windowGap = windowGap
         self.outerGaps = outerGaps
         self.corrections = corrections
+        self.parkFloors = parkFloors
     }
 
     // MARK: The two viewports
@@ -550,12 +557,13 @@ public struct Layout: Sendable, Equatable, Codable {
     /// `scrollOffset`. On-viewport columns tile, off-viewport ones park; a parked window keeps its
     /// tiled *size*, since parking repositions and never resizes. Exhaustive over the strip.
     ///
-    /// **The ordinal run is an input, because uniqueness is a property of the whole workspace set.**
-    /// Every window on every unfocused workspace is parked too, so a range local to one strip would
-    /// hand two windows the same nub, silently breaking both the ±2 pt first-sight identity join and
-    /// the no-overlap invariant. `parkingFrom: 0` is the single-strip case.
+    /// **The ordinal run is an input *and* an output, because uniqueness is a property of the whole
+    /// workspace set.** Every window on every unfocused workspace is parked too, so a range local to one
+    /// strip would hand two windows the same nub, silently breaking both the ±2 pt first-sight identity
+    /// join and the no-overlap invariant. The cursor comes back rather than being counted from the
+    /// outside because a window with a park floor skips the ordinals whose nubs are too short for it.
     public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics,
-                             parkingFrom firstOrdinal: Int = 0) -> [WindowId: Rect] {
+                             parkingFrom cursor: inout Int) -> [WindowId: Rect] {
         let area = metrics.contentArea
         let s = strip(metrics: metrics)
         // Physical: a column with pixels anywhere on the display is tiled, including one bleeding into
@@ -568,7 +576,6 @@ public struct Layout: Sendable, Equatable, Codable {
         let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]
-        var parkOrdinal = firstOrdinal
         for (i, column) in columns.enumerated() {
             if visible.contains(i) {
                 for (w, f) in zip(column.windowIds, stripFrames[i]) {
@@ -576,40 +583,45 @@ public struct Layout: Sendable, Equatable, Codable {
                 }
             } else {
                 for (w, f) in zip(column.windowIds, stripFrames[i]) {
-                    frames[w] = lot.slot(ordinal: parkOrdinal, size: f.size)
-                    parkOrdinal += 1
+                    frames[w] = Self.park(w, size: f.size, in: lot, at: &cursor, metrics: metrics)
                 }
             }
         }
         return frames
     }
 
-    /// **Every** window on this strip parked, from `firstOrdinal` — what an *unfocused* workspace is.
-    /// Sizes come from this strip's own geometry, so a window that switches workspaces changes address,
-    /// not shape.
-    public func parkedFrames(metrics: LayoutMetrics, parkingFrom firstOrdinal: Int) -> [WindowId: Rect] {
+    /// `targetFrames` for a strip standing on its own — the whole-set run starts and ends here.
+    public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId: Rect] {
+        var cursor = 0
+        return targetFrames(scrollOffset: scrollOffset, metrics: metrics, parkingFrom: &cursor)
+    }
+
+    /// **Every** window on this strip parked, continuing the run at `cursor` — what an *unfocused*
+    /// workspace is. Sizes come from this strip's own geometry, so a window that switches workspaces
+    /// changes address, not shape.
+    public func parkedFrames(metrics: LayoutMetrics, parkingFrom cursor: inout Int) -> [WindowId: Rect] {
         let s = strip(metrics: metrics)
         let lot = ParkingLot(frame: metrics.workingArea)
         let stripFrames = columnStripFrames(s, area: metrics.contentArea, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]
-        var ordinal = firstOrdinal
         for (i, column) in columns.enumerated() {
             for (w, f) in zip(column.windowIds, stripFrames[i]) {
-                frames[w] = lot.slot(ordinal: ordinal, size: f.size)
-                ordinal += 1
+                frames[w] = Self.park(w, size: f.size, in: lot, at: &cursor, metrics: metrics)
             }
         }
         return frames
     }
 
-    /// The windows `targetFrames` parks at `scrollOffset`, in ordinal order — so its *count* is how
-    /// many ordinals this strip consumes, which is how `Workspaces` knows where the next run begins.
-    public func parkedWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
-        let view = metrics.physicalViewport(at: scrollOffset)
-        let visible = Set(strip(metrics: metrics)
-            .visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
-        return windowIds(inColumns: columns.indices.filter { !visible.contains($0) })
+    /// One window's park slot, and the cursor moved past it — the step both park runs take. A window
+    /// that has refused a short nub (`LayoutMetrics.parkFloors`) is given the first slot at or after the
+    /// cursor that clears its floor; the ones behind it in the run follow from there, which is what keeps
+    /// the nubs distinct when an app's answer skips ordinals.
+    private static func park(_ id: WindowId, size: Size, in lot: ParkingLot,
+                             at cursor: inout Int, metrics: LayoutMetrics) -> Rect {
+        let ordinal = lot.ordinal(atLeast: cursor, clearing: metrics.parkFloors[id] ?? 0)
+        cursor = ordinal + 1
+        return lot.slot(ordinal: ordinal, size: size)
     }
 
     /// The **presentation-plane** counterpart to `targetFrames`: the same frames with **no parking**, so

@@ -39,6 +39,22 @@ public struct ParkingLot: Sendable, Equatable {
         max(Int(((frame.height - visibleChrome) / stagger).rounded(.down)) + 1, 1)
     }
 
+    /// The ordinal to hand out at `ordinal` for a window that will not keep less than `chrome` points of
+    /// itself on screen — its own row if that already shows enough, else the first row of the same lane
+    /// that does. Ordinals only ever move *forward*, so a run stays unique however many windows push.
+    ///
+    /// The floor is rounded **up onto the stagger lattice** rather than honoured exactly: every slot
+    /// staying one of the staggered ones is what keeps distinctness a property of the lattice instead of
+    /// something each window's answer has to re-argue. A floor past the last row is not reachable — that
+    /// window is asking for more of itself than a nub can show — so it takes the tallest row there is.
+    public func ordinal(atLeast ordinal: Int, clearing chrome: Double) -> Int {
+        let n = max(ordinal, 0)
+        let rows = rowsPerLane
+        let needed = min(max(Int(((chrome - visibleChrome) / stagger).rounded(.up)), 0), rows - 1)
+        let (lane, row) = (n / rows, n % rows)
+        return needed <= row ? n : lane * rows + needed
+    }
+
     /// The park frame for the `ordinal`-th parked window of size `size`: shoved off the bottom-right so
     /// `visibleSliver` of its left edge and `visibleChrome` (+ `stagger` per ordinal) of its top edge
     /// poke back in. Unique per ordinal, total for any `ordinal`. `size` is kept verbatim — parking

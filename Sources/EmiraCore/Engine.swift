@@ -65,7 +65,8 @@ public struct State: Sendable, Equatable, Codable {
             columnGap: config.columnGap,
             windowGap: config.windowGap,
             outerGaps: config.outerGaps,
-            corrections: world.corrections)
+            corrections: world.corrections,
+            parkFloors: world.parkFloors)
     }
 }
 
@@ -252,6 +253,10 @@ public enum Engine {
 
         case .placementCorrected(let id, let requested, let actual):
             let effects = handlePlacementCorrected(&s, id, requested: requested, actual: actual)
+            return (s, effects)
+
+        case .parkCorrected(let id, let requested, let actual):
+            let effects = handleParkCorrected(&s, id, requested: requested, actual: actual)
             return (s, effects)
 
         case .axFailed(let id):
@@ -1421,6 +1426,37 @@ public enum Engine {
             return reaimViewport(&s, corrected)
         }
 
+        return reassertTruthPlane(&s)
+    }
+
+    // MARK: - Windows that refuse the nub we park them behind
+
+    /// Fold a park that landed showing more of its window than the slot asked for: record the truth,
+    /// remember the chrome, re-place. macOS honours a park slot only as far as the app will go, and a
+    /// window whose title bar carries a toolbar keeps more of itself on screen than a bare 40 pt nub —
+    /// so without this the same slot is re-asked on every placement pass for the life of the window.
+    ///
+    /// What is learned is the **chrome**, not the frame: a floor is a fact about the window, so it
+    /// survives the ordinal run renumbering, which happens whenever a column opens or closes. The size
+    /// half of the answer is still discarded (`Effect.park`) — an app refuses a resize at a sliver that
+    /// it accepts back in view, and recording that would freeze the column at its parked width.
+    private static func handleParkCorrected(_ s: inout State, _ id: WindowId,
+                                            requested: Rect, actual: Rect) -> [Effect] {
+        s.world.updateFrame(id, to: actual)          // truth first, exactly as `windowFrameChanged` does
+
+        // An answer about the nub, or a window that isn't at our corner at all? A park writes the slot's
+        // left edge as well, so an app that also moved itself horizontally is refusing to park rather
+        // than stating a floor, and has nothing to teach a lot that only allocates chrome.
+        guard let metrics = s.metrics(),
+              approximatelyEqualScalar(actual.minX, requested.minX),
+              actual.minY < requested.minY - 0.5
+        else { return [] }
+
+        let chrome = metrics.workingArea.maxY - actual.minY
+        // Nothing new: the floor is already recorded and the slot it produced was refused anyway. Placing
+        // again would ask the identical question, so stop here rather than trade writes with the app.
+        if let known = s.world.parkFloors[id], approximatelyEqualScalar(known, chrome) { return [] }
+        s.world.noteParkFloor(id, chrome: chrome)
         return reassertTruthPlane(&s)
     }
 

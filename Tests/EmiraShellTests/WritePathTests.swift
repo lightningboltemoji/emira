@@ -175,22 +175,25 @@ import EmiraCore
         ])
     }
 
-    @Test("a parked window that drifted records truth and teaches nothing")
-    func aParkedWindowThatDriftedIsNotACorrection() {
+    @Test("a parked window that drifted is a park correction, not a placement one")
+    func aParkedWindowThatDriftedIsAParkCorrection() {
         // A park slot is a 1 px sliver at the working area's edge, and a window can refuse a resize
-        // there that it accepts once it scrolls back into view. So the drift describes off-viewport
-        // geometry, not the window: `windowFrameChanged`, which the reducer never learns from.
+        // there that it accepts once it scrolls back into view. So the *size* half of this answer
+        // describes off-viewport geometry rather than the window, and it must not reach `corrections` —
+        // which is why a drifted park is its own event and not a `placementCorrected`.
         let registry = WindowRegistry()
         let id = Self.adopt(registry, pid: 100, number: 1)
-        let refused = Rect(x: -199, y: 0, width: 260, height: 100)
+        let asked = Rect(x: -199, y: 0, width: 200, height: 100)
+        let refused = Rect(x: -199, y: -12, width: 260, height: 100)
         let writer = ScriptedWriter()
         writer.landing = { WindowLanding(id: $0.record.id, accepted: true, frame: refused) }
         let events = Recorder()
 
-        AXExecutor(registry: registry, writer: writer)
-            .execute([.park(id, Rect(x: -199, y: 0, width: 200, height: 100))], feedback: events.sink)
+        AXExecutor(registry: registry, writer: writer).execute([.park(id, asked)], feedback: events.sink)
 
-        #expect(events.events == [.windowFrameChanged(id, refused), .axLanded(id)])
+        // The request rides along here too: how much of itself the window kept on screen is only
+        // readable against how much the slot asked it to.
+        #expect(events.events == [.parkCorrected(id, requested: asked, actual: refused), .axLanded(id)])
     }
 
     @Test("sub-point rounding is not drift and is not reported")
