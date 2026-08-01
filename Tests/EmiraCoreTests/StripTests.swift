@@ -119,12 +119,14 @@ import Testing
                                   centered: false) == 50)
     }
 
-    /// The notch is left by being *in* it: flush, the sweep starts on an edge and crosses none, which is
-    /// what lets a second press push a column off screen without anything being remembered.
-    @Test func aFlushStripHasNoDetentInEitherDirection() {
+    /// The notch is left by being *in* it: flush, that bound starts on an edge and crosses none, which is
+    /// what lets a second press push a column off screen without anything being remembered. What it
+    /// reaches instead is the edge beyond — col0's own right edge, 450 out, where col1 has gone entirely
+    /// and col0 fills the viewport. Nothing is out there going the other way.
+    @Test func aFlushStripCatchesOnlyOnTheEdgeBeyond() {
         let flush = Strip(columnWidths: [550, 450], gap: 0)
         #expect(flush.resizeDetent(ofColumn: 0, growing: true, viewportWidth: 1000, offset: 0,
-                                   centered: false) == nil)
+                                   centered: false) == 450)
         #expect(flush.resizeDetent(ofColumn: 0, growing: false, viewportWidth: 1000, offset: 0,
                                    centered: false) == nil)
     }
@@ -148,15 +150,45 @@ import Testing
                                   centered: false) == 50)
     }
 
-    /// Only the columns from `i` on move with its width, so a strip whose focused column is already cut
-    /// has nothing left to protect: the edges behind it are fixed, and growing crosses none of them.
-    @Test func growingAnAlreadyCutColumnCrossesNoEdge() {
+    /// A focused column already cut has no edge below the viewport's right one to protect — but the
+    /// reveal holds it against that edge as it grows, so the strip travels left under a viewport whose
+    /// left edge crosses the fixed edges behind: col1's own, 50 out, where it exactly fills the viewport.
+    @Test func growingAnAlreadyCutColumnCatchesWhereItFillsTheViewport() {
         // col1 [500,1450) runs 450 past a 1000-wide viewport.
         let cut = Strip(columnWidths: [500, 950], gap: 0)
         #expect(cut.resizeDetent(ofColumn: 1, growing: true, viewportWidth: 1000, offset: 0,
-                                 centered: false) == nil)
+                                 centered: false) == 50)
         #expect(cut.resizeDetent(ofColumn: 1, growing: false, viewportWidth: 1000, offset: 0,
                                  centered: false) == 450)   // …back to whole
+    }
+
+    /// The right edge is not always the first crossed. A column resting flush against it — every focused
+    /// column at the strip's end, and any the reveal has just pulled in — scrolls the viewport from the
+    /// first point of the delta, freezing the edges from it on against the viewport's right and leaving
+    /// the left edge the only one still sweeping. [300, 300, 600] rests at offset 200 with col0 cut;
+    /// growing col2 catches 100 out, where col1 goes flush left and the pair exactly fill the viewport.
+    @Test func growingAgainstTheRightEdgeCatchesOnTheLeftOne() {
+        let trailing = Strip(columnWidths: [300, 300, 600], gap: 0)
+        #expect(trailing.offsetToReveal(2, viewportWidth: 1000, from: 0) == 200)
+        #expect(trailing.resizeDetent(ofColumn: 2, growing: true, viewportWidth: 1000, offset: 200,
+                                      centered: false) == 100)
+        // Past the notch, the next one is col2's own left edge: col1 gone, col2 filling the viewport.
+        let packed = Strip(columnWidths: [300, 300, 700], gap: 0)
+        #expect(packed.resizeDetent(ofColumn: 2, growing: true, viewportWidth: 1000, offset: 300,
+                                    centered: false) == 300)
+    }
+
+    /// The mirror, on the same strip: shrinking at the far end pulls the viewport off `maxOffset` rather
+    /// than uncovering anything to the right, and the notch is where the column it had cut comes back
+    /// whole — 200 out, the whole strip flush inside the viewport.
+    @Test func shrinkingAtTheFarEndCatchesWhereTheCutColumnComesBackWhole() {
+        let trailing = Strip(columnWidths: [300, 300, 600], gap: 0)
+        #expect(trailing.resizeDetent(ofColumn: 2, growing: false, viewportWidth: 1000, offset: 200,
+                                      centered: false) == 200)
+        // Flush, there is nothing cut left or right, and the strip no longer fills the viewport.
+        let short = Strip(columnWidths: [300, 300, 400], gap: 0)
+        #expect(short.resizeDetent(ofColumn: 2, growing: false, viewportWidth: 1000, offset: 0,
+                                   centered: false) == nil)
     }
 
     /// Centred, both viewport edges sweep at half the width's speed, so the notch is the nearer of the

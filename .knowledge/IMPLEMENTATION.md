@@ -641,8 +641,12 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     bare minimum, but each is widened to the current width when the column is already outside it — so a `grow` on a
     column a config deliberately made wider than the screen is a no-op rather than a sudden shrink to fit.
   - **`resize-detent` catches the knob where the strip goes flush, and a second press pushes past.** A delta that
-    would carry a viewport edge across a column edge is cut short at that edge (`Strip.resizeDetent`); a delta
-    starting *from* one spends in full, because a sweep beginning on an edge crosses none. **The geometry is the
+    would carry a viewport edge across a column edge is cut short at that edge (`Strip.resizeDetent`); a bound
+    already on one crosses nothing of its own, so a delta starting there spends in full. **Both viewport edges
+    are candidates, and uncentred they sweep in sequence.** The right one closes on the columns ahead while the
+    viewport is still; once the focused column rests against it — where the strip's last column always sits, and
+    where a reveal leaves any other — the columns ahead are frozen against it and the left edge is the one crossing
+    the columns behind, over the neighbour a grow evicts or the one a shrink brings back. **The geometry is the
     memory** — nothing records that the last press was clamped, so nothing has to invalidate it when a focus change,
     a new window or an app's `SizeCorrection` moves the strip underneath. Only the continuous verbs catch: a preset
     is an exact intent and ½ has to stay ½, so the ladder and `fullscreen` step past the notch.

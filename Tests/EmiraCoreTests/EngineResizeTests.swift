@@ -314,6 +314,28 @@ import EmiraMotion
         #expect(!Self.showsWhole(s, 1))                           // 100 pt of it off screen
     }
 
+    /// A column resting flush against the viewport's right edge — the strip's last, and any the reveal
+    /// has just pulled in — has nothing ahead of it to catch on, and grows by scrolling the strip out
+    /// from under its own left edge. So the notch is behind it: 300 + 300 + 600 focused at col2 sits at
+    /// offset 200, and 100 of the 200 asked for is what fits before col1 is cut off the left edge.
+    @Test func growingTheTrailingColumnCatchesOnTheColumnBehindIt() {
+        let config = Config(widthPresets: PresetCycle([.proportion(0.3)]), resizeDetent: true,
+                            transitionMode: .off)
+        var s = EngineFix.world(3, config: config)
+        s.layout.setWidthOverride(.proportion(0.6), ofColumn: s.layout.columns[2].id)
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
+        s = EngineFix.settle(s)
+        #expect(Self.showsWhole(s, 1))
+
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(20))))
+        #expect(EngineFix.approxScalar(EngineFix.width(s, 2), 700))    // 100 of the 200 asked for
+        #expect(Self.showsWhole(s, 1))                          // …the neighbour kept, exactly flush
+
+        (s, _) = Engine.reduce(s, .command(.grow(.percent(20))))
+        #expect(EngineFix.approxScalar(EngineFix.width(s, 2), 900))    // …and now the whole 200
+        #expect(!Self.showsWhole(s, 1))                         // 100 pt of it off screen
+    }
+
     /// The way back in, on the same notch: a shrink stops where the column it cut comes back whole. Without
     /// it the packed strip would be a configuration you can only pass through, never land on.
     @Test func shrinkCatchesWhereTheCutColumnComesBackWhole() {

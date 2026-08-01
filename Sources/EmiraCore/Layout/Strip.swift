@@ -131,38 +131,52 @@ public struct Strip: Sendable, Equatable {
 
     // Detents — the edge a resize catches on
 
-    /// How far column `i`'s width may travel before a viewport edge crosses a column edge, or `nil`
-    /// where the sweep crosses none — including from an edge already flush with one, the notch a second
-    /// press passes through. Only columns at or after `i` move with its width.
+    /// How far column `i`'s width may travel before a viewport edge crosses a column edge, or `nil` where
+    /// neither bound crosses one — a bound already flush with an edge included, the notch a second press
+    /// passes through. Only the columns at or after `i` move with its width, and the viewport moves with
+    /// them once the reveal has nowhere else to put the focused column.
     public func resizeDetent(ofColumn i: Int, growing: Bool, viewportWidth: Double, offset: Double,
                              centered: Bool) -> Double? {
         guard i >= 0, i < count else { return nil }
         let viewMax = offset + viewportWidth
-        // The right viewport edge sweeps the right edges of the columns from `i` on. Under `centered`
-        // the left edge sweeps the left edges of those up to `i`, in the opposite direction; otherwise
-        // it is never the first crossed, a reveal only scrolling once the focused column is flush.
+        // The right viewport edge sweeps the right edges of the columns from `i` on — the ones its width
+        // moves — and the left edge the left edges of those up to `i`, which it doesn't. Each bound over
+        // one kind of edge only: the far edge landing on a column's near one is that column gone
+        // entirely, a legitimate arrangement but not one to stop a press at.
         let rights = (i..<count).map { leftEdge(of: $0) + columnWidths[$0] }
         let lefts = (0...i).map { leftEdge(of: $0) }
-        guard !Self.isFlush(rights, viewMax) else { return nil }
-        guard !centered || !Self.isFlush(lefts, offset) else { return nil }
+        // Growing carries the right edge inward, over the last column shown whole, and the left edge
+        // outward, over the first one it evicts; shrinking reverses both.
+        let right = Self.crossing(rights, from: viewMax, ascending: !growing)
+        let left = Self.crossing(lefts, from: offset, ascending: growing)
 
-        // Growing carries the right edge inward, over the last column shown whole; shrinking carries it
-        // outward, over the first one cut.
-        let swept = growing ? rights.last(where: { $0 < viewMax })
-                            : rights.first(where: { $0 > viewMax })
-        let reach = swept.map { abs($0 - viewMax) }
-        guard centered else { return reach }
+        // Centred, the viewport travels half the width with the column, so both edges sweep from the
+        // first point of the delta at half speed — the nearer notch, twice as far off.
+        guard !centered else { return [right, left].compactMap { $0 }.min().map { 2 * $0 } }
 
-        // Centred, the viewport travels half the width with the column, so each edge closes at half
-        // speed — the nearer notch, twice as far off.
-        let mirrored = (growing ? lefts.first(where: { $0 > offset })
-                                : lefts.last(where: { $0 < offset })).map { abs($0 - offset) }
-        return [reach, mirrored].compactMap { $0 }.min().map { 2 * $0 }
+        // Uncentred the two sweep in sequence, not together, because a reveal is the minimal scroll: the
+        // viewport is still — only the right edge closing — until the column's own right edge reaches it
+        // growing, or the shrinking strip's end is pulled off it, which is `drag` away. Past that the
+        // strip travels with the column, freezing every edge from `i` on against the viewport's right,
+        // and the left edge is the only one still crossing anything.
+        let drag = growing ? viewMax - (leftEdge(of: i) + columnWidths[i])
+                           : maxOffset(viewportWidth: viewportWidth) - offset
+        return [right, left.map { drag + $0 }]
+            .compactMap { $0 }
+            .filter { $0 > Self.visibilityTolerance }   // an edge a stale offset is already past
+            .min()
     }
 
-    /// Whether `bound` already sits on one of `edges` — within the tolerance a placement is diffed at,
-    /// since a detent is reached by arithmetic that has to land on it exactly to be left again.
-    private static func isFlush(_ edges: [Double], _ bound: Double) -> Bool {
-        edges.contains { abs($0 - bound) <= visibilityTolerance }
+    /// How far a bound at `at` travels before it crosses one of `edges` — ascending or descending — and
+    /// `nil` where it meets none. `edges` is ascending.
+    ///
+    /// An edge the bound already sits on, within the tolerance a placement is diffed at, is not one it is
+    /// about to cross: a detent is reached by arithmetic that has to land on it exactly to be left again,
+    /// and that notch is what a second press passes through. Taken per bound — being flush at one says
+    /// nothing about what the other is about to reach.
+    private static func crossing(_ edges: [Double], from at: Double, ascending: Bool) -> Double? {
+        let edge = ascending ? edges.first(where: { $0 > at + visibilityTolerance })
+                             : edges.last(where: { $0 < at - visibilityTolerance })
+        return edge.map { abs($0 - at) }
     }
 }
