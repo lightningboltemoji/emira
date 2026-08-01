@@ -9,12 +9,8 @@ import Foundation
 /// The protocol's constants and codec.
 public enum Wire {
 
-    // MARK: - Version
-
     /// Bump whenever `Request`/`Reply` change shape in a way an older peer can't read.
     public static let version = 1
-
-    // MARK: - Socket location
 
     /// Overrides the socket path — the escape hatch for tests and for two daemons side by side.
     public static let socketEnvironmentKey = "EMIRA_SOCKET"
@@ -40,8 +36,6 @@ public enum Wire {
         }
         return "/tmp/emira-\(user).sock"
     }
-
-    // MARK: - Codec
 
     /// Ceiling on one framed message, so a wedged or hostile peer can't grow the read buffer forever.
     public static let maxLineBytes = 1 << 20
@@ -80,8 +74,6 @@ public enum Wire {
     private struct VersionProbe: Decodable {
         let version: Int
     }
-
-    // MARK: - Addressing
 
     /// Build the `sockaddr_un` for a path. `sun_path` truncates silently, so an over-long path must
     /// fail loudly here rather than bind or connect to a different socket than the one named.

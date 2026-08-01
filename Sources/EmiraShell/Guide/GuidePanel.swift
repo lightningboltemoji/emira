@@ -120,7 +120,7 @@ public final class GuidePanel {
         window.orderFrontRegardless()
     }
 
-    // MARK: - A frame
+    // A frame
 
     /// Draw one frame of the guide. `content` is asked only for tiles whose layer is being *built*, so
     /// a still or an icon is resolved once per window rather than once per frame.
@@ -208,8 +208,6 @@ public final class GuidePanel {
         }
     }
 
-    // MARK: - Showing and hiding
-
     /// Show the guide instantly. Written through the animator at zero duration rather than as a bare
     /// assignment, for `Overlay.raise`'s reason: a direct one would be overwritten by the next frame of
     /// a fade still in flight.
@@ -242,7 +240,6 @@ public final class GuidePanel {
         })
     }
 
-    // MARK: - The look
     //
     // Resolved against the app's effective appearance when a layer is built, the way `Reconstruction`
     // resolves its scrim — so the guide follows light/dark from the next rebuild rather than the next

@@ -38,7 +38,7 @@ public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
 
 extension Command {
 
-    // MARK: - Rendering (the canonical spelling)
+    // Rendering (the canonical spelling)
 
     /// This command written as argv words — the spelling `parse` accepts back. Exhaustive on purpose:
     /// a new `Command` case fails to compile here until it is given a spelling and a `verbs` entry.
@@ -63,8 +63,6 @@ extension Command {
         case .dumpState:                      return ["debug"]
         }
     }
-
-    // MARK: - Parsing
 
     /// Read a `Command` from argv-style words (verb first, then its arguments).
     /// - Throws: `CommandSyntaxError`, whose `description` is already a printable diagnostic.
@@ -91,8 +89,6 @@ extension Command {
         return try parse(text.split(whereSeparator: \.isWhitespace).map(String.init))
     }
 
-    // MARK: - Help
-
     /// One indented line per verb, columns aligned. The CLI adds its own header.
     public static var usage: String {
         let width = verbs.map(\.signature.count).max() ?? 0
@@ -101,8 +97,6 @@ extension Command {
             return "  \(verb.signature)\(padding)\(verb.summary)"
         }.joined(separator: "\n")
     }
-
-    // MARK: - The verb table
 
     /// One spelling of one command: canonical name, aliases, argument grammar (for `usage`), a summary,
     /// and how to build it. `build` gets the canonical name, so errors read the same via any alias.
@@ -196,7 +190,7 @@ extension Command {
              build: bare(.dumpState)),
     ]
 
-    // MARK: - Grammar fragments (one spelling, used by both `usage` and the error messages)
+    // Grammar fragments (one spelling, used by both `usage` and the error messages)
 
     private enum Grammar {
         static let direction = "<left|right|up|down>"
@@ -207,8 +201,6 @@ extension Command {
         static let delta = "<Npx|N%>"
         static let commandLine = "<shell command>"
     }
-
-    // MARK: - Argument readers
 
     /// A verb that takes no arguments: any word after it is a typo, not something to ignore.
     private static func bare(_ command: Command) -> @Sendable (String, [String]) throws -> Command {
@@ -311,7 +303,6 @@ extension StringProtocol {
     }
 }
 
-// MARK: - Reference spellings
 //
 // The inverse halves of `parse`'s argument readers; they exist to spell `Command.words`.
 

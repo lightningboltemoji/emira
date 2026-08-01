@@ -66,8 +66,6 @@ import Testing
         #expect(try decoder.decode(Event.self, from: encoder.encode(ours)) == ours)
     }
 
-    // MARK: WindowRole taxonomy
-
     /// Only `.standard` tiles; every other role floats.
     @Test func onlyStandardRoleTiles() {
         #expect(WindowRole.standard.tiles)
@@ -80,8 +78,6 @@ import Testing
         let data = try JSONEncoder().encode([WindowRole.standard, .popover])
         #expect(String(decoding: data, as: UTF8.self) == #"["standard","popover"]"#)
     }
-
-    // MARK: Boundary DTOs
 
     @Test func windowSnapshotRoundTrips() throws {
         let snap = WindowSnapshot(

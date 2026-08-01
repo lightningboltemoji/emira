@@ -32,7 +32,7 @@ import EmiraCore
             && abs(a.width - b.width) <= tol && abs(a.height - b.height) <= tol
     }
 
-    // MARK: - k is the whole projection
+    // k is the whole projection
 
     @Test func theScaleIsWidthOverSpan() {
         #expect(abs(Self.settings(width: 0.3, span: 3).scale - 0.1) < 1e-12)
@@ -55,7 +55,7 @@ import EmiraCore
         #expect(abs(panel.height - 80) < 0.001)         // k × working.height — never configured
     }
 
-    // MARK: - `span` is a ceiling, not a frame
+    // `span` is a ceiling, not a frame
 
     @Test func aStripShorterThanTheSpanShrinksTheGuideToFitIt() throws {
         let settings = Self.settings(width: 0.3, span: 3)
@@ -85,7 +85,7 @@ import EmiraCore
         #expect(abs(panel.width - 300) < 0.001)         // nine screens shown three at a time
     }
 
-    // MARK: - The viewport indicator travels; the guide does not
+    // The viewport indicator travels; the guide does not
 
     @Test func theIndicatorPinsToEitherEndOfALongStripAndCentresBetweenThem() throws {
         let settings = Self.settings(width: 0.3, span: 3)
@@ -127,8 +127,6 @@ import EmiraCore
         #expect(abs(under.width - over.width) < 2)
     }
 
-    // MARK: - The nine anchors
-
     @Test func everyAnchorPlacesThePanelInsideTheWorkingAreaWithItsGap() throws {
         // A 300×80 panel in a 1000×800 area with a 16 pt gap: the free travel is 1000−32−300 = 668
         // horizontally and 800−32−80 = 688 vertically.
@@ -161,7 +159,7 @@ import EmiraCore
         #expect(panel.maxX == 1000)
     }
 
-    // MARK: - What the panel shows
+    // What the panel shows
 
     @Test func thePanelShowsTheStripItself() throws {
         let p = try Self.projection(Self.settings(width: 0.3, span: 3), strip: Self.strip(3))
@@ -188,8 +186,6 @@ import EmiraCore
         #expect(abs(up.height - 80) < 0.001)
     }
 
-    // MARK: - Separation
-
     @Test func separationIsTakenOutInGuidePointsWhateverTheScale() {
         let wide = GuideModel.separated(Rect(x: 0, y: 0, width: 100, height: 80))
         #expect(Self.approx(wide, Rect(x: 1.5, y: 1.5, width: 97, height: 77)))
@@ -206,7 +202,7 @@ import EmiraCore
         #expect(sliver.width == 1)                      // a quarter off each side, never more
     }
 
-    // MARK: - Where the strip divides
+    // Where the strip divides
 
     /// A column of `windows`, and the frames a strip of such columns would resolve to: `width` wide,
     /// full height, `gap` apart, each column's stack sharing its height equally.
@@ -263,8 +259,6 @@ import EmiraCore
         #expect(layout.separators.count == 1)
         #expect(Self.approx(layout.separators[0], Rect(x: 100, y: 0, width: 0, height: 80)))
     }
-
-    // MARK: - Rounding
 
     /// A ribbon-sized container with room for the rule to run in: a 4 pt tile inside a 19 pt curve, so
     /// the conformance is alive over the first 15 pt of approach.
@@ -325,8 +319,6 @@ import EmiraCore
         #expect(c == Corners(topLeft: 17.5, topRight: 3.5, bottomRight: 0, bottomLeft: 3.5))
     }
 
-    // MARK: - The placeholder's padding
-
     /// What fraction of its tile's short side the icon takes.
     static func iconFraction(_ size: Size) -> Double {
         GuideModel.placeholder(in: size).width / min(size.width, size.height)
@@ -366,8 +358,6 @@ import EmiraCore
         #expect(GuideModel.placeholder(in: Size(width: 40, height: 0)) == .zero)
     }
 
-    // MARK: - Off
-
     @Test func theGuideOffHasNoLayoutAndNoTrigger() {
         var state = State(config: Config(guide: Self.settings(style: .off)))
         state.world.setMonitors([MonitorInfo(id: MonitorId(1), frame: Self.working)])
@@ -381,7 +371,7 @@ import EmiraCore
         #expect(GuideModel.trigger(for: state) != nil)  // …but the guide is still on
     }
 
-    // MARK: - A layout over a real strip
+    // A layout over a real strip
 
     /// Two windows on a strip, at rest, with the guide on.
     static func world(_ style: GuideStyle = .placeholder) -> State {
@@ -457,8 +447,6 @@ import EmiraCore
         #expect(layout.ring == nil)
         #expect(layout.tiles.count == 2)                // the strip is still there
     }
-
-    // MARK: - The trigger
 
     @Test func theTriggerReportsAChangeInTheValueNotInTheThingCarryingIt() {
         let state = Self.world()

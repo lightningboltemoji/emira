@@ -17,8 +17,6 @@ import EmiraCore
     static let root = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
 
-    // MARK: - The generated document
-
     /// The golden file. Generated means it cannot drift from the reader; golden means it cannot change
     /// without a human reading the diff — and it is the file the README sends people to.
     @Test func theGeneratedDocumentIsTheGoldenFile() throws {
@@ -58,7 +56,7 @@ import EmiraCore
         }
     }
 
-    // MARK: - Every field of `Config` has a config story
+    // Every field of `Config` has a config story
 
     /// The stored properties of `Config`, by name, described well enough to compare two of them. The
     /// compiler can't check that a field is reachable from the file, so this does — the same trick
@@ -134,7 +132,7 @@ import EmiraCore
         }
     }
 
-    // MARK: - A value from a word
+    // A value from a word
 
     /// The round trip that makes `emira config get` and `emira config set` the same vocabulary: what a
     /// setting prints is what it reads. Driven off the table, so a new entry is exercised without being
@@ -201,7 +199,7 @@ import EmiraCore
         #expect(ConfigSchema.setting(for: "window-rules") == nil)
     }
 
-    // MARK: - The table's own shape
+    // The table's own shape
 
     /// A `Kind` case nothing spells is a shape the table carries for free — the cases are the forms a TOML
     /// value comes in, so *used at all* is the test and a census of the settings is not. The four are

@@ -10,8 +10,6 @@ import EmiraCore
 
 @Suite @MainActor struct HotkeyTests {
 
-    // MARK: - Fixtures
-
     /// A `HotkeyBinder` that records what was asked of it and can be told to refuse chords, the way a
     /// real registry refuses one another app already holds.
     final class FakeBinder: HotkeyBinder {
@@ -82,7 +80,7 @@ import EmiraCore
     static let focusRight = KeyBinding(KeyChord([.option], .l), .focus(.right))
     static let cycleWidth = KeyBinding(KeyChord([.option], .r), .cycleWidth)
 
-    // MARK: - A press is a command
+    // A press is a command
 
     /// A keypress produces the same `Event.command` the socket does, with no translation anywhere.
     @Test func aPressBecomesTheCommandItIsBoundTo() {
@@ -103,8 +101,6 @@ import EmiraCore
         binder.press(Self.focusRight.chord)
         #expect(recorder.events.isEmpty)
     }
-
-    // MARK: - Applying a config
 
     @Test func applyingBindingsTakesThemAll() {
         let binder = FakeBinder()
@@ -149,8 +145,6 @@ import EmiraCore
         binder.press(id: offered)
         #expect(recorder.events.isEmpty)
     }
-
-    // MARK: - Reload
 
     /// Every config change reaches `apply`, including ones that only moved `column-gap`. A chord is a
     /// global resource, so re-taking twenty of them leaves a window where the keystroke reaches
@@ -241,7 +235,7 @@ import EmiraCore
         #expect(binder.live.isEmpty)
     }
 
-    // MARK: - The Carbon half's one testable claim
+    // The Carbon half's one testable claim
 
     /// The keycode table's failure mode is a transposition: two key names sharing one code means one
     /// silently binds the wrong physical key, undetectable at the call site. Injectivity catches it.

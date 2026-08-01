@@ -63,8 +63,6 @@ public struct Column: Sendable, Equatable {
     public var count: Int { windowHeights.count }
     public var isEmpty: Bool { windowHeights.isEmpty }
 
-    // MARK: Height distribution
-
     /// Each window's resolved point height, top→bottom, 1:1 with `windowHeights`. Presets resolve
     /// against the column height; what remains after them and the gaps splits equally among the autos,
     /// clamped at zero. Bounds are water-filled **in both directions**: an auto whose bound rules its
@@ -110,8 +108,6 @@ public struct Column: Sendable, Equatable {
     private func heightBound(at i: Int) -> HeightBound? {
         heightBounds.indices.contains(i) ? heightBounds[i] : nil
     }
-
-    // MARK: Placement
 
     /// Every window's frame, top→bottom: full column width, resolved height, stacked down from
     /// `frame.minY`. 1:1 with `windowHeights`.

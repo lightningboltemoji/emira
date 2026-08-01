@@ -136,7 +136,7 @@ public struct OnboardingModel: Equatable, Sendable {
     /// end of onboarding is a restart, said next to the button that starts it.
     public var status: String {
         isSatisfied
-            ? "emira must be restarted after granting — quit, then open it again."
+            ? "emira must be restarted. quit and reopen."
             : "waiting for \(Self.list(missing))…"
     }
 

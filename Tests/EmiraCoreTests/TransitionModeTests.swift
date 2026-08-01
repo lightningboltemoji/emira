@@ -16,20 +16,18 @@ import Testing
 
 @Suite struct TransitionModeTests {
 
-    // MARK: - Fixtures
-
     /// One full-width column *is* the viewport, so every focus change across columns genuinely scrolls —
-    /// `EngineTests.fullWidth`'s reason, which is what makes a transition open at all.
+    /// `EngineFix.fullWidth`'s reason, which is what makes a transition open at all.
     static func fullWidth(_ mode: TransitionMode) -> Config {
         Config(widthPresets: PresetCycle([.proportion(1.0)]), transitionMode: mode)
     }
 
     /// Three full-width columns at rest, focused on w3.
     static func world(_ mode: TransitionMode) -> State {
-        let (s, _) = EngineTests.run(EngineTests.booted(config: fullWidth(mode)), [
-            .windowCreated(EngineTests.snapshot(1)),
-            .windowCreated(EngineTests.snapshot(2)),
-            .windowCreated(EngineTests.snapshot(3)),
+        let (s, _) = EngineFix.run(EngineFix.booted(config: fullWidth(mode)), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),
+            .windowCreated(EngineFix.snapshot(3)),
         ])
         return s
     }
@@ -48,7 +46,7 @@ import Testing
         return (onScreen, fx + teleports)
     }
 
-    // MARK: - The cover goes up
+    // The cover goes up
 
     /// The distinction from `off`, which is the whole point of having three modes rather than two: a
     /// snapped scroll is still covered, so the AX latency happens behind pixels instead of on screen.
@@ -58,15 +56,15 @@ import Testing
         (s, fx) = Engine.reduce(s, .command(.focus(.left)))
 
         #expect(s.motion.isTransitioning, "snap opens a session; only off declines one")
-        #expect(!EngineTests.capturedIds(in: fx).isEmpty)
+        #expect(!EngineFix.capturedIds(in: fx).isEmpty)
 
         let raised: [Effect]
         (s, raised) = Self.completeCaptures(s)
         #expect(s.motion.isCovered)
-        #expect(EngineTests.hasEffect(raised) { if case .beginTransition = $0 { return true }; return false })
+        #expect(EngineFix.hasEffect(raised) { if case .beginTransition = $0 { return true }; return false })
     }
 
-    // MARK: - …with no clock under it
+    // …with no clock under it
 
     /// The mechanism, asserted directly: no animator is ever created, which is what makes every gate that
     /// reads `isSettled` answer yes from the session's first instant.
@@ -77,8 +75,8 @@ import Testing
         #expect(s.motion.windowAnimators.isEmpty)
         #expect(s.motion.columnWidths.isEmpty)
         #expect(s.motion.isSettled, "the scroll is already at its target, so nothing is in flight")
-        #expect(EngineTests.approxScalar(s.motion.viewportOffset.current,
-                                         s.motion.viewportOffset.target))
+        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current,
+                                       s.motion.viewportOffset.target))
     }
 
     /// The visible claim. The cover's first blit is the *finished* strip — `emitLayerFrames` reads the
@@ -91,9 +89,9 @@ import Testing
         (snap, snapRaise) = Self.completeCaptures(snap)
 
         let layer = try! #require(snap.motion.layerId(for: WindowId(2)))
-        let framed = try! #require(EngineTests.layerFrame(of: layer, in: snapRaise))
+        let framed = try! #require(EngineFix.layerFrame(of: layer, in: snapRaise))
         // w2 is the column being revealed: at rest it fills the viewport from the working-area origin.
-        #expect(EngineTests.approx(framed, Rect(x: 0, y: 0, width: 1000, height: 800)))
+        #expect(EngineFix.approx(framed, Rect(x: 0, y: 0, width: 1000, height: 800)))
 
         // The same instant under `smooth`: the cover goes up on the strip as it *was* — the viewport is
         // still on w3, so w2 is a full screen off to the left — and only then starts moving.
@@ -103,8 +101,8 @@ import Testing
         (smooth, smoothRaise) = Self.completeCaptures(smooth)
 
         let smoothLayer = try! #require(smooth.motion.layerId(for: WindowId(2)))
-        let smoothFramed = try! #require(EngineTests.layerFrame(of: smoothLayer, in: smoothRaise))
-        #expect(EngineTests.approx(smoothFramed, Rect(x: -1000, y: 0, width: 1000, height: 800)))
+        let smoothFramed = try! #require(EngineFix.layerFrame(of: smoothLayer, in: smoothRaise))
+        #expect(EngineFix.approx(smoothFramed, Rect(x: -1000, y: 0, width: 1000, height: 800)))
     }
 
     /// A tick is not part of a snapped transition's story: the cover closes on the AX sets alone, so the
@@ -125,7 +123,7 @@ import Testing
 
         #expect(!s.motion.isTransitioning, "landings alone close it — no tick was fed")
         #expect(fx.contains(.endTransition))
-        #expect(EngineTests.approxScalar(s.motion.viewportOffset.current, 1000))
+        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current, 1000))
     }
 
     /// The tick guard, from the other side: a covered-but-settled tick repeats no frame and emits
@@ -140,8 +138,6 @@ import Testing
         #expect(ticked.motion.isCovered, "and it does not close either — the reals have not landed")
     }
 
-    // MARK: - The placement invariant
-
     /// What all three modes owe: the same resting world. A mode decides what is on screen during the
     /// transition and nothing else — if snap and smooth disagreed here, one of them would be laying out
     /// a different strip rather than animating the same one differently.
@@ -152,17 +148,17 @@ import Testing
             var s = Self.world(mode)
             let fx: [Effect]
             (s, fx) = Engine.reduce(s, .command(.focus(.left)))
-            s = EngineTests.settle(s, fx)
+            s = EngineFix.settle(s, fx)
             resting[mode] = s.motion.viewportOffset.current
             frames[mode] = s.world.windows[WindowId(2)]?.frame
         }
-        #expect(EngineTests.approxScalar(resting[.snap] ?? -1, resting[.smooth] ?? -2))
-        #expect(EngineTests.approxScalar(resting[.off] ?? -1, resting[.smooth] ?? -2))
-        #expect(EngineTests.approx(frames[.snap] ?? .zero, frames[.smooth] ?? .zero))
-        #expect(EngineTests.approx(frames[.off] ?? .zero, frames[.smooth] ?? .zero))
+        #expect(EngineFix.approxScalar(resting[.snap] ?? -1, resting[.smooth] ?? -2))
+        #expect(EngineFix.approxScalar(resting[.off] ?? -1, resting[.smooth] ?? -2))
+        #expect(EngineFix.approx(frames[.snap] ?? .zero, frames[.smooth] ?? .zero))
+        #expect(EngineFix.approx(frames[.off] ?? .zero, frames[.smooth] ?? .zero))
     }
 
-    // MARK: - The other two things a transition covers
+    // The other two things a transition covers
 
     /// A resize under `snap` leaves the width out of `Motion` entirely, and an absent width animator
     /// resolves to the preset the layout now holds — so the cover paints the finished width rather than
@@ -172,13 +168,13 @@ import Testing
     @Test func aSnappedResizeIsCoveredAtTheFinalWidth() {
         let ladder = Config(widthPresets: PresetCycle([.proportion(0.5), .proportion(1.0)]),
                             transitionMode: .snap)
-        var s = EngineTests.world(2, config: ladder)
+        var s = EngineFix.world(2, config: ladder)
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .command(.cycleWidth))
 
         #expect(s.motion.isTransitioning, "a resize is covered under snap")
         #expect(s.motion.columnWidths.isEmpty, "…but the width itself is never animated")
-        #expect(!EngineTests.capturedIds(in: fx).isEmpty)
+        #expect(!EngineFix.capturedIds(in: fx).isEmpty)
     }
 
     /// A structural edit under `snap` must still raise a cover, which is the branch that has to count the
@@ -186,13 +182,13 @@ import Testing
     /// no cover under any mode, and reading that count off an empty animator set would make *every*
     /// snapped edit look invisible.
     @Test func aSnappedStructuralEditIsStillCovered() {
-        var s = EngineTests.world(3, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
-                                                    transitionMode: .snap))
+        var s = EngineFix.world(3, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
+                                                  transitionMode: .snap))
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .command(.moveWindow(.left)))
 
         #expect(s.motion.isTransitioning, "the strip rearranged where someone can see it")
         #expect(s.motion.windowAnimators.isEmpty, "…and nothing was put in motion to show it")
-        #expect(!EngineTests.capturedIds(in: fx).isEmpty)
+        #expect(!EngineFix.capturedIds(in: fx).isEmpty)
     }
 }

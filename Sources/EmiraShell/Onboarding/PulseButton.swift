@@ -97,8 +97,6 @@ final class PulseButton: NSButton {
         layer?.opacity = 1
     }
 
-    // MARK: - The animations
-
     /// Started on reaching a window, not at init: a layer with no window has nothing to commit its
     /// transaction to. They run inside the onboarding window's modal session because Core Animation is
     /// driven by the render server rather than by this process's run loop.

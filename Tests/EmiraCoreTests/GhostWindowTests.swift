@@ -56,7 +56,7 @@ import EmiraMotion
         return s
     }
 
-    /// As `EngineTests.run`: an arrival that *opened* a transition is driven to rest, because building
+    /// As `EngineFix.run`: an arrival that *opened* a transition is driven to rest, because building
     /// a world is setup rather than the thing under test. One that joined a live transition is not.
     static func run(_ start: State, _ events: [Event]) -> (State, [Effect]) {
         var s = start
@@ -87,7 +87,7 @@ import EmiraMotion
         return nil
     }
 
-    // MARK: Focus resting off the strip is an entry condition, not a dead end
+    // Focus resting off the strip is an entry condition, not a dead end
 
     @Test func focusOnANonStripWindowStillLetsFocusReEnterTheStrip() {
         var s = Self.booted()
@@ -120,7 +120,7 @@ import EmiraMotion
                 "the far-right column is reachable again")
     }
 
-    // MARK: A refused write invalidates the optimistic frame it was supposed to confirm
+    // A refused write invalidates the optimistic frame it was supposed to confirm
 
     @Test func aFailedPlacementIsReIssuedRatherThanSkippedForever() {
         // Snapping, because this is about the placement *diff*: the sets want to be in the same batch as
@@ -149,7 +149,7 @@ import EmiraMotion
         #expect(Self.placement(of: WindowId(1), in: retried) == nil)
     }
 
-    // MARK: Arrival — the strip opens for a new window, and it opens beside the focused one
+    // Arrival — the strip opens for a new window, and it opens beside the focused one
 
     @Test func aNewWindowOpensBesideTheFocusedColumnNotAtTheEndOfTheStrip() {
         var s = Self.booted()
@@ -212,7 +212,7 @@ import EmiraMotion
         abs(a.width - b.width) <= tol && abs(a.height - b.height) <= tol
     }
 
-    // MARK: The viewport never rests looking past the end of the strip
+    // The viewport never rests looking past the end of the strip
 
     /// Scroll to the far right, then close columns the viewport is *not* focused on. Focus survives,
     /// so nothing on this path asks to reveal anything — which is exactly how the offset is left
@@ -325,7 +325,7 @@ import EmiraMotion
                 "both surviving columns the viewport can hold are on screen")
     }
 
-    // MARK: A window adopted mid-transition is placed and covered, not dropped
+    // A window adopted mid-transition is placed and covered, not dropped
 
     @Test func aWindowAdoptedDuringATransitionIsPlacedAndCaptured() {
         var s = Self.booted(Self.full)   // full-width columns ⇒ focus across columns really scrolls

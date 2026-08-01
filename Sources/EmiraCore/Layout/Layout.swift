@@ -143,7 +143,6 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.parkFloors = parkFloors
     }
 
-    // MARK: The two viewports
     //
     // Outer gaps split one number in two. *Where does the strip live?* is `contentArea`, the logical
     // viewport — width proportions, column placement and every scroll target frame against it, and
@@ -251,8 +250,6 @@ public struct Layout: Sendable, Equatable, Codable {
 
     public var isEmpty: Bool { columns.isEmpty }
 
-    // MARK: - Membership queries
-
     /// The index of the column containing `id`, or `nil` if the window is not on this strip.
     public func columnIndex(ofWindow id: WindowId) -> Int? {
         columns.firstIndex { $0.windowIds.contains(id) }
@@ -268,8 +265,6 @@ public struct Layout: Sendable, Equatable, Codable {
     public var allWindowIds: [WindowId] {
         columns.flatMap(\.windowIds)
     }
-
-    // MARK: - Structural mutation
 
     /// Sync the column structure to the strip's current membership: departures are dropped along with
     /// any column they empty, newcomers arrive as fresh single-window columns. Surviving columns keep
@@ -365,7 +360,7 @@ public struct Layout: Sendable, Equatable, Codable {
         columns[i].fullscreen = record
     }
 
-    // MARK: - Structural mutation (the strip's editing primitives)
+    // Structural mutation (the strip's editing primitives)
     //
     // The four edits every structural command composes from. All **total** — an unknown id or an
     // out-of-range destination is a silent no-op, and indices *clamp*, which is where the reducer's
@@ -455,8 +450,6 @@ public struct Layout: Sendable, Equatable, Codable {
                        at: to)
         return LayoutEdit(moved: true, destroyedColumn: nil)
     }
-
-    // MARK: - Geometry
 
     /// The resolved `Strip` for these columns against `metrics` — the handle for the reducer's scroll math.
     ///
@@ -687,7 +680,7 @@ public struct Layout: Sendable, Equatable, Codable {
             .flatMap { $0.element.windowIds }
     }
 
-    // MARK: - Scroll targets (thin delegations to `Strip`, keyed by window)
+    // Scroll targets (thin delegations to `Strip`, keyed by window)
     //
     // All three frame against the **logical** viewport (`contentArea.width`) — the opposite choice from
     // the visibility queries above, because "reveal this column" means put it inside the margin rather

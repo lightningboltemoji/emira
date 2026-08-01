@@ -12,8 +12,6 @@ import EmiraCore
 
 @Suite @MainActor struct WritePathTests {
 
-    // MARK: - Fixtures
-
     /// A 1000×800 display at the origin.
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
 
@@ -49,7 +47,7 @@ import EmiraCore
         return s
     }
 
-    // MARK: - Batching: one lane job per app
+    // Batching: one lane job per app
 
     @Test("a batch is grouped into one job per app, in first-touched order")
     func aBatchIsGroupedIntoOneJobPerApp() {
@@ -99,8 +97,6 @@ import EmiraCore
         #expect(writer.placements[0].moves[0].target == Self.rect(-999))
     }
 
-    // MARK: - The unknown window
-
     @Test("a placement for a window the registry never saw fails at once instead of vanishing")
     func anUnknownWindowFailsRatherThanVanishing() {
         // The failure this prevents is a hung cover, not a lost set: a scoped `setFrame` that
@@ -136,7 +132,7 @@ import EmiraCore
         #expect(events.events.isEmpty)
     }
 
-    // MARK: - Landings: the write, and where the window ended up
+    // Landings: the write, and where the window ended up
 
     @Test("a window that lands where it was asked to acks the landing and says nothing else")
     func anExactLandingIsSilentApartFromTheAck() {
@@ -251,7 +247,7 @@ import EmiraCore
         ])
     }
 
-    // MARK: - The rest of the vocabulary
+    // The rest of the vocabulary
 
     @Test("focus and raise are routed to the writer as themselves")
     func focusAndRaiseAreRouted() {
@@ -329,8 +325,6 @@ import EmiraCore
         #expect(writer.placements.isEmpty)
     }
 
-    // MARK: - Through the pump
-
     @Test("a transition closes only once the real windows have landed")
     func aTransitionWaitsForRealLandings() {
         let registry = WindowRegistry()
@@ -374,8 +368,6 @@ import EmiraCore
         #expect(!placed.isEmpty)
         #expect(placed.sorted() == asked.sorted())
     }
-
-    // MARK: - The hold timeout
 
     @Test("the hold is armed when a transition opens and cancelled when it closes")
     func theHoldIsArmedWithTheTransition() {
@@ -467,7 +459,7 @@ import EmiraCore
         #expect(hold.armCount == 2)
     }
 
-    // MARK: - Struts (the number the write path made load-bearing)
+    // Struts (the number the write path made load-bearing)
 
     @Test("struts are the screen minus its visible area, with the vertical edges swapped")
     func strutsSwapTheVerticalEdges() {
@@ -507,8 +499,6 @@ import EmiraCore
         #expect(insets == EdgeInsets.zero)
     }
 }
-
-// MARK: - Doubles
 
 /// Records the `Event`s a subsystem feeds back — the reply address, without a pump behind it.
 @MainActor

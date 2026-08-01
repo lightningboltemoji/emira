@@ -167,7 +167,7 @@ public struct World: Sendable, Equatable, Codable {
         self.lastStripFocus = nil
     }
 
-    // MARK: - Mutators (each folds exactly one truth-plane Event; all are total)
+    // Mutators (each folds exactly one truth-plane Event; all are total)
 
     /// Fold `Event.windowCreated`: record the window and ensure its app exists (a repeat id overwrites).
     /// `isMinimized` is carried through rather than assumed `false` — launch enumeration meets windows
@@ -269,7 +269,7 @@ public struct World: Sendable, Equatable, Codable {
         }
     }
 
-    // MARK: - Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)
+    // Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)
 
     /// Whether a window is currently on the tiled strip: it exists, its own state permits tiling, and its
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.

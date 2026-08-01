@@ -20,14 +20,14 @@ import EmiraMotion
     }
 
     static func world(_ count: UInt64, style: GuideStyle = .placeholder) -> State {
-        EngineTests.world(count, config: config(style))
+        EngineFix.world(count, config: config(style))
     }
 
     static func focus(_ s: State, _ direction: Direction) -> (State, [Effect]) {
         Engine.reduce(s, .command(.focus(direction)))
     }
 
-    /// Tick until the ring has arrived — `EngineTests.settle` stops at the transition, which the ring
+    /// Tick until the ring has arrived — `EngineFix.settle` stops at the transition, which the ring
     /// deliberately outlives.
     static func settleRing(_ start: State) -> State {
         var s = start
@@ -37,7 +37,7 @@ import EmiraMotion
         return s
     }
 
-    // MARK: - The ring travels, and arrives
+    // The ring travels, and arrives
 
     @Test func aFocusChangeSeedsTheRingWithTheTravelBetweenTwoWindows() {
         let s = Self.settleRing(Self.world(2))
@@ -54,7 +54,7 @@ import EmiraMotion
         // A newcomer takes focus, so the ring travels to it — the arrival is a focus change like any
         // other, which is the whole reason `trackFocusRing` sits at the tail of `reduce`.
         let s = Self.settleRing(Self.world(1))
-        let (arrived, fx) = Engine.reduce(s, .windowCreated(EngineTests.snapshot(2)))
+        let (arrived, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(2)))
         _ = fx
         #expect(arrived.motion.focusRing != nil)
         #expect(!arrived.motion.isFocusRingSettled)
@@ -63,7 +63,7 @@ import EmiraMotion
     @Test func theRingSettlesAndTheClockGateFollowsItDown() {
         let (moved, fx) = Self.focus(Self.world(2), .left)
         #expect(moved.motion.needsFrames)
-        var s = EngineTests.settle(moved, fx)
+        var s = EngineFix.settle(moved, fx)
         // `settle` stops as soon as the transition closes; the ring outlives it, so tick on.
         for _ in 0..<600 where s.motion.needsFrames {
             s = Engine.reduce(s, .tick(dt: 1.0 / 120)).0
@@ -87,8 +87,6 @@ import EmiraMotion
         #expect((again.motion.focusRing.map { abs($0.x.velocity) } ?? 0) >= speed)
         #expect(again.motion.focusRingDisplacement.minX > s.motion.focusRingDisplacement.minX)
     }
-
-    // MARK: - The three traps
 
     @Test func aTravellingRingDoesNotHoldTheCoverUp() {
         // The ring is a guide decoration; `isReadyToClose` is the cross-fade. A session with every
@@ -129,14 +127,12 @@ import EmiraMotion
         #expect(motion.needsFrames)                         // …and still asks for frames with no session
     }
 
-    // MARK: - The clock gate
-
     @Test func aFocusChangeThatScrollsNothingStillAsksForFrames() {
         // Two half-width columns share one screen, so focusing across them scrolls nothing and opens no
         // transition — the case the ring needs `needsFrames` for.
         let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                             guide: GuideSettings(style: .placeholder))
-        let s = EngineTests.world(2, config: config)
+        let s = EngineFix.world(2, config: config)
         let (moved, _) = Engine.reduce(s, .command(.focus(.left)))
         #expect(!moved.motion.isTransitioning)              // nothing scrolled
         #expect(moved.motion.needsFrames)                   // and the clock runs anyway
@@ -147,7 +143,7 @@ import EmiraMotion
         // has nothing but the ring to move, and moves it.
         let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                             guide: GuideSettings(style: .placeholder))
-        let s = Self.settleRing(EngineTests.world(2, config: config))
+        let s = Self.settleRing(EngineFix.world(2, config: config))
         let (moved, _) = Engine.reduce(s, .command(.focus(.left)))
         #expect(!moved.motion.isCovered)
         let started = moved.motion.focusRingDisplacement.minX
@@ -155,8 +151,6 @@ import EmiraMotion
         #expect(effects.isEmpty)                            // no cover ⇒ no layer frames
         #expect(ticked.motion.focusRingDisplacement.minX < started)
     }
-
-    // MARK: - Off
 
     @Test func theGuideOffCreatesNoRingAtAll() {
         let (moved, _) = Self.focus(Self.world(2, style: .off), .left)

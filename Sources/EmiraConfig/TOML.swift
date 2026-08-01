@@ -87,7 +87,6 @@ struct TOMLTable: Equatable {
     /// table is still a typo worth catching: `[layuot]` contributes no key to be left over.
     private(set) var tables: [String: TOMLHeader] = [:]
 
-    // MARK: - Consumption
     //
     // Taking the keys it knows and then asking what is left means "unknown key" needs no second list
     // of valid names to drift out of step with the reader.
@@ -152,7 +151,7 @@ struct TOMLTable: Equatable {
         return (keys + headers).sorted { ($0.line, $0.key) < ($1.line, $1.key) }
     }
 
-    // MARK: - Where things were written
+    // Where things were written
     //
     // What an edit needs and the schema never asks for. Read off the pristine table — `take` is
     // destructive, so a document keeps its own uneaten copy.
@@ -180,8 +179,6 @@ struct TOMLTable: Equatable {
         guard let extent = tables[dotted]?.extent else { return }
         tables[dotted]?.extent = extent.lowerBound..<line.upperBound
     }
-
-    // MARK: - Parsing
 
     /// Read a whole config file. Throws on the first thing it cannot read, naming the line.
     static func parse(_ text: String) throws -> TOMLTable {
@@ -293,8 +290,6 @@ struct TOMLTable: Equatable {
     private static func isBareKeyCharacter(_ c: Character) -> Bool {
         c.isLetter || c.isNumber || c == "-" || c == "_"
     }
-
-    // MARK: - Values
 
     /// The right-hand side of a `key = value`, with any trailing comment removed. `lineSpan` is the
     /// whole line, carried down so every value — an array's elements included — knows both the text it
@@ -408,7 +403,6 @@ struct TOMLTable: Equatable {
         return (String(body[..<close]), body[body.index(after: close)...])
     }
 
-    // MARK: - Quote-aware scanning
     //
     // A quoted string may contain the character being looked for: `"#" = "focus left"` is a legal
     // binding line, and a quote-blind comment-stripper would mangle it.
@@ -457,7 +451,6 @@ struct TOMLTable: Equatable {
     }
 }
 
-// MARK: - Spelling
 //
 // The inverse of `value(_:)`, and all of the grammar the writer needs: `ConfigDocument` decides *where*
 // a line goes, this decides how it reads. Only the value being written is ever spelled — a line the
@@ -515,7 +508,7 @@ extension TOMLValue {
     }
 }
 
-// MARK: - Values to be written
+// Values to be written
 //
 // A value handed to `ConfigDocument.set` has no line and no span: it hasn't been written down yet.
 // These are the only way to make one from outside the package, which keeps `Payload` — the grammar's

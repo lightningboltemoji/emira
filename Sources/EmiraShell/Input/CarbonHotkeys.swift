@@ -83,8 +83,6 @@ public final class CarbonHotkeyBinder: HotkeyBinder {
     }
 }
 
-// MARK: - The two translations
-
 extension KeyModifiers {
     /// Our modifier set in the registry's own bit layout. Neither side distinguishes left from right.
     var carbonFlags: UInt32 {

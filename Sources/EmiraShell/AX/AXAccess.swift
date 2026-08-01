@@ -12,8 +12,6 @@ import Foundation
 //  · `@unchecked Sendable` is sound: `AXUIElement` is an immutable CF handle and the AX client API is
 //    callable from any thread. Swift cannot see that through a C type.
 
-// MARK: - Attribute names
-
 // Literals rather than the `kAX…` constants: the SDK exports some as Swift `String`s and omits others
 // entirely (`AXFullScreen` has none).
 private enum AXKey {
@@ -50,8 +48,6 @@ private enum AXAction {
     /// Click a button. Performed on a close button, never on a window.
     static let press = "AXPress"
 }
-
-// MARK: - The application element
 
 /// An application's AX element, and the object the per-app messaging timeout is set on. Created from a
 /// pid — the only place a pid appears above the shell's boundary; the core keys apps by `bundleId`.
@@ -105,8 +101,6 @@ public struct AXApplication: @unchecked Sendable {
         return AXWindow(raw as! AXUIElement)
     }
 }
-
-// MARK: - The window element
 
 /// A window's AX element and the attributes emira reads from it. Every property is a **round trip** —
 /// synchronous Mach IPC into the owning app — so they are read once into an `ObservedWindow` and never
@@ -168,8 +162,6 @@ public struct AXWindow: @unchecked Sendable {
             frame: frame,
             isMinimized: isMinimized)
     }
-
-    // MARK: The write path
 
     @discardableResult
     func setPosition(_ point: Point) -> Bool {
@@ -255,7 +247,7 @@ public struct AXWindow: @unchecked Sendable {
     }
 }
 
-// MARK: - Element identity (the observers' lookup key)
+// Element identity (the observers' lookup key)
 
 extension AXWindow: Hashable {
 
@@ -273,8 +265,6 @@ extension AXWindow: Hashable {
         hasher.combine(CFHash(element))
     }
 }
-
-// MARK: - The tiling taxonomy
 
 extension WindowRole {
 
@@ -308,7 +298,7 @@ extension WindowRole {
     }
 }
 
-// MARK: - CF bridging (the +1/+0 boundary)
+// CF bridging (the +1/+0 boundary)
 
 /// A *Copy* function: it hands back a +1 reference that Swift's `CFTypeRef?` binding takes ownership of.
 /// Every non-`.success` `AXError` collapses to `nil` — at this layer they are the same fact.

@@ -31,7 +31,7 @@ import Testing
         .exec("ghostty"), .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 
-    // MARK: - The two load-bearing properties
+    // The two load-bearing properties
 
     @Test func everyCommandRoundTripsThroughItsWords() throws {
         for command in Self.all {
@@ -58,7 +58,7 @@ import Testing
         #expect(!Command.verbs.contains { $0.matches("config") })
     }
 
-    // MARK: - Canonical spellings (pinned — they're a user-facing contract)
+    // Canonical spellings (pinned — they're a user-facing contract)
 
     @Test func canonicalSpellingsAreStable() {
         #expect(Command.focus(.left).words == ["focus", "left"])
@@ -104,7 +104,7 @@ import Testing
         #expect(try Command.parse(line: "cycle-width") == .cycleWidth)
     }
 
-    // MARK: - `exec`, the one verb whose argument owns its own whitespace
+    // `exec`, the one verb whose argument owns its own whitespace
 
     /// The motivating binding: a shell line whose interior quoting and spacing must survive intact.
     /// Every other verb's argument is a word, so `parse(line:)` splits — for this one it must not.
@@ -136,8 +136,6 @@ import Testing
             try Command.parse(["exec"])
         }
     }
-
-    // MARK: - Diagnostics
 
     @Test func anEmptyInvocationIsNoVerb() {
         #expect(throws: CommandSyntaxError.noVerb) { try Command.parse([]) }
@@ -173,7 +171,7 @@ import Testing
         }
     }
 
-    // MARK: - `grow` / `shrink` arguments
+    // `grow` / `shrink` arguments
 
     /// The unit is points throughout the core, but `px` is what people type — so `100px`, `100pt` and a
     /// bare `100` are one value, and `100px` is the spelling it comes back out as.
@@ -250,8 +248,6 @@ import Testing
         }
         #expect(error == .tooManyArguments(verb: "debug", extra: ["now"]))
     }
-
-    // MARK: - Help
 
     @Test func usageListsEveryVerbWithItsGrammarInAlignedColumns() {
         let lines = Command.usage.split(separator: "\n").map(String.init)

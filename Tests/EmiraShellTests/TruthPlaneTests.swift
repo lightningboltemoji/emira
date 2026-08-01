@@ -10,8 +10,6 @@ import EmiraCore
 // are permanent, so its refusals are asserted as hard as its matches), the registry, the enumerator's
 // fan-out over N apps, and the one-serial-lane-per-app discipline.
 
-// MARK: - Fixtures
-
 /// A frame at a distinct place, so "same window" and "different window" are never accidental.
 private func rect(_ x: Double, _ y: Double = 0, w: Double = 640, h: Double = 460) -> Rect {
     Rect(x: x, y: y, width: w, height: h)
@@ -47,8 +45,6 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
                    onScreen: Bool = true) -> WindowListEntry {
     WindowListEntry(number: number, pid: pid, frame: frame, isOnScreen: onScreen)
 }
-
-// MARK: - The tiling taxonomy
 
 @Suite struct WindowTaxonomyTests {
 
@@ -105,8 +101,6 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXSomethingNew", isFullScreen: false) == .other)
     }
 }
-
-// MARK: - The identity join
 
 @Suite struct WindowIdentityTests {
 
@@ -231,8 +225,6 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 }
 
-// MARK: - The registry
-
 @Suite @MainActor struct WindowRegistryTests {
 
     /// A distinct AX element per window: `adopt` refuses to bind one element to two window numbers.
@@ -337,8 +329,6 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(registry.id(for: element) == nil)
     }
 }
-
-// MARK: - The enumerator's orchestration
 
 @Suite @MainActor struct AXEnumeratorTests {
 
@@ -566,7 +556,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
     }
 }
 
-// MARK: - The AX lane discipline
+// The AX lane discipline
 
 @Suite @MainActor struct AXClientTests {
 

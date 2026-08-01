@@ -7,7 +7,7 @@ import Foundation
 /// One input to the reducer, grouped below by source.
 public enum Event: Sendable, Equatable, Codable {
 
-    // MARK: Commands & the frame clock
+    // Commands & the frame clock
 
     /// A command from any surface — CLI, hotkey, or config binding.
     case command(Command)
@@ -15,7 +15,7 @@ public enum Event: Sendable, Equatable, Codable {
     /// A display-link frame; every animator advances by `dt` seconds. Only emitted mid-transition.
     case tick(dt: Double)
 
-    // MARK: Truth-plane observations (AX + `NSWorkspace`) — reality folded into `World`
+    // Truth-plane observations (AX + `NSWorkspace`) — reality folded into `World`
 
     /// A new manageable window appeared, its `WindowId` already minted and bound to a `CGWindowID`.
     case windowCreated(WindowSnapshot)
@@ -43,19 +43,15 @@ public enum Event: Sendable, Equatable, Codable {
     /// A global mouse-up: the end of a possible drag, on which a drifted tiled window re-tiles.
     case dragEnded
 
-    // MARK: Configuration
-
     /// The config file parsed successfully; the core adopts the values and re-lays out in place. Only
     /// successful parses reach the core — a syntax error logs a diagnostic and emits nothing.
     case configChanged(Config)
-
-    // MARK: Display hotplug
 
     /// The set of displays changed. Carries the full monitor set in system enumeration order, which
     /// decides which display the strip is laid out against (`State.metrics()` takes the first).
     case screensChanged([MonitorInfo])
 
-    // MARK: Effect feedback — every effect's result is just another event
+    // Effect feedback — every effect's result is just another event
 
     /// A `setFrame`/`park` landed at its AX target. The bounded wait on these is what closes a transition.
     case axLanded(WindowId)

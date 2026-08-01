@@ -95,8 +95,6 @@ public final class SurfaceCache {
     /// How many stills are kept.
     public var count: Int { entries.count }
 
-    // MARK: - Reduction
-
     /// One capture at cache resolution, or `nil` if the pixels could not be redrawn — keeping nothing is
     /// safe, since a miss costs latency and never accuracy. `nonisolated` so the scale-down runs off the
     /// main actor.

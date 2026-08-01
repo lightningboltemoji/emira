@@ -15,7 +15,7 @@ import Testing
         WindowSnapshot(id: WindowId(id), bundleId: bundleId, title: title, role: role, frame: frame)
     }
 
-    // MARK: insert / app grouping
+    // insert / app grouping
 
     @Test func insertRecordsWindowAndMintsApp() {
         var world = World()
@@ -57,7 +57,7 @@ import Testing
         #expect(world.windowIds(inApp: "com.apple.Safari") == [WindowId(1), WindowId(2)])
     }
 
-    // MARK: remove — focus integrity + app ref-counting
+    // remove — focus integrity + app ref-counting
 
     @Test func removeDropsWindowAndClearsFocusWhenItWasFocused() {
         var world = World()
@@ -98,7 +98,7 @@ import Testing
         #expect(world.apps.count == 1)
     }
 
-    // MARK: updateFrame / setMinimized — tolerant of unknown ids
+    // updateFrame / setMinimized — tolerant of unknown ids
 
     @Test func updateFrameUpdatesKnownAndIgnoresUnknown() {
         var world = World()
@@ -110,7 +110,7 @@ import Testing
         #expect(world.windows.count == 1)
     }
 
-    // MARK: strip participation (the taxonomy, derived)
+    // strip participation (the taxonomy, derived)
 
     @Test func onlyStandardNonMinimizedNonHiddenWindowsAreOnTheStrip() {
         var world = World()
@@ -161,8 +161,6 @@ import Testing
         #expect(world.stripWindowIds == [1, 3, 5, 7, 10].map { WindowId($0) })
     }
 
-    // MARK: focus
-
     @Test func focusStoresAndClearsAndResolvesToRecord() {
         var world = World()
         world.insert(Self.snap(1, "com.apple.Safari", title: "Focused"))
@@ -174,8 +172,6 @@ import Testing
         #expect(world.focusedWindow == nil)
         #expect(world.focusedWindowState == nil)
     }
-
-    // MARK: monitors
 
     @Test func setMonitorsPreservesEnumerationOrderAndUpdatesFrames() {
         var world = World()
@@ -195,7 +191,7 @@ import Testing
         #expect(world.monitors.first?.frame == Rect(x: 0, y: 0, width: 3000, height: 2000))
     }
 
-    // MARK: serialization (state dump / golden replay)
+    // serialization (state dump / golden replay)
 
     @Test func populatedWorldRoundTripsThroughCodable() throws {
         var world = World()

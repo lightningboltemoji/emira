@@ -43,8 +43,6 @@ enum ConfigCommand {
         }
     }
 
-    // MARK: - The subcommands
-
     /// Parse the file and say nothing when it reads — the same reading the daemon does, including what
     /// it makes of a file that isn't there.
     private static func check(_ arguments: [String]) -> Int32 {
@@ -122,8 +120,6 @@ enum ConfigCommand {
         }
     }
 
-    // MARK: - The file
-
     private static var path: String { Config.defaultPath() }
 
     /// The file's text. An absent file reads as empty, which is the same thing the daemon makes of one.
@@ -170,8 +166,6 @@ enum ConfigCommand {
         }
         try Data(text.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
     }
-
-    // MARK: - Complaints
 
     /// `path:line: message`, which is what the daemon logs and what an editor's error parser reads.
     private static func diagnostic(_ error: ConfigSyntaxError) -> String {

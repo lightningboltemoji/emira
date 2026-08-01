@@ -10,16 +10,14 @@ import Testing
 // the viewport, switched a workspace or raised a cover would be the transition the user is trying to
 // stop seeing.
 //
-// Everything snaps (`transitionMode: .off`) for `EngineTests.halfWidthSnap`'s reason, except where
+// Everything snaps (`transitionMode: .off`) for `EngineFix.halfWidthSnap`'s reason, except where
 // a raised cover is the thing under test.
 
 @Suite struct SystemFocusEventTests {
 
-    // MARK: - Fixtures
-
     /// Two ½-width columns fill the 1000-pt viewport exactly, so a two-window world is entirely on
     /// screen and a third column is unambiguously off it.
-    static let twoUp = EngineTests.halfWidthSnap
+    static let twoUp = EngineFix.halfWidthSnap
 
     /// One full-width column *is* the viewport, so column *n* is on screen only at offset 1000*n*.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
@@ -32,11 +30,11 @@ import Testing
     }
 
     private func world(_ count: UInt64, _ mode: SystemFocusEvents, _ base: Config = twoUp) -> State {
-        EngineTests.world(count, config: Self.policy(mode, base))
+        EngineFix.world(count, config: Self.policy(mode, base))
     }
 
     private func run(_ s: State, _ events: [Event]) -> (State, [Effect]) {
-        EngineTests.run(s, events)
+        EngineFix.run(s, events)
     }
 
     /// One system focus event — the thing the config key is named for: a report nobody here asked for,
@@ -74,7 +72,7 @@ import Testing
         #expect(after.world.focusedWindow == id, sourceLocation: sourceLocation)
     }
 
-    // MARK: - The bug this exists for
+    // The bug this exists for
 
     /// An app bringing its own parked window forward from a workspace nobody is looking at — dismissing
     /// a floating reminder is enough — drags the whole desktop to that workspace under `respect`. That
@@ -113,7 +111,7 @@ import Testing
         }
     }
 
-    // MARK: - `on-screen`: honoured iff you can already see it
+    // `on-screen`: honoured iff you can already see it
 
     /// The compromise the mode is named for. Two ½-width columns fill the viewport, so clicking the
     /// neighbour is a focus change that reveals nothing — and there is nothing to protect the user from.
@@ -142,7 +140,7 @@ import Testing
     @Test func onScreenAdmitsAFloatBecauseAFloatIsInView() {
         var s = world(2, .onScreen, Self.oneColumn)
         let dialog = WindowId(9)
-        s = run(s, [.windowCreated(EngineTests.snapshot(9, role: .dialog))]).0
+        s = run(s, [.windowCreated(EngineFix.snapshot(9, role: .dialog))]).0
         #expect(s.world.isFloating(dialog))
         #expect(s.workspaces.workspace(of: dialog) == nil, "a float is on no strip")
         s = run(s, [systemEvent(WindowId(2))]).0        // put focus somewhere refusable-from
@@ -178,7 +176,7 @@ import Testing
         expectRefused(s, systemEvent(WindowId(1)))
     }
 
-    // MARK: - `ignore`: honoured only for windows emira does not place
+    // `ignore`: honoured only for windows emira does not place
 
     /// The strictest mode takes focus between tiled windows for emira alone, so even a click on the
     /// visible neighbour bounces — the one thing `on-screen` exists to keep.
@@ -195,7 +193,7 @@ import Testing
     @Test func ignoreStillAdmitsAWindowEmiraDoesNotPlace() {
         var s = world(2, .ignore)
         let sheet = WindowId(9)
-        s = run(s, [.windowCreated(EngineTests.snapshot(9, role: .sheet))]).0
+        s = run(s, [.windowCreated(EngineFix.snapshot(9, role: .sheet))]).0
         #expect(s.world.isFloating(sheet))
 
         expectAdmitted(s, systemEvent(sheet), sheet)
@@ -215,7 +213,7 @@ import Testing
         func admitted(_ mode: SystemFocusEvents) -> Set<WindowId> {
             var s = world(4, mode, Self.twoUp)
             s = run(s, [moveToWorkspace("3")]).0                             // window 4 goes away
-            s = run(s, [.windowCreated(EngineTests.snapshot(9, role: .dialog))]).0   // a float
+            s = run(s, [.windowCreated(EngineFix.snapshot(9, role: .dialog))]).0   // a float
             s = run(s, [.windowMinimized(WindowId(1))]).0                    // and one in the Dock
             #expect(s.world.focusedWindow == focus, "\(mode) lost its footing")
             #expect(onScreen(s) == [WindowId(2), focus], "\(mode): \(onScreen(s))")
@@ -233,7 +231,7 @@ import Testing
         #expect(strictest.isSubset(of: middle) && middle.isSubset(of: loosest))
     }
 
-    // MARK: - What is never refused, whatever the policy
+    // What is never refused, whatever the policy
 
     /// Our own echo. The reducer wrote that focus optimistically when it emitted the effect, so a policy
     /// that could refuse it would make every focus command emira issues fight itself — and `ignore`,
@@ -248,7 +246,7 @@ import Testing
         #expect(focused(in: fx) == [WindowId(2)])
         // …and the AX echo of that announcement comes back, naming a window `ignore` would refuse from
         // any other source. Absorbed, not fought.
-        let settled = EngineTests.settle(moved, fx)
+        let settled = EngineFix.settle(moved, fx)
         let (echoed, echoFx) = Engine.reduce(settled, .focusChanged(WindowId(2), origin: .ours))
         #expect(echoFx.isEmpty, "the echo produced \(echoFx)")
         #expect(echoed.world.focusedWindow == WindowId(2))
@@ -271,7 +269,7 @@ import Testing
     @Test func aNewWindowStillTakesFocusUnderIgnore() {
         var s = world(2, .ignore)
         s = run(s, [systemEvent(nil)]).0                    // the clear that precedes every ⌘N
-        let (after, _) = run(s, [.windowCreated(EngineTests.snapshot(3))])
+        let (after, _) = run(s, [.windowCreated(EngineFix.snapshot(3))])
         #expect(after.world.focusedWindow == WindowId(3))
     }
 
@@ -375,7 +373,7 @@ import Testing
         #expect(s.world.focusedWindow == WindowId(3))
 
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(3)))
-        #expect(!EngineTests.hasEffect(fx) { if case .focus = $0 { return true }; return false })
+        #expect(!EngineFix.hasEffect(fx) { if case .focus = $0 { return true }; return false })
         #expect(after.world.focusedWindow == WindowId(3))
     }
 
@@ -384,28 +382,26 @@ import Testing
     /// daemon sees, on a strip it cannot yet lay out.
     @Test func nothingIsRefusedBeforeADisplayIsKnown() {
         var s = State(config: Self.policy(.ignore, Self.twoUp))
-        for raw in UInt64(1)...2 { s = Engine.reduce(s, .windowCreated(EngineTests.snapshot(raw))).0 }
+        for raw in UInt64(1)...2 { s = Engine.reduce(s, .windowCreated(EngineFix.snapshot(raw))).0 }
         #expect(s.metrics() == nil)
 
         expectAdmitted(s, systemEvent(WindowId(1)), WindowId(1))
     }
-
-    // MARK: - Mid-transition
 
     /// The predicate reads `World.placedOnScreen`. **Under a raised cover** that is the destination's set,
     /// because `teleportBehindCover` moved the real windows there the moment the cover went up — so a
     /// window the scroll is travelling *to* is already on screen, and refusing it would fight a reveal in
     /// flight.
     @Test func aWindowTheLiveScrollIsHeadedForCountsAsOnScreen() {
-        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        var config = Self.policy(.onScreen, EngineFix.fullWidth)
         config.transitionMode = .smooth
-        var s = EngineTests.world(3, config: config)
+        var s = EngineFix.world(3, config: config)
         #expect(s.world.focusedWindow == WindowId(3))
 
         // Scroll left to window 1 and raise the cover, but do not let it settle.
         var (moving, fx) = Engine.reduce(s, .command(.focus(.left)))
         (moving, fx) = Engine.reduce(moving, .command(.focus(.left)))
-        for id in EngineTests.capturedIds(in: fx) {
+        for id in EngineFix.capturedIds(in: fx) {
             (moving, _) = Engine.reduce(moving, .captureReady(id))
         }
         (moving, _) = Engine.reduce(moving, .coverOnScreen)
@@ -423,9 +419,9 @@ import Testing
     /// Reading the destination here refuses the window still on the glass and yanks focus back off the
     /// click that landed on it.
     @Test func aWindowStillOnScreenThroughTheCaptureHeadIsNotRefused() {
-        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        var config = Self.policy(.onScreen, EngineFix.fullWidth)
         config.transitionMode = .smooth
-        var s = EngineTests.world(3, config: config)
+        var s = EngineFix.world(3, config: config)
         #expect(s.world.focusedWindow == WindowId(3))
         #expect(onScreen(s) == [WindowId(3)])
 
@@ -444,9 +440,9 @@ import Testing
     /// writing *both* ends of the offset, so there is no animator left holding where the windows are. Only
     /// the placement's own record survives that, and the reals do not move until the raise either way.
     @Test func aWindowStillOnScreenThroughASnappedCaptureHeadIsNotRefused() {
-        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        var config = Self.policy(.onScreen, EngineFix.fullWidth)
         config.transitionMode = .snap
-        var s = EngineTests.world(3, config: config)
+        var s = EngineFix.world(3, config: config)
         #expect(onScreen(s) == [WindowId(3)])
         let placed = s.world.placedOnScreen
 
@@ -467,9 +463,9 @@ import Testing
     /// and reports an empty desktop. Judged that way, a click on the window physically filling the display
     /// is refused, and the refusal is an AX write that takes focus off it.
     @Test func aStructuralEditInTheCaptureHeadDoesNotStrandTheRecord() {
-        var config = Self.policy(.onScreen, EngineTests.fullWidth)
+        var config = Self.policy(.onScreen, EngineFix.fullWidth)
         config.transitionMode = .smooth
-        var s = EngineTests.world(3, config: config)
+        var s = EngineFix.world(3, config: config)
         #expect(onScreen(s) == [WindowId(3)])       // three full-width columns; w3 fills the screen
 
         (s, _) = Engine.reduce(s, .command(.focus(.left)))

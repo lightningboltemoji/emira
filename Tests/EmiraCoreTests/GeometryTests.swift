@@ -5,8 +5,6 @@ import Testing
 /// The virtual-strip geometry primitives — top-left origin, framework-free.
 @Suite struct GeometryTests {
 
-    // MARK: Point / Size
-
     @Test func pointOffsetMovesDownOnPositiveDy() {
         // Top-left origin: +dy is *down*.
         let p = Point(x: 10, y: 20).offsetBy(dx: 5, dy: 3)
@@ -21,7 +19,7 @@ import Testing
         #expect(!Size(width: 1, height: 1).isEmpty)
     }
 
-    // MARK: Rect edges — the top-left convention
+    // Rect edges — the top-left convention
 
     @Test func edgesFollowTopLeftOrigin() {
         let r = Rect(x: 100, y: 200, width: 30, height: 40)
@@ -45,7 +43,7 @@ import Testing
         #expect(!r.isEmpty)
     }
 
-    // MARK: contains — half-open [min, max)
+    // contains — half-open [min, max)
 
     @Test func containsIsHalfOpen() {
         let r = Rect(x: 0, y: 0, width: 10, height: 10)
@@ -61,7 +59,7 @@ import Testing
         #expect(!r.contains(Point(x: 5, y: 5)))
     }
 
-    // MARK: intersects — strict positive-area overlap
+    // intersects — strict positive-area overlap
 
     @Test func intersectsDetectsOverlap() {
         let a = Rect(x: 0, y: 0, width: 10, height: 10)
@@ -77,8 +75,6 @@ import Testing
         #expect(!a.intersects(Rect(x: 20, y: 0, width: 5, height: 5)))   // fully disjoint
     }
 
-    // MARK: intersection
-
     @Test func intersectionReturnsOverlapRegion() {
         let a = Rect(x: 0, y: 0, width: 10, height: 10)
         let b = Rect(x: 5, y: 5, width: 10, height: 10)
@@ -90,8 +86,6 @@ import Testing
         #expect(a.intersection(Rect(x: 10, y: 0, width: 5, height: 5)) == nil) // edge-touch
         #expect(a.intersection(Rect(x: 50, y: 50, width: 5, height: 5)) == nil) // disjoint
     }
-
-    // MARK: union
 
     @Test func unionIsBoundingBox() {
         let a = Rect(x: 0, y: 0, width: 10, height: 10)
@@ -105,8 +99,6 @@ import Testing
         #expect(Rect.zero.union(r) == r)
         #expect(r.union(.zero) == r)
     }
-
-    // MARK: offset / inset
 
     @Test func offsetByTranslatesWithoutResizing() {
         let r = Rect(x: 10, y: 10, width: 30, height: 40).offsetBy(dx: 5, dy: -3)
@@ -132,7 +124,7 @@ import Testing
         #expect(r.inset(by: EdgeInsets(uniform: 8)) == Rect(x: 8, y: 8, width: 84, height: 84))
     }
 
-    // MARK: The crop — where `WindowAnimation.crop` pins a still
+    // The crop — where `WindowAnimation.crop` pins a still
     //
     // The anchor, and only the anchor: the *cutting* is the compositor's rounded clip, so this
     // deliberately answers a rect that overflows rather than one that fits.
@@ -179,8 +171,6 @@ import Testing
         #expect(placed.maxX < rect.maxX)                         // grown: room to spare on the right
         #expect(placed.maxY > rect.maxY)                         // shrunk: overflowing below
     }
-
-    // MARK: Codable
 
     @Test func rectRoundTripsThroughCodable() throws {
         let original = Rect(x: -12.5, y: 34, width: 100, height: 200)

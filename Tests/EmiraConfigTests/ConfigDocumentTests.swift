@@ -12,8 +12,6 @@ import EmiraCore
 
 @Suite struct ConfigDocumentTests {
 
-    // MARK: - Fixtures
-
     /// One fixture, named so a failure says which shape broke.
     struct File: Sendable, CustomStringConvertible {
         let name: String
@@ -139,8 +137,6 @@ import EmiraCore
         return zip(old, new).filter { $0 != $1 }.map { String($1) }
     }
 
-    // MARK: - Round-trip identity
-
     @Test(arguments: corpus)
     func aDocumentRendersBackByteForByte(_ file: File) throws {
         #expect(try ConfigDocument(file.text).rendered == file.text)
@@ -159,8 +155,6 @@ import EmiraCore
         let fromDocument = #expect(throws: ConfigSyntaxError.self) { _ = try ConfigDocument(broken) }
         #expect(fromDocument?.description == fromParse?.description)
     }
-
-    // MARK: - set
 
     @Test func settingAValueTheFileAlreadyHasMovesExactlyOneLine() throws {
         var document = try ConfigDocument(Self.real)
@@ -289,8 +283,6 @@ import EmiraCore
         #expect(document.config.columnGap == 20)
     }
 
-    // MARK: - remove
-
     @Test func removingAKeyTheFileDoesNotSetIsANoOp() throws {
         var document = try ConfigDocument(Self.real)
         try document.remove("layout.center-focused-column")
@@ -325,8 +317,6 @@ import EmiraCore
         try document.remove("layout.window-gap")
         #expect(document.rendered == "[layout]\ncolumn-gap = 8")
     }
-
-    // MARK: - Spelling
 
     /// The writer's half of the grammar, pinned exactly: these are the bytes that land in a file.
     @Test func valuesAreSpelledTheWayTheFileWritesThem() {

@@ -73,7 +73,7 @@ public enum Permissions {
         CGRequestScreenCaptureAccess() ? .granted : .denied
     }
 
-    // MARK: - Asking again, from outside
+    // Asking again, from outside
 
     /// The argument `emira-daemon` answers with the Screen Recording grant and nothing else.
     public static let captureProbeFlag = "--probe-capture"

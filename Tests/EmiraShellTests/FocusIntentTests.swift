@@ -40,7 +40,7 @@ import EmiraCore
     static let w2 = WindowId(2)
     static let w3 = WindowId(3)
 
-    // MARK: - isCurrent: which activation is still wanted
+    // isCurrent: which activation is still wanted
 
     @Test func aTicketIsCurrentUntilSomethingNewerIsAskedFor() {
         let intent = Self.intent(ManualScheduler())
@@ -73,7 +73,7 @@ import EmiraCore
         #expect(intent.resolve(Self.w1) == .external)   // …but off the record, so no longer ours
     }
 
-    // MARK: - resolve: which report is news
+    // resolve: which report is news
 
     @Test func aReportWithNothingOutstandingIsExternal() {
         let intent = Self.intent(ManualScheduler())
@@ -120,8 +120,6 @@ import EmiraCore
         #expect(intent.resolve(Self.w1) == .stale)
         #expect(intent.resolve(Self.w1) == .stale)
     }
-
-    // MARK: - The grace
 
     @Test func theRecordClearsAfterTheGraceSoRealFocusIsNeverLostForGood() {
         let clock = ManualScheduler()

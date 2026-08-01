@@ -10,8 +10,6 @@ import EmiraCore
 // early" retries, move coalescing, and teardown ordering. The event stream is asserted against the
 // `EventSink` the daemon really wires up, so these say what the core would be told.
 
-// MARK: - Fixtures
-
 private func rect(_ x: Double, _ y: Double = 0, w: Double = 600, h: Double = 400) -> Rect {
     Rect(x: x, y: y, width: w, height: h)
 }
@@ -29,8 +27,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
                                  frame: frame, isMinimized: false),
         element: element(seed))
 }
-
-// MARK: - Doubles
 
 /// A `WindowSource` answering from arrays, scoped to whatever app set it is asked about.
 @MainActor private final class StubWindowSource: WindowSource {
@@ -201,7 +197,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var watchedAtFirstCreate: Int?
 }
 
-// MARK: - The world under test
+// The world under test
 
 /// The fixture, named `LiveWorld` rather than `World` so it can't shadow `EmiraCore.World`.
 @MainActor private struct LiveWorld {
@@ -259,7 +255,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - Scans that overlap
 //
 // Four rapid ⌘N presses produce four `windowAppeared` notifications for one app. Answering each with
 // its own full re-scan floods that app's single serial AX lane, so each answer is joined against a
@@ -326,8 +321,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(offers.last?.1 == [term].compactMap { $0 })
     }
 }
-
-// MARK: - Adoption
 
 @Suite @MainActor struct WorldWatcherAdoptionTests {
 
@@ -436,7 +429,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - The two "asked too early" races
+// The two "asked too early" races
 
 @Suite @MainActor struct WorldWatcherRetryTests {
 
@@ -538,7 +531,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - Frame reads (the coalescer)
+// Frame reads (the coalescer)
 
 @Suite @MainActor struct WorldWatcherFrameTests {
 
@@ -589,8 +582,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - Teardown
-
 @Suite @MainActor struct WorldWatcherTeardownTests {
 
     @Test func aQuitAppTakesItsWindowsItsObserverAndItsLaneWithIt() {
@@ -636,7 +627,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.registry.record(two) != nil, "and only the one window left")
     }
 
-    // MARK: The destroy that waits for one answer
+    // The destroy that waits for one answer
     //
     // A destroyed element is not always a window leaving the strip: ⌘W on a native tab group destroys
     // the selected tab and the group carries on under the next one. Only a scan can see the successor,
@@ -803,8 +794,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 }
 
-// MARK: - The pass-throughs
-
 @Suite @MainActor struct WorldWatcherEventTests {
 
     @Test func minimizeDeminimizeFocusAndMouseUpBecomeTheirEvents() {
@@ -835,7 +824,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil, origin: .system)])
     }
 
-    // MARK: Focus reports that are our own, arriving late
+    // Focus reports that are our own, arriving late
     //
     // `Effect.focus` provokes the same notification a Cmd-Tab does, and it comes back across per-app AX
     // lanes with no order between them. Spam `focus` across a slow app and a fast one and an echo lands
@@ -930,7 +919,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
     }
 
-    // MARK: Focus reports macOS made up
+    // Focus reports macOS made up
     //
     // An app that loses its key window picks a replacement and announces it, byte-identical to what a
     // Cmd-Tab produces. Told apart by the only fact that separates them: whether the window the report
@@ -1044,8 +1033,6 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.recorder.events.count == before)
     }
 }
-
-// MARK: - Reconciliation
 
 @Suite @MainActor struct WorldWatcherReconcileTests {
 

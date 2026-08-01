@@ -207,7 +207,7 @@ public final class WorldWatcher {
         }
     }
 
-    // MARK: - Retirement (the destroy that waits for one answer)
+    // Retirement (the destroy that waits for one answer)
 
     /// Whether a window is still one the core should hear about. A vanished window is not: its element
     /// is destroyed and the only thing still open about it is where its *id* goes.
@@ -260,7 +260,7 @@ public final class WorldWatcher {
         emit(.windowDestroyed(id))
     }
 
-    // MARK: - Reconciliation (the standing question the notification stream cannot answer)
+    // Reconciliation (the standing question the notification stream cannot answer)
 
     /// Ask the window server what is on screen, and scan any app holding a window emira does not manage.
     ///
@@ -303,8 +303,6 @@ public final class WorldWatcher {
         // did not watch open, so the core keeps its existing width rather than snapping it to a preset.
         scan(Array(targets.values), attempt: 0, alreadyOpen: true)
     }
-
-    // MARK: - Scanning
 
     /// Scan a set of apps and absorb the result, carrying the attempt number so the report knows whether
     /// it may ask again.
@@ -426,7 +424,7 @@ public final class WorldWatcher {
         }
     }
 
-    // MARK: - Focus (the report that isn't self-describing)
+    // Focus (the report that isn't self-describing)
 
     /// Pass a focus report to the core — unless it is our own stale echo, or macOS backfilling the
     /// window that just died.
@@ -486,7 +484,7 @@ public final class WorldWatcher {
         }
     }
 
-    // MARK: - Frame reads (the coalescer)
+    // Frame reads (the coalescer)
 
     /// Read one window's frame, then honour at most one move that arrived while we were asking.
     private func readFrame(of id: WindowId) {

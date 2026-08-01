@@ -47,8 +47,6 @@ public final class Reconstruction: CoverSurface {
         self.animation = animation
     }
 
-    // MARK: - CoverSurface
-
     public func beginFrame() {
         CATransaction.begin()
         // The core computes every frame's position; without this each blit starts an implicit 0.25 s
@@ -115,8 +113,6 @@ public final class Reconstruction: CoverSurface {
             completion()
         }
     }
-
-    // MARK: - Layers
 
     /// Mint and install one layer per binding, bottom→top. A binding whose layer already exists is
     /// skipped. A window with no still gets no layer, and the base shows through where it was.
@@ -206,8 +202,6 @@ public final class Reconstruction: CoverSurface {
         for layer in layers.values { layer.root.removeFromSuperlayer() }
         layers.removeAll()
     }
-
-    // MARK: - The crop's cosmetics
 
     /// The wash over the space a growing window has yet to fill. Translucent so the desktop behind it
     /// shows through; `windowBackgroundColor` follows the user's light/dark appearance for free.

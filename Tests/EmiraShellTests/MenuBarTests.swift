@@ -11,8 +11,6 @@ import EmiraCore
 
 @Suite @MainActor struct MenuBarTests {
 
-    // MARK: - The title
-
     @Test func titleIsTheFocusedWorkspacesAddress() {
         #expect(StatusModel(workspace: .first).title == "1")
         #expect(StatusModel(workspace: WorkspaceName("3")!).title == "3")
@@ -60,8 +58,6 @@ import EmiraCore
                 == StatusModel(configStatus: .neverLoaded(error)).diagnosticLines())
     }
 
-    // MARK: - The diagnostic
-
     @Test func aHealthyConfigContributesNoMenuLines() {
         #expect(StatusModel(workspace: .first).diagnosticLines().isEmpty)
     }
@@ -84,7 +80,7 @@ import EmiraCore
         #expect(lines == ["aaa bbb", "ccc ddd"])
     }
 
-    // MARK: - The seam it hangs off
+    // The seam it hangs off
 
     @Test func stateChangesAreReportedOncePerDrainNotOncePerEvent() {
         let executor = MockExecutor()

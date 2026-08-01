@@ -8,8 +8,6 @@ import EmiraCore
 /// one. Plus the socket-path policy and the version probe.
 @Suite struct WireTests {
 
-    // MARK: - Framing
-
     @Test func encodingProducesOneNewlineTerminatedLine() throws {
         let line = try Wire.encode(Request(.focus(.left), client: Client(pid: 42)))
         #expect(line.last == 0x0A)
@@ -40,8 +38,6 @@ import EmiraCore
         }
     }
 
-    // MARK: - Version probe
-
     @Test func probeReadsTheVersionOfAMessageItCannotDecode() throws {
         // A v2 envelope: the payload has moved, so `Request` can't decode it, but the version is
         // still legible.
@@ -60,8 +56,6 @@ import EmiraCore
         #expect(Wire.probeVersion(try Wire.encode(Request(.closeWindow))) == Wire.version)
         #expect(Wire.probeVersion(try Wire.encode(Reply.ok)) == Wire.version)
     }
-
-    // MARK: - LineBuffer
 
     @Test func oneChunkCanHoldSeveralLines() throws {
         var buffer = LineBuffer()
@@ -120,8 +114,6 @@ import EmiraCore
         }
         #expect(received == sent)
     }
-
-    // MARK: - Socket path
 
     @Test func theEnvironmentOverrideWins() {
         let path = Wire.socketPath(environment: [Wire.socketEnvironmentKey: "/tmp/custom.sock",

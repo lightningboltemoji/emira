@@ -6,8 +6,6 @@ import Testing
 /// replay log, so the load-bearing property is a faithful `Codable` round-trip.
 @Suite struct CommandTests {
 
-    // MARK: Direction
-
     @Test func directionOppositeIsInvolutive() {
         for d in Direction.allCases {
             #expect(d.opposite.opposite == d)          // flipping twice is identity
@@ -29,8 +27,6 @@ import Testing
         #expect(String(decoding: data, as: UTF8.self) == #"["left","up"]"#)
     }
 
-    // MARK: Toggle
-
     @Test func toggleResolvesAgainstCurrentState() {
         #expect(Toggle.on.resolved(current: false) == true)
         #expect(Toggle.on.resolved(current: true) == true)
@@ -40,7 +36,7 @@ import Testing
         #expect(Toggle.toggle.resolved(current: false) == true)
     }
 
-    // MARK: Codable round-trips — the contract that matters
+    // Codable round-trips — the contract that matters
 
     /// Every command, including one carrying each supporting-enum shape, survives encode→decode
     /// unchanged — the guarantee the CLI↔daemon wire and the replay log depend on.

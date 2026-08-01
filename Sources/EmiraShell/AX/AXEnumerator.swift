@@ -10,8 +10,6 @@ import Foundation
 // new windows. The join runs once, after every app has answered, so every window is matched against one
 // window-list read and `.contested` is a real signal rather than an artifact of two different lists.
 
-// MARK: - The boundary
-
 /// One app worth scanning.
 public struct ScanTarget: Sendable, Equatable {
     /// The process to address over AX.
@@ -67,8 +65,6 @@ public protocol WindowSource {
     /// accounted for. Touches no app's run loop, so it costs nothing an app can slow down.
     func windowList() -> [WindowListEntry]
 }
-
-// MARK: - The enumerator
 
 /// Scans every running app, binds each window to its public window number, takes the bound ones into
 /// the registry, and reports what happened.
@@ -377,8 +373,6 @@ public final class AXEnumerator {
         }
     }
 }
-
-// MARK: - The live source
 
 /// `WindowSource` against the real system: `NSWorkspace` for the process list, `AXClient` for the
 /// windows, `CGWindowListCopyWindowInfo` for the numbers.

@@ -20,7 +20,7 @@ import Foundation
 // new number and element. The core is never told: it holds one window for the group, so the column, its
 // width, its workspace and its float state survive every tab switch.
 
-// MARK: - The two sides of the join
+// The two sides of the join
 
 /// A window as the Accessibility API describes it, with the AX element factored out — the pure value the
 /// identity join and the taxonomy work on.
@@ -97,7 +97,7 @@ public struct WindowListEntry: Sendable, Equatable {
     }
 }
 
-// MARK: - The join (pure)
+// The join (pure)
 
 /// The first-sight match between AX-observed windows and public window numbers. Pure and total: two
 /// lists of values in, which ones paired up and why the rest didn't out.
@@ -204,7 +204,7 @@ public enum WindowIdentity {
         return Binding(matches: matches, rejections: rejections.sorted { $0.observed < $1.observed })
     }
 
-    // MARK: Succession (the tab join)
+    // Succession (the tab join)
 
     /// A managed window AX has stopped listing.
     public struct Departure: Sendable, Equatable {
@@ -287,8 +287,6 @@ public enum WindowIdentity {
         abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 }
-
-// MARK: - The registry
 
 /// Mints `WindowId`s and holds the shell-private binding behind each one: the public window number, the
 /// owning process, and the live AX element to write to. The only place a `WindowId` becomes a thing you

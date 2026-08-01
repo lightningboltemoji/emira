@@ -314,8 +314,6 @@ public final class CaptureService: CaptureStore {
         self.deadline = deadline
     }
 
-    // MARK: - CaptureStore
-
     public func surface(for window: WindowId) -> CapturedSurface? { surfaces[window] }
 
     public var base: CGImage? { baseImage }
@@ -382,8 +380,6 @@ public final class CaptureService: CaptureStore {
             self?.finish(generation: mine, timedOut: true)
         }
     }
-
-    // MARK: - Resolution
 
     /// Take one piece of the batch `generation` names: store it, then say so.
     private func receive(generation: Int, piece: CapturePiece) {

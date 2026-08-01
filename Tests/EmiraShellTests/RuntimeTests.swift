@@ -11,8 +11,6 @@ import EmiraCore
 
 @Suite @MainActor struct RuntimeTests {
 
-    // MARK: - Fixtures
-
     /// A 1000×800 display at the origin.
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
 
@@ -57,8 +55,6 @@ import EmiraCore
     static func focusedIds(in effects: [Effect]) -> [WindowId] {
         effects.compactMap { if case .focus(let w) = $0 { return w }; return nil }
     }
-
-    // MARK: - The pump
 
     @Test func dispatchReducesAndHandsTheEffectsToTheExecutor() {
         // Unsmoothed, so the arrival places in the same batch it reduces in: this test is about the
@@ -145,7 +141,7 @@ import EmiraCore
         sink(.axLanded(WindowId(1)))                            // safely ignored
     }
 
-    // MARK: - The transition lifecycle, end to end through the pump
+    // The transition lifecycle, end to end through the pump
 
     /// The whole cascade — command → captures → cover raise → teleport → landings — resolves inside
     /// one `dispatch`, because a perfectly responsive executor acks synchronously.
@@ -192,8 +188,6 @@ import EmiraCore
         #expect(abs(runtime.state.motion.viewportOffset.current - 1000) < 0.5)
     }
 
-    // MARK: - Frame-clock gating
-
     @Test func idleWorkNeverStartsTheClock() {
         let clock = ManualFrameClock()
         let runtime = Runtime(state: Self.booted(config: Self.fullWidth, windows: 2),
@@ -227,8 +221,6 @@ import EmiraCore
         #expect(runtime.state.world.focusedWindow == WindowId(3))
         #expect(abs(runtime.state.motion.viewportOffset.current - 2000) < 0.5)
     }
-
-    // MARK: - Hold-deadline gating
 
     /// The ordinary shape: a session opens, the deadline is armed once, and closing on time cancels it.
     @Test func aTransitionArmsTheDeadlineAndClosingCancelsIt() {
@@ -269,8 +261,6 @@ import EmiraCore
         #expect(!runtime.state.motion.isTransitioning)
     }
 }
-
-// MARK: - Test doubles
 
 /// A `FrameClock` whose frames are delivered by hand, so a transition's animation runs at whatever
 /// pace the test wants and never depends on a real display link.

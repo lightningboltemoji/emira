@@ -107,8 +107,6 @@ import Testing
         widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
         columnGap: 0, windowGap: 0)
 
-    // MARK: Materialization
-
     @Test func aFreshSetHasExactlyTheFocusedWorkspace() {
         let ws = Workspaces()
         #expect(ws.focused == .first)
@@ -157,7 +155,7 @@ import Testing
         #expect(ws.placementOrder == [c, a, b])
     }
 
-    // MARK: reconcile — the World→Workspaces bridge
+    // reconcile — the World→Workspaces bridge
 
     /// The single-workspace case is byte-for-byte the bare `Layout.reconcile`.
     @Test func withOneWorkspaceReconcileIsExactlyTheSingleStripCall() {
@@ -218,8 +216,6 @@ import Testing
         #expect(ws.focusedStrip.allWindowIds == [w1, w3, w2])
     }
 
-    // MARK: ColumnId disjointness
-
     /// Column #1 on one workspace and column #1 on another must not be the same id: `Motion.columnWidths`
     /// is keyed by a bare `ColumnId`, so a collision would let an in-flight resize on one workspace
     /// re-aim a column on another. One allocator for the whole set makes that unrepresentable.
@@ -262,7 +258,7 @@ import Testing
         #expect(ws == before)                        // not even an id consumed
     }
 
-    // MARK: Park slots across the whole set
+    // Park slots across the whole set
 
     /// Every window on every unfocused workspace is parked, so the ordinals have to be one run across the
     /// set. Two windows sharing a park frame breaks the ±2 pt first-sight identity join *and* the
@@ -322,8 +318,6 @@ import Testing
         ws.focus(a)
         #expect(ws.targetFrames(scrollOffset: 0, metrics: metrics)[w4] == alone)
     }
-
-    // MARK: Codable
 
     @Test func theContainerRoundTripsThroughCodable() throws {
         var ws = Workspaces()

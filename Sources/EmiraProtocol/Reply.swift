@@ -25,7 +25,7 @@ public struct ReplyError: Sendable, Equatable, Codable, Error, CustomStringConve
 
     public var description: String { message }
 
-    // MARK: Canonical errors (the wording lives here, once)
+    // Canonical errors (the wording lives here, once)
 
     /// The one part of this protocol whose shape must never change — a peer of *any* version has to
     /// be able to read it.

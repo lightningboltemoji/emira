@@ -80,8 +80,6 @@ public struct Workspaces: Sendable, Equatable, Codable {
         self.columnIds = ColumnAllocator(next: highest + 1)
     }
 
-    // MARK: - Access
-
     /// The strip at `name` — an **empty** strip for an address never materialized, so no caller
     /// branches on existence. Assigning materializes it, and never un-materializes.
     public subscript(name: WorkspaceName) -> Layout {
@@ -179,7 +177,7 @@ public struct Workspaces: Sendable, Equatable, Codable {
         return nil
     }
 
-    // MARK: - Structural mutation (the two edits that mint)
+    // Structural mutation (the two edits that mint)
     //
     // Only `reconcile` and `extract` create columns, so only they need the allocator — and because they
     // need it, they live here rather than being reached through `State.layout`. Every other structural
@@ -277,7 +275,7 @@ public struct Workspaces: Sendable, Equatable, Codable {
         return edit
     }
 
-    // MARK: - Geometry across the whole set
+    // Geometry across the whole set
 
     /// The truth-plane target frame for **every** window on **every** workspace at `scrollOffset`. The
     /// focused strip tiles its on-viewport columns and parks the rest; every other workspace parks in

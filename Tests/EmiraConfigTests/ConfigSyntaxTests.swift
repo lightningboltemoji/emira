@@ -13,8 +13,6 @@ import EmiraCore
 
 @Suite struct ConfigSyntaxTests {
 
-    // MARK: - Fixtures
-
     /// Parse, failing the test with the diagnostic if it throws (which is what a human would see).
     static func parse(_ text: String, sourceLocation: SourceLocation = #_sourceLocation) throws -> Config {
         do {
@@ -36,8 +34,6 @@ import EmiraCore
             return nil
         }
     }
-
-    // MARK: - The zero-config file
 
     @Test func anEmptyFileIsTheDefaultConfig() throws {
         #expect(try Self.parse("") == Config())
@@ -63,7 +59,7 @@ import EmiraCore
         #expect(config.scrollSpring == Config().scrollSpring)
     }
 
-    // MARK: - Every key in the schema
+    // Every key in the schema
 
     @Test func theWholeSchemaReadsBack() throws {
         let text = """
@@ -158,7 +154,7 @@ import EmiraCore
         #expect(abs(config.scrollSpring.damping - SpringParams.smooth.damping) < 1e-9)
     }
 
-    // MARK: - Typos are refused, and the diagnostic names the line
+    // Typos are refused, and the diagnostic names the line
 
     @Test func anUnknownKeyIsRefusedWithItsLine() {
         let text = """
@@ -199,7 +195,7 @@ import EmiraCore
         #expect(Self.diagnostic(text) == .duplicateKey(line: 3, key: "layout.column-gap"))
     }
 
-    // MARK: - Values are validated, not merely read
+    // Values are validated, not merely read
 
     @Test func aValueOfTheWrongKindIsRefused() {
         #expect(Self.diagnostic("[layout]\ncolumn-gap = \"8\"\n")
@@ -249,7 +245,7 @@ import EmiraCore
                              message: "must be an array, not a number"))
     }
 
-    // MARK: - The grammar (TOMLTable)
+    // The grammar (TOMLTable)
 
     @Test func commentsAndBlanksAndTrailingCommentsAreIgnored() throws {
         let config = try Self.parse("""
@@ -335,7 +331,7 @@ import EmiraCore
                 == "line 2: unterminated string")
     }
 
-    // MARK: - [[window-rules]]
+    // [[window-rules]]
 
     @Test func rulesAreReadInFileOrderWithEveryMatcher() throws {
         let config = try Self.parse("""
@@ -474,7 +470,7 @@ import EmiraCore
         #expect(Self.diagnostic("[layout]\ncolumn-gap = 0x10\n")?.line == 2)
     }
 
-    // MARK: - The diagnostic is the product
+    // The diagnostic is the product
 
     @Test func diagnosticsReadAsSentences() {
         #expect(ConfigSyntaxError.unknownKey(line: 4, key: "layout.colum-gap").description
@@ -538,7 +534,7 @@ import EmiraCore
         #expect(config.keys.isEmpty)
     }
 
-    // MARK: - The `[keys]` table (the one open table in the schema)
+    // The `[keys]` table (the one open table in the schema)
 
     @Test func bindingsAreReadInFileOrder() throws {
         let config = try Self.parse("""
@@ -763,7 +759,7 @@ import EmiraCore
                 == .unknownKey(line: 2, key: "layout.struts"))
     }
 
-    // MARK: `animation.cover` — the same question `animation.window` asks, in time
+    // `animation.cover` — the same question `animation.window` asks, in time
 
     @Test func theCoverModeIsExactUntilAskedOtherwise() throws {
         #expect(try ConfigSyntaxTests.parse("").coverMode == .exact)
@@ -792,7 +788,7 @@ import EmiraCore
                              message: "must be \"exact\" or \"immediate\", not \"fast\""))
     }
 
-    // MARK: `animation.window` — the schema's one word-valued key
+    // `animation.window` — the schema's one word-valued key
 
     @Test func theWindowAnimationIsStretchUntilAskedOtherwise() throws {
         #expect(try ConfigSyntaxTests.parse("").windowAnimation == .stretch)

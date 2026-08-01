@@ -8,7 +8,7 @@ import EmiraCore
 
 @Suite struct ConfigExplainTests {
 
-    // MARK: - One setting
+    // One setting
 
     @Test func aSettingExplainsItselfFromTheTable() throws {
         let setting = try #require(ConfigSchema.setting(for: "layout.column-gap"))
@@ -52,8 +52,6 @@ import EmiraCore
             if let legend = setting.kind.legend { #expect(explanation.contains(legend)) }
         }
     }
-
-    // MARK: - The whole schema
 
     /// The listing is the file's shape: every key under the `[table]` it is written in, in schema order.
     @Test func theSummaryIsEverySettingGroupedTheWayTheFileGroupsThem() {

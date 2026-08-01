@@ -120,14 +120,14 @@ import Testing
     ])
 
     private func arrival(_ raw: UInt64, bundle: String, alreadyOpen: Bool = false) -> Event {
-        .windowCreated(EngineTests.snapshot(raw, bundle: bundle, wasAlreadyOpen: alreadyOpen))
+        .windowCreated(EngineFix.snapshot(raw, bundle: bundle, wasAlreadyOpen: alreadyOpen))
     }
 
     /// The headline: a matching window starts on the workspace the rule names, without the user having
     /// gone there.
     @Test func aMatchingWindowStartsOnTheWorkspaceItsRuleNames() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("3"))
         #expect(after.workspaces[.first].isEmpty)
@@ -136,8 +136,8 @@ import Testing
     /// …and a window no rule matches is untouched by the feature — the ordinary arrival, on the strip
     /// in view.
     @Test func anUnmatchedWindowStillJoinsTheFocusedStrip() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.apple.Safari")])
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.apple.Safari")])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
         #expect(after.workspaces.focused == .first)
@@ -147,8 +147,8 @@ import Testing
     /// where the window already is.
     @Test func aRuleNamingTheFocusedWorkspaceChangesNothing() {
         let config = Self.config([WindowRule(appId: "com.test.app", workspace: .first)])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
         #expect(after.world.focusedWindow == WindowId(1))
@@ -157,8 +157,8 @@ import Testing
     /// A window opened *now* is one the user opened, so the workspace follows it — the same thing a
     /// Dock click on an app living elsewhere already does.
     @Test func aLiveArrivalTakesTheUserWithIt() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, fx) = EngineTests.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, fx) = EngineFix.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
 
         #expect(after.workspaces.focused == name("3"))
         #expect(after.world.focusedWindow == WindowId(1))
@@ -168,8 +168,8 @@ import Testing
     /// The launch scan is emira sorting a desktop nobody just asked it to sort, so it stays put — the
     /// alternative walks the user through every address they own before their first keystroke.
     @Test func theBootScanSortsTheDesktopWithoutMovingTheUser() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, fx) = EngineTests.run(
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, fx) = EngineFix.run(
             s, [arrival(1, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true)])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("3"))
@@ -181,8 +181,8 @@ import Testing
     /// An assigned window is on a parked strip, so it is parked — placed, not merely recorded. Two
     /// adopted at boot get *distinct* nubs, which is the invariant the whole park model rests on.
     @Test func anAssignedWindowIsParkedAtItsOwnNub() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, _) = EngineTests.run(s, [
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, _) = EngineFix.run(s, [
             arrival(1, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true),
             arrival(2, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true),
         ])
@@ -196,16 +196,16 @@ import Testing
     /// The rule fires at first sight and never again: a window moved off its assigned workspace by
     /// hand stays where it was put, and being minimized and restored does not re-post it either.
     @Test func theRuleIsNeverConsultedTwice() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        var (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
+        let s = EngineFix.booted(config: Self.slackToThree)
+        var (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
         #expect(after.workspaces.focused == name("3"))
 
         // Moved by hand to "7" — the freedom the whole design is for.
-        (after, _) = EngineTests.run(after, [.command(.moveToWorkspace(.name(name("7"))))])
+        (after, _) = EngineFix.run(after, [.command(.moveToWorkspace(.name(name("7"))))])
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("7"))
 
         // Minimized and restored, from a different workspace: it lands where the user is.
-        (after, _) = EngineTests.run(after, [
+        (after, _) = EngineFix.run(after, [
             .windowMinimized(WindowId(1)),
             .command(.focusWorkspace(.name(name("9")))),
             .windowDeminimized(WindowId(1)),
@@ -217,9 +217,9 @@ import Testing
     /// position, and a rule naming one says nothing about where it goes.
     @Test func aRuleCannotPlaceAWindowThatDoesNotTile() {
         let config = Self.config([WindowRule(appId: "com.test.app", workspace: name("3"))])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(
-            s, [.windowCreated(EngineTests.snapshot(1, bundle: "com.test.app", role: .dialog))])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(
+            s, [.windowCreated(EngineFix.snapshot(1, bundle: "com.test.app", role: .dialog))])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
         #expect(after.workspaces.focused == .first)
@@ -228,12 +228,12 @@ import Testing
     /// A boot-adopted window keeps the width it already had (`PRINCIPLES.md` §4a) even though it is
     /// assigned elsewhere — the intent is read on the focused strip and carried across by the move.
     @Test func anAssignedBootWindowKeepsTheWidthItArrivedWith() {
-        let s = EngineTests.booted(config: Self.slackToThree)
+        let s = EngineFix.booted(config: Self.slackToThree)
         let wide = WindowSnapshot(id: WindowId(1), bundleId: "com.tinyspeck.slackmacgap",
                                   title: "Slack", role: .standard,
                                   frame: Rect(x: 0, y: 0, width: 750, height: 400),
                                   wasAlreadyOpen: true)
-        let (after, _) = EngineTests.run(s, [.windowCreated(wide)])
+        let (after, _) = EngineFix.run(s, [.windowCreated(wide)])
 
         let strip = after.workspaces[name("3")]
         #expect(strip.columns.count == 1)
@@ -241,14 +241,12 @@ import Testing
         #expect(strip.columns[0].widthOverride == .proportion(0.75))
     }
 
-    // MARK: float
-
     /// `float = true` takes a window off the strip that would otherwise have tiled — the rule's answer
     /// outranks the role, which is the same direction `Command.float` runs.
     @Test func floatTrueKeepsAStandardWindowOffTheStrip() {
         let config = Self.config([WindowRule(appId: "com.test.app", float: true)])
-        let s = EngineTests.booted(config: config)
-        let (after, fx) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        let (after, fx) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
         #expect(after.world.isFloating(WindowId(1)))
         #expect(!after.world.participatesInStrip(WindowId(1)))
@@ -260,9 +258,9 @@ import Testing
     /// tri-state: a mis-classified window would otherwise be stuck floating forever.
     @Test func floatFalseTilesAWindowTheRoleWouldHaveFloated() {
         let config = Self.config([WindowRule(appId: "com.test.app", float: false)])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(
-            s, [.windowCreated(EngineTests.snapshot(1, bundle: "com.test.app", role: .dialog))])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(
+            s, [.windowCreated(EngineFix.snapshot(1, bundle: "com.test.app", role: .dialog))])
 
         #expect(!after.world.isFloating(WindowId(1)))
         #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
@@ -272,23 +270,21 @@ import Testing
     /// not a mode.
     @Test func aFloatedWindowCanStillBeTiledByHand() {
         let config = Self.config([WindowRule(appId: "com.test.app", float: true)])
-        let s = EngineTests.booted(config: config)
-        var (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        var (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
         #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
 
         after.world.setFocus(WindowId(1))
-        (after, _) = EngineTests.run(after, [.command(.float(.off))])
+        (after, _) = EngineFix.run(after, [.command(.float(.off))])
         #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
     }
-
-    // MARK: width
 
     /// `width` is on `width-presets`' scale, so `0.5` is half the content area — 500 pt of the 1000-pt
     /// display these tests lay out against, rather than the ½ preset by coincidence.
     @Test func widthSeedsTheColumnItOpens() {
         let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.75))])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
         let column = after.workspaces[.first].columns[0]
         #expect(column.widthOverride == .proportion(0.75))
@@ -299,8 +295,8 @@ import Testing
     /// rather than restated so the two spellings of a width cannot drift apart.
     @Test func aWidthOverOneIsPoints() {
         let config = Self.config([WindowRule(appId: "com.test.app", width: .fixed(420))])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
         let strip = after.workspaces[.first]
         #expect(strip.resolvedWidth(of: strip.columns[0], metrics: after.metrics()!) == 420)
@@ -310,10 +306,10 @@ import Testing
     /// — the rule decides where a window *starts*, here as with the workspace.
     @Test func cycleWidthClearsTheSeededWidth() {
         let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.75))])
-        let s = EngineTests.booted(config: config)
-        var (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app")])
+        let s = EngineFix.booted(config: config)
+        var (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
-        (after, _) = EngineTests.run(after, [.command(.cycleWidth)])
+        (after, _) = EngineFix.run(after, [.command(.cycleWidth)])
         #expect(after.workspaces[.first].columns[0].widthOverride == nil)
     }
 
@@ -321,11 +317,11 @@ import Testing
     /// user asked for, while the adopted width is an inference from what happened to be on screen.
     @Test func aRuleWidthOutranksTheWidthABootWindowArrivedWith() {
         let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.25))])
-        let s = EngineTests.booted(config: config)
+        let s = EngineFix.booted(config: config)
         let wide = WindowSnapshot(id: WindowId(1), bundleId: "com.test.app", title: "w",
                                   role: .standard, frame: Rect(x: 0, y: 0, width: 900, height: 400),
                                   wasAlreadyOpen: true)
-        let (after, _) = EngineTests.run(s, [.windowCreated(wide)])
+        let (after, _) = EngineFix.run(s, [.windowCreated(wide)])
 
         #expect(after.workspaces[.first].columns[0].widthOverride == .proportion(0.25))
     }
@@ -335,8 +331,8 @@ import Testing
     @Test func aWidthRidesAcrossToTheWorkspaceItWasAssigned() {
         let config = Self.config([WindowRule(appId: "com.test.app", workspace: name("4"),
                                              width: .proportion(0.25))])
-        let s = EngineTests.booted(config: config)
-        let (after, _) = EngineTests.run(s, [arrival(1, bundle: "com.test.app", alreadyOpen: true)])
+        let s = EngineFix.booted(config: config)
+        let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app", alreadyOpen: true)])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("4"))
         #expect(after.workspaces[name("4")].columns[0].widthOverride == .proportion(0.25))
@@ -345,8 +341,8 @@ import Testing
     /// Two windows for the same address stack up as two columns on it, in arrival order, rather than
     /// the second replacing or merging with the first.
     @Test func severalAssignedWindowsBuildTheStripTheyLandOn() {
-        let s = EngineTests.booted(config: Self.slackToThree)
-        let (after, _) = EngineTests.run(s, [
+        let s = EngineFix.booted(config: Self.slackToThree)
+        let (after, _) = EngineFix.run(s, [
             arrival(1, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true),
             arrival(2, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true),
         ])

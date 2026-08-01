@@ -67,8 +67,6 @@ public final class ConfigLoader {
         self.coalesce = coalesce
     }
 
-    // MARK: - Reading
-
     /// Read and parse now; a missing file is `.success(Config())`. Called once at boot, before there
     /// is a pump to send events to.
     public func load() -> Result<Config, ConfigLoadError> {
@@ -110,8 +108,6 @@ public final class ConfigLoader {
         }
         onLoad?(result)
     }
-
-    // MARK: - Watching
 
     /// Begin hot reload. A burst of filesystem events collapses into one `reload()` a window later.
     public func start() {

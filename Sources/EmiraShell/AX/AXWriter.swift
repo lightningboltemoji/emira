@@ -9,8 +9,6 @@ import Foundation
 // their whole accessibility tree). Ordering within a group is the lane's; between groups it is
 // meaningless, since they are different processes with different run loops.
 
-// MARK: - The vocabulary
-
 /// One window's requested placement: the registry record that says where to write, and the frame to
 /// write.
 public struct WindowMove: Sendable {
@@ -74,8 +72,6 @@ public protocol WindowWriter {
     /// put up a save sheet and close later, or never).
     func close(_ window: WindowRegistry.Record)
 }
-
-// MARK: - The live writer
 
 /// `WindowWriter` against the real system: `AXClient` for the lanes and the messaging timeout,
 /// `AXAccess` for the attributes, `NSRunningApplication` for activation.

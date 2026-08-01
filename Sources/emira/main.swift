@@ -50,8 +50,6 @@ func help() -> String {
     """
 }
 
-// MARK: - argv
-
 var isDryRun = false
 var words: [String] = []
 
@@ -86,7 +84,7 @@ if words.first == ConfigCommand.name {
     exit(ConfigCommand.run(Array(words.dropFirst())))
 }
 
-// MARK: - argv → Command → Request → wire
+// argv → Command → Request → wire
 
 do {
     let request = Request(try Command.parse(words))

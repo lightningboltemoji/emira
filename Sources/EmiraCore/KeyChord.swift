@@ -174,7 +174,7 @@ public struct KeyChord: Sendable, Hashable, Equatable, Codable, CustomStringConv
         return KeyChord(modifiers, key)
     }
 
-    // MARK: - Codable (as the spelling)
+    // Codable (as the spelling)
 
     public init(from decoder: Decoder) throws {
         let text = try decoder.singleValueContainer().decode(String.self)

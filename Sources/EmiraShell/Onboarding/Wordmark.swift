@@ -51,8 +51,6 @@ final class Wordmark: NSView {
 
     required init?(coder: NSCoder) { return nil }     // never comes from a nib; there aren't any
 
-    // MARK: - Finding the asset
-
     /// SwiftPM's name for a target's resources — the name `make app` copies it into the bundle under.
     static let resourceBundleName = "Emira_EmiraShell.bundle"
 

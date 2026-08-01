@@ -191,8 +191,6 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         button.toolTip = model.tooltip
     }
 
-    // MARK: - The menu
-
     /// Rebuilt every time it opens rather than kept in sync: the login-item registration can be
     /// changed in System Settings, and the diagnostic can change while the menu is closed.
     public func menuNeedsUpdate(_ menu: NSMenu) {

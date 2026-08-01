@@ -9,8 +9,6 @@ import Testing
 
 @Suite struct KeyChordTests {
 
-    // MARK: - Round-trip
-
     /// The one test that can't rot: `Key` is `CaseIterable`, so a key added without a spelling that
     /// survives the round-trip fails here rather than at somebody's keyboard.
     @Test func everyKeyRoundTripsThroughItsSpelling() throws {
@@ -68,7 +66,7 @@ import Testing
         #expect(KeyChord([.command], .digit0).description == "cmd-0")
     }
 
-    // MARK: - Every way of writing it wrong
+    // Every way of writing it wrong
 
     /// The error `text` produces, or `nil` if it parsed.
     static func diagnostic(_ text: String) -> KeyChordSyntaxError? {
@@ -162,8 +160,6 @@ import Testing
         #expect(KeyChordSyntaxError.multipleKeys("h", "j").description
                 == "two keys, 'h' and 'j' — a binding takes one")
     }
-
-    // MARK: - Codable
 
     /// A chord encodes as the string it was written as, so `emira debug` prints bindings a human can
     /// check against their own config file — and so there is one spelling, not two.

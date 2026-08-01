@@ -18,8 +18,6 @@ import Foundation
 // and main-thread, but `AXObserverAdd/RemoveNotification` are round trips that answer `.cannotComplete`
 // when the app is busy or still starting. Callback *delivery* stays on the main run loop.
 
-// MARK: - The notification tables
-
 // Split by the element they must be registered against.
 private enum AXNotification {
 
@@ -48,8 +46,6 @@ private enum AXNotification {
     static let windowMiniaturized = "AXWindowMiniaturized"
     static let windowDeminiaturized = "AXWindowDeminiaturized"
 }
-
-// MARK: - The C callback
 
 /// What an `AXObserver` calls, on the run loop its source was added to — the main one.
 ///
@@ -88,8 +84,6 @@ private struct AppFacts: Sendable {
     }
 }
 
-// MARK: - The source
-
 /// The live `ObservationSource`: per-app `AXObserver`s, `NSWorkspace` notifications, and a global
 /// mouse monitor, translated into `WorldObservation`s.
 @MainActor
@@ -127,15 +121,11 @@ public final class AXObservationSource: ObservationSource {
     // No `deinit` teardown: a `@MainActor` class is `Sendable`, so its `deinit` is nonisolated and may
     // not touch isolated state. The tokens and the mouse monitor capture `self` weakly anyway.
 
-    // MARK: Lifecycle
-
     public func start(_ deliver: @escaping @MainActor (WorldObservation) -> Void) {
         self.deliver = deliver
         observeWorkspace()
         observeMouse()
     }
-
-    // MARK: Per-app observation
 
     public func watch(app target: ScanTarget, then completion: @escaping @MainActor (Bool) -> Void) {
         if observers[target.pid] != nil {
@@ -230,8 +220,6 @@ public final class AXObservationSource: ObservationSource {
         client.forget(app: pid)
     }
 
-    // MARK: Reads
-
     public func readFrame(of id: WindowId, then completion: @escaping @MainActor (Rect?) -> Void) {
         guard let record = registry.record(id) else {
             completion(nil)
@@ -259,7 +247,7 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
-    // MARK: The callback's landing point
+    // The callback's landing point
 
     /// Turn one AX notification into a `WorldObservation`. An unmanaged element produces silence.
     fileprivate func received(_ notification: String, about element: AXWindow) {
@@ -306,7 +294,7 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
-    // MARK: NSWorkspace + the mouse
+    // NSWorkspace + the mouse
 
     private func observeWorkspace() {
         let center = NSWorkspace.shared.notificationCenter

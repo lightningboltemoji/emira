@@ -23,8 +23,6 @@ public struct Strip: Sendable, Equatable {
     public var count: Int { columnWidths.count }
     public var isEmpty: Bool { columnWidths.isEmpty }
 
-    // MARK: Placement
-
     /// The x of column `i`'s left edge. Defined for `i` in `0...count` — `leftEdge(of: count)` is where
     /// a newly appended column would go. Outside that range it clamps, so the function is total.
     public func leftEdge(of i: Int) -> Double {
@@ -49,7 +47,7 @@ public struct Strip: Sendable, Equatable {
         return columnWidths.reduce(0, +) + Double(count - 1) * gap
     }
 
-    // MARK: Scroll math — offset that frames a column
+    // Scroll math — offset that frames a column
 
     /// The largest offset that still shows content across the whole viewport — the last column's right
     /// edge flush with the viewport's. Degenerates to `origin` when the strip fits entirely on screen.
@@ -91,7 +89,7 @@ public struct Strip: Sendable, Equatable {
         return clampOffset(framed, viewportWidth: viewportWidth)
     }
 
-    // MARK: Visibility — which columns the viewport touches
+    // Visibility — which columns the viewport touches
 
     /// Whether column `i` lies entirely within the viewport. Edge-flush counts as visible.
     public func isFullyVisible(_ i: Int, viewportWidth: Double, offset: Double) -> Bool {
@@ -131,7 +129,7 @@ public struct Strip: Sendable, Equatable {
         return result
     }
 
-    // MARK: Detents — the edge a resize catches on
+    // Detents — the edge a resize catches on
 
     /// How far column `i`'s width may travel before a viewport edge crosses a column edge, or `nil`
     /// where the sweep crosses none — including from an edge already flush with one, the notch a second

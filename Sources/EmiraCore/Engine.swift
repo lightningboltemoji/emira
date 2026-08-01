@@ -107,15 +107,12 @@ public enum Engine {
         var s = state
         switch event {
 
-        // MARK: Commands
-
         case .command(let command):
             // NB: bind effects to a local before returning. `(s, reduceCommand(&s, …))` would read
             // `s` (tuple element 0) *before* the `&s` call mutates it, returning stale state.
             let effects = reduceCommand(&s, command)
             return (s, effects)
 
-        // MARK: The frame clock
         //
         // Ticks fire while a transition is open *or* the guide's focus ring is travelling, and are
         // inert for the strip until the cover is raised.
@@ -137,7 +134,7 @@ public enum Engine {
             effects += maybeCloseTransition(&s)
             return (s, effects)
 
-        // MARK: Truth-plane observations — reality folded into `World`, then re-placed
+        // Truth-plane observations — reality folded into `World`, then re-placed
 
         case .windowCreated(let snapshot):
             let before = strandedGeometry(&s)
@@ -211,7 +208,6 @@ public enum Engine {
             let effects = arriveOnStrip(&s, id, beside: beside, old: before)
             return (s, effects)
 
-        // MARK: Configuration
         //
         // A reload is a `screensChanged` by another route: the geometry changed without a window moving,
         // so both re-resolve the strip and keep the focused column in view.
@@ -237,7 +233,7 @@ public enum Engine {
             let effects = reassertTruthPlane(&s)
             return (s, effects)
 
-        // MARK: Effect feedback — every effect's result is just another event
+        // Effect feedback — every effect's result is just another event
 
         case .captureReady(let id):
             // A scoped still completes one of two waits: the *last* raises the cover and teleports the
@@ -324,8 +320,6 @@ public enum Engine {
             return (s, [])
         }
     }
-
-    // MARK: - Command handling
 
     /// Reduce a `Command`. Total over the vocabulary: the verbs not yet built no-op cleanly.
     private static func reduceCommand(_ s: inout State, _ command: Command) -> [Effect] {
@@ -432,7 +426,7 @@ public enum Engine {
         }
     }
 
-    // MARK: - Structural edits (the strip rearranged, under the cover)
+    // Structural edits (the strip rearranged, under the cover)
 
     /// Everything a structural command must read off the old geometry before it destroys it. `widths` is
     /// captured once and used for *both* `naturalFrames` calls, so the scroll and any in-flight resize
@@ -629,7 +623,7 @@ public enum Engine {
         return [.elevateLayer(layer)]
     }
 
-    // MARK: - Workspaces (the second axis)
+    // Workspaces (the second axis)
     //
     // A workspace switch is a structural edit in `finishStructuralEdit`'s sense: one geometric term
     // (`Workspaces.verticalOffset`) plus the call `move-window` makes.
@@ -720,7 +714,7 @@ public enum Engine {
         return effects
     }
 
-    // MARK: - The focus we did not ask for (`[focus] system-events`)
+    // The focus we did not ask for (`[focus] system-events`)
 
     /// Whether `[focus] system-events` refuses this focus report — and if so, the whole of the response.
     ///
@@ -836,7 +830,7 @@ public enum Engine {
         return [.endTransition]
     }
 
-    // MARK: - Floating (leaving the strip on purpose)
+    // Floating (leaving the strip on purpose)
 
     /// Float or tile the focused window. It is the *same* pair of paths a minimize and a restore take —
     /// a departure and an arrival — so the strip closes and opens ranks in motion, and this handler owns
@@ -873,7 +867,7 @@ public enum Engine {
         return departFromStrip(&s, focused) { $0.world.setFloating(focused, true) }
     }
 
-    // MARK: - Placement (the instant-correct core)
+    // Placement (the instant-correct core)
 
     /// Snap the viewport to reveal `id`'s column (centered, or minimally revealed per config) and re-place
     /// every window — the no-animation reveal: a display change, a config reload, a focus landing off the
@@ -898,7 +892,7 @@ public enum Engine {
         return reassertTruthPlane(&s)
     }
 
-    // MARK: - The animated scroll (the transition session)
+    // The animated scroll (the transition session)
 
     /// Reveal `id`'s column with a transition under a layered cover — the counterpart to `reveal`'s bare
     /// snap, and where every scroll of the strip goes: the focus commands, and the focus reports emira did
@@ -971,7 +965,7 @@ public enum Engine {
         ids.map { .capture($0, size: s.world.windows[$0]?.frame.size ?? .zero) }
     }
 
-    // MARK: - The animated resize (the strip's own geometry in motion)
+    // The animated resize (the strip's own geometry in motion)
 
     /// Cycle the focused column to its next preset width — the ladder, as against `grow`/`shrink`'s
     /// continuous knob.
@@ -1421,7 +1415,7 @@ public enum Engine {
                                     animatingFrom: old) + refocus
     }
 
-    // MARK: - Windows that refuse the size we ask for
+    // Windows that refuse the size we ask for
 
     /// Fold a tiled landing that came back a different size than we asked for: record the truth, remember
     /// the answer, re-place. The guards below decline to learn from a stale report and from position-only
@@ -1471,7 +1465,7 @@ public enum Engine {
         return reassertTruthPlane(&s)
     }
 
-    // MARK: - Windows that refuse the nub we park them behind
+    // Windows that refuse the nub we park them behind
 
     /// Fold a park that landed showing more of its window than the slot asked for: record the truth,
     /// remember the chrome, re-place. macOS honours a park slot only as far as the app will go, and a

@@ -49,8 +49,6 @@ public struct ConfigDocument {
     /// The file as it now stands, for the caller to write.
     public var rendered: String { text }
 
-    // MARK: - Editing
-
     /// Set `key` to `value` — splicing over the value already on its line, or inserting a line for a
     /// key the file doesn't set.
     ///
@@ -100,7 +98,6 @@ public struct ConfigDocument {
         self = try ConfigDocument(edited)
     }
 
-    // MARK: - Insertion policy
     //
     // Deterministic, so writing the same change twice writes the same file. Where a *new header* goes
     // is the part with a real choice in it, and appending is the placeholder: once a schema can be

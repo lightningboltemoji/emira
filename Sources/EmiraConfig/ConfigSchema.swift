@@ -185,7 +185,6 @@ extension Setting {
     var name: String { String(key.split(separator: ".").last ?? "") }
 }
 
-// MARK: - Codecs
 //
 // What makes one entry serve the reader and the writer both: a codec knows what a legal value is, how
 // to take one out of the file, and how to put one back. Every read here goes through
@@ -266,7 +265,7 @@ extension PresetSize {
     }
 }
 
-// MARK: - A value from a word
+// A value from a word
 //
 // The codec run backwards from *text* rather than from TOML — what a command line hands over, and what
 // a text field in a window will. The validation stays the codec's: the word is built into the value the
@@ -325,8 +324,6 @@ extension Setting.Kind {
         return String(text.dropFirst().dropLast())
     }
 }
-
-// MARK: - The table
 
 /// Every setting emira has, in the order it is read and the order it is shown.
 public enum ConfigSchema {

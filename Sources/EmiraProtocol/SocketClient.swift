@@ -81,8 +81,6 @@ public enum SocketClient {
         return true
     }
 
-    // MARK: - Plumbing
-
     private static func connect(to path: String, timeout: TimeInterval) throws -> Int32 {
         let address = try Wire.socketAddress(for: path)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)

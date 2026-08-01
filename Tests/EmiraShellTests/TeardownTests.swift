@@ -87,8 +87,6 @@ import EmiraCore
         return (state, [])
     }
 
-    // MARK: - The ordinary path
-
     @Test func itPlacesEveryWindowAndWaitsForAllOfThemToLand() {
         let executor = DeferredExecutor()
         let scheduler = ManualScheduler()
@@ -141,8 +139,6 @@ import EmiraCore
         #expect(calls == 1)
     }
 
-    // MARK: - The bound
-
     @Test func aWindowThatNeverAnswersCannotPreventTheQuit() {
         let executor = DeferredExecutor()
         let scheduler = ManualScheduler()
@@ -161,7 +157,7 @@ import EmiraCore
         #expect(report?.timedOut == true)
     }
 
-    // MARK: - Nothing to do
+    // Nothing to do
 
     @Test func anEmptyDesktopFinishesImmediatelyAndWithoutATimer() {
         let executor = DeferredExecutor()

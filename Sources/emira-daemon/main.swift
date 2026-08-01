@@ -24,7 +24,6 @@ func summary(of reply: Reply) -> String {
     }
 }
 
-// MARK: - The capture probe
 //
 // Answered before anything else exists, because it is the whole of this process: `--probe-capture` is how
 // a *running* daemon finds out whether Screen Recording has been granted since it started, which its own
@@ -45,8 +44,6 @@ case let unexpected:
             + "\(Permissions.captureProbeFlag)\n").utf8))
     exit(2)
 }
-
-// MARK: - The daemon proper
 
 /// A peer vanishing mid-reply must be a failed `write`, never a signal that kills the daemon.
 signal(SIGPIPE, SIG_IGN)
@@ -70,7 +67,6 @@ app.setActivationPolicy(.accessory)
     exit(1)
 }
 
-// MARK: - The config file
 //
 // Must be read *before* the grant checks below: whether Screen Recording is required depends on
 // whether the user asked for the cover at all (`transition`).
@@ -97,7 +93,6 @@ case .failure(let error):
     log("config: \(error) — not managing windows until it parses")
 }
 
-// MARK: - Permissions
 //
 // Both grants are required to start; only Accessibility is required to keep running — without it
 // every AX read returns nothing *without an error*. Screen Recording is demanded only when the config
@@ -127,8 +122,6 @@ case .restart(let missing):
     exit(0)
 }
 
-// MARK: - The presentation plane
-
 let screens = NSScreen.screens
 if screens.isEmpty {
     die("No displays are attached — there is nothing to manage.")
@@ -144,7 +137,7 @@ let screen = screens[0]
 let struts = ScreenGeometry.struts(of: screen)
 let overlay = Overlay(screen: screen, geometry: geometry, insets: struts)
 
-// MARK: - The truth plane's machinery
+// The truth plane's machinery
 //
 // One `AXClient` for the whole daemon: the per-app lanes are only serial if the enumerator, the
 // writer and the observers all queue onto the same ones.
@@ -155,8 +148,6 @@ let axClient = AXClient()
 // One `FocusIntent` too, for the same reason and on the other axis: the writer records the focus it
 // asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
 let focusIntent = FocusIntent(scheduler: DispatchScheduler())
-
-// MARK: - The capture plane
 
 let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
 // One cache for the daemon's life: it outlives every cover, which is the whole of what it is for.
@@ -169,7 +160,6 @@ let capture = CaptureService(
     cache: surfaceCache)
 let reconstruction = Reconstruction(overlay: overlay, store: capture)
 
-// MARK: - The guide
 //
 // The same display the overlay and the strip use — it reads the core's own projection at another scale,
 // so a second display would need a second strip before it needed a second guide.
@@ -181,7 +171,7 @@ let guide = Guide(panel: GuidePanel(screen: screen, geometry: geometry, insets: 
                   // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to its icon.
                   still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
 
-// MARK: - The config, finished
+// The config, finished
 
 /// The two values a config file may not decide: the struts (the same number must reach the core and
 /// the overlay or the cover stops matching the strip) and the Screen Recording grant (a capability, not
@@ -197,15 +187,12 @@ func applyEnvironment(to config: Config) -> Config {
 
 var config = applyEnvironment(to: parsedConfig)
 
-// MARK: - The GUI
 //
 // Created before the pump so a config already broken at boot has somewhere to say so.
 
 let menuBar = MenuBarItem(configPath: loader.path)
 menuBar.configStatus = bootConfigError.map { .neverLoaded($0) } ?? .loaded
 menuBar.onError = { log($0) }
-
-// MARK: - The pump
 
 let truth = AXExecutor(registry: registry,
                        writer: AXWindowWriter(client: axClient, intent: focusIntent))
@@ -281,7 +268,6 @@ runtime.onStateChanged = { state in
     guide.stateChanged(state)
 }
 
-// MARK: - The keyboard
 //
 // A source, not a consequence of state changing, so it is wired here rather than driven by an
 // `Effect`. A press produces the same `Event.command` value `emira focus left` sends over the socket.
@@ -310,7 +296,6 @@ let hotkeys = HotkeyManager(binder: CarbonHotkeyBinder(), sink: EventSink { even
 // their place would report the keyboard's silence as something the user chose.
 if bootConfigError == nil { applyKeys(config) }
 
-// MARK: - The truth plane
 //
 // Launch is just events: `screensChanged`, then one `windowCreated` per window — the same path every
 // later observation takes as the user opens, closes, drags and Cmd-Tabs. *When* launch is, though, is
@@ -358,7 +343,6 @@ var isManaging = false
 
 if bootConfigError == nil { startManaging() }
 
-// MARK: - Hot reload
 //
 // Only a successful parse becomes an event. The three subsystems told separately — reducer, hotkeys,
 // shell — must all read the *same* post-`applyEnvironment` value.
@@ -390,8 +374,6 @@ loader.onLoad = { result in
 }
 loader.start()
 
-// MARK: - The CLI seam
-
 let socketPath = Wire.socketPath()
 let server = SocketServer(path: socketPath) { request in
     let reply = RequestRouter.reply(to: request, from: runtime)
@@ -408,7 +390,6 @@ do {
 }
 log("listening on \(socketPath) (pid \(ProcessInfo.processInfo.processIdentifier))")
 
-// MARK: - Stopping
 //
 // One shutdown path, reached three ways: Ctrl-C, `kill`, and the menu bar's Quit. Exiting on the spot
 // would strand every parked window at its 1 pt sliver, so the desktop is handed back as a `Cascade`.

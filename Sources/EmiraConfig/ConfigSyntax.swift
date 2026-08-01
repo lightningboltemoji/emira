@@ -142,7 +142,6 @@ extension Config {
     }
 }
 
-// MARK: - Typed reads
 //
 // One reader per value kind, each producing the same shape of complaint: what was expected, on which
 // line, for which key.

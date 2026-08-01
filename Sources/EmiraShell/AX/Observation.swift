@@ -14,16 +14,12 @@ import Foundation
 /// Every case is a *fact*, never an instruction: `windowAppeared` says an app made a window, not "scan".
 public enum WorldObservation: Sendable, Equatable {
 
-    // MARK: Applications
-
     /// A `.regular` app started. Its windows are often not there yet, and it may not even be ready to be
     /// observed (see `ObservationSource.watch(app:then:)`).
     case appLaunched(ScanTarget)
 
     /// An app exited. Everything keyed on its pid — windows, lane, observer — is now garbage.
     case appTerminated(pid_t)
-
-    // MARK: Windows
 
     /// An app created a window. Which one only a re-scan of that app can answer, so this carries the pid
     /// and nothing else.

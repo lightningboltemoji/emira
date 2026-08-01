@@ -76,7 +76,7 @@ public struct WorkspaceName: Sendable, Hashable, Comparable, Codable, CustomStri
     /// The previous address, or `nil` at `"1"`. The mirror of `next`.
     public var previous: WorkspaceName? { WorkspaceName(rank: rank - 1) }
 
-    // MARK: - Codable (the one-character string, not the rank)
+    // Codable (the one-character string, not the rank)
 
     public init(from decoder: any Decoder) throws {
         let text = try decoder.singleValueContainer().decode(String.self)
@@ -93,8 +93,6 @@ public struct WorkspaceName: Sendable, Hashable, Comparable, Codable, CustomStri
         try container.encode(description)
     }
 }
-
-// MARK: - CodingKeyRepresentable
 
 /// Makes `[WorkspaceName: T]` encode as a JSON object keyed by the character (`{"0": …, "3": …}`)
 /// instead of the flat alternating key/value array Swift falls back to for non-string keys.

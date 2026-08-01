@@ -170,7 +170,6 @@ public struct EdgeInsets: Sendable, Equatable, Codable {
     }
 }
 
-// MARK: - The window animation
 //
 // Read only by the compositor; the arithmetic lives here because it is pure and testable headlessly.
 

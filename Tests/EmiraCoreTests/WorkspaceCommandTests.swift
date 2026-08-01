@@ -6,7 +6,7 @@ import Testing
 // ways to name an address, per-workspace scroll and focus memory, and the cross-workspace focus a real
 // desktop produces.
 //
-// Everything here snaps (`transitionMode: .off`), for `EngineTests.halfWidthSnap`'s reason: these
+// Everything here snaps (`transitionMode: .off`), for `EngineFix.halfWidthSnap`'s reason: these
 // tests are about *where windows end up*, and under the animated path the reals teleport at the cover's
 // raise rather than in the command's own batch. The motion is `WorkspaceMotionTests`, below.
 
@@ -73,8 +73,6 @@ import Testing
 /// The three verbs, driven through the reducer.
 @Suite struct WorkspaceCommandTests {
 
-    // MARK: Fixtures
-
     /// One full-width preset on a 1000-pt display: one column *is* the viewport, so column *n* sits at
     /// strip offset `1000n` and every scroll number below is readable at a glance.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]),
@@ -83,7 +81,7 @@ import Testing
     /// Two half-width columns fill the 1000-pt viewport exactly, so a two-window workspace is entirely
     /// on screen at offset 0. Used where the test is about *tiled versus parked*: the whole strip then
     /// changes state on a switch, so the placement diff has something to say about all of it.
-    static let twoUp = EngineTests.halfWidthSnap
+    static let twoUp = EngineFix.halfWidthSnap
 
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
@@ -95,13 +93,13 @@ import Testing
 
     /// A booted world of `count` tiled windows at rest, one per column.
     private func world(_ count: UInt64, config: Config = oneColumn) -> State {
-        EngineTests.world(count, config: config)
+        EngineFix.world(count, config: config)
     }
 
     /// Drive one command and settle whatever it started (a workspace verb starts nothing, but a
     /// `focus` in the same scenario does).
     private func run(_ s: State, _ events: [Event]) -> (State, [Effect]) {
-        EngineTests.run(s, events)
+        EngineFix.run(s, events)
     }
 
     private func focusWorkspace(_ name: WorkspaceName) -> Event {
@@ -135,8 +133,6 @@ import Testing
         Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
                                       metrics: s.metrics()!))
     }
-
-    // MARK: focus-workspace
 
     /// Leaving parks the whole outgoing strip, arriving tiles the incoming one — which is just what
     /// "everything that is not the focused strip is parked" already meant.
@@ -178,9 +174,9 @@ import Testing
     @Test func scrollPositionSurvivesARoundTrip() {
         // Four full-width columns: focus the last, which scrolls the strip to 3000.
         var s = world(4)
-        s = EngineTests.settle(s, [])
+        s = EngineFix.settle(s, [])
         let (scrolled, fx) = run(s, [.command(.focus(.right))])
-        s = EngineTests.settle(scrolled, fx)
+        s = EngineFix.settle(scrolled, fx)
         let offset = s.motion.viewportOffset.current
         #expect(offset > 0, "the fixture did not actually scroll")
 
@@ -189,7 +185,7 @@ import Testing
         #expect(s.workspaces[scrollOffsetOf: .first] == offset)
 
         s = run(s, [focusWorkspace(home)]).0
-        #expect(EngineTests.approxScalar(s.motion.viewportOffset.current, offset))
+        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current, offset))
         // A snap, not a spring: nothing is left travelling.
         #expect(s.motion.viewportOffset.target == s.motion.viewportOffset.current)
         #expect(!s.motion.isTransitioning)
@@ -230,8 +226,8 @@ import Testing
         // Back home the long way: `focus right` re-enters *this* (empty) strip and finds nothing…
         #expect(run(s, [.command(.focus(.right))]).1.isEmpty)
         // …and once there is a window here, it re-enters at the near end.
-        let (populated, createFx) = Engine.reduce(s, .windowCreated(EngineTests.snapshot(9)))
-        s = EngineTests.settle(populated, createFx)
+        let (populated, createFx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(9)))
+        s = EngineFix.settle(populated, createFx)
         #expect(s.world.focusedWindow == WindowId(9))
         #expect(s.workspaces[other].allWindowIds == [WindowId(9)])
         #expect(s.workspaces[.first].allWindowIds == [WindowId(1), WindowId(2)])
@@ -265,8 +261,6 @@ import Testing
         #expect(back.world.focusedWindow == WindowId(1))
         #expect(focused(in: fx) == [WindowId(1)])
     }
-
-    // MARK: move-to-workspace
 
     /// It moves a *window*, not its column, so a window with stackmates leaves them behind and the
     /// column it left survives.
@@ -343,7 +337,7 @@ import Testing
     /// nobody requested.
     @Test func theWidthIntentTravelsWithTheWindow() {
         var s = world(2, config: Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0), .proportion(0.5)])))
-        s = EngineTests.settle(run(s, [.command(.cycleWidth)]).0, [])
+        s = EngineFix.settle(run(s, [.command(.cycleWidth)]).0, [])
         let column = s.layout.columns[s.layout.columnIndex(ofWindow: s.world.focusedWindow!)!]
         #expect(column.widthPreset == 1)
 
@@ -371,7 +365,7 @@ import Testing
         #expect(Set(all).count == all.count)
     }
 
-    // MARK: The cross-workspace focus a real desktop produces
+    // The cross-workspace focus a real desktop produces
 
     /// Cmd-Tab, a Dock click, an app raising its own window: `focusChanged` can name a window on a
     /// workspace nobody is looking at. The user must never be focused on something they cannot see, so
@@ -442,7 +436,7 @@ import Testing
         #expect(tiled(in: fx).contains(WindowId(1)))
     }
 
-    // MARK: Placement across the whole set
+    // Placement across the whole set
 
     /// Every parked window — on *any* unfocused workspace — gets a slot no other window shares, within
     /// the ±2 pt tolerance the first-sight identity join binds at.
@@ -498,22 +492,20 @@ import Testing
         let (after, fx) = Engine.reduce(s, .focusChanged(away, origin: .system))
         #expect(after.workspaces.focused == other)
         #expect(after.motion.isTransitioning, "an external focus cut across the switch")
-        #expect(EngineTests.hasEffect(fx) { if case .capture = $0 { return true }; return false })
+        #expect(EngineFix.hasEffect(fx) { if case .capture = $0 { return true }; return false })
 
         // The command form of the identical move, from the identical state.
         let (byVerb, verbFx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
         #expect(byVerb.motion.isTransitioning)
-        #expect(EngineTests.capturedIds(in: verbFx) == EngineTests.capturedIds(in: fx),
+        #expect(EngineFix.capturedIds(in: verbFx) == EngineFix.capturedIds(in: fx),
                 "the same span, so the same cover")
 
         // And it still lands where the snap landed — the motion is the only thing that changed.
-        let rested = EngineTests.settle(after, fx)
+        let rested = EngineFix.settle(after, fx)
         #expect(rested.world.placedOnScreen == [away])
         #expect(rested.workspaces.focused == other)
     }
 }
-
-// MARK: - The vertical transition
 
 /// A workspace switch in motion: the outgoing strip slides out and the incoming one slides in, under
 /// the cover.
@@ -525,22 +517,20 @@ import Testing
 /// sign rather than a distance.
 @Suite struct WorkspaceMotionTests {
 
-    // MARK: Fixtures
-
     /// One screen of vertical travel. The fixture display is 1000×800 with no struts, so this is 800 —
     /// the *physical* working height.
-    static let screen = EngineTests.displayFrame.height
+    static let screen = EngineFix.displayFrame.height
 
     /// Two half-width columns fill the viewport exactly: a two-window workspace is entirely on screen,
     /// so a switch has both strips' worth of windows in scope and nothing incidental parked.
-    static let twoUp = EngineTests.halfWidth
+    static let twoUp = EngineFix.halfWidth
 
     /// One column *is* the viewport, so each workspace can rest at a different, legible scroll offset —
     /// what the horizontal-cancellation test needs.
     static let oneColumn = Config(widthPresets: PresetCycle([.proportion(1.0)]))
 
     static func smoothWorld(_ count: UInt64, config: Config = twoUp) -> State {
-        EngineTests.world(count, config: config)
+        EngineFix.world(count, config: config)
     }
 
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
@@ -553,7 +543,7 @@ import Testing
         var (next, fx) = Engine.reduce(s, .command(command))
         #expect(next.motion.isTransitioning, "\(command) opened no transition")
         var raiseFx: [Effect] = []
-        for id in EngineTests.capturedIds(in: fx) {
+        for id in EngineFix.capturedIds(in: fx) {
             let (after, out) = Engine.reduce(next, .captureReady(id))
             next = after
             raiseFx += out
@@ -575,12 +565,12 @@ import Testing
     /// inert under `tick`).
     static func settled(_ s: State, _ command: Command) -> State {
         let (next, fx) = Engine.reduce(s, .command(command))
-        return EngineTests.settle(next, fx)
+        return EngineFix.settle(next, fx)
     }
 
     /// Two workspaces, two windows each, at rest and focused on `home`.
     private func twoPopulatedWorkspaces(_ config: Config = twoUp) -> State {
-        var s = EngineTests.world(4, config: config)
+        var s = EngineFix.world(4, config: config)
         // Send the two right-hand windows to `other`, then visit it once so it is materialized with a
         // memory of its own, and come back.
         for _ in 0..<2 { s = Self.settled(s, .moveToWorkspace(.name(other))) }
@@ -593,7 +583,7 @@ import Testing
         return s
     }
 
-    // MARK: The one new term
+    // The one new term
 
     /// A sign, not a distance: every unfocused workspace is exactly one screen away, which bounds a
     /// switch's capture scope to two screens of windows and makes `1 → z` the same motion as `1 → 2`.
@@ -627,7 +617,7 @@ import Testing
         #expect(frames[WindowId(1)]!.maxY <= metrics.workingArea.minY)
     }
 
-    // MARK: The switch, in flight
+    // The switch, in flight
 
     /// One session, scoped to both strips, and both seeded with the *same* one-screen displacement —
     /// which is what makes them travel rigidly one screen apart rather than as two slides kept in step.
@@ -643,7 +633,7 @@ import Testing
         for id in after.workspaces.allWindowIds {
             let d = seed(after, id)
             #expect(d != nil, "\(id) was not displaced")
-            #expect(EngineTests.approx(d!, Rect(x: 0, y: Self.screen, width: 0, height: 0)),
+            #expect(EngineFix.approx(d!, Rect(x: 0, y: Self.screen, width: 0, height: 0)),
                     "\(id) seeded \(d!)")
         }
     }
@@ -656,8 +646,8 @@ import Testing
 
         let (after, _) = raiseCover(s, .focusWorkspace(.name(home)))
         for id in after.workspaces.allWindowIds {
-            #expect(EngineTests.approx(seed(after, id)!,
-                                       Rect(x: 0, y: -Self.screen, width: 0, height: 0)), "\(id)")
+            #expect(EngineFix.approx(seed(after, id)!,
+                                     Rect(x: 0, y: -Self.screen, width: 0, height: 0)), "\(id)")
         }
     }
 
@@ -674,8 +664,8 @@ import Testing
         #expect(after.workspaces[scrollOffsetOf: home] == homeOffset)
         for id in after.workspaces.allWindowIds {
             guard let d = seed(after, id) else { continue }
-            #expect(EngineTests.approxScalar(d.minX, 0), "\(id) was displaced sideways by \(d.minX)")
-            #expect(EngineTests.approxScalar(abs(d.minY), Self.screen), "\(id) moved \(d.minY)")
+            #expect(EngineFix.approxScalar(d.minX, 0), "\(id) was displaced sideways by \(d.minX)")
+            #expect(EngineFix.approxScalar(abs(d.minY), Self.screen), "\(id) moved \(d.minY)")
         }
     }
 
@@ -697,7 +687,7 @@ import Testing
             after = next
             for id in leaving {
                 guard let layer = after.motion.layerId(for: id),
-                      let frame = EngineTests.layerFrame(of: layer, in: fx) else { continue }
+                      let frame = EngineFix.layerFrame(of: layer, in: fx) else { continue }
                 seen[id, default: []].insert((frame.minX * 100).rounded() / 100)
             }
         }
@@ -714,7 +704,7 @@ import Testing
         // `.right` is the strip's no-wrap edge and opens nothing.
         let s = twoPopulatedWorkspaces(Self.oneColumn)
         var (scrolling, fx) = Engine.reduce(s, .command(.focus(.left)))
-        for id in EngineTests.capturedIds(in: fx) {
+        for id in EngineFix.capturedIds(in: fx) {
             (scrolling, _) = Engine.reduce(scrolling, .captureReady(id))
         }
         (scrolling, _) = Engine.reduce(scrolling, .coverOnScreen)
@@ -722,13 +712,13 @@ import Testing
         let before = Set(scrolling.motion.transition!.windows)
 
         let (after, switchFx) = Engine.reduce(scrolling, .command(.focusWorkspace(.name(other))))
-        #expect(!EngineTests.hasEffect(switchFx) { if case .endTransition = $0 { return true }; return false })
+        #expect(!EngineFix.hasEffect(switchFx) { if case .endTransition = $0 { return true }; return false })
         #expect(after.motion.isCovered, "the switch tore the cover down")
         #expect(before.isSubset(of: Set(after.motion.transition!.windows)))
         #expect(after.workspaces.focused == other)
 
         // …and it settles onto the truth with nothing left in flight.
-        let (done, _) = EngineTests.drive(after)
+        let (done, _) = EngineFix.drive(after)
         #expect(!done.motion.isTransitioning)
         #expect(done.motion.windowAnimators.isEmpty)
         #expect(Engine.reduce(done, .dragEnded).1.isEmpty,
@@ -755,11 +745,11 @@ import Testing
         #expect(again.motion.isCovered, "the second press opened a second session")
         // `2` is the outgoing strip now: the nudge *adds* the new screen to what was still in flight,
         // so the layer never jumps — one continuous motion through two addresses.
-        #expect(EngineTests.approxScalar(again.motion.windowAnimator(arriving)!.current.minY,
-                                         midFlight.minY + Self.screen))
+        #expect(EngineFix.approxScalar(again.motion.windowAnimator(arriving)!.current.minY,
+                                       midFlight.minY + Self.screen))
         // …while `1`, already one screen up and still one screen up, is left alone to finish.
-        #expect(EngineTests.approxScalar(again.motion.windowAnimator(alreadyLeft)!.current.minY,
-                                         settling.minY))
+        #expect(EngineFix.approxScalar(again.motion.windowAnimator(alreadyLeft)!.current.minY,
+                                       settling.minY))
     }
 
     /// Switching onto an empty workspace still animates: the outgoing strip slides away and what is
@@ -770,13 +760,13 @@ import Testing
         #expect(after.workspaces[name("9")].isEmpty)
         #expect(after.motion.transition!.windows.count == 2)
         for id in [WindowId(1), WindowId(2)] {
-            #expect(EngineTests.approx(seed(after, id)!,
-                                       Rect(x: 0, y: Self.screen, width: 0, height: 0)))
+            #expect(EngineFix.approx(seed(after, id)!,
+                                     Rect(x: 0, y: Self.screen, width: 0, height: 0)))
         }
         #expect(after.layout.columnIndex(ofWindow: after.world.focusedWindow ?? WindowId(0)) == nil)
     }
 
-    // MARK: The two move verbs
+    // The two move verbs
 
     /// `move-to-workspace` without following falls out of the same table: the moved window's "after" is
     /// one screen away, so it flies toward its new workspace while the columns it left close ranks
@@ -792,13 +782,13 @@ import Testing
         // carries the horizontal move too, because it flies to where it will genuinely be: the
         // destination's first column rather than the second column it is leaving.
         let flight = seed(after, moved)!
-        #expect(EngineTests.approxScalar(flight.minY, -Self.screen))
+        #expect(EngineFix.approxScalar(flight.minY, -Self.screen))
         #expect(flight.minX > 0, "the moved window did not travel to its new column")
         // The survivor closes ranks — horizontally, on the strip it is still on.
         let stayed = WindowId(1)
-        #expect(EngineTests.approxScalar(seed(after, stayed)?.minY ?? 0, 0))
+        #expect(EngineFix.approxScalar(seed(after, stayed)?.minY ?? 0, 0))
         #expect(after.motion.elevatedLayer == after.motion.layerId(for: moved))
-        #expect(EngineTests.hasEffect(fx) { if case .elevateLayer = $0 { return true }; return false })
+        #expect(EngineFix.hasEffect(fx) { if case .elevateLayer = $0 { return true }; return false })
     }
 
     /// The follow verb differs by geometry rather than choreography: the moved window is on the focused
@@ -811,14 +801,12 @@ import Testing
 
         #expect(after.workspaces.focused == other)
         #expect(after.world.focusedWindow == moved)
-        #expect(EngineTests.approxScalar(seed(after, moved)?.minY ?? 0, 0),
+        #expect(EngineFix.approxScalar(seed(after, moved)?.minY ?? 0, 0),
                 "the followed window travelled vertically")
         for id in after.workspaces.allWindowIds where id != moved {
-            #expect(EngineTests.approxScalar(abs(seed(after, id)?.minY ?? 0), Self.screen), "\(id)")
+            #expect(EngineFix.approxScalar(abs(seed(after, id)?.minY ?? 0), Self.screen), "\(id)")
         }
     }
-
-    // MARK: The raise blits
 
     /// A layer starts at its capture-time frame, and for a switch that is a screen away from where it
     /// belongs: the incoming workspace's windows are captured at their 1 px park slivers. So the raise
@@ -829,7 +817,7 @@ import Testing
         let s = twoPopulatedWorkspaces()
         var (next, fx) = Engine.reduce(s, .command(.focusWorkspace(.name(other))))
         var raise: [Effect] = []
-        for id in EngineTests.capturedIds(in: fx) {
+        for id in EngineFix.capturedIds(in: fx) {
             let (after, out) = Engine.reduce(next, .captureReady(id))
             next = after
             if !out.isEmpty { raise = out }
@@ -839,7 +827,7 @@ import Testing
         // Every binding is placed…
         let bindings = next.motion.transition!.bindings
         for binding in bindings {
-            #expect(EngineTests.layerFrame(of: binding.layer, in: raise) != nil,
+            #expect(EngineFix.layerFrame(of: binding.layer, in: raise) != nil,
                     "\(binding.window) was raised without being placed")
         }
         // …and the batch is presentation-only, so nothing has been asked to move by the time it lands.
@@ -856,23 +844,23 @@ import Testing
         // sits one screen below, where the eye has not seen it yet.
         let metrics = next.metrics()!
         for binding in bindings where next.workspaces[other].columnIndex(ofWindow: binding.window) != nil {
-            let placed = EngineTests.layerFrame(of: binding.layer, in: raise)!
-            #expect(EngineTests.approxScalar(placed.minY, metrics.contentArea.minY + Self.screen),
+            let placed = EngineFix.layerFrame(of: binding.layer, in: raise)!
+            #expect(EngineFix.approxScalar(placed.minY, metrics.contentArea.minY + Self.screen),
                     "\(binding.window) was blitted to \(placed)")
         }
     }
 
-    // MARK: The residual, characterized rather than hidden
+    // The residual, characterized rather than hidden
 
     /// Spam `focus-workspace next` across a populated address space and report the widest hole the cover
-    /// ever showed, using the same frame-stepped instrument as the scroll (`EngineTests.LatentWorld`).
+    /// ever showed, using the same frame-stepped instrument as the scroll (`EngineFix.LatentWorld`).
     ///
     /// `gapFrames == nil` lets each press run to rest before the next one, whatever the capture latency
     /// costs; a number presses again after exactly that many frames, settled or not.
     private static func worstHoleWhileSwitching(presses: Int, gapFrames: Int?,
                                                 captureLatency: Int) -> Double {
-        var w = EngineTests.LatentWorld(EngineTests.world(8, config: twoUp),
-                                        captureLatency: captureLatency)
+        var w = EngineFix.LatentWorld(EngineFix.world(8, config: twoUp),
+                                      captureLatency: captureLatency)
         var worst = 0.0
         func run(to rest: Bool, frames: Int) {
             var step = 0

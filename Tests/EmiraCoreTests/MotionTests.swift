@@ -13,7 +13,7 @@ import EmiraMotion
         for _ in 0..<frames { m.advance(by: Self.dt) }
     }
 
-    // MARK: - Viewport scroll (the one scalar)
+    // Viewport scroll (the one scalar)
 
     @Test func startsIdleAndSettled() {
         let m = Motion(viewportOffset: 300)
@@ -48,7 +48,7 @@ import EmiraMotion
         #expect(m.isSettled)
     }
 
-    // MARK: - Per-window displacements (the structural edit, in flight)
+    // Per-window displacements (the structural edit, in flight)
 
     static let displacement = Rect(x: -200, y: -40, width: 100, height: -300)
 
@@ -110,7 +110,7 @@ import EmiraMotion
         #expect(m.displacement(of: WindowId(42)) == .zero)
     }
 
-    // MARK: - The retarget generation (what the shell's hold deadline keys on)
+    // The retarget generation (what the shell's hold deadline keys on)
 
     /// It counts decisions, not frames. Every re-aim of every animated quantity bumps it, which is what
     /// lets `Runtime.syncHold` notice a redirect that never touches the viewport; `advance` never does,
@@ -154,7 +154,7 @@ import EmiraMotion
         #expect(elapsed - (lookedFinished ?? 0) < 0.1)          // …within 100 ms of looking settled
     }
 
-    // MARK: - Column widths (the strip's own geometry)
+    // Column widths (the strip's own geometry)
 
     @Test func aColumnWidthAnimatesFromTheOldPresetToTheNew() {
         var m = Motion()
@@ -236,7 +236,7 @@ import EmiraMotion
         m.removeColumnWidthAnimator(ColumnId(99)) // never-installed id → no-op, no crash
     }
 
-    // MARK: - Transition lifecycle: capture → cover → land → close
+    // Transition lifecycle: capture → cover → land → close
 
     private static let scope = [WindowId(1), WindowId(2), WindowId(3)]
 
@@ -329,7 +329,7 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(1)) == nil)
     }
 
-    // MARK: - The scope that grows
+    // The scope that grows
 
     @Test func extendingBeforeTheRaiseAddsToTheBatchTheCoverWaitsOn() {
         var m = Motion()
@@ -400,7 +400,7 @@ import EmiraMotion
         #expect(m.extendCover().isEmpty)                            // not covered yet
     }
 
-    // MARK: - Abandoning a session that never got a cover
+    // Abandoning a session that never got a cover
 
     @Test func abortTransitionTearsDownAPreCoverSessionAndSnaps() {
         var m = Motion(viewportOffset: 0, params: .smooth)
@@ -486,7 +486,7 @@ import EmiraMotion
         #expect(m.layerId(for: WindowId(1)) == LayerId(3))
     }
 
-    // MARK: - Serialization (State dumps / replay)
+    // Serialization (State dumps / replay)
 
     @Test func populatedMotionRoundTripsThroughCodable() throws {
         var m = Motion(viewportOffset: 0, params: .snappy)

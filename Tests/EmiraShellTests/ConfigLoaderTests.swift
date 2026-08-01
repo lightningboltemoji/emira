@@ -11,8 +11,6 @@ import EmiraCore
 
 @Suite @MainActor struct ConfigLoaderTests {
 
-    // MARK: - Fixtures
-
     /// A `FileWatcher` a test fires by hand.
     final class ManualWatcher: FileWatcher {
         private var onChange: (@MainActor () -> Void)?
@@ -81,8 +79,6 @@ import EmiraCore
         }
     }
 
-    // MARK: - Reading
-
     /// emira must run before it is configured.
     @Test func aMissingFileIsTheDefaultConfigAndNotAnError() throws {
         let scratch = Scratch()
@@ -120,8 +116,6 @@ import EmiraCore
         #expect(error.description.hasPrefix(scratch.path))
     }
 
-    // MARK: - Reporting
-
     @Test func reloadReportsThroughOnLoad() {
         let scratch = Scratch()
         scratch.write("[layout]\ncolumn-gap = 3\n")
@@ -152,8 +146,6 @@ import EmiraCore
         #expect(reports.configs.map(\.columnGap) == [3])     // still just the good one
         #expect(reports.errors.count == 1)
     }
-
-    // MARK: - Watching
 
     /// One save is several filesystem events (a temp file, then a rename over the target), so a burst
     /// collapses into one read of the file's final state rather than re-placing every window twice.
@@ -285,7 +277,6 @@ import EmiraCore
         #expect(config.columnGap == 6)
     }
 
-    // MARK: - Opening
     //
     // Handing the file to an editor is a `NSWorkspace.open` that a unit test must not make. What is
     // testable — and what the menu item actually needs — is that there is a file there to open.

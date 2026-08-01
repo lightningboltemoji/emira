@@ -75,8 +75,6 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
         build()
     }
 
-    // MARK: - Running
-
     private func run() -> Outcome {
         render()
         place()
@@ -171,8 +169,6 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
         hasStopped = true
         NSApp.stopModal()
     }
-
-    // MARK: - The view
 
     private func build() {
         window.title = "emira"
@@ -305,8 +301,6 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
               let url = URL(string: model.rows[sender.tag].url) else { return }
         NSWorkspace.shared.open(url)
     }
-
-    // MARK: - Text
 
     /// A wrapping label. `NSTextField` rather than `NSTextView`: nothing here scrolls or is edited, and a
     /// label sizes itself from the width it is given.

@@ -71,7 +71,6 @@ public final class SCKCapturer: SurfaceCapturer {
     }
 }
 
-// MARK: - ScreenCaptureKit
 //
 // File scope on purpose: nested inside a `@MainActor` type these would inherit its isolation, and a
 // main-actor-isolated child-task closure cannot take ownership of the filter it was handed.

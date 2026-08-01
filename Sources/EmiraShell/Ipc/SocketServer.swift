@@ -49,7 +49,7 @@ public final class SocketServer: @unchecked Sendable {
     private let handler: Handler
     private let queue = DispatchQueue(label: "emira.ipc")
 
-    // MARK: State confined to `queue`
+    // State confined to `queue`
 
     private var listener: Int32 = -1
     private var acceptSource: DispatchSourceRead?
@@ -65,8 +65,6 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     deinit { stop() }
-
-    // MARK: - Lifecycle
 
     /// Bind, listen, and begin accepting. Throws if the path can't be safely claimed.
     public func start() throws {
@@ -134,8 +132,6 @@ public final class SocketServer: @unchecked Sendable {
         guard unlink(path) == 0 else { throw SocketServerError.systemCall("unlink", code: errno) }
     }
 
-    // MARK: - Accepting
-
     private func acceptPending() {
         while true {
             let fd = accept(listener, nil, nil)
@@ -168,7 +164,7 @@ public final class SocketServer: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + idleTimeout) { [weak self] in self?.closeConnection(id) }
     }
 
-    // MARK: - One request, one reply
+    // One request, one reply
 
     private func receive(_ id: UInt64) {
         guard let connection = connections[id], !connection.isAnswering else { return }

@@ -13,8 +13,6 @@ import EmiraCore
         return try Wire.decode(T.self, from: Data(line.dropLast()))
     }
 
-    // MARK: - Request
-
     @Test func everyCommandSurvivesTheEnvelope() throws {
         for command in CommandSamples.all {
             let request = Request(command, client: Client(pid: 4821))
@@ -37,8 +35,6 @@ import EmiraCore
         let text = String(decoding: line.dropLast(), as: UTF8.self)
         #expect(text == #"{"client":{"pid":7},"command":{"focus":{"_0":"left"}},"version":1}"#)
     }
-
-    // MARK: - Reply
 
     @Test func allThreeOutcomesRoundTrip() throws {
         let replies: [Reply] = [

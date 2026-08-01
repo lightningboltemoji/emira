@@ -131,7 +131,6 @@ public final class Overlay: NSObject {
         armFence(onScreen)
     }
 
-    // MARK: - The presentation fence
     //
     // Nothing in AppKit or Core Animation reports a commit reaching the glass, so the display is asked
     // instead. `CADisplayLink.targetTimestamp` is when the frame being composed at this callback will be

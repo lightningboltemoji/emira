@@ -27,8 +27,6 @@ import Foundation
 /// one that matches without doing anything.
 public struct WindowRule: Sendable, Equatable, Codable {
 
-    // MARK: Matchers
-
     /// The window's app, by bundle identifier, matched exactly — the stable key, unlike a title.
     public var appId: String?
     /// The window's bundle identifier, matched against a regular expression. Unanchored, so
@@ -40,8 +38,6 @@ public struct WindowRule: Sendable, Equatable, Codable {
     public var title: String?
     /// The window's title at first sight, matched against a regular expression.
     public var titleRegex: String?
-
-    // MARK: Actions
 
     /// The workspace this window arrives on, instead of the focused one.
     public var workspace: WorkspaceName?

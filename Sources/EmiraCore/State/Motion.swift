@@ -192,7 +192,7 @@ public struct Motion: Sendable, Equatable, Codable {
         self.retargetGeneration = 0
     }
 
-    // MARK: - The clock (Event.tick)
+    // The clock (Event.tick)
 
     /// Advance every animator by `dt` seconds, off `Event.tick(dt)` — emitted only under a transition.
     public mutating func advance(by dt: Double) {
@@ -245,8 +245,6 @@ public struct Motion: Sendable, Equatable, Codable {
     /// a ring is a guide decoration and must never hold a cover in the air.
     public var needsFrames: Bool { isTransitioning || !isFocusRingSettled }
 
-    // MARK: - Viewport scroll
-
     /// Aim the scroll at a new offset without disturbing position or velocity — the interrupt path.
     public mutating func retargetViewport(to offset: Double) {
         retargetGeneration &+= 1
@@ -264,7 +262,7 @@ public struct Motion: Sendable, Equatable, Codable {
     /// changes the *shape* of the remaining motion, not where it is.
     public mutating func setScrollSpring(_ params: SpringParams) { viewportOffset.params = params }
 
-    // MARK: - Per-window displacements (the structural edit, in flight)
+    // Per-window displacements (the structural edit, in flight)
 
     /// Displace `id`'s presented rect by `delta` and let it decay back to zero — or add to an in-flight
     /// displacement, keeping its velocity. Create-or-accumulate because a structural edit is a keybind:
@@ -289,7 +287,7 @@ public struct Motion: Sendable, Equatable, Codable {
     /// The displacement animator carrying `id`, or `nil` if it isn't rearranging.
     public func windowAnimator(_ id: WindowId) -> RectAnimator? { windowAnimators[id] }
 
-    // MARK: - Column widths (the strip's own geometry, in flight)
+    // Column widths (the strip's own geometry, in flight)
 
     /// Put column `id`'s resolved width in motion from `from` to `to` — or, if it is *already* in motion,
     /// re-aim it, keeping position and velocity. That second branch is the point: restarting the animator
@@ -320,7 +318,7 @@ public struct Motion: Sendable, Equatable, Codable {
     /// `LayoutEdit.destroyedColumn` is reported at all. Same hygiene as `removeWindowAnimator`.
     public mutating func removeColumnWidthAnimator(_ id: ColumnId) { columnWidths[id] = nil }
 
-    // MARK: - The focus ring (the guide's travel, in flight)
+    // The focus ring (the guide's travel, in flight)
     //
     // Structurally `windowAnimators`, and for the identical reason: focus moves between two *different*
     // windows, so there is no shared number to interpolate and the destination must stay derived. Three
@@ -355,7 +353,7 @@ public struct Motion: Sendable, Equatable, Codable {
                              velocityEpsilon: Self.settleVelocityEpsilon) ?? true
     }
 
-    // MARK: - Transition session (the ephemeral cover lifecycle)
+    // Transition session (the ephemeral cover lifecycle)
 
     /// Which of the three the truth plane is in. Every question about where the real windows are — and
     /// therefore which writer owns them — resolves here.
@@ -463,7 +461,7 @@ public struct Motion: Sendable, Equatable, Codable {
         transition = nil
     }
 
-    // MARK: - Readiness queries (policy gates the reducer reads)
+    // Readiness queries (policy gates the reducer reads)
 
     public var isReadyToRaise: Bool {
         guard let t = transition else { return false }

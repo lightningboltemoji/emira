@@ -12,8 +12,6 @@ import EmiraCore
 // main actor to reply, so a synchronous dial from a test would deadlock on the thread it needs.
 @Suite @MainActor struct SocketServerTests {
 
-    // MARK: - Fixtures
-
     /// A unique socket path in the per-user temporary directory (short enough to bind, cleaned up by
     /// each test's `stop()`).
     static func temporaryPath() -> String {
@@ -78,8 +76,6 @@ import EmiraCore
         guard lstat(path, &info) == 0 else { return nil }
         return info.st_mode
     }
-
-    // MARK: - The round trip
 
     /// A word typed in a terminal becomes an `Event` in the core.
     @Test func aCommandRoundTripsIntoThePump() async throws {
@@ -172,7 +168,7 @@ import EmiraCore
         #expect(runtime.state.world.focusedWindow == WindowId(2))
     }
 
-    // MARK: - The socket path (each of these is a destructive bug if it's wrong)
+    // The socket path (each of these is a destructive bug if it's wrong)
 
     @Test func theSocketIsCreatedPrivateToThisUser() throws {
         let path = Self.temporaryPath()

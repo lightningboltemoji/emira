@@ -13,7 +13,7 @@ import Testing
         OnboardingModel(rows: rows)
     }
 
-    // MARK: - What is asked for
+    // What is asked for
 
     @Test func askingForTheCoverIsWhatMakesScreenRecordingARow() {
         // Demanding a grant for a feature the user turned off is the whole reason it is conditional.
@@ -28,7 +28,7 @@ import Testing
         }
     }
 
-    // MARK: - When boot may proceed
+    // When boot may proceed
 
     @Test func everyRowIsRequired() {
         // Satisfaction is just "all of them" — the optional grant is the one that isn't there.
@@ -47,7 +47,7 @@ import Testing
         #expect(Self.model([.accessibility(.granted), .screenRecording(.granted)]).missing.isEmpty)
     }
 
-    // MARK: - What it says
+    // What it says
 
     @Test func theStatusLineReadsAsASentenceAtEveryCount() {
         #expect(Self.model([.accessibility(.denied), .screenRecording(.denied)]).status
@@ -95,7 +95,7 @@ import Testing
                 + " screenshots stand in for real windows during transitions.")
     }
 
-    // MARK: - Reading a grant this process can't read
+    // Reading a grant this process can't read
 
     @Test func aGrantOnceSeenIsNotUnseen() {
         // The probe writes `.granted` into a row whose in-process read still says otherwise, so a
@@ -125,7 +125,7 @@ import Testing
         }
     }
 
-    // MARK: - Where it opens
+    // Where it opens
 
     @Test func theWindowOpensInTheTopRightCorner() {
         // Where emira lives: the menu bar item this window hands over to is in the same corner.

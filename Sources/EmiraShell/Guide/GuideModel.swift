@@ -158,7 +158,7 @@ public enum GuideModel {
         rect.insetBy(dx: min(separation, rect.width / 4), dy: min(separation, rect.height / 4))
     }
 
-    // MARK: - Where the strip divides
+    // Where the strip divides
 
     /// The boundaries between adjacent tiles, in screen space, to be projected with everything else: a
     /// line down the middle of every gap between columns, and one across every gap between windows
@@ -192,7 +192,6 @@ public enum GuideModel {
         return lines
     }
 
-    // MARK: - Rounding
     //
     // Paint-time, like the separation: it changes no frame, and it is here rather than in `GuidePanel`
     // because it is arithmetic and the panel is wiring. The radii themselves are cosmetics and stay
@@ -246,8 +245,6 @@ public enum GuideModel {
         return Rect(x: (size.width - side) / 2, y: (size.height - side) / 2,
                     width: side, height: side)
     }
-
-    // MARK: - The projection
 
     /// Where the panel sits and how screen geometry maps into it. Pure, and the whole of the placement
     /// policy: nine anchors, one gap, one scale.

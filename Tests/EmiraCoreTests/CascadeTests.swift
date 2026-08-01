@@ -11,8 +11,6 @@ import Testing
     /// An 1800×1130 working area — a ProMotion display minus its menu bar.
     static let working = Rect(x: 0, y: 39, width: 1800, height: 1130)
 
-    // MARK: - The region
-
     @Test func theStackOccupiesTheCentreThreeQuarters() {
         let region = Cascade.region(in: Self.working)
 
@@ -22,8 +20,6 @@ import Testing
         #expect(region.minX - Self.working.minX == Self.working.maxX - region.maxX)
         #expect(region.minY - Self.working.minY == Self.working.maxY - region.maxY)
     }
-
-    // MARK: - The stagger
 
     @Test func everyWindowIsThirtyPointsDownAndRightOfTheLast() {
         let frames = Cascade.frames(count: 5, in: Self.working)
@@ -63,7 +59,7 @@ import Testing
         }
     }
 
-    // MARK: - Totality (the cases a real desktop supplies and a demo never does)
+    // Totality (the cases a real desktop supplies and a demo never does)
 
     @Test func anEmptyDesktopCascadesNothing() {
         #expect(Cascade.frames(count: 0, in: Self.working).isEmpty)
@@ -124,10 +120,10 @@ import Testing
         }
     }
 
-    // MARK: - The effects (which window ends up on top)
+    // The effects (which window ends up on top)
 
     @Test func everyManagedWindowIsPlacedExactlyOnce() {
-        let state = EngineTests.world(4)
+        let state = EngineFix.world(4)
         let effects = state.cascadeEffects()
 
         let placements = effects.compactMap { effect -> WindowId? in
@@ -142,7 +138,7 @@ import Testing
     @Test func parkedWindowsAreRescuedToo() {
         // One full-width preset, so only the focused column is ever in view and the other three are
         // sitting at their 1 pt nubs — the state the cascade exists to stop handing to the user.
-        let state = EngineTests.world(4, config: EngineTests.fullWidth)
+        let state = EngineFix.world(4, config: EngineFix.fullWidth)
         let region = Cascade.region(in: state.metrics()!.workingArea)
 
         for effect in state.cascadeEffects() {
@@ -153,7 +149,7 @@ import Testing
     }
 
     @Test func theFocusedWindowEndsUpOnTop() {
-        var state = EngineTests.world(4)
+        var state = EngineFix.world(4)
         let wanted = WindowId(2)
         state.world.setFocus(wanted)
 
@@ -173,7 +169,7 @@ import Testing
     }
 
     @Test func theStackIsRaisedFromTheBackForwards() {
-        let state = EngineTests.world(3)
+        let state = EngineFix.world(3)
         let effects = state.cascadeEffects()
 
         let placed = effects.compactMap { effect -> WindowId? in
@@ -188,6 +184,6 @@ import Testing
 
     @Test func aWorldWithNoDisplayOrNoWindowsCascadesNothing() {
         #expect(State().cascadeEffects().isEmpty)            // no monitor yet
-        #expect(EngineTests.booted().cascadeEffects().isEmpty)  // a display, no windows
+        #expect(EngineFix.booted().cascadeEffects().isEmpty)  // a display, no windows
     }
 }

@@ -38,7 +38,7 @@ import Testing
         return url
     }
 
-    // MARK: - The layouts a toolchain may emit
+    // The layouts a toolchain may emit
 
     @Test(arguments: [Layout.flat, Layout.deep])
     func theAssetIsFoundInEitherLayoutSwiftPMWrites(layout: Layout) throws {
@@ -52,7 +52,7 @@ import Testing
         #expect(url?.lastPathComponent == "logo.webp")
     }
 
-    // MARK: - The places a build leaves it
+    // The places a build leaves it
 
     @Test func theAppBundlesCopyIsPreferredToOneBesideTheExecutable() throws {
         // Inside a shipped `.app` both roots can exist; the sealed copy belongs to this build.
@@ -80,7 +80,7 @@ import Testing
         #expect(Wordmark.logoURL(searching: [empty, root]) != nil)
     }
 
-    // MARK: - Missing is a value, not a trap
+    // Missing is a value, not a trap
 
     @Test func aMissingAssetIsNilRatherThanACrash() throws {
         let empty = try Self.temporaryDirectory()

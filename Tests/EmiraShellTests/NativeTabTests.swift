@@ -15,8 +15,6 @@ import EmiraCore
 // throughout: a tab switch is not a `windowCreated`, and an app that goes quiet is not a desktop that
 // emptied.
 
-// MARK: - Fixtures
-
 /// Where the tab group sits — every member of a group reports the group's rectangle.
 private let groupFrame = Rect(x: 0, y: 39, width: 600, height: 1100)
 
@@ -77,8 +75,6 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         return report!
     }
 }
-
-// MARK: - The succession itself
 
 @Suite @MainActor struct NativeTabSuccessionTests {
 
@@ -182,7 +178,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     }
 }
 
-// MARK: - What the succession refuses to guess
+// What the succession refuses to guess
 
 @Suite @MainActor struct NativeTabAmbiguityTests {
 
@@ -297,7 +293,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     }
 }
 
-// MARK: - What the rest of the shell is told
+// What the rest of the shell is told
 
 @Suite @MainActor struct NativeTabWatcherTests {
 
@@ -436,7 +432,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     }
 }
 
-// MARK: - Absence is only read from a complete answer
+// Absence is only read from a complete answer
 
 @Suite @MainActor struct NativeTabIncompleteScanTests {
 

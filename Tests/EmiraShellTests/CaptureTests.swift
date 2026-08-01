@@ -13,8 +13,6 @@ import EmiraCore
 
 @Suite @MainActor struct CaptureServiceTests {
 
-    // MARK: - Fixtures
-
     /// A capturer that answers when told to, so a test can put a batch in flight. Sinks are kept per
     /// batch, not one at a time, because the interesting race needs two live at once: a batch that was
     /// superseded and then answers anyway.
@@ -154,7 +152,7 @@ import EmiraCore
         return (service, capturer, scheduler, EventLog())
     }
 
-    // MARK: - Every capture is answered, exactly once
+    // Every capture is answered, exactly once
 
     @Test func aBatchAcksEveryWindowItWasGiven() {
         let (service, capturer, _, log) = Self.service([1, 2, 3])
@@ -258,7 +256,7 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) == nil)       // its late image is not adopted
     }
 
-    // MARK: - The cover session: one base, one lifetime
+    // The cover session: one base, one lifetime
 
     /// The base is the display captured excluding the batch's windows. A batch growing a raised cover
     /// must not take a second one: the first batch's windows have already teleported, so a fresh base
@@ -307,7 +305,7 @@ import EmiraCore
         #expect(service.base != nil)
     }
 
-    // MARK: - No pixels ⇒ no cover (never a black one)
+    // No pixels ⇒ no cover (never a black one)
 
     /// A head batch that resolves with no base leaves the reconstruction nothing to be opaque with,
     /// and the overlay's own fill is black — so it answers `coverUnavailable`, which the core turns
@@ -368,8 +366,6 @@ import EmiraCore
         #expect(service.base != nil)                             // the cover is still opaque
     }
 
-    // MARK: - The read-out
-
     /// The head of a transition is invisible to frames-per-transition, which starts counting at the
     /// raise, so each batch reports its own cost and misses.
     @Test func everyBatchReportsWhatItCostAndWhatItMissed() {
@@ -392,7 +388,7 @@ import EmiraCore
         #expect(reports[1].timedOut)
     }
 
-    // MARK: - Ordering: images before acks
+    // Ordering: images before acks
 
     /// The last `captureReady` re-enters the pump synchronously and comes back out as `raiseCover`,
     /// which reads the store. Acking first would raise the cover over an empty cache.
@@ -414,8 +410,6 @@ import EmiraCore
 
         #expect(service.surface(for: WindowId(7))?.frame == Rect(x: 7, y: 0, width: 100, height: 100))
     }
-
-    // MARK: - Lifetime
 
     @Test func discardEmptiesTheStore() {
         let (service, capturer, _, log) = Self.service([1])
@@ -534,8 +528,6 @@ import EmiraCore
 
     static let size = Size(width: 800, height: 600)
 
-    // MARK: - The stand-in
-
     /// The whole point: a window a kept still fits does not wait for its own capture, so the batch the
     /// cover waits on is the base and nothing else. Its still lands ~10 ms later and is a *refresh*.
     @Test func aKeptStillAnswersForItsWindowWithoutWaiting() {
@@ -633,7 +625,7 @@ import EmiraCore
         #expect(service.surface(for: WindowId(1)) == nil)
     }
 
-    // MARK: - When a kept still may not stand in
+    // When a kept still may not stand in
 
     /// Size is the whole of freshness. A window its app re-laid-out is not showing the pixels it was
     /// filmed with, and painting them into the new rect distorts them — so a resized window is a miss,
@@ -789,7 +781,7 @@ import EmiraCore
                                cornerRadius: radius)
     }
 
-    // MARK: - Who wants a still kept
+    // Who wants a still kept
 
     /// `keepsStills` is the union of the two features that want them — `CoverMode.immediate` raises
     /// over them, `GuideStyle.preview` draws from them — and neither is the other's, so the bit is
@@ -828,8 +820,6 @@ import EmiraCore
         #expect(cache.anySurface(for: WindowId(2)) == nil)
     }
 
-    // MARK: - Matching
-
     @Test func aStillIsReturnedOnlyAtTheSizeItWasFilmedAt() {
         let cache = SurfaceCache()
         cache.keep([WindowId(1): Capturer.surface(WindowId(1), Size(width: 800, height: 600))])
@@ -862,8 +852,6 @@ import EmiraCore
         #expect(cache.surface(for: WindowId(1), at: Size(width: 800, height: 600)) != nil)
     }
 
-    // MARK: - Reduction
-
     /// The reduction is the budget *and* the disclosure: a sixteenth of the pixels, and the softness an
     /// upscale back to the window's own size produces is what stops a stale still passing for a live one.
     @Test func aReducedStillIsSmallerAndKeepsWhatTheLayerNeeds() throws {
@@ -895,8 +883,6 @@ import EmiraCore
         #expect(SurfaceCache.reduced(Self.surface(1, width: 1, height: 1)) == nil)
         #expect(SurfaceCache.reduced(Self.surface(1), by: 1.0) == nil)
     }
-
-    // MARK: - The budget
 
     /// A desktop of many large windows must not grow the cache without bound. Oldest-first, because the
     /// still that has been *read* most is the one most likely to be stale.

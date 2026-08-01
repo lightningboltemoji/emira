@@ -10,8 +10,6 @@ import EmiraCore
 // presentation run wrapped in exactly one frame. `Overlay`, `Reconstruction` and `DisplayLinkDriver`
 // need a window server and hold no decisions, hence `CoverSurface` and `FrameClock` being protocols.
 
-// MARK: - The Y-flip
-
 @Suite struct ScreenGeometryTests {
 
     /// A 1000 pt-tall primary display.
@@ -45,7 +43,7 @@ import EmiraCore
         #expect(core == Rect(x: 0, y: -600, width: 1920, height: 600))
     }
 
-    // MARK: The cover's local space
+    // The cover's local space
 
     /// The cover is inset past the menu bar, so `local` and `cocoa` differ — this is the arithmetic
     /// that decides whether a window layer is drawn where the window is.
@@ -82,11 +80,9 @@ import EmiraCore
     }
 }
 
-// MARK: - Routing & frame boundaries
+// Routing & frame boundaries
 
 @Suite @MainActor struct CompositingExecutorTests {
-
-    // MARK: Fixtures
 
     static let bindings = [LayerBinding(window: WindowId(1), layer: LayerId(1)),
                            LayerBinding(window: WindowId(2), layer: LayerId(2))]
@@ -244,8 +240,6 @@ import EmiraCore
                 launcher, timeline, EventLog())
     }
 
-    // MARK: Plane assignment
-
     @Test func everyEffectIsAssignedToAPlane() {
         #expect(CompositingExecutor.plane(of: .beginTransition([])) == .presentation)
         #expect(CompositingExecutor.plane(of: .extendCover([])) == .presentation)
@@ -260,8 +254,6 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
     }
-
-    // MARK: The system plane
 
     /// A spawn reaches the launcher and touches nothing else — it shares no machinery with AX, which
     /// is why it is a plane of its own rather than a corner of the truth plane.
@@ -301,8 +293,6 @@ import EmiraCore
         #expect(CompositingExecutor.runs(of: []).isEmpty)
     }
 
-    // MARK: Ordering
-
     @Test func theCoverIsRaisedBeforeTheRealWindowsTeleport() {
         // Emission order across a plane change, asked of a batch the reducer does not build — it holds
         // the teleports for `coverOnScreen`. The routing rule stands on its own: nothing may reach the
@@ -338,8 +328,6 @@ import EmiraCore
                                      "truth[raise2]"])
     }
 
-    // MARK: Frame boundaries
-
     @Test func aTicksBlitsAllLandInOneFrame() {
         let (executor, _, _, timeline, log) = Self.harness()
         executor.execute([.setLayerFrame(LayerId(1), Self.rect(10)),
@@ -356,8 +344,6 @@ import EmiraCore
         #expect(!timeline.entries.contains("beginFrame"))
         #expect(truth.batches == [[.focus(WindowId(1)), .raise(WindowId(2))]])
     }
-
-    // MARK: The capture plane
 
     /// A run of `capture`s reaches the store as one call, not one per window: the batch is the unit —
     /// one shareable-content fetch, one fan-out, one set of acks. Each window's recorded size travels
@@ -388,7 +374,7 @@ import EmiraCore
                                      "beginFrame", "blit(1@0)", "endFrame"])
     }
 
-    // MARK: The cover that grows
+    // The cover that grows
 
     /// `extendCover` and the `setLayerFrame`s placing the new layers are one contiguous presentation
     /// run, so they reach the window server in a single transaction. Split across two frames, a
@@ -478,8 +464,6 @@ import EmiraCore
                                      "closeCover", "dismiss", "discard"])
     }
 
-    // MARK: The ack
-
     @Test func aFinishedCrossFadeAcksCrossfadeDone() {
         let (executor, _, _, _, log) = Self.harness()
         executor.execute([.endTransition], feedback: log.sink)
@@ -496,8 +480,6 @@ import EmiraCore
         surface.heldCompletion?()
         #expect(log.events == [.crossfadeDone])
     }
-
-    // MARK: The smoothness read-out
 
     @MainActor final class Counter { var frames: Int? }
 

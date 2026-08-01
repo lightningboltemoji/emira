@@ -1811,10 +1811,14 @@ The architecture exists to make testing cheap. Weight the pyramid accordingly:
 
 - **`EmiraMotionTests`** — feed synthetic `dt` sequences; assert springs converge, don't overshoot past tolerance, and
   that `retarget()` preserves velocity (no visual discontinuity on interrupt).
-- **`EmiraCoreTests / LayoutTests`** — strip math, width/height cycling, viewport scroll & centering, gaps/struts,
-  multi-monitor placement, park-slot assignment (uniqueness, reuse on unpark), rule evaluation. Pure, fast,
-  exhaustive.
-- **`EmiraCoreTests / EngineScenarioTests`** — the scenarios that motivated this whole design, written as scripts:
+- **The layout suites** — `StripTests` (scroll math, visibility, detents), `PresetTests`, `ColumnTests` (height
+  distribution and its bounds), `ParkTests` (park-slot assignment, and windows that refuse a short nub), `LayoutTests`
+  (reconcile, structural mutation, target/natural frames, size corrections) and `OuterGapTests`. One suite per
+  question, each in its own file. Pure, fast, exhaustive.
+- **The reducer suites** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`, `EngineTransitionTests`,
+  `EngineResizeTests`, `EngineFullscreenTests`, `EngineRefusalTests`, `EngineStructuralEditTests` and
+  `EngineConfigReplayTests`, over the shared scripted world in `EngineFix`. The scenarios that motivated this whole
+  design, written as scripts:
 
   ```
   moveWindow(A, right); tick×3; focus(right); moveWindow(B, right); tick×N
