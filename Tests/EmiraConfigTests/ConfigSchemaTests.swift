@@ -19,11 +19,25 @@ import EmiraCore
 
     /// The golden file. Generated means it cannot drift from the reader; golden means it cannot change
     /// without a human reading the diff — and it is the file the README sends people to.
+    ///
+    /// `make example` regenerates it, by setting `EMIRA_UPDATE_GOLDEN` and running this test as the
+    /// generator: the schema reader writes the file it is otherwise checked against, so there is no
+    /// second copy of the rendering to keep in step. The diff a human is meant to read is then
+    /// `git diff` rather than a failure message.
+    ///
+    /// Opt-in, and deliberately not something CI sets. A suite that repaired itself on the way past
+    /// would answer "do the tests pass?" differently on a second run — and a CI retry would go green
+    /// with a modified tree, laundering a stale file into main.
     @Test func theGeneratedDocumentIsTheGoldenFile() throws {
-        let golden = try String(contentsOf: Self.root.appendingPathComponent("emira.example.toml"),
-                                encoding: .utf8)
+        let file = Self.root.appendingPathComponent("emira.example.toml")
+        let updating = ProcessInfo.processInfo.environment["EMIRA_UPDATE_GOLDEN"]
+        if let updating, !updating.isEmpty {
+            try ConfigSchema.document.write(to: file, atomically: true, encoding: .utf8)
+            return
+        }
+        let golden = try String(contentsOf: file, encoding: .utf8)
         #expect(ConfigSchema.document == golden, """
-        emira.example.toml is stale. Regenerate it from ConfigSchema.document and read the diff.
+        emira.example.toml is stale. Run `make example` to regenerate it, and read the diff.
         """)
     }
 

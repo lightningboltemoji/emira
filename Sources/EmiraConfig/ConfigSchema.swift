@@ -352,13 +352,13 @@ public enum ConfigSchema {
                 section: .layout),
 
         Setting("layout.center-focused-column", \.centerFocusedColumn, .toggle,
-                label: "Centre the focused column",
-                help: "Centre a focused column rather than scrolling the least that reveals it.",
+                label: "Center the focused column",
+                help: "Center a focused column rather than scrolling the least that reveals it.",
                 section: .layout),
 
         Setting("layout.resize-detent", \.resizeDetent, .toggle,
                 label: "Resize detent",
-                help: "Stop a grow or shrink where the columns on screen sit flush; press again to push past.",
+                help: "Stop a grow or shrink where it meets the working area boundary; again to pass it.",
                 section: .layout),
 
         Setting("layout.width-presets", \.widthPresets, .sizeList,
@@ -367,7 +367,7 @@ public enum ConfigSchema {
 
         Setting("layout.height-presets", \.heightPresets, .sizeList,
                 label: "Window heights",
-                help: "The heights cycle-height steps through, inside the column.",
+                help: "The heights cycle-height steps through.",
                 section: .layout),
     ]
 
@@ -380,8 +380,7 @@ public enum ConfigSchema {
         // and what a reader needs to find is "the things that move focus".
         Setting("focus.follows-mouse", \.focusFollowsMouse, .toggle,
                 label: "Focus follows the mouse",
-                help: "Focus a window when the pointer crosses into it. Here focus scrolls, so this "
-                    + "moves the strip.",
+                help: "Focus a window when the pointer crosses into it.",
                 section: .focus),
     ]
 
@@ -391,13 +390,12 @@ public enum ConfigSchema {
     private static let mouse: [Setting] = [
         Setting("mouse.hide", \.hidesCursor, .toggle,
                 label: "Hide the pointer",
-                help: "Hide the pointer while you work from the keyboard, until the mouse moves. "
-                    + "The Dock unhides it.",
+                help: "Hide the cursor on events such as focus change.",
                 section: .mouse),
 
         Setting("mouse.follows-focus", \.mouseFollowsFocus, .word,
                 label: "Pointer follows focus",
-                help: "Send the pointer after focus; except-hover skips a hover, lazy one already "
+                help: "Send the pointer after focus; except-hover skips a hover, lazy skips already "
                     + "inside.",
                 section: .mouse),
     ]
@@ -405,12 +403,12 @@ public enum ConfigSchema {
     private static let animation: [Setting] = [
         Setting("animation.transition", \.transitionMode, .word,
                 label: "Transition mode",
-                help: "Whether a cover is used during window transitions, and if so, what style.",
+                help: "smooth for spring animations, snap for no motion, off to disable.",
                 section: .animation),
 
         Setting("animation.hold-timeout", \.holdTimeout, .number(greaterThan: 0, unit: .seconds),
                 label: "Hold timeout",
-                help: "Seconds a cover may stay up waiting for a window to land.",
+                help: "Maximum seconds a cover can stay up waiting for windows to adjust.",
                 section: .animation, advanced: true),
 
         Setting("animation.window", \.windowAnimation, .word,
@@ -420,7 +418,7 @@ public enum ConfigSchema {
 
         Setting("animation.cover", \.coverMode, .word,
                 label: "Cover mode",
-                help: "Whether a cover waits for every window's still, or goes up on the desktop's.",
+                help: "exact waits for current screenshots; immediate uses stale screenshots to begin sooner.",
                 section: .animation),
     ]
 

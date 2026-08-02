@@ -30,8 +30,8 @@ import EmiraCore
     @Test func aToggleIsExplainedWithoutOne() throws {
         let setting = try #require(ConfigSchema.setting(for: "layout.center-focused-column"))
         #expect(setting.explanation(in: Config()) == """
-        layout.center-focused-column — Centre the focused column
-          Centre a focused column rather than scrolling the least that reveals it.
+        layout.center-focused-column — Center the focused column
+          Center a focused column rather than scrolling the least that reveals it.
 
           default  false
           current  false

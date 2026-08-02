@@ -35,12 +35,25 @@ SHELL   := /bin/bash
 LD_NOISE = ld: warning: search path '$(DEVDIR)/Developer/.*' not found
 QUIET    = 2> >(grep -vE "$(LD_NOISE)" >&2)
 
-.PHONY: build test clean app icon zip dist install uninstall print-version
+.PHONY: build test example clean app icon zip dist install uninstall print-version
 build:
 	swift build $(QUIET)
 
 test:
 	swift test $(TEST_FLAGS) $(QUIET)
+
+# --- The golden config file ----------------------------------------------------------------------
+# `emira.example.toml` is generated from `ConfigSchema` and pinned by a test; this is the one way to
+# regenerate it. The generator *is* that test — under `EMIRA_UPDATE_GOLDEN` it writes the file it
+# otherwise asserts against — so there is no second rendering of the schema to keep in step with the
+# first, and no new executable target to build one.
+#
+# The variable is opt-in and nothing in CI sets it: `make test` only ever checks. What replaces the
+# failure message as the thing a human reads is `git diff`, which is the review the file is golden for.
+example:
+	EMIRA_UPDATE_GOLDEN=1 swift test $(TEST_FLAGS) \
+		--filter theGeneratedDocumentIsTheGoldenFile $(QUIET)
+	@git --no-pager diff --stat -- emira.example.toml
 
 clean:
 	swift package clean

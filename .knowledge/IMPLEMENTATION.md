@@ -1871,6 +1871,11 @@ document cannot drift from the reader, and cannot change without someone reading
 of `Config` is either covered by an entry, claimed by one of the three named sections, or on an explicit not-a-key
 list — so a new field cannot be added without a config story.
 
+`make example` regenerates the golden file, by setting `EMIRA_UPDATE_GOLDEN` and running the pinning test as the
+generator — the schema reader writes the file it is otherwise checked against, so no second rendering exists to drift.
+The diff someone reads is then `git diff`. The variable is opt-in and CI never sets it: a suite that repaired itself on
+the way past would answer differently on a second run, and a CI retry would go green with a modified tree.
+
 **Three rules about a file that isn't what we hoped, and each is a decision:** a **missing** file is `Config()`, not an
 error (emira must run before it is configured); a **broken** file changes *nothing* and reports `path:line: message`
 (falling back to defaults would rearrange a whole desktop as the side effect of a typo, at the moment the user is
