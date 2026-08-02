@@ -35,7 +35,7 @@ private enum AXKey {
     static let focusedWindow = "AXFocusedWindow"
     /// The window's own close button. A window-level *attribute*, not a child walk — the one element
     /// below a window emira ever asks for, and the only public way to close a foreign window
-    /// (`PRINCIPLES.md` §5's "never walk the child tree" is about enumerating a tree, not naming a
+    /// (`IMPLEMENTATION.md` §7's "never walk children" is about enumerating a tree, not naming a
     /// standard part). A window that cannot be closed simply doesn't answer.
     static let closeButton = "AXCloseButton"
 }

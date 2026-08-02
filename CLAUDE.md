@@ -1,4 +1,4 @@
-`.knowledge/README.md` provides context on the project and how knowledge is managed.
+`.agents/README.md` provides context on the project and how knowledge is managed.
 
 House rules:
 

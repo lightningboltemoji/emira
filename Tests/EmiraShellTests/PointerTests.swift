@@ -9,7 +9,7 @@ import EmiraCore
 // real cursor to say anything about.
 //
 // The three window-server facts these tests are shaped around were measured, not assumed, and are
-// recorded in `.knowledge/changes/1785627157.md`: absent an activation the hide count is real; an
+// recorded in `.agents/changes/1785627157.md`: absent an activation the hide count is real; an
 // activation resets it; the count floors at zero.
 
 @Suite struct PointerTests {

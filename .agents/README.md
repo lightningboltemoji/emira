@@ -1,4 +1,4 @@
-# `.knowledge/`
+# `.agents/`
 
 | File                | Contents                                                | Tense   |
 | ------------------- | ------------------------------------------------------- | ------- |
@@ -15,7 +15,7 @@ reading stays in git and in the change that replaced it.
 ## Changes
 
 Feature work has a change id: the Unix epoch second it was made. The id names a file,
-`.knowledge/changes/1784863319.md`.
+`.agents/changes/1784863319.md`.
 
 ## Where an explanation goes
 

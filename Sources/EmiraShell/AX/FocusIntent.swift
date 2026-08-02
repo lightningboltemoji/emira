@@ -27,7 +27,7 @@ public final class FocusIntent {
     ///
     /// A bound rather than a delay: nothing waits on it, it only decides when a request stops meaning
     /// anything. A record that never expired would make emira permanently deaf to real focus changes on
-    /// every window it had ever focused, which is the failure `PRINCIPLES.md` §5 will not accept.
+    /// every window it had ever focused, which is the failure `PRINCIPLES.md` §4 will not accept.
     public static let defaultGrace: TimeInterval = 0.5
 
     /// One issued focus request. Ordinal and opaque — `isCurrent` is the only thing that reads it.

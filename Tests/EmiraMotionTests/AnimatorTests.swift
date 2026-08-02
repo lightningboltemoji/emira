@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import EmiraMotion
 
-/// An animator the core advances itself, with velocity-preserving retargeting (PRINCIPLES.md §7).
+/// An animator the core advances itself, with velocity-preserving retargeting (IMPLEMENTATION.md §1).
 @Suite struct AnimatorTests {
     static let dt = 1.0 / 120.0
 

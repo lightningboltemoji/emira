@@ -225,7 +225,7 @@ import Testing
         #expect(after.workspaces.focused == .first)
     }
 
-    /// A boot-adopted window keeps the width it already had (`PRINCIPLES.md` §4a) even though it is
+    /// A boot-adopted window keeps the width it already had (`PRINCIPLES.md` §4) even though it is
     /// assigned elsewhere — the intent is read on the focused strip and carried across by the move.
     @Test func anAssignedBootWindowKeepsTheWidthItArrivedWith() {
         let s = EngineFix.booted(config: Self.slackToThree)

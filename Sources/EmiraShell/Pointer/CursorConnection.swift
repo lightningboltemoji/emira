@@ -4,7 +4,7 @@ import Foundation
 
 // **The whole of emira's private surface, and nothing else in the repository mentions CGS.**
 //
-// `PRINCIPLES.md` §7 takes its one narrow exception here, on terms this file is built to keep: the two
+// `PRINCIPLES.md` §2 takes its one narrow exception here, on terms this file is built to keep: the two
 // symbols are reached by `dlsym` and are neither linked nor `dlopen`ed, so a macOS that stops exporting
 // them makes emira's cursor setting unavailable rather than making emira unlaunchable — arm64 binaries
 // use chained fixups with no lazy binding, so a *linked* symbol that went away would fail in dyld before
