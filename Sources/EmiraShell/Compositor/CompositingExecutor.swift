@@ -54,6 +54,9 @@ public final class CompositingExecutor: Executor {
         case presentation
         case capture
         case truth
+        /// The cursor. Not the presentation plane: it composites above our overlay as it does above
+        /// every other window, which is the whole reason it needs hiding at all.
+        case pointer
         /// Outside the desktop entirely: a child process. Its own plane rather than a corner of the
         /// truth plane, because it shares nothing with AX — no window, no per-app lane, no ack.
         case system
@@ -86,6 +89,7 @@ public final class CompositingExecutor: Executor {
     private let surface: any CoverSurface
     private let store: any CaptureStore
     private let truth: any Executor
+    private let pointer: any Executor
     private let launcher: any ProcessLauncher
     /// Frames blitted since the current cover was raised, and when it went up.
     private var framesBlitted = 0
@@ -93,10 +97,11 @@ public final class CompositingExecutor: Executor {
 
     /// `store` is the same object that backs `surface`'s pixels.
     public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor,
-                launcher: any ProcessLauncher = ShellLauncher()) {
+                pointer: any Executor, launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
         self.store = store
         self.truth = truth
+        self.pointer = pointer
         self.launcher = launcher
     }
 
@@ -106,6 +111,7 @@ public final class CompositingExecutor: Executor {
             case .presentation: present(run.effects, feedback: feedback)
             case .capture:      store.capture(Self.captureTargets(run.effects), feedback: feedback)
             case .truth:        truth.execute(run.effects, feedback: feedback)
+            case .pointer:      pointer.execute(run.effects, feedback: feedback)
             case .system:       for line in Self.execLines(run.effects) { launcher.launch(line) }
             }
         }
@@ -149,6 +155,8 @@ public final class CompositingExecutor: Executor {
             return .capture
         case .setFrame, .park, .focus, .raise, .closeWindow:
             return .truth
+        case .setCursorHidden, .warpPointer:
+            return .pointer
         case .exec:
             return .system
         }
@@ -183,7 +191,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition:
                 dismissing = true
-            case .setFrame, .park, .capture, .focus, .raise, .closeWindow, .exec:
+            case .setFrame, .park, .capture, .focus, .raise, .closeWindow, .setCursorHidden,
+                 .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
             }
         }

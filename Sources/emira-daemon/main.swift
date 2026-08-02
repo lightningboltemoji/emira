@@ -145,6 +145,27 @@ let overlay = Overlay(screen: screen, geometry: geometry, insets: struts)
 let registry = WindowRegistry()
 let axClient = AXClient()
 
+// Both built here, and the pointer's monitor probed here, because `applyEnvironment` clamps the two
+// `[mouse]`/`[focus]` pointer settings against what they can do, and the config has to be finished
+// before anything reads it.
+let observation = AXObservationSource(client: axClient, registry: registry)
+/// Whether the pointer's **motion** can be observed at all. Both pointer settings rest on that one
+/// monitor, for different reasons: hiding, because the only exit from a hidden pointer is seeing the
+/// mouse move; hover, because a crossing is a thing you can only detect in samples.
+///
+/// Probed by installing the real monitor and taking it straight back down, not by asking the button
+/// monitor whether *it* installed: buttons answer a different question, and the setting this gates is
+/// the one whose failure mode is a desktop with no cursor and no way to get one. The idle cost that
+/// keeps motion unobserved by default is paid once, at boot, rather than for the life of the process.
+///
+/// Honestly a **defensive branch rather than a machine anyone has met** — mouse masks need no grant
+/// beyond the one boot already demands, and no macOS is known where the installer answers nil. Read
+/// because a nullable return is not to be waved through, but not a capability the way `canHideCursor`
+/// and the Screen Recording grant are, both of which are routinely absent.
+let observesPointerMotion = observation.observePointerMotion(true)
+observation.observePointerMotion(false)
+let pointer = PointerExecutor(surface: SystemCursor())
+
 // One `FocusIntent` too, for the same reason and on the other axis: the writer records the focus it
 // asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
 let focusIntent = FocusIntent(scheduler: DispatchScheduler())
@@ -173,19 +194,42 @@ let guide = Guide(panel: GuidePanel(screen: screen, geometry: geometry, insets: 
 
 // The config, finished
 
-/// The two values a config file may not decide: the struts (the same number must reach the core and
-/// the overlay or the cover stops matching the strip) and the Screen Recording grant (a capability, not
-/// a preference). Re-applied on every reload, which is what notices macOS revoking the grant.
+/// Whether hiding the pointer is reachable on this machine at all: the mechanism has to be there, and
+/// the pointer's motion has to be observable. Read once — neither answer changes while the process runs.
+let canHidePointer = pointer.canHideCursor && observesPointerMotion
+
+/// The values a config file may not decide: the struts (the same number must reach the core and the
+/// overlay or the cover stops matching the strip), the Screen Recording grant, and the two settings
+/// that need the pointer — the last three capabilities rather than preferences. Re-applied on every
+/// reload, which is what notices macOS revoking the grant.
 func applyEnvironment(to config: Config) -> Config {
     var config = config
     config.struts = struts
     // The whole ladder above `off`, not just `smooth`: a cover is captured pixels under either, so `snap`
     // needs the grant exactly as much. What runs under the cover is the core's own arithmetic and free.
     if !Permissions.screenRecording.isGranted { config.transitionMode = .off }
+    // The interesting conjunct is `observesPointerMotion`: emira only hides the pointer because it can
+    // see the motion that brings it back, so no monitor means no hide — better than any timeout, which
+    // would also unhide on someone who is merely reading.
+    if !canHidePointer { config.hidesCursor = false }
+    // The same monitor, the other dependent. Nothing unsafe follows from leaving this on — a crossing
+    // simply never arrives — which is exactly why it is clamped rather than left: a setting that
+    // silently does nothing is the failure this philosophy refuses everywhere else.
+    if !observesPointerMotion { config.focusFollowsMouse = false }
     return config
 }
 
 var config = applyEnvironment(to: parsedConfig)
+// So a user who asked for something this machine cannot do is told, once — and told *which* settings,
+// since one machine can lose both (no motion monitor) or only the first (no cursor property). One line
+// rather than one per setting: they have one cause between them and a list reads as one fact.
+let clamped = [("mouse: hide", parsedConfig.hidesCursor && !config.hidesCursor),
+               ("focus: follows-mouse",
+                parsedConfig.focusFollowsMouse && !config.focusFollowsMouse)]
+    .filter(\.1).map(\.0)
+if !clamped.isEmpty {
+    log("\(clamped.joined(separator: ", ")) — not available on this system, and off for this run")
+}
 
 //
 // Created before the pump so a config already broken at boot has somewhere to say so.
@@ -204,25 +248,7 @@ let launcher = ShellLauncher()
 launcher.onOutcome = { log("exec: \($0)") }
 
 let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
-                                   launcher: launcher)
-
-/// The config values that reach the shell rather than the reducer — the core's emitted geometry is
-/// identical under every setting of them. One function, called at boot and again on every reload, so
-/// that the shell and the reducer read the same post-`applyEnvironment` value by construction.
-@MainActor func applyShellConfig(_ config: Config) {
-    reconstruction.animation = config.windowAnimation
-    capture.mode = config.coverMode
-    executor.transitionMode = config.transitionMode
-    // Two features want the stills a cover leaves behind and neither is the other's: `immediate` raises
-    // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
-    let keepsStills = config.coverMode == .immediate || config.guide.style == .preview
-    capture.keepsStills = keepsStills
-    // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte
-    // budget collects them. A no-op at boot, where there is nothing kept yet.
-    if !keepsStills { surfaceCache.removeAll() }
-}
-
-applyShellConfig(config)
+                                   pointer: pointer, launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below.
@@ -302,7 +328,7 @@ if bootConfigError == nil { applyKeys(config) }
 // the config file's to say — see `startManaging`.
 
 let watcher = WorldWatcher(
-    source: AXObservationSource(client: axClient, registry: registry),
+    source: observation,
     enumerator: AXEnumerator(source: AXWindowSource(client: axClient), registry: registry),
     registry: registry,
     scheduler: DispatchScheduler(),
@@ -314,6 +340,61 @@ let watcher = WorldWatcher(
 watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
 }
+
+// The pointer plane's read direction: two consumers of the same samples, neither of which the watcher
+// owns. Wired here because nothing owns anything else — the shape `capture.onBatchResolved` and
+// `executor.onCoverDismissed` have.
+//
+// `PointerFocus` holds a `() -> State` reader, which the watcher deliberately does not; `PointerWake`
+// holds the threshold that answers a hide. The hide arms the wake, so the anchor is taken at the moment
+// the cursor goes.
+let pointerFocus = PointerFocus(state: { runtime.state }, sink: runtime.sink)
+let pointerWake = PointerWake(sink: runtime.sink)
+pointer.onCursorHidden = { [pointerWake] hidden in pointerWake.setArmed(hidden) }
+
+// Through `PointerSamples` rather than closures calling both: focus must read a sample before the wake
+// clears the flag it reads, and an ordering rule that matters belongs beside the two types it orders
+// rather than in a wiring line nothing can test. It takes the other direction too — a warp moves the
+// cursor without the user touching it, so both readers are measuring against a place it no longer is.
+let pointerSamples = PointerSamples(focus: pointerFocus, wake: pointerWake)
+watcher.onPointerMoved = { [pointerSamples] point in pointerSamples.pointerMoved(to: point) }
+pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: point) }
+
+/// The config values that reach the shell rather than the reducer — the core's emitted geometry is
+/// identical under every setting of them. One function, called at boot and again on every reload, so
+/// that the shell and the reducer read the same post-`applyEnvironment` value by construction.
+///
+/// Defined *below* everything it writes to, deliberately. Top-level `let`s in `main.swift` are
+/// initialized in execution order and are not lazy, so a function up here that reached a global down
+/// there would compile clean and read zeroed memory if it were ever called early. Keeping the
+/// definition after the last thing it touches makes that unrepresentable rather than merely avoided.
+@MainActor func applyShellConfig(_ config: Config) {
+    reconstruction.animation = config.windowAnimation
+    capture.mode = config.coverMode
+    executor.transitionMode = config.transitionMode
+    // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
+    // warp under all three, and the position the upper two decide against is only readable out here.
+    pointer.recentres = config.mouseFollowsFocus.recentres
+    // Two features want the stills a cover leaves behind and neither is the other's: `immediate` raises
+    // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
+    let keepsStills = config.coverMode == .immediate || config.guide.style == .preview
+    capture.keepsStills = keepsStills
+    // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte
+    // budget collects them. A no-op at boot, where there is nothing kept yet.
+    if !keepsStills { surfaceCache.removeAll() }
+    // The pointer's samples, and the only observation in the daemon with a standing idle cost: the
+    // monitor fires at the pointer's rate for as long as it is installed. Two settings want it and
+    // neither is the other's — hiding, because the only exit from a hidden pointer is seeing the mouse
+    // move; hover, because a crossing is a thing you can only detect in samples — so it is installed
+    // for either and taken down for neither. With both off, which is the default, emira observes the
+    // mouse's buttons and not its motion.
+    observation.observePointerMotion(config.focusFollowsMouse || config.hidesCursor)
+    // …and the second reader still asks per sample whether it is wanted, because the first setting can
+    // keep the samples flowing on its own.
+    pointerFocus.isEnabled = config.focusFollowsMouse
+}
+
+applyShellConfig(config)
 
 /// Whether the desktop has been adopted. A latch: adoption happens once, and the only open question
 /// is when.
@@ -409,6 +490,9 @@ var isShuttingDown = false
     log("shutting down")
 
     watcher.stop()          // our own placements stop being events that undo themselves
+    // Directly, not through `Teardown`: that takes the truth executor and emits only
+    // `setFrame`/`raise`/`focus`, and quitting is the one moment there is no next command to unhide on.
+    pointer.restoreCursor()
     hotkeys.stop()
     loader.stop()
     server.stop()

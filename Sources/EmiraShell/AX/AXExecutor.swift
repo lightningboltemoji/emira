@@ -22,10 +22,16 @@ public final class AXExecutor: Executor {
 
     private let registry: WindowRegistry
     private let writer: any WindowWriter
+    private let scheduler: any DelayScheduler
 
-    public init(registry: WindowRegistry, writer: any WindowWriter) {
+    /// - Parameter scheduler: for the one turn `appActivated` waits (see `execute`). Defaulted because
+    ///   it is the only asynchrony in this type and every other test of it is about geometry; a test
+    ///   that cares injects a manual one rather than every test that doesn't naming a real one.
+    public init(registry: WindowRegistry, writer: any WindowWriter,
+                scheduler: any DelayScheduler = DispatchScheduler()) {
         self.registry = registry
         self.writer = writer
+        self.scheduler = scheduler
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -53,7 +59,19 @@ public final class AXExecutor: Executor {
             // An unknown id is dropped rather than acked; there is no "focus failed" event.
             case .focus(let id):
                 guard let record = registry.record(id) else { continue }
-                writer.focus(record)
+                // The one thing focus acks, and it is not about focus: bringing an app forward discards
+                // a background cursor hide, *including* the redundant activation that moves focus
+                // between two windows of one app — which `NSWorkspace` announces to nobody, so the
+                // writer that asked for it is the only witness there is.
+                //
+                // Reported a turn after the writer says it activated something, because the window
+                // server re-establishes the cursor *after* the activation call returns and a hide
+                // re-asserted inside that window is thrown away along with the one it replaced. The
+                // delay is here rather than in the writer: what it defers is an **event**, which is
+                // this type's half of the seam, and the writer has no business knowing a cursor exists.
+                writer.focus(record) { [scheduler] in
+                    scheduler.schedule(after: 0) { feedback(.appActivated) }
+                }
 
             case .raise(let id):
                 guard let record = registry.record(id) else { continue }
@@ -68,7 +86,7 @@ public final class AXExecutor: Executor {
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
             case .capture, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer,
-                 .endTransition, .exec:
+                 .endTransition, .setCursorHidden, .warpPointer, .exec:
                 break
             }
         }

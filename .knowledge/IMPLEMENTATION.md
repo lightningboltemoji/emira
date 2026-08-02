@@ -215,12 +215,12 @@ the placement diff skips the window forever. Marking it unverified makes that pr
 the set clears it. Deliberately **not** a retry — nothing is scheduled — so a genuinely hung app costs one extra set
 per real event instead of a busy loop.
 
-**A batch streams its pieces, and what the atomic batch was protecting is now said outright.** Stills used to be
-answered all at once, on the reasoning that per-window acks would let the core count down to a raise the base was not
-ready for. That reasoning is about the *base*, not about batching, and answering as a unit charges every cover the
-full serialized cost of its scope (§6). So a batch hands each piece over as it lands, and the capture plane holds
-every ack until the base is in — the same guarantee, stated as the rule it always was. The core's gate is untouched:
-it still raises on the last `captureReady` and knows nothing about a base.
+**A batch streams its pieces, and the guarantee that would justify answering it as a unit is stated outright
+instead.** Answering every still at once keeps the core from counting down to a raise the base is not ready for — but
+that is a fact about the *base*, not about batching, and buying it by the batch charges every cover the full
+serialized cost of its scope (§6). So a batch hands each piece over as it lands, and the capture plane holds every
+ack until the base is in: the same guarantee, as the rule it is. The core's gate knows nothing about a base — it
+raises on the last `captureReady`.
 
 **`CoverMode` decides when a window *has* pixels, and that is the whole of it.** Under `immediate` a window whose
 kept still fits is acked at once, and its own capture — still taken, because the stand-in buys the raise and not the
@@ -360,7 +360,9 @@ emira/
 │   │   │   ├── World.swift          # truth: monitors, apps, windows, focus, managed/floating
 │   │   │   ├── Motion.swift         # viewport-offset + per-column width + per-window Animators;
 │   │   │   │                        # the transition session
-│   │   │   └── RectAnimator.swift   # four scalar animators in a trenchcoat, for displacements
+│   │   │   ├── RectAnimator.swift   # four scalar animators in a trenchcoat, for displacements
+│   │   │   └── Pointer.swift        # the visit owed and the hide wanted — the one part of `State`
+│   │   │                            # that is intent rather than fact, and so not `World`'s
 │   │   ├── Layout/
 │   │   │   ├── Layout.swift         # ONE strip → columns → windows; its target geometry. Also
 │   │   │   │                        # the four structural editing primitives — reorder a column,
@@ -423,15 +425,17 @@ emira/
 │   │   │   ├── AXEnumerator.swift   # window-level enumeration only (no child walk).
 │   │   │   │                        # `WindowSource` protocol + AXWindowSource (the untestable half)
 │   │   │   ├── AXWriter.swift       # the write half's boundary: `WindowWriter` protocol (place a
-│   │   │   │                        # *group* of one app's windows / focus / raise) + AXWindowWriter
+│   │   │   │                        # *group* of one app's windows / focus / raise) + AXWindowWriter.
+│   │   │   │                        # `focus` answers the moment it has activated an app; the turn
+│   │   │   │                        # that answer waits before becoming an Event is AXExecutor's
 │   │   │   ├── AXExecutor.swift     # the truth plane's Executor: groups a batch into one lane job
-│   │   │   │                        # per app, acks axLanded/axFailed, reports clamp drift
+│   │   │   │                        # per app, acks axLanded/axFailed/appActivated, reports clamp drift
 │   │   │   ├── Observation.swift    # WorldObservation vocabulary + the `ObservationSource` seam.
 │   │   │   │                        # Not `Event`: "a window appeared" needs a re-scan to be named,
 │   │   │   │                        # and "a window moved" carries no frame — both are policy
 │   │   │   ├── AXObservers.swift    # AXObservationSource: per-app AXObserver (registered against
 │   │   │   │                        # *two* element scopes), NSWorkspace launch/quit/activate, and
-│   │   │   │                        # the global mouse-up monitor
+│   │   │   │                        # the global mouse monitor — buttons up and motion together
 │   │   │   ├── FocusIntent.swift    # the focus emira asked for, so it can tell its own echo from the
 │   │   │   │                        # user's Cmd-Tab. Written by the writer, read by the writer (which
 │   │   │   │                        # activation is still wanted) and by WorldWatcher (which report is
@@ -468,6 +472,20 @@ emira/
 │   │   │   │                        # bundleId → CGImage for the daemon's life; `Guide` is the
 │   │   │   ├── GuideIcons.swift     # trigger, the dwell and the fade. The same split `MenuBar` keeps,
 │   │   │   └── Guide.swift          # so the interesting half is testable with no window server
+│   │   ├── Pointer/
+│   │   │   ├── CursorConnection.swift # the whole of §7's exception: two dlsym'd CGS symbols setting
+│   │   │   │                        # SetsCursorInBackground on our own connection, lazily on the
+│   │   │   │                        # first hide. Nothing else in the tree names CGS
+│   │   │   ├── PointerExecutor.swift # the pointer plane's Executor + the `CursorSurface` seam. Owns
+│   │   │   │                        # the hide depth: a hide is re-asserted on every activation, and
+│   │   │   │                        # one show pays out all of them
+│   │   │   ├── PointerFocus.swift   # the *other* direction, reader one: samples → Event.pointerEntered,
+│   │   │   │                        # one per crossing. Holds a `() -> State` reader, so it is not in
+│   │   │   │                        # WorldWatcher, which holds no core state by design
+│   │   │   ├── PointerWake.swift    # reader two: samples → Event.pointerWoke, one per hide. The
+│   │   │   │                        # anchor and the jitter threshold — the hide's only exit
+│   │   │   └── PointerSamples.swift # and the one thing neither reader owns: focus runs first, because
+│   │   │                            # the wake is about to clear the flag focus reads
 │   │   ├── Display/
 │   │   │   ├── FrameClock.swift     # tick-source protocol the Runtime gates (the testable seam)
 │   │   │   ├── DisplayLinkDriver.swift  # CADisplayLink (NSScreen.displayLink) -> Event.tick(dt)
@@ -875,6 +893,22 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     origin carries it the rest of the way. Re-deriving it in the core would duplicate a ticket ordinal and a grace
     timer the core has no clock for, and splitting the case in two would let a third focus source be added without
     anyone being made to think about the policy.
+  - **`[focus] follows-mouse` is the third source of focus changes, and the only one that can chase itself.** In i3 or
+    AeroSpace, focusing a hovered window moves nothing. **Here focus scrolls**, so the naive implementation runs away:
+    hover the edge of column N+1 → the reveal scrolls → N+2's new edge is under the stationary pointer → focus →
+    scroll, off across the desktop. Two rules stop it, and neither is an optimisation. **It fires on pointer motion
+    only, never on window motion** — a window sliding under a stationary pointer changes nothing, and that is the
+    termination argument, which is why `PointerFocus` is driven by the mouse monitor and never by `onStateChanged`.
+    And **it is suspended while a cover is up**: mid-transition the truth plane and what the user sees disagree, and
+    hover is an act of the eye, so it must not read a screen the eye is not seeing. Suspension keeps *tracking* while
+    it declines to *dispatch*, so a cover coming down leaves the baseline as whatever is now under the hand rather
+    than reporting a crossing the pointer never made. The core's half is a pure hit test
+    (`World.window(at:)` — floats and dialogs before tiled windows, restricted to `isOnScreen`, which excludes
+    parked nubs **for free**, and that matters: a nub sits under a hot corner). It is `World`'s rather than the
+    reducer's because every term of it is — frames, floats, `placedOnScreen` — and it is one allocation-free pass
+    for the same reason `PointerFocus` reads the setting before calling it: this runs at the refresh rate for as
+    long as hover is on. The crossing then reduces into the same tail
+    `focus(Direction)` already has, so the echo comes home marked `.ours` and nothing new is needed on the way back.
 - **Workspaces: 36 strips, one focused, the rest parked in full** (`PRINCIPLES.md` §1). Nothing is persisted across
   restart, so a daemon restart adopts every window onto the focused workspace — accepted deliberately, and the most
   annoying consequence of the charter.
@@ -1065,6 +1099,55 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     re-inserted on return.
 - **The `Engine` reducer:** the reconciliation state machine — absorbs external reality (user clicks, app-launched,
   display hotplug) into the World model, decides snap-vs-transition, drives the motion session.
+  - **`State.pointer` carries two things the plane is owed, and neither is a fact about the desktop.** `pendingWarp`
+    is the visit a focus change booked; `isCursorHidden` is an *intent* the shell is asked to keep true. Neither is
+    `World`'s, because every field of `World` is refreshed by observation and these cannot be: no public API
+    reports cursor visibility, and the window server discards a background hide on every activation without saying
+    so. A record nothing can refresh is a wish, and holding it as one is what makes the hide an assertion that is
+    re-made rather than a latch that refuses. One `Pointer` value rather than two loose fields, so the two post-passes
+    below read as one subsystem's and `State` keeps naming subsystems rather than accumulating flags.
+  - **Three things are decided *after* the fold, in the `reduce` wrapper, because each is a difference between two
+    states no single path can see.** The guide's focus ring is one (§4c). The other two are the pointer's, and the
+    hide runs before the warp — not for emission order, which comes out the same either way, but because the hide
+    asks whether the command *did something* by reading `effects.isEmpty`, and a warp appended first would answer
+    that `true` for a command that moved nothing. A visit already owed is a consequence of an earlier hide, never a
+    reason for a new one. **The
+    hide**: a `.command` that *emitted something*, with nothing already hidden, gets `setCursorHidden(true)`
+    *prepended* — so workspace switches, structural edits and any verb added later are covered by construction, and a
+    window opening by itself is not. Prepending buys the capture head and is not sufficient on its own, since the
+    same batch usually ends in `.focus`; `Event.appActivated` is what survives that. Both gates are about **who asked**, not about what moved: a rule drawn around
+    window movement looks right and is wrong, because focus crossing between two columns that are both already on
+    screen emits `.focus` alone — the single most common thing a keyboard user does, in the layout where hiding the
+    pointer matters most. "Emitted something" is also what excludes a read like `dumpState` and a `focus left` into
+    the wall at the end of the strip, without either needing to be named. **And a hide is paid back the moment the
+    setting goes away, which is the one exit the mouse cannot supply**: a hide is only ever taken while
+    `[mouse] hide` is on, so "hidden with the setting off" can only mean the setting was withdrawn — a reload, or
+    `applyEnvironment` clamping it against a capability — and by then the shell has stopped watching for the motion
+    that ordinarily ends it, because watching *was* the setting. So the post-pass is written against the invariant
+    rather than against `configChanged`, and any later way of lowering the setting is covered by it. **The warp**:
+    focus moving records
+    `State.pointer.pendingWarp`, and one rule pays it —
+    *owed, and no session open* — which covers both the uncovered case (at once) and the covered one (when the session
+    closes), with no list of closing events to keep in step. Newest wins, the resolution `FocusIntent` and every
+    retargeted animator already use — and **every focus change re-decides the debt, including one the rung declines**,
+    since a visit left standing would aim the pointer at a window that no longer has focus. `off` cancels a debt
+    already standing rather than only declining the next one, on the hide's terms and for its reason: a debt outlives
+    the event that booked it, so a reload is a way the rung can change under an owed visit. `except-hover` gates the
+    **owing** and never the paying: by the time a visit is paid the event that booked it is several events ago, and
+    `FocusOrigin` cannot answer the question anyway — a hovered focus reduces into the same tail `focus(Direction)`
+    does, so its echo comes home marked `.ours` exactly as a commanded one's does. The test is on the event, one line
+    from the `.command` test the hide makes.
+    - **The rung reaches the shell as config, not on the effect.** All three warping rungs emit the *identical*
+      `Effect.warpPointer`, because what separates them — whether a pointer already inside the rect is centred anyway —
+      is a question about a position only the shell can read. So `MouseFollowsFocus.recentres` lands on
+      `PointerExecutor` through `applyShellConfig`, beside `animation.window` and for its reason: a preference that
+      moves no emitted geometry does not belong in the effect vocabulary.
+  - **Why the warp waits.** Under a cover the reals have already teleported, so the correct target exists immediately
+    — but the user is watching layers travel toward it, and a cursor arriving 250 ms before its window is the flash
+    the cover exists to prevent, one element over. The visit is dropped, never retried, if the window is gone or off
+    screen by the time it is paid: `isOnScreen`, the same predicate `[focus] system-events = on-screen` uses, and the
+    target is clamped into the working area so a half-revealed column takes the pointer to the part of itself the user
+    can see.
 
 ### Imperative shell (`EmiraShell`)
 - **Runtime** — the `@MainActor` pump: turn Events into `reduce`, hand Effects to the Executor. The one place the two
@@ -1088,16 +1171,49 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     executor's job is only to be faithful to it. What the router cannot supply is "cover before teleport" — that is a
     fact about the *display*, not about emission order, so it is a phase in the core fenced by `coverOnScreen` and the
     two never share a batch at all.
-    - **There are four planes, and `exec`'s is its own rather than a corner of the truth plane.** A spawn has no
-      window, no per-app lane, no enhanced-UI toggle and no ack, so the only thing it would share with AX is the file
-      it was routed in. `plane(of:)` is exhaustive on purpose — a new `Effect` must be *assigned* a home rather than
-      falling into one — and the run-splitting means the system plane keeps its place in emission order for free.
+    - **There are five planes, and the two small ones are their own rather than corners of a bigger one.** A spawn has
+      no window, no per-app lane, no enhanced-UI toggle and no ack, so the only thing `exec` would share with AX is the
+      file it was routed in. The pointer is not the presentation plane either: it composites *above* our overlay as it
+      does above every other window, which is the whole reason it needs hiding. `plane(of:)` is exhaustive on purpose —
+      a new `Effect` must be *assigned* a home rather than falling into one — and the run-splitting means both small
+      planes keep their place in emission order for free, which is what puts the pointer's hide in front of the
+      placement it was prepended to.
 - **AXClient / enumerator / writer / observers / watcher** — the truth plane, in its three directions: read
   (`AXEnumerator`), write (`AXExecutor`), watch (`AXObservationSource` + `WorldWatcher`). Per-app serial queues,
   messaging timeout, enhanced-UI toggle, the clamping dance, window-level-only enumeration (AX hygiene,
   `PRINCIPLES.md` §5). The same source watches `NSWorkspace` activation so externally-initiated focus becomes an Event
-  (which reveals by scrolling), and holds a global mouse-up monitor (allowed under the AX grant) marking drag-end so a
-  user-dragged tiled window re-tiles on release.
+  (which reveals by scrolling), and is the one owner of global mouse events. **Two monitors, because the two halves
+  are wanted on different terms.** Button-up marks drag-end so a user-dragged tiled window re-tiles on release: a
+  fact about the desktop, always watched. Motion feeds the pointer plane and is a **setting** — it fires at the
+  pointer's sample rate for as long as it is installed, waking a background process on every mouse move anywhere on
+  the system, and with both `[mouse] hide` and `[focus] follows-mouse` off (the default) every one of those samples
+  would be delivered to two readers that refuse it. So `observePointerMotion(_:)` is driven by `applyShellConfig`
+  and installed for either setting; a window manager does not charge a standing idle cost to a desktop that asked it
+  to watch nothing. Motion is three masks besides
+  `mouseMoved`, since moving with a button held posts `*MouseDragged` instead, and a pointer hidden by a command must
+  not survive a window drag. Locations come off the `CGEvent`, already in top-left global coordinates — the core's own
+  space, and the one boundary in the shell with no Y-flip. **The capability both settings are clamped against is
+  *this* monitor's, asked by installing it and taking it straight back down** — `observePointerMotion(_:)` answers
+  whether it took, and the daemon probes before finishing the config. The button monitor could only stand in for the
+  question, and standing in is exactly what must not happen here: the setting being gated is the one whose failure
+  mode is a desktop with no cursor and no way to get one, so it is gated on the monitor that actually provides the
+  way back. The standing idle cost that keeps motion unobserved by default is then paid once, at boot, rather than
+  for the life of the process. The button monitor installs from `start` and nowhere else — drag-end predates the
+  pointer plane and may not become something a call site can forget. Constructing the source observes nothing, which
+  keeps the two questions — can we see the mouse, and is the desktop adopted — answerable apart; samples arriving
+  before `start` are dropped, since `deliver` is the switch.
+  The same activation notification is read *twice*, for the two different things it means: `focusMoved` (which window
+  has focus now — an AX read away) and the bare `appActivated` (somebody else owns the cursor now, so a background
+  hide has been discarded). The second is reported for every app but us and ahead of the `isRegular` filter: a
+  spurious re-assertion is free, a missed one is a visible pointer. It is not the only source of that event —
+  the notification fires on a *change* of frontmost app, and emira's own re-activation of the app already in front
+  discards the hide without changing anything, so `AXWindowWriter` reports the activations it makes itself.
+  - **That self-report is a turn late, and the turn is `AXExecutor`'s rather than the writer's.** The window server
+    re-establishes the cursor *after* the activation call returns, so a hide re-asserted level with the ask is thrown
+    away along with the one it replaced. What that delays is an **Event**, which is the executor's half of the seam —
+    the writer says "I activated an app" and is not required to know that a cursor exists. It also puts the deferral
+    above `WindowWriter`, where a manual scheduler can assert on both sides of it, instead of in the half no test
+    reaches.
   - **A match must be unique or it is not a match.** Exactly one candidate within a 2 pt tolerance, checked in *both*
     directions (no window may see two entries; no entry may be claimed by two windows), and everything else is
     rejected *with a reason* the daemon logs. A nearest-position match is right for a prototype and wrong here,
@@ -1187,7 +1303,7 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     reports, and is exactly what a successor looks like a moment before it can be seen. Both skip the app entirely and
     let the retry ask again. Believing either costs a live column.
   - **A departure with no successor is corroborated against the window list.** The succession refuses to guess, but
-    its *orphans* used to go straight to `windowDestroyed` on the strength of an app's silence — and a window snapshot
+    its *orphans* may not go straight to `windowDestroyed` on the strength of an app's silence — a window snapshot
     is seven round trips under the messaging timeout, so one failed read drops a live window out of its app's answer
     and looks exactly like a backgrounded tab. The corroboration costs nothing: the window-list entries are already
     read for the first join, and a window still listed **on screen** is alive whatever AX says, since a background tab
@@ -1301,6 +1417,80 @@ Grouped by plane. Items marked *(later)* are post-M5 polish, not part of the lig
     antialiasing *conserves* coverage, so summing the alpha deficit over a corner-sized block inverts to `r` within a
     quarter-pixel regardless of what the rasterizer did to the edges, and degrades honestly on a continuous (squircle)
     corner by yielding the circular radius enclosing the same area.
+- **Pointer** — the smallest plane: `Effect.setCursorHidden` against the real cursor, over a `CursorSurface` seam so
+  everything above the one untestable call is headless. The private property that makes a background hide take effect
+  is the whole of `CursorConnection` (`PRINCIPLES.md` §7's exception); `CGDisplayHideCursor` itself is public.
+  - **A hide is a standing assertion, not an edge**, because any activation discards it (`PRINCIPLES.md` §6) — and
+    emira's own `focus` effect activates one a millisecond after the hide prepended to the same batch.
+    `Event.appActivated` re-emits `setCursorHidden(true)` for as long as one is owed, so the batch no longer destroys
+    its own first effect. Nothing about the *state* moves on a re-assertion: nothing was decided, something was undone.
+  - **That event has two sources, because one of them is deaf to the commonest case.** `NSWorkspace` announces a
+    change of frontmost app; it says nothing when emira re-activates the app already in front, which is what focusing
+    the *other window of the same app* does — and that activation discards the hide exactly like any other. So
+    `AXExecutor` acks `.focus` with `.appActivated` off the writer's own activation, which is the one thing focus
+    acks and is not about focus at all: which window has focus is still the observers' to say.
+  - **The executor counts its own hides and a show pays out all of them.** No arithmetic on our side can predict the
+    window server's count — absent an activation it is real, and an activation resets it — so the depth kept here is
+    an upper bound, which is the safe side: the count floors at zero, and the failure that outlives the process is a
+    hide left *unpaid*, not a show too many. A show with nothing outstanding does not reach the cursor at all, since
+    the count is shared with every other process on the connection — and "something is outstanding" *is*
+    `isCursorHidden`, derived from the depth rather than stored beside it, since a boolean agreeing with a counter by
+    convention is the second authority this plane spends its whole argument avoiding. The `restoreCursor()` path
+    matters for the same
+    reason: shutdown unhides outside the effect stream, because `Teardown` takes the truth executor and emits only
+    `setFrame`/`raise`/`focus`, and quitting is the one moment there is no next command to unhide on.
+  - **The announcement stayed edge-triggered even though the hide did not.** `onCursorHidden` arms the wake watcher
+    and the watcher re-anchors as it arms, so announcing every re-assertion would move the anchor to wherever the
+    pointer sat at the last activation — and a pointer nobody had touched would need to travel the threshold again
+    from a fresh origin each time.
+  - **The capability is not re-checked per effect.** `canHideCursor` is read once, by `applyEnvironment`, and the
+    executor obeys whatever the reducer asks. An executor free to decline a hide the reducer has already recorded
+    puts the two permanently out of step — no announcement, so no armed watcher, so no `pointerWoke`, so no way back
+    for the rest of the session — and an invariant two modules must agree on is not one either of them should be
+    able to break alone.
+  - **One call, not one per display.** The `display` argument to `CGDisplayHideCursor` is documented as ignored and the
+    count belongs to the connection, so hiding per screen would take as many shows to undo — and the screens can change
+    in between.
+  - **Which motion ends a hide is `PointerWake`'s**, a sibling of `PointerFocus` rather than a corner of
+    `WorldWatcher`: both turn raw samples into at most one `Event`, both are armed by the pointer's own state, and
+    neither is a fact about the desktop. The watcher owns the mouse monitor and therefore the **fan-out**, and owns
+    nothing else about the pointer. The hide anchors, and a sample past `PointerWake.distance` from that anchor
+    reports `Event.pointerWoke` once and disarms. Measured from the
+    anchor rather than summed along the path: a resting trackpad finger jitters, and a sum would reach any threshold
+    given enough seconds while a slow deliberate drag still crosses this within a few samples.
+  - **`Effect.warpPointer` carries a rect, not a point**, so "leave it alone if it is already in there" belongs to the
+    instruction rather than needing a second effect or a core that tracks the cursor. Focus landing on the window the
+    pointer is already over must not yank it, and the cursor moves without anyone asking — a `State` holding its
+    position would be wrong between reads. It carries the rect and *nothing else*: whether being inside is enough is
+    `recentres`, applied by `applyShellConfig` like every other shell-read preference. The executor reads it, skips or warps to the rect's centre, and
+    re-associates (`CGAssociateMouseAndMouseCursorPosition`) because a warp starts a suppression interval that would
+    otherwise swallow the user's next movement.
+  - **A warp rebases *both* sample readers, because a warp posts no event and nothing else can tell them.** Each holds
+    a record of where the cursor was and each is wrong the instant it is carried: the wake would measure hundreds of
+    points against an anchor the cursor has left and unhide on the next jitter, and `PointerFocus` would call that
+    same jitter a crossing into a window the pointer never travelled to. So `onWarp` carries the point it was put at
+    and goes through `PointerSamples.pointerWarped(to:)`, the sibling of `pointerMoved` — "the cursor moved" has
+    exactly two sources and that type is where both are spelled out. The wake's half deliberately forgets the anchor
+    *without* changing whether we are watching: a warp with nothing hidden must not start the watching, or an unhidden
+    pointer would put an event through the pump on every twitch thereafter. Focus's half re-reads the hit test at the
+    new point, which matters more than the usual case suggests — the window warped into normally has focus already, so
+    the spurious crossing is a no-op, but `World.window(at:)` prefers a float to the tiled window under it, and a
+    float lying over the target's centre would take the focus the warp was sent to deliver, with the user's hand
+    still. Unlike a sample there is no order to keep here: neither reader's answer depends on the other's.
+  - **`PointerFocus` is the plane's other direction**, and it is a *reader* of state rather than an executor of
+    effects. Raw samples must never reach the pump — 120 events a second would fire `onStateChanged` at that rate and
+    fill the inbound log, which *is* the replay log — so the crossing is detected out here and only the crossing goes
+    in as `Event.pointerEntered`.
+    It holds a `() -> State` reader wired from the daemon, which makes it the **second route by which core state
+    reaches the shell** — deliberate, and the reason is that the first route cannot serve it: `onStateChanged` fires
+    once per drain, and this reads on a sample that is not an event and must not become one. Everything else that
+    displays state (`MenuBarItem`, `Guide`) still goes through `onStateChanged`, and should.
+  - **`PointerSamples` is three lines and exists for one rule: focus reads a sample before the wake clears the flag
+    it reads.** The two readers are otherwise independent and the watcher hands the same sample to both, but a hidden
+    pointer may be sitting over a window nobody chose — so the motion that ends a hide must only *wake*, and
+    `PointerFocus` tells that this is that sample from `State.pointer.isCursorHidden`. Running the wake first would let the
+    first twitch throw focus wherever the cursor had drifted. That belongs beside the two types it constrains rather
+    than in a wiring line, because a wiring line is the one place nothing can test it.
 - **DisplayLinkDriver** — the frame clock; emits `tick(dt)` only while a transition is active (idle = no ticks).
 - **Hotkeys** — global binds via Carbon `RegisterEventHotKey`. The deciding property is not latency, it is
   **consumption**: an `NSEvent` global monitor is already available to us under the AX grant, but it cannot swallow
@@ -1611,8 +1801,24 @@ Covers: keybindings (`[keys]`, key → `Command`, including the
 `exec` that hands a chord back to the system), gaps
 (`column-gap`, `window-gap`, `outer-gap` + its four per-side overrides), `width-presets` and `height-presets`,
 `center-focused-column` (the height ladder has an implicit extra rung, **auto**, which the cycle wraps through),
-`focus.system-events` (`"respect"` / `"on-screen"` / `"ignore"` — which focus changes emira did not cause it honours),
-`animation.transition` (`"off"` / `"snap"` / `"smooth"` — the one key **both** planes read: the reducer for whether
+`focus.system-events` (`"respect"` / `"on-screen"` / `"ignore"` — which focus changes emira did not cause it honours)
+and `focus.follows-mouse` (hovering a window focuses it — under `[focus]` rather than `[mouse]` because it is another
+source of focus changes, and what a reader looks for is "the things that move focus"),
+`mouse.hide` (hide the pointer while you work from the keyboard, until the mouse next moves — *any* command that did
+something, `exec` included, since the rule is about the hand rather than about the desktop; whose help sentence
+names the Dock limit, because a user whose cursor reappears at the bottom of the screen would otherwise file it as a
+bug) and `mouse.follows-focus` (`"off"` / `"lazy"` / `"except-hover"` / `"force"` — send the pointer after focus. The
+ladder is spelled rather than assumed because **here a column is most of the screen**: "the pointer is already inside
+the window focus landed on" is the common case, not the rare one, so `lazy` is nearly inert and `force` is what most
+people mean by the feature. **The two middle rungs refuse on different questions** — `lazy` on where the pointer is,
+`except-hover` on whether the pointer is what moved focus. `except-hover` is `force` with one source removed, and it
+is removed because a hover is the one focus change where recentring can only *lose*: the window under the cursor is
+already the right one, so the warp's whole effect is a jump away from the spot the hand aimed at. Every other source —
+Cmd-Tab, a Dock click, an app raising itself, a window arriving — is a focus the hand was not already on, and the
+pointer follows it. The key is read by **both** planes and split cleanly between them: the reducer asks
+`warps(pointerCaused:)`, which decides whether a visit is booked at all, and the shell asks `recentres`, which decides
+what to do with a pointer already inside — the half that needs a position no `State` can hold),
+`animation.transition` (`"off"` / `"snap"` / `"smooth"` — the other key **both** planes read: the reducer for whether
 to cover and whether to animate, the shell for how long the finished cover takes to leave), and animation params (spring stiffness/damping,
 durations, and the two word-valued keys that reach the *shell* alone rather than the reducer — `animation.window`,
 `"stretch"` or `"crop"`, and `animation.cover`, `"exact"` or `"immediate"`; one says what to paint where a still no
@@ -1677,16 +1883,31 @@ other and hot reload works for some ways of editing a file and silently not for 
 wakes on *any* activity in that directory, what is reported is a change in the **parsed `Config`**, not a change to
 the file: the file changing is a guess, the config changing is the fact.
 
-**The daemon owns the two values a file may not decide.** `struts` come from `NSScreen.visibleFrame` and the same
+**The daemon owns the values a file may not decide.** `struts` come from `NSScreen.visibleFrame` and the same
 number must reach the core and the overlay; `transitionMode` is a *preference* answerable to the Screen Recording
 *capability* — no grant sends it to `off` outright, both covered rungs being made of the same pixels, so `snap` is out
-of reach exactly as `smooth` is. Both are re-applied on every reload (`applyEnvironment`), which also makes a reload
-the first thing that notices macOS revoking the grant mid-session.
+of reach exactly as `smooth` is. `hidesCursor` is the same shape against a capability with two conjuncts: the private
+property has to resolve, *and* the pointer's **motion** monitor has to have installed, because the only exit from a
+hidden pointer is seeing the mouse move and emira will not enter a state it has no exit from. **That monitor is one
+capability with two dependents**, and the second is clamped for the opposite reason to the first: nothing unsafe follows from
+leaving `focusFollowsMouse` on without it — a crossing simply never arrives — which is exactly why it must be clamped
+rather than left, since a setting that silently does nothing is the failure this philosophy refuses everywhere else,
+and the log can only report what the clamp actually took away. A setting asked for and clamped away is logged once.
+All are re-applied on every reload (`applyEnvironment`), which also makes a reload the first thing that notices macOS
+revoking the grant mid-session.
 
-**Boot and reload apply the same config the same way.** The three values that reach the shell rather than the reducer
-(`windowAnimation`, `coverMode`, `transitionMode`) are pushed onto their subsystems by one `applyShellConfig`, called
-at launch and again from `ConfigLoader.onLoad`. Two call sites assigning three properties each is where "the reducer
-and the shell read the same post-`applyEnvironment` value" goes quietly false.
+**Boot and reload apply the same config the same way.** The values that reach the shell rather than the reducer
+(`windowAnimation`, `coverMode`, `transitionMode`, the kept stills, and the pointer plane's rung and its monitor) are
+pushed onto their subsystems by one `applyShellConfig`, called at launch and again from `ConfigLoader.onLoad`. Two
+call sites assigning a property each is where "the reducer and the shell read the same post-`applyEnvironment` value"
+goes quietly false.
+
+**It is defined below everything it writes to, and that is a language fact rather than a stylistic one.** Top-level
+`let`s in `main.swift` are initialized in execution order and are *not* lazy, so a function declared above a global it
+reaches compiles clean and reads zeroed memory if it is ever called before that line — a segfault with no diagnostic.
+`applyShellConfig` touches the pointer plane's readers, which are built from `runtime`, so it sits after them and is
+called immediately below. Keeping the definition after the last thing it touches makes the ordering unrepresentable
+rather than a rule a comment has to hold.
 
 ---
 
@@ -1703,7 +1924,10 @@ and the shell read the same post-`applyEnvironment` value" goes quietly false.
   customers are the overlay and `NSScreen` enumeration. It is a `Double` plus an involution: the two spaces differ by
   a reflection about the primary screen's half-height. AX's global space **is** the core's space (top-left origin at
   the primary display's top-left), so `AXAccess` copies frames straight across with no arithmetic at all. There is
-  nothing to get wrong there, which is the strongest form of "exactly once".
+  nothing to get wrong there, which is the strongest form of "exactly once". The **pointer plane** is in the same
+  position and worth naming for it: `CGEvent.location` and `CGWarpMouseCursorPosition` both speak that same top-left
+  global space, so nothing in `Pointer/` flips either, and the comment there says so — every *other* seam in the shell
+  does, and a boundary that doesn't is worth a line.
 - **Smoothness needs its own instrument, and there is only one.** `Spring` is an analytic integrator, so it lands on
   the physically correct position for any `dt`: a six-frame lurching scroll and a 76-frame fluid one trace the *same*
   offset-vs-wall-clock curve, and no amount of `emira debug` polling tells them apart — worse, polling perturbs the

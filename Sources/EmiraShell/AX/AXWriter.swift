@@ -62,7 +62,12 @@ public protocol WindowWriter {
     /// Give a window keyboard focus: make it its app's key window, then bring the app forward. A writer
     /// that really writes also puts the request on the `FocusIntent` record, since the echo it provokes
     /// is only distinguishable from the user's own Cmd-Tab by what we asked for.
-    func focus(_ window: WindowRegistry.Record)
+    ///
+    /// Calls `completion` once it has activated the app, and not at all when a newer focus superseded
+    /// this one first — an activation nobody made is not one to report. Which window ends up focused
+    /// still comes back from the observers; this says only that an activation happened, which is a
+    /// fact about the *app* and the one thing focus has to answer for.
+    func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
 
     /// Raise a window within its app's stack, without touching focus.
     func raise(_ window: WindowRegistry.Record)
@@ -124,7 +129,8 @@ public final class AXWindowWriter: WindowWriter {
     /// The `makeKey` itself is left to run. It cannot bring an app forward on its own, its own lane
     /// already orders it against the app's other writes, and the echo it may post is what `FocusIntent`
     /// exists to recognise on the way back.
-    public func focus(_ window: WindowRegistry.Record) {
+    public func focus(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor () -> Void) {
         let ticket = intent.request(window.id)
         let element = window.element
         let pid = window.pid
@@ -135,6 +141,7 @@ public final class AXWindowWriter: WindowWriter {
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
             NSRunningApplication(processIdentifier: pid)?.activate()
+            completion()
         }
     }
 

@@ -43,6 +43,27 @@ public enum Event: Sendable, Equatable, Codable {
     /// A global mouse-up: the end of a possible drag, on which a drifted tiled window re-tiles.
     case dragEnded
 
+    /// The pointer crossed into a window. A *fact* the shell reports, not an instruction: whether it
+    /// moves focus is `[focus] follows-mouse`, and the core decides.
+    ///
+    /// Deliberately not `pointerMoved(Point)` into the reducer. Raw samples would put 120 events a
+    /// second through the pump, fire `onStateChanged` at that rate, and fill the inbound log — which
+    /// *is* the replay log. So the hit test is pure (`World.window(at:)`) and the shell calls it,
+    /// dispatching only on a crossing.
+    case pointerEntered(WindowId)
+
+    /// The user moved the mouse far enough to end a hide (`Effect.setCursorHidden`). One event,
+    /// edge-triggered, never a stream: the shell holds the anchor and the distance threshold, because a
+    /// mouse on a desk jitters and a resting trackpad finger jitters more — so *which* motion counts is
+    /// a filter, and every filter of that kind is `WorldWatcher`'s.
+    case pointerWoke
+
+    /// Some application came to the front. Carries no pid because nothing here is about *which* one:
+    /// the fact reported is that the window server has handed the cursor to somebody else, and a hide
+    /// issued from the background has been discarded. Distinct from `focusChanged`, which is the same
+    /// notification read for the other thing it means.
+    case appActivated
+
     /// The config file parsed successfully; the core adopts the values and re-lays out in place. Only
     /// successful parses reach the core — a syntax error logs a diagnostic and emits nothing.
     case configChanged(Config)

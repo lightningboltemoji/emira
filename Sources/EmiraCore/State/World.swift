@@ -294,6 +294,53 @@ public struct World: Sendable, Equatable, Codable {
         return floating[id] ?? !window.role.tiles
     }
 
+    /// Whether the user can see `id` right now. Not the same question as `participatesInStrip`, and the
+    /// difference is the whole of this function: **off the strip and off the screen are different sets.**
+    /// A float is off the strip and plainly visible; a minimized window is off the strip and in the Dock.
+    ///
+    /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch, and the last
+    /// placement pass already made it: `placedOnScreen` is that decision, kept. Asking it rather than
+    /// re-deriving it is what keeps the question "where is this window" from being answered with where
+    /// it is *going* — the viewport describes the destination for the whole of a reveal — or with where
+    /// it would be under a strip that has been restructured since it was last placed. Membership
+    /// subsumes the workspace test too: a pass parks everything off the focused strip.
+    public func isOnScreen(_ id: WindowId) -> Bool {
+        guard let window = windows[id] else { return false }
+        // Nowhere on the screen for a reason that has nothing to do with the strip.
+        guard !window.isMinimized, !isAppHidden(of: id) else { return false }
+        // A window emira does not place is wherever its app put it, which is in view.
+        guard participatesInStrip(id) else { return true }
+        return placedOnScreen.contains(id)
+    }
+
+    /// The window under `point`, in top-left global coordinates — the hit test behind
+    /// `[focus] follows-mouse`.
+    ///
+    /// Here because every term of it is `World`'s, and public because the *shell* asks it: raw samples
+    /// must not reach the pump (see `Event.pointerEntered`), so the crossing is detected outside.
+    /// Restricted to `isOnScreen`, which excludes parked nubs **for free** — a nub sits under a hot
+    /// corner, where a stray sweep would otherwise switch workspaces.
+    ///
+    /// **Floats and dialogs before tiled windows**, since emira declines an opinion about where a float
+    /// sits. That is as far as `World` sees: it knows frames, not stacking, so an *unmanaged* window over
+    /// a tiled one still resolves to the tiled one.
+    ///
+    /// One pass and no intermediate arrays — this runs at the refresh rate for as long as the setting is
+    /// on. Ties break on the lowest id, a dictionary's order being no order, and only floats can tie.
+    public func window(at point: Point) -> WindowId? {
+        var float: WindowId?
+        var tiled: WindowId?
+        for window in windows.values where window.frame.contains(point) && isOnScreen(window.id) {
+            let id = window.id
+            if isFloating(id) {
+                float = float.map { min($0, id) } ?? id
+            } else {
+                tiled = tiled.map { min($0, id) } ?? id
+            }
+        }
+        return float ?? tiled
+    }
+
     /// Fold `Command.float`. Stored **explicitly**, even when it agrees with the role, because a
     /// subrole describes a window's *presentation* and can change under us — a natively full-screen
     /// Safari window reports `AXDialog` (§10) — and the user's answer must outrank a role that moves.

@@ -160,12 +160,13 @@ extension Setting {
     /// no entries on purpose: they are the two sections the table cannot describe, and naming them here
     /// is what keeps a window's list of sections one list rather than "the schema's, plus two".
     public enum Section: String, CaseIterable, Sendable {
-        case layout, focus, animation, springs, guide, keys, windowRules
+        case layout, focus, mouse, animation, springs, guide, keys, windowRules
 
         public var title: String {
             switch self {
             case .layout:      return "Layout"
             case .focus:       return "Focus"
+            case .mouse:       return "Mouse"
             case .animation:   return "Animation"
             case .springs:     return "Springs"
             case .guide:       return "Guide"
@@ -328,7 +329,7 @@ extension Setting.Kind {
 /// Every setting emira has, in the order it is read and the order it is shown.
 public enum ConfigSchema {
 
-    public static let settings: [Setting] = layout + focus + animation + springs + guide
+    public static let settings: [Setting] = layout + focus + mouse + animation + springs + guide
 
     /// The setting spelled `key`, or `nil` when the schema has no such key — which the three sections
     /// it doesn't describe are also on the wrong side of: `[keys]` and `[[window-rules]]` are edited
@@ -374,6 +375,31 @@ public enum ConfigSchema {
         Setting("focus.system-events", \.systemFocusEvents, .word,
                 label: "System focus events",
                 help: "Which focus changes emira did not cause it honours.", section: .focus),
+
+        // Beside `system-events` rather than under `[mouse]`: it is another source of focus changes,
+        // and what a reader needs to find is "the things that move focus".
+        Setting("focus.follows-mouse", \.focusFollowsMouse, .toggle,
+                label: "Focus follows the mouse",
+                help: "Focus a window when the pointer crosses into it. Here focus scrolls, so this "
+                    + "moves the strip.",
+                section: .focus),
+    ]
+
+    /// The pointer plane. `hide` is also a *capability* — the shell clamps it off when macOS cannot do
+    /// what it asks for, exactly as it clamps `animation.transition` — while `follows-focus` is public
+    /// API throughout and nothing clamps it.
+    private static let mouse: [Setting] = [
+        Setting("mouse.hide", \.hidesCursor, .toggle,
+                label: "Hide the pointer",
+                help: "Hide the pointer while you work from the keyboard, until the mouse moves. "
+                    + "The Dock unhides it.",
+                section: .mouse),
+
+        Setting("mouse.follows-focus", \.mouseFollowsFocus, .word,
+                label: "Pointer follows focus",
+                help: "Send the pointer after focus; except-hover skips a hover, lazy one already "
+                    + "inside.",
+                section: .mouse),
     ]
 
     private static let animation: [Setting] = [

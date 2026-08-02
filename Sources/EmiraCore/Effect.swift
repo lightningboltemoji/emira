@@ -84,6 +84,25 @@ public enum Effect: Sendable, Equatable, Codable {
     /// so the core changes no state here and the strip closes ranks when (and if) the window really goes.
     case closeWindow(WindowId)
 
+    // Pointer plane — Core Graphics, on the cursor itself
+
+    /// Hide the pointer, or bring it back. The cursor composites above every window including our own
+    /// cover, so for the length of a transition it is the only element still describing a desktop the
+    /// user has stopped looking at. Unacked: what ends a hide is the user moving the mouse
+    /// (`Event.pointerWoke`), not a report that the hide happened.
+    case setCursorHidden(Bool)
+
+    /// Put the pointer inside `rect` — a *rect* rather than a point so that "it is already in there" is
+    /// a question the instruction can ask, rather than needing a second effect or a core that tracks
+    /// the cursor's position.
+    ///
+    /// Whether being already inside is *enough* is the shell's, read off `[mouse] follows-focus` the
+    /// way `[animation] window` is read: the rung changes no geometry the core emits, so the effect
+    /// stream is identical under all three of them and the preference stays out of the vocabulary.
+    ///
+    /// Unacked: a warp posts no event, so there is nothing to hear back.
+    case warpPointer(into: Rect)
+
     // System — a child process
 
     /// Run a command line through `/bin/sh -c`, fire and forget. The one effect that reaches outside

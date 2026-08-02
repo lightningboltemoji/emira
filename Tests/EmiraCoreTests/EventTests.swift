@@ -23,6 +23,9 @@ import Testing
         .windowMinimized(WindowId(5)),
         .windowDeminimized(WindowId(5)),
         .dragEnded,
+        .pointerEntered(WindowId(9)),
+        .pointerWoke,
+        .appActivated,
         .screensChanged([
             MonitorInfo(id: MonitorId(1), frame: Rect(x: 0, y: 0, width: 1920, height: 1080)),
             MonitorInfo(id: MonitorId(2), frame: Rect(x: 1920, y: 0, width: 2560, height: 1440)),

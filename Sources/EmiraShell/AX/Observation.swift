@@ -45,6 +45,16 @@ public enum WorldObservation: Sendable, Equatable {
     /// A mouse button came up somewhere on the system — the end of a possible drag, and the moment a
     /// tiled window the user dragged off its target re-asserts its layout.
     case mouseUp
+
+    /// The pointer is at `point` — top-left global coordinates, the core's own space. A raw sample and
+    /// nothing more: whether it is *motion* is a threshold, and the threshold is `WorldWatcher`'s.
+    case pointerMoved(Point)
+
+    /// An application came to the front. The same `NSWorkspace` notification `focusMoved` is derived
+    /// from, reported raw as well because the two mean different things: that one asks *which window*
+    /// now has focus and needs an AX read to answer, this one is the bare fact that somebody else owns
+    /// the cursor now — which discards a hide we issued from the background.
+    case appActivated
 }
 
 /// Everything the live world needs from macOS, and nothing more.

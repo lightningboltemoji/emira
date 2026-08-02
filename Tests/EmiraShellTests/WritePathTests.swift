@@ -264,6 +264,63 @@ import EmiraCore
         #expect(writer.raised == [b])
     }
 
+    @Test("focus acks the activation it makes, which is the only thing focus acks")
+    func focusAcksItsActivation() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        let scheduler = ManualScheduler()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer, scheduler: scheduler)
+            .execute([.focus(a)], feedback: events.sink)
+        scheduler.drain()
+
+        // Not `focusChanged` — which window has focus is the observers' to say. This is the bare fact
+        // that an app was brought forward, and the pointer plane is the only thing that cares: an
+        // activation discards a background hide, and the one emira makes for a focus inside the app
+        // already in front is announced by nothing else on the system.
+        #expect(events.events == [.appActivated])
+    }
+
+    @Test("the ack is a turn behind the activation, not level with it")
+    func theActivationAckIsDeferredByATurn() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        let scheduler = ManualScheduler()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer, scheduler: scheduler)
+            .execute([.focus(a)], feedback: events.sink)
+
+        // The writer has activated the app and said so *synchronously*; the event has not gone out.
+        // The window server re-establishes the cursor after the activation call returns, so a hide
+        // re-asserted on an ack level with the ask would be discarded along with the one it replaced.
+        #expect(writer.focused == [a])
+        #expect(events.events.isEmpty)
+
+        scheduler.drain()
+        #expect(events.events == [.appActivated])
+    }
+
+    /// A superseded focus never activates, so there is nothing to defer and nothing is scheduled —
+    /// the deferral must not become a way for a dropped activation to be reported late.
+    @Test("a focus the writer declines to activate schedules nothing")
+    func aDeclinedFocusReportsNothing() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = SilentFocusWriter()
+        let scheduler = ManualScheduler()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer, scheduler: scheduler)
+            .execute([.focus(a)], feedback: events.sink)
+        scheduler.drain()
+
+        #expect(events.events.isEmpty)
+    }
+
     @Test("close is routed to the writer and answers nothing")
     func closeIsRoutedAndUnacked() {
         let registry = WindowRegistry()
@@ -500,6 +557,23 @@ import EmiraCore
     }
 }
 
+/// Runs scheduled work when a test says so, which is what turns `AXExecutor`'s one-turn deferral of
+/// `appActivated` into a step that can be asserted on either side of rather than waited out.
+@MainActor
+private final class ManualScheduler: DelayScheduler {
+    private var pending: [@MainActor () -> Void] = []
+
+    func schedule(after seconds: TimeInterval, _ work: @escaping @MainActor () -> Void) {
+        pending.append(work)
+    }
+
+    func drain() {
+        let work = pending
+        pending = []
+        for item in work { item() }
+    }
+}
+
 /// Records the `Event`s a subsystem feeds back — the reply address, without a pump behind it.
 @MainActor
 final class Recorder {
@@ -539,7 +613,12 @@ final class ScriptedWriter: WindowWriter {
         held.append { completion(answer) }
     }
 
-    func focus(_ window: WindowRegistry.Record) { focused.append(window.id) }
+    /// Synchronously, always: the writer's contract is "call this once you have activated the app", and
+    /// the turn `AXExecutor` waits before reporting it is that type's, not this one's.
+    func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void) {
+        focused.append(window.id)
+        completion()
+    }
 
     func raise(_ window: WindowRegistry.Record) { raised.append(window.id) }
 
@@ -551,6 +630,17 @@ final class ScriptedWriter: WindowWriter {
         held = []
         for deliver in pending { deliver() }
     }
+}
+
+/// A writer whose `focus` activates nothing and therefore reports nothing — the real one's superseded
+/// case, where a newer focus took the ticket while this one was out on its lane.
+@MainActor
+private final class SilentFocusWriter: WindowWriter {
+    func place(_ moves: [WindowMove], of app: pid_t,
+               then completion: @escaping @MainActor ([WindowLanding]) -> Void) {}
+    func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void) {}
+    func raise(_ window: WindowRegistry.Record) {}
+    func close(_ window: WindowRegistry.Record) {}
 }
 
 /// Answers the two planes `AXExecutor` does not own, instantly, and forwards everything else — the

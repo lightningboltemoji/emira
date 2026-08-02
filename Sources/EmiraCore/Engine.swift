@@ -21,6 +21,8 @@ public struct State: Sendable, Equatable, Codable {
     public var motion: Motion
     /// The parsed config values the reducer reads (gaps, presets, struts, scroll feel).
     public var config: Config
+    /// What the pointer plane is owed. Two intents, neither a fact about the desktop — see `Pointer`.
+    public var pointer: Pointer
 
     /// The focused workspace's strip — a projection of `workspaces`, not a second authority. Only the
     /// cross-workspace queries bypass it: reconcile, `targetFrames`, the placement walks, the mutators
@@ -36,21 +38,27 @@ public struct State: Sendable, Equatable, Codable {
         self.workspaces = Workspaces()
         self.motion = Motion(viewportOffset: 0, params: config.scrollSpring)
         self.config = config
+        self.pointer = Pointer()
     }
 
     /// Full memberwise init — for the reducer building a specific state, for replay, and for tests.
-    public init(world: World, workspaces: Workspaces, motion: Motion, config: Config) {
+    /// `pointer` defaults to "nothing owed", which is what every caller but a replay wants; it is a
+    /// parameter rather than hard-coded so that "full" stays true.
+    public init(world: World, workspaces: Workspaces, motion: Motion, config: Config,
+                pointer: Pointer = Pointer()) {
         self.world = world
         self.workspaces = workspaces
         self.motion = motion
         self.config = config
+        self.pointer = pointer
     }
 
     /// The single-strip init: `layout` becomes the focused workspace's strip, nothing else materialized.
-    public init(world: World, layout: Layout, motion: Motion, config: Config) {
+    public init(world: World, layout: Layout, motion: Motion, config: Config,
+                pointer: Pointer = Pointer()) {
         self.init(world: world,
                   workspaces: Workspaces(focused: .first, strips: [.first: layout]),
-                  motion: motion, config: config)
+                  motion: motion, config: config, pointer: pointer)
     }
 
     /// Layout metrics for the current monitor + config, `nil` until the first `screensChanged` (so
@@ -79,10 +87,79 @@ public enum Engine {
     /// itself. Focus reaches `World.setFocus` from a dozen paths — a command, a system event, a
     /// workspace switch, a departure's refocus, an arrival, boot — and the ring's travel is a
     /// *difference between two states*, which no single one of those paths can see.
+    /// **The hide runs before the warp**, and not because of where each writes — the hide prepends and
+    /// the warp appends, so the emitted order comes out the same either way. It is because the hide
+    /// asks whether the command *did something*, and reads that off `effects.isEmpty`: that question is
+    /// about the fold's own output, and a warp appended first would answer it `true` for a command that
+    /// moved nothing. A visit the pointer was already owed is a consequence of an earlier hide, never a
+    /// reason for a new one.
     public static func reduce(_ state: State, _ event: Event) -> (State, [Effect]) {
         var (next, effects) = fold(state, event)
         trackFocusRing(from: state, into: &next)
+        hidePointer(on: event, into: &next, effects: &effects)
+        warpPointer(on: event, from: state, into: &next, effects: &effects)
         return (next, effects)
+    }
+
+    /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch
+    /// rather than a call in each verb, so a verb added later is covered without being told.
+    ///
+    /// Both gates ask *who asked*, never what moved: a **command** that **emitted something** — which
+    /// also excludes a read like `dumpState` and a `focus left` into the wall. Drawn around window
+    /// movement instead it would miss focus crossing two columns already on screen, which emits `.focus`
+    /// alone and is the commonest thing a keyboard user does. Prepending buys the capture head and is
+    /// *not* sufficient: the same batch usually ends in `.focus`, whose activation discards the hide, and
+    /// `Event.appActivated` is what puts it back.
+    ///
+    /// **The setting going off pays the hide back here**, because it is the one exit the mouse cannot
+    /// supply — a shell that has stopped watching for motion leaves a desktop with no way to get its
+    /// cursor back. Stated as the invariant rather than as a list of events.
+    private static func hidePointer(on event: Event, into s: inout State, effects: inout [Effect]) {
+        guard s.config.hidesCursor else {
+            guard s.pointer.isCursorHidden else { return }
+            s.pointer.isCursorHidden = false
+            effects.append(.setCursorHidden(false))
+            return
+        }
+        guard case .command = event, !s.pointer.isCursorHidden, !effects.isEmpty else { return }
+        s.pointer.isCursorHidden = true
+        effects.insert(.setCursorHidden(true), at: 0)
+    }
+
+    /// Send the pointer after focus — but not until the user can see where it went. A post-pass beside
+    /// `trackFocusRing`, and for its reason: "focus moved" is a difference between two states that none
+    /// of the dozen paths into `World.setFocus` can see.
+    ///
+    /// **The visit is owed while a session is open and paid the moment none is** — one rule for both the
+    /// covered case and the uncovered one. Warping on the focus change itself would put the cursor on
+    /// its target 250 ms before the window gets there, which is the flash the cover exists to prevent.
+    ///
+    /// **The source gates the owing, never the paying**: by payment time the event that booked the visit
+    /// is several events ago, and `FocusOrigin` could not answer anyway, a hovered focus reducing into
+    /// the same tail a commanded one does. Every focus change re-decides the debt, including one the rung
+    /// declines — an older visit left standing aims the pointer at a window focus has left.
+    private static func warpPointer(on event: Event, from before: State, into s: inout State,
+                                    effects: inout [Effect]) {
+        // A debt outlives the event that booked it, so the setting going off has to cancel one already
+        // standing rather than only stopping the next — the same shape the hide's payout above has,
+        // and the same reason: a reload is the one way a rung can change under an owed visit.
+        guard s.config.mouseFollowsFocus != .off else { return s.pointer.pendingWarp = nil }
+        var pointerCaused = false
+        if case .pointerEntered = event { pointerCaused = true }
+        if before.world.focusedWindow != s.world.focusedWindow {
+            s.pointer.pendingWarp = s.config.mouseFollowsFocus.warps(pointerCaused: pointerCaused)
+                ? s.world.focusedWindow : nil
+        }
+        guard let owed = s.pointer.pendingWarp, !s.motion.isTransitioning else { return }
+        // Dropped whether or not it produces an effect: a window that closed, parked or went off-screen
+        // while the cover was up is not one to send the pointer to, and nothing here retries.
+        s.pointer.pendingWarp = nil
+        guard s.world.isOnScreen(owed), let metrics = s.metrics(),
+              let frame = s.world.windows[owed]?.frame,
+              // Clamped into the working area, so a column only half revealed at the viewport's edge
+              // takes the pointer to the part of itself the user can actually see.
+              let target = frame.intersection(metrics.workingArea) else { return }
+        effects.append(.warpPointer(into: target))
     }
 
     /// Seed the guide's focus ring when focus moved between two windows on the strip.
@@ -174,6 +251,26 @@ public enum Engine {
         case .dragEnded:
             let effects = reassertTruthPlane(&s)   // a window dragged off its target snaps back
             return (s, effects)
+
+        case .pointerEntered(let id):
+            let effects = handlePointerEntered(&s, id)   // local first — the `.command` trap above
+            return (s, effects)
+
+        case .pointerWoke:
+            // The mouse moved, so the user is looking at the desktop again. Edge-triggered and
+            // idempotent: the shell's anchor and the core's flag are two records of one fact, and a
+            // wake that arrives with nothing hidden is the ordinary way they resynchronize.
+            guard s.pointer.isCursorHidden else { return (s, []) }
+            s.pointer.isCursorHidden = false
+            return (s, [.setCursorHidden(false)])
+
+        case .appActivated:
+            // An app coming to the front discards a hide issued from the background, so it is
+            // re-asserted for as long as one is wanted. The state does not move: nothing is decided
+            // here, something has been undone. The common case is emira's own `focus` landing, which is
+            // why a command that hides sees one of these a few milliseconds later.
+            guard s.pointer.isCursorHidden else { return (s, []) }
+            return (s, [.setCursorHidden(true)])
 
         case .focusChanged(let id, let origin):
             // Externally-initiated focus (Cmd-Tab, Dock click, self-activation) and the echo of our own
@@ -380,7 +477,7 @@ public enum Engine {
             return [.exec(line)]
 
         // The only verb that is permanently a no-op here: `dumpState` is a *read*, answered out of band
-        // by the shell off `Runtime.state` (§11, 2026-07-24). Everything else in the vocabulary does
+        // by the shell off `Runtime.state`. Everything else in the vocabulary does
         // something — a listed verb is a promise, since `Command.usage` is `emira --help`.
         case .dumpState:
             return []
@@ -766,29 +863,27 @@ public enum Engine {
         case .respect:
             return true
         case .onScreen:
-            return isOnScreen(s, id)
+            return s.world.isOnScreen(id)
         case .ignore:
-            return isOnScreen(s, id) && !s.world.participatesInStrip(id)
+            return s.world.isOnScreen(id) && !s.world.participatesInStrip(id)
         }
     }
 
-    /// Whether the user can see `id` right now. Not the same question as `participatesInStrip`, and the
-    /// difference is the whole of this function: **off the strip and off the screen are different sets.**
-    /// A float is off the strip and plainly visible; a minimized window is off the strip and in the Dock.
+    /// Move focus because the pointer crossed into a window.
     ///
-    /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch, and the last
-    /// placement pass already made it: `World.placedOnScreen` is that decision, kept. Asking it rather
-    /// than re-deriving it is what keeps the question "where is this window" from being answered with
-    /// where it is *going* — the viewport describes the destination for the whole of a reveal — or with
-    /// where it would be under a strip that has been restructured since it was last placed. Membership
-    /// subsumes the workspace test too: a pass parks everything off the focused strip.
-    private static func isOnScreen(_ s: State, _ id: WindowId) -> Bool {
-        guard let window = s.world.windows[id] else { return false }
-        // Nowhere on the screen for a reason that has nothing to do with the strip.
-        guard !window.isMinimized, !s.world.isAppHidden(of: id) else { return false }
-        // A window emira does not place is wherever its app put it, which is in view.
-        guard s.world.participatesInStrip(id) else { return true }
-        return s.world.placedOnScreen.contains(id)
+    /// Reduces into the same tail as `focus(Direction)` — reveal plus `.focus` — so the echo comes back
+    /// marked `.ours` through `FocusIntent` and nothing new is needed on the way home. The termination
+    /// argument is not here but in the shell: this fires on **pointer** motion only, so a window sliding
+    /// under a stationary pointer changes nothing and a reveal cannot chase itself across the desktop.
+    private static func handlePointerEntered(_ s: inout State, _ id: WindowId) -> [Effect] {
+        guard s.config.focusFollowsMouse, s.world.focusedWindow != id,
+              s.world.windows[id] != nil else { return [] }
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.world.setFocus(id)
+        // Off the strip — a float, a dialog, a sheet — there is no column to frame on and nothing to
+        // scroll: the window is already exactly where its app put it.
+        guard s.layout.columnIndex(ofWindow: id) != nil else { return [.focus(id)] }
+        return scrollReveal(&s, to: id, center: s.config.centerFocusedColumn) + [.focus(id)]
     }
 
     /// Reveal an externally-focused window (Cmd-Tab, a Dock click, an app raising itself), switching

@@ -112,8 +112,12 @@ public final class MockExecutor: Executor {
         // re-stacking a cover has no observable completion. `closeWindow` is unacked for a different
         // reason — a real app may refuse, so simulating a destroy here would be inventing the one fact
         // only the app can supply. `exec` for a third: a child process is not a desktop fact, and this
-        // being a *record* is what keeps a replayed session log from spawning anything.
-        case .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise, .closeWindow, .exec:
+        // being a *record* is what keeps a replayed session log from spawning anything. And
+        // the pointer plane for a fourth: what answers a hide is the user moving the mouse, which no
+        // system, however fast, can be made to do — and a warp posts no event at all, which is a fact
+        // about the window server this mock could only misrepresent.
+        case .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise, .closeWindow,
+             .setCursorHidden, .warpPointer, .exec:
             break
         }
     }

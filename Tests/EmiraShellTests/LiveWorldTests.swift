@@ -806,10 +806,26 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.windowDeminimized(id))
         world.watcher.handle(.focusMoved(id))
         world.watcher.handle(.mouseUp)
+        world.watcher.handle(.appActivated)
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
             .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system), .dragEnded,
+            .appActivated,
         ])
+    }
+
+    /// Straight through, with no threshold and no filtering of its own: unlike `pointerMoved`, an
+    /// activation is already the edge, and the reducer is where "is a hide still owed" is answered.
+    /// Repeated ones stay repeated, because each one has discarded a hide.
+    @Test func everyActivationReachesTheCoreSeparately() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        for _ in 0..<3 { world.watcher.handle(.appActivated) }
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated, .appActivated,
+                                                                   .appActivated])
     }
 
     @Test func focusLandingOnAnUnmanagedWindowIsPassedThroughRatherThanSwallowed() {
@@ -1145,5 +1161,52 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(world.heartbeat.stopped)
         #expect(!world.heartbeat.isRunning)
+    }
+}
+
+//
+// Pointer samples, which this type owns the monitor for and nothing else about. What a sample *means*
+// is the pointer plane's — see `PointerWakeTests` and `PointerFocusTests` — so all that is asserted
+// here is that every sample is handed on, and that a stopped watcher hands on nothing.
+
+@Suite @MainActor struct WorldWatcherPointerForwardingTests {
+
+    @Test func everySampleIsForwardedWhetherOrNotAnythingIsHidden() {
+        let world = LiveWorld()
+        world.watcher.start()
+        var seen: [Point] = []
+        world.watcher.onPointerMoved = { seen.append($0) }
+
+        for x in stride(from: 0.0, through: 300.0, by: 100) {
+            world.watcher.handle(.pointerMoved(Point(x: x, y: 400)))
+        }
+        #expect(seen.count == 4)
+        #expect(seen.first == Point(x: 0, y: 400))
+    }
+
+    /// A raw sample is not news and never becomes an `Event` here: 120 of them a second through the
+    /// pump would fill the inbound log, which *is* the replay log.
+    @Test func aSampleIsNeverAnEventOfItsOwn() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        for x in stride(from: 0.0, through: 900.0, by: 100) {
+            world.watcher.handle(.pointerMoved(Point(x: x, y: 400)))
+        }
+        #expect(world.recorder.events.count == before)
+    }
+
+    /// A stopped watcher speaks to nobody at all, forwarding included: teardown places every managed
+    /// window into the quit cascade, and nothing the mouse does may reach the core after that.
+    @Test func aStoppedWatcherForwardsNothing() {
+        let world = LiveWorld()
+        world.watcher.start()
+        var seen = 0
+        world.watcher.onPointerMoved = { _ in seen += 1 }
+
+        world.watcher.stop()
+        world.watcher.handle(.pointerMoved(Point(x: 500, y: 400)))
+        #expect(seen == 0)
     }
 }

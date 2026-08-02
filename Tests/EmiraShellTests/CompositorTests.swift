@@ -193,6 +193,28 @@ import EmiraCore
         }
     }
 
+    /// The pointer plane's recorder. Its own executor rather than a second `RecordingTruth`, so a test
+    /// can say that a hide reached the cursor and *not* the AX lanes.
+    @MainActor final class RecordingPointer: Executor {
+        let timeline: Timeline
+        private(set) var batches: [[Effect]] = []
+
+        init(_ timeline: Timeline) { self.timeline = timeline }
+
+        func execute(_ effects: [Effect], feedback: EventSink) {
+            batches.append(effects)
+            timeline.record("pointer[\(effects.map(Self.name).joined(separator: ","))]")
+        }
+
+        static func name(_ effect: Effect) -> String {
+            switch effect {
+            case .setCursorHidden(let hidden): return hidden ? "hide" : "show"
+            case .warpPointer(let rect):      return "warp@\(Int(rect.midX))"
+            default:                          return "?"
+            }
+        }
+    }
+
     /// A `ProcessLauncher` that records instead of spawning — the point of the seam.
     @MainActor final class RecordingLauncher: ProcessLauncher {
         let timeline: Timeline
@@ -225,6 +247,7 @@ import EmiraCore
         let truth = RecordingTruth(timeline)
         let store = RecordingStore(timeline)
         return (CompositingExecutor(surface: surface, store: store, truth: truth,
+                                    pointer: RecordingPointer(timeline),
                                     launcher: RecordingLauncher(timeline)),
                 surface, truth, store, timeline, EventLog())
     }
@@ -236,8 +259,23 @@ import EmiraCore
         return (CompositingExecutor(surface: RecordingSurface(timeline),
                                     store: RecordingStore(timeline),
                                     truth: RecordingTruth(timeline),
+                                    pointer: RecordingPointer(timeline),
                                     launcher: launcher),
                 launcher, timeline, EventLog())
+    }
+
+    /// The pointer plane's harness — the cursor and the truth plane, so a test can say which one a
+    /// batch reached.
+    static func pointerHarness() -> (CompositingExecutor, RecordingPointer, RecordingTruth,
+                                     Timeline, EventLog) {
+        let timeline = Timeline()
+        let pointer = RecordingPointer(timeline)
+        let truth = RecordingTruth(timeline)
+        return (CompositingExecutor(surface: RecordingSurface(timeline),
+                                    store: RecordingStore(timeline),
+                                    truth: truth, pointer: pointer,
+                                    launcher: RecordingLauncher(timeline)),
+                pointer, truth, timeline, EventLog())
     }
 
     @Test func everyEffectIsAssignedToAPlane() {
@@ -252,7 +290,19 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .capture(WindowId(1), size: .zero)) == .capture)
         #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
+        #expect(CompositingExecutor.plane(of: .setCursorHidden(true)) == .pointer)
+        #expect(CompositingExecutor.plane(of: .warpPointer(into: .zero)) == .pointer)
         #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
+    }
+
+    /// The hide the reducer prepends reaches the cursor and nothing else, and it stays *in front of*
+    /// the placement it was prepended to — the pointer is gone before the first window moves under it.
+    @Test func aHideReachesThePointerPlaneAheadOfTheTruthPlane() {
+        let (executor, pointer, truth, timeline, log) = Self.pointerHarness()
+        executor.execute([.setCursorHidden(true), .setFrame(WindowId(1), .zero)], feedback: log.sink)
+        #expect(timeline.entries == ["pointer[hide]", "truth[setFrame1]"])
+        #expect(pointer.batches == [[.setCursorHidden(true)]])
+        #expect(truth.batches.count == 1)
     }
 
     /// A spawn reaches the launcher and touches nothing else — it shares no machinery with AX, which

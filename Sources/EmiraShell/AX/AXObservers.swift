@@ -111,7 +111,13 @@ public final class AXObservationSource: ObservationSource {
 
     /// Held only to be released.
     private var workspaceTokens: [any NSObjectProtocol] = []
-    private var mouseMonitor: Any?
+
+    /// The two global mouse monitors, and they are two because they are wanted on different terms.
+    /// Buttons are always: a mouse-up ends a possible drag, which is a fact about the desktop and
+    /// predates the pointer plane. Motion is a *setting*: it fires at the pointer's sample rate, and
+    /// nothing wants it unless the pointer plane is switched on.
+    private var buttonMonitor: Any?
+    private var motionMonitor: Any?
 
     public init(client: AXClient, registry: WindowRegistry) {
         self.client = client
@@ -124,6 +130,9 @@ public final class AXObservationSource: ObservationSource {
     public func start(_ deliver: @escaping @MainActor (WorldObservation) -> Void) {
         self.deliver = deliver
         observeWorkspace()
+        // Buttons are watched whether or not anybody asked: drag-end predates the pointer plane and must
+        // not become a thing a call site can forget. Motion is the opposite and is not started here —
+        // nothing wants it until a setting does.
         observeMouse()
     }
 
@@ -324,10 +333,46 @@ public final class AXObservationSource: ObservationSource {
     /// A global mouse-up ends a possible drag. Being *global*, the monitor never sees events destined for
     /// our own overlay, and the Accessibility grant already covers it — no new permission.
     private func observeMouse() {
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) {
+        buttonMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) {
             [weak self] _ in
             MainActor.assumeIsolated { self?.deliver?(.mouseUp) }
         }
+    }
+
+    /// Watch — or stop watching — the pointer itself, and answer whether it is now observed. Driven by
+    /// `applyShellConfig`, so it tracks the two settings that want samples across every reload.
+    ///
+    /// **A monitor of its own, because motion is the one observation with a standing idle cost**: it
+    /// fires at the pointer's sample rate for as long as it is installed, and with both settings off —
+    /// the default — every sample would reach two readers that refuse it. So it is not installed until
+    /// something wants it.
+    ///
+    /// The answer is what both settings are clamped against, and it must be *this* monitor's rather than
+    /// the button monitor's: the only exit from a hidden pointer is seeing the mouse move, and buttons
+    /// could only stand in for that question. Callable *ahead of* `start` for the same reason — the
+    /// capability has to exist before the config is finished, and `start` waits on the config parsing.
+    /// Samples arriving before `start` are dropped, `deliver` being the switch.
+    ///
+    /// Motion is three masks besides `mouseMoved`, since moving with a button held posts `*MouseDragged`
+    /// and a pointer hidden by a command must not survive a window drag. Locations come off the
+    /// `CGEvent`, already top-left global — the core's own space, and the one seam here with no Y-flip.
+    @discardableResult
+    public func observePointerMotion(_ observed: Bool) -> Bool {
+        guard observed != (motionMonitor != nil) else { return motionMonitor != nil }
+        guard observed else {
+            motionMonitor.map(NSEvent.removeMonitor)
+            motionMonitor = nil
+            return false
+        }
+        let masks: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged,
+                                            .otherMouseDragged]
+        motionMonitor = NSEvent.addGlobalMonitorForEvents(matching: masks) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let location = event.cgEvent?.location else { return }
+                self?.deliver?(.pointerMoved(Point(x: Double(location.x), y: Double(location.y))))
+            }
+        }
+        return motionMonitor != nil
     }
 
     /// A launched app becomes a scan target if it is the kind we manage. Must stay the same filter
@@ -340,6 +385,12 @@ public final class AXObservationSource: ObservationSource {
     /// An app came forward. `NSWorkspace` says *which app*, so the focused window has to be read — the
     /// one observation in this file that costs a round trip.
     private func activated(_ app: AppFacts) {
+        // Reported before the `isRegular` filter below, and for every app but us: what this half of the
+        // notification means is "the cursor has a new owner", which is true of an accessory app coming
+        // forward as much as a regular one. A spurious one costs a re-assert of a hide that is already
+        // in force, which the pointer plane's own depth count makes free; a missed one is a pointer
+        // that stays visible.
+        if !app.isSelfOrInvalid { deliver?(.appActivated) }
         guard app.isRegular, !app.isSelfOrInvalid else { return }
         client.perform(app: app.pid) { application in
             application.focusedWindow()

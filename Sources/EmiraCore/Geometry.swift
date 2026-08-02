@@ -23,6 +23,12 @@ public struct Point: Sendable, Equatable, Codable, CustomStringConvertible {
         Point(x: x + dx, y: y + dy)
     }
 
+    /// Straight-line distance to another point.
+    public func distance(to other: Point) -> Double {
+        let dx = x - other.x, dy = y - other.y
+        return (dx * dx + dy * dy).squareRoot()
+    }
+
     public var description: String { "(\(x), \(y))" }
 }
 

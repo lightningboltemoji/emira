@@ -22,6 +22,9 @@ import Testing
         .focus(WindowId(5)),
         .raise(WindowId(6)),
         .closeWindow(WindowId(13)),
+        .setCursorHidden(true),
+        .setCursorHidden(false),
+        .warpPointer(into: Rect(x: 100, y: 100, width: 400, height: 300)),
         .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 

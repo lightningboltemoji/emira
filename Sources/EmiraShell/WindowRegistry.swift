@@ -10,7 +10,7 @@ import Foundation
 // unique or it is not a match — a mis-bind is permanent and invisible, where an unmanaged window is
 // visible and recoverable.
 //
-// **A native tab group is one window, and which tab is showing is not identity** (decided 2026-07-27).
+// **A native tab group is one window, and which tab is showing is not identity.**
 // macOS tabs are real `NSWindow`s, but `kAXWindowsAttribute` lists only the *selected* one — so AX
 // already answers the question the way emira wants it answered. What it does not do is announce the
 // swap: selecting a never-shown tab posts `AXWindowCreated` for a window that already existed, and the

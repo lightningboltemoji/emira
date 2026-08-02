@@ -66,6 +66,12 @@ public final class WorldWatcher {
     /// A window manager quietly not managing something is the failure a user cannot debug.
     public var onIncompleteScan: (@MainActor (AXEnumerator.Report) -> Void)?
 
+    /// Every raw pointer sample, forwarded whole. This type owns the mouse monitor and therefore the
+    /// fan-out, and owns nothing else about the pointer: what a sample *means* is `PointerFocus`'s (a
+    /// crossing) and `PointerWake`'s (the motion that ends a hide), and the order those two run in is
+    /// stated where they are wired together rather than decided here.
+    public var onPointerMoved: (@MainActor (Point) -> Void)?
+
     /// Every app we know how to re-scan, by pid. Populated from scan reports and from launches.
     private var apps: [pid_t: ScanTarget] = [:]
 
@@ -204,6 +210,15 @@ public final class WorldWatcher {
 
         case .mouseUp:
             emit(.dragEnded)
+
+        case .pointerMoved(let point):
+            // Not an `Event`, and not this type's to filter either: a sample is not news, and 120 of
+            // them a second through the pump would fill the replay log. Handed to the pointer plane's
+            // two readers, which is all this file does with it.
+            onPointerMoved?(point)
+
+        case .appActivated:
+            emit(.appActivated)
         }
     }
 

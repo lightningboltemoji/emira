@@ -46,6 +46,18 @@ outer-gap-top = 0
 # One of "respect", "on-screen", "ignore".
 system-events = "respect"
 
+# Focus a window when the pointer crosses into it. Here focus scrolls, so this moves the strip.
+follows-mouse = false
+
+[mouse]
+
+# Hide the pointer while you work from the keyboard, until the mouse moves. The Dock unhides it.
+hide = false
+
+# Send the pointer after focus; except-hover skips a hover, lazy one already inside.
+# One of "off", "lazy", "except-hover", "force".
+follows-focus = "off"
+
 [animation]
 
 # Whether a cover is used during window transitions, and if so, what style.

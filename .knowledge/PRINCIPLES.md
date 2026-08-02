@@ -382,6 +382,43 @@ Much of the "slow AX" pain is self-inflicted and controllable:
 
 - **We cannot hide, alpha, transform, or re-level a foreign window.** Those need SkyLight (SIP-off). All masking must
   be done with covers made of our own overlay windows. This is _the_ constraint that shapes §4.
+- **The pointer cannot be covered, and the public API cannot hide it from a background app.** The cursor composites
+  above every window including our overlay, so for the length of a transition it is the one element still describing a
+  desktop the user has stopped looking at. It cannot be hidden the ordinary way either: an Apple DTS engineer confirms
+  `cursorUpdate` is not delivered to non-active applications, which closes cursor rects, tracking areas and
+  `NSCursor.push`/`set` for an `.accessory` process — eight variants were tried and none worked. What does work is
+  `SetsCursorInBackground` on our own window-server connection (§7's one exception) followed by `CGDisplayHideCursor`,
+  and **passing over the Dock brings the cursor back whatever we do**: the window server enforces that deliberately, so
+  it is a limit to document rather than a bug to work around. Since a hidden pointer's only exit is seeing the mouse
+  move, emira hides only while it can see that motion — refusing a state we have no exit from is better than any
+  timeout, which would also unhide on someone who is merely reading.
+- **A background hide lasts until the next activation, and then it is gone.** Not decremented — *discarded*: absent an
+  activation `CGDisplayHideCursor` keeps a real per-connection reference count (two hides need two shows), an
+  activation resets that count, and the count floors at zero. This is the fact that makes hiding the pointer a
+  standing **assertion** rather than an edge, because emira's own `focus` effect activates an app a millisecond after
+  the hide it was prepended to — the batch would otherwise destroy its own first effect. Every activation re-asserts,
+  and the shell counts its own hides so a show can pay out all of them; overshooting is free and underpaying leaves a
+  desktop with no cursor.
+- **An activation that changes nothing still discards it, and macOS announces only the ones that change something.**
+  Bringing forward an app that is *already* frontmost — exactly what moving focus between two windows of one app does
+  — resets the count like any other activation, while `NSWorkspace` posts `didActivateApplication` for a change of
+  frontmost app and not for a re-activation. So the discard is announced in the general case and silent in the
+  commonest one, and the writer that asked for the activation is the only witness there is: **a self-issued
+  activation has to be reported by the code that issued it.** The re-assertion must also be a *turn* late — the window
+  server re-establishes the cursor after the activation call returns, so a hide re-issued inside that call is thrown
+  away along with the one it was replacing.
+- **Cursor visibility can be read, but not by anything we ship.** `CGCursorIsVisible` tracks the real state exactly,
+  in both directions, read from an `.accessory` process that is neither frontmost nor the one that hid it — but it is
+  deprecated since 10.9 and *unavailable* in the SDK, so it is reachable only by `dlsym` and belongs in a throwaway
+  probe, never in emira. What anchors it is a screenshot: `screencapture -x` against `screencapture -x -C`, which
+  composites the cursor and nothing else, differenced over a crop at the pointer with a second plain shot as the noise
+  control. Every claim about the cursor is checked that way or not at all.
+- **Moving the pointer works from a background process, and posts no event.** `CGWarpMouseCursorPosition` succeeds
+  from an `.accessory` app that is never frontmost, lands exactly on target (integer-quantized), and takes **top-left
+  global coordinates — the core's own space**, so the pointer is the one shell boundary with no Y-flip. That it posts
+  no event is load-bearing twice over: mouse-follows-focus cannot trigger focus-follows-mouse, and a hidden pointer
+  cannot unhide itself by being moved. It does start a short suppression interval, so a warp must re-associate
+  (`CGAssociateMouseAndMouseCursorPosition`) or the user's next movement is swallowed.
 - **Resized content must come from the app.** The floor on resize smoothness is the app's own responsiveness.
 - **AX subroles describe a window's *presentation*, not its identity or its kind.** A natively full-screen Safari
   window reports subrole `AXDialog` with an empty title; a TextEdit document created programmatically reports
@@ -477,8 +514,26 @@ Much of the "slow AX" pain is self-inflicted and controllable:
   The C/CoreFoundation handles — `AXUIElement`, `CGImage`, `CVPixelBuffer`/`IOSurface` — bridge via
   `takeRetainedValue()` / `takeUnretainedValue()`; get the +1 vs +0 ownership right at each boundary.
 
-- **No private symbols.** By policy we do not link or `dlopen` `SkyLight`, and we avoid private AX SPI — in particular
-  the private `_AXUIElementGetWindow`. Instead, window identity is **bound once, at first sight**: the shell matches an
+- **No private symbols, with one exception, taken narrowly and on stated terms.** By policy we do not link or `dlopen`
+  `SkyLight`, and we avoid private AX SPI — in particular the private `_AXUIElementGetWindow`. The exception is the
+  **cursor**, and it is two symbols wide: `CGSMainConnectionID` and `CGSSetConnectionProperty`, setting
+  `SetsCursorInBackground` on our own window-server connection, which is the only route by which a background app can
+  hide the pointer at all (§6). It does not touch SIP — the property works with SIP fully enabled — so §2's core
+  decision is untouched. The terms:
+  - **Reached by `dlsym`, never linked and never `dlopen`ed.** Linking is what makes a removed symbol a dyld failure at
+    launch: arm64 binaries use chained fixups with no lazy binding, so every dylib symbol resolves at process start and
+    a missing one means emira does not start at all. Looking it up by name makes the same removal a `nil`.
+  - **It decides nothing about where a window goes.** If it fails, silently or loudly, every window still lands exactly
+    where it would have — and the property is set lazily, on the first hide, so a user who leaves `[mouse] hide` off
+    has emira execute no private call at all.
+  - **It is a capability, not a preference** — the same shape `transitionMode` has with the Screen Recording grant,
+    clamped in the same function. Degradation, worst to best: `dlsym` returning nil clamps the setting off; the symbol
+    surviving while the property stops being honoured is a silent no-op we cannot detect, since no public API reports
+    cursor visibility; a crash while hidden restores the cursor along with the connection.
+  - **It is one file.** `Pointer/CursorConnection.swift` is the whole of it, and nothing else in the repository names
+    CGS — deletable in one commit if the policy is ever reversed.
+- **Window identity is bound once, at first sight** — the question the policy above is most often bent for, and the
+  one place emira does not bend it. The shell matches an
   AX window to a `CGWindowListCopyWindowInfo` entry by **owner + frame**, and — only when those tie — by whether the
   window server calls the entry on-screen, then keys on the stable public `CGWindowID` forever after. Immune to later
   frame/title collisions (titles are unstable; parked frames would otherwise collide), and unique park slots (§4a)

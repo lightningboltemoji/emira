@@ -68,6 +68,52 @@ public enum SystemFocusEvents: String, Sendable, Equatable, Codable, CaseIterabl
     case ignore
 }
 
+/// Whether focus moving takes the pointer with it, and how insistently.
+///
+/// **The two middle rungs both refuse, and they refuse on different questions.** `lazy` asks where the
+/// pointer *is*; `exceptHover` asks whether the pointer is what *moved focus*. Elsewhere `lazy` is the
+/// obvious default: with many small windows, the pointer already being inside the window focus landed on
+/// is the *rare* case, so skipping it only avoids the occasional pointless yank. **Here a column is most
+/// of the screen**, so "already inside" is the common case and `lazy` is nearly inert — the pointer
+/// stays put through almost every focus change.
+///
+/// Which is why the source question is worth asking separately. `force` is what most people mean by the
+/// feature, and it also fires when the *pointer* moved focus: a hover under `[focus] follows-mouse`
+/// centres the cursor the user has their hand on, and the only thing that recentring can add is a jump
+/// away from the spot they aimed at — the window under it is already the right one. `exceptHover` is
+/// `force` with that one source removed, which leaves every focus the *hand was not already on* —
+/// Cmd-Tab, a Dock click, an app raising itself, a window arriving — still taking the pointer along.
+public enum MouseFollowsFocus: String, Sendable, Equatable, Codable, CaseIterable {
+    /// The pointer stays where the user left it.
+    case off
+    /// Move it only when it is not already inside the window focus landed on.
+    case lazy
+    /// Centre it in the focused window on every focus change except one the pointer itself caused.
+    case exceptHover = "except-hover"
+    /// Centre it in the focused window on every focus change.
+    case force
+
+    /// Whether a focus change owes the pointer a visit, given whether the *pointer* is what moved it.
+    ///
+    /// The source is read off the event rather than off `FocusOrigin`, which cannot answer this: a
+    /// hovered focus reduces into the same tail `focus(Direction)` does, so its echo comes home marked
+    /// `.ours` exactly as a commanded one's does.
+    public func warps(pointerCaused: Bool) -> Bool {
+        switch self {
+        case .off:          return false
+        case .exceptHover:  return !pointerCaused
+        case .lazy, .force: return true
+        }
+    }
+
+    /// Whether a pointer already inside the window is moved anyway. Read by the *shell*, off the
+    /// config and never off the effect: the position it decides against is only knowable there, and a
+    /// rung that changes no emitted geometry belongs beside `[animation] window` rather than in the
+    /// effect vocabulary. `exceptHover` centres like `force`: it has already refused on the source, and
+    /// refusing a second time on the position would leave the rung doing nothing a plain `lazy` doesn't.
+    public var recentres: Bool { self == .force || self == .exceptHover }
+}
+
 /// What the guide draws for each window on the strip, or nothing at all. A ladder like
 /// `TransitionMode`'s: each rung asks the machine for strictly more, and the top one asks for the same
 /// thing a cover does — captured pixels — at a cost of zero extra captures, since it only keeps what a
@@ -187,6 +233,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// Which focus changes emira did not cause it honours. `respect` is every one of them, which is
     /// macOS's own behaviour and the only setting under which an app can move the viewport by itself.
     public var systemFocusEvents: SystemFocusEvents
+    /// Whether the pointer crossing into a window focuses it. Beside `systemFocusEvents` because it is
+    /// another source of focus changes — and unlike every other window manager's version of this, here
+    /// focus *scrolls*, so the shell fires it on pointer motion alone and never on window motion.
+    public var focusFollowsMouse: Bool
     /// How a window's captured still is painted into the rect it occupies during a transition. Read
     /// by the compositor, never the reducer — the core's emitted geometry is identical under both,
     /// and the two differ only when a window's rect stops matching the still captured of it.
@@ -201,6 +251,19 @@ public struct Config: Sendable, Equatable, Codable {
     /// Seconds a transition may stay under its cover before the truth is revealed regardless. Read by
     /// the shell's hold timer, not the reducer — the core owns no wall clock.
     public var holdTimeout: Double
+    /// Whether a command that *did something* hides the pointer until the mouse next moves — any
+    /// command that emitted an effect, deliberately including `exec`, which moves no window: the rule
+    /// is about the hand being on the keyboard rather than about the desktop being rearranged, and a
+    /// keybind that opens a terminal is as much the one as the other. What it excludes is a command
+    /// that changed nothing, which would cost a mouse jiggle for a keystroke that did nothing at all.
+    ///
+    /// Also a capability bit, the shape `transitionMode` has: hiding the cursor from a background
+    /// process is reachable only by private property and only while the motion that ends it can be
+    /// seen, so the shell clamps this to `false` when either is missing.
+    public var hidesCursor: Bool
+    /// Whether focus moving takes the pointer with it, and how insistently. Not a capability — warping
+    /// is public API and works from a background process — so nothing clamps this.
+    public var mouseFollowsFocus: MouseFollowsFocus
     /// The transient minimap of the strip. The reducer reads `style != .off` and nothing else: that one
     /// bit decides whether a focus change seeds `Motion.focusRing`, and the rest is the shell's.
     public var guide: GuideSettings
@@ -226,10 +289,13 @@ public struct Config: Sendable, Equatable, Codable {
         centerFocusedColumn: Bool = false,
         resizeDetent: Bool = false,
         systemFocusEvents: SystemFocusEvents = .respect,
+        focusFollowsMouse: Bool = false,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
         transitionMode: TransitionMode = .smooth,
         holdTimeout: Double = 1.0,
+        hidesCursor: Bool = false,
+        mouseFollowsFocus: MouseFollowsFocus = .off,
         guide: GuideSettings = GuideSettings(),
         keys: [KeyBinding] = [],
         windowRules: [WindowRule] = []
@@ -246,10 +312,13 @@ public struct Config: Sendable, Equatable, Codable {
         self.centerFocusedColumn = centerFocusedColumn
         self.resizeDetent = resizeDetent
         self.systemFocusEvents = systemFocusEvents
+        self.focusFollowsMouse = focusFollowsMouse
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
         self.transitionMode = transitionMode
         self.holdTimeout = holdTimeout
+        self.hidesCursor = hidesCursor
+        self.mouseFollowsFocus = mouseFollowsFocus
         self.guide = guide
         self.keys = keys
         self.windowRules = windowRules
