@@ -232,6 +232,76 @@ import Testing
         #expect(m.isReadyToClose(on: Self.right, holding: contents))
     }
 
+    // A window handed across the desktop
+    //
+    // The one term of a structural difference no single display can compute. A travelling window is
+    // missing from the *after* side on the display it left and from the *before* side on the one it
+    // reached, so each screen's own geometry sees one frame and no travel at all — which came out as a
+    // hard cut on the arrival and a layer frozen at its capture frame on the departure.
+
+    /// **Both screens cover it.** The destination has nothing of its own to animate — its strip was
+    /// still, its viewport did not move — so the arriving window is the whole of what it has to show,
+    /// and without counting the crossing it judged the edit invisible and snapped.
+    @Test func aWindowSentToAnotherDisplayCoversBothScreens() {
+        let s = Self.desktop(3)
+        let (after, _) = Engine.reduce(s, .command(.moveToWorkspace(.name(Self.shownOnRight(s)))))
+
+        #expect(after.motion.transitioningMonitors == [Self.left, Self.right])
+    }
+
+    /// **One journey, read twice.** Natural frames on every display share one global space and the
+    /// displacement animators are the desktop's, so the two covers draw the travelling window at the
+    /// *same* rect on every frame — it reads as one window crossing rather than two cutting.
+    ///
+    /// That rect starting at the window's pre-move frame is also the guard against seeding the
+    /// crossing on both displays: a second seed accumulates, and the layer would open one whole
+    /// journey past where the window actually was.
+    @Test func bothCoversDrawTheTravellingWindowOnOneJourney() {
+        let s = Self.desktop(3)
+        let moved = try! #require(s.world.focusedWindow)
+        let before = try! #require(s.world.windows[moved]?.frame)
+
+        var (state, _) = Engine.reduce(s, .command(.moveToWorkspace(.name(Self.shownOnRight(s)))))
+        for monitor in state.motion.transitioningMonitors {
+            for w in state.motion.transition(of: monitor)?.windows ?? [] {
+                (state, _) = Engine.reduce(state, .captureReady(w))
+            }
+        }
+        for monitor in state.motion.transitioningMonitors {
+            (state, _) = Engine.reduce(state, .coverOnScreen(monitor))
+        }
+
+        // A short step, so the spring has barely left the start it was seeded at.
+        let (_, fx) = Engine.reduce(state, .tick(dt: 1.0 / 1000))
+        var drawn: [MonitorId: Rect] = [:]
+        for monitor in state.motion.transitioningMonitors {
+            let layer = try! #require(state.motion.transition(of: monitor)?.layerId(for: moved),
+                                      "every cover that scopes it owes it a layer")
+            for effect in fx {
+                if case .setLayerFrame(let id, let rect) = effect, id == layer { drawn[monitor] = rect }
+            }
+        }
+
+        let onLeft = try! #require(drawn[Self.left], "the display it left still draws it travelling off")
+        let onRight = try! #require(drawn[Self.right], "and the one it reached draws it arriving")
+        #expect(EngineFix.approx(onLeft, onRight), "one journey, not two")
+        #expect(EngineFix.approx(onLeft, before, tol: 2),
+                "…starting where the window actually was, so the crossing was seeded once")
+    }
+
+    /// The arrival lands where the *destination* lays it out, which is the other end of the same
+    /// journey — proof the travel is between two displays' geometries rather than within one.
+    @Test func theTravellingWindowComesToRestOnTheDisplayItReached() {
+        let s = Self.desktop(3)
+        let moved = try! #require(s.world.focusedWindow)
+        let (after, fx) = Engine.reduce(s, .command(.moveToWorkspace(.name(Self.shownOnRight(s)))))
+        let settled = EngineFix.settle(after, fx)
+
+        let frame = try! #require(settled.world.windows[moved]?.frame)
+        #expect(Self.rightFrame.contains(Point(x: frame.midX, y: frame.midY)))
+        #expect(settled.motion.windowAnimator(moved) == nil, "and the displacement is retired with it")
+    }
+
     // What a display leaving takes with it
 
     /// A session on a display that has gone has no overlay to drive and no glass to reach, so it is
@@ -248,6 +318,107 @@ import Testing
         #expect(fx.contains(.endTransition(Self.left)))
         #expect(!state.motion.isTransitioning(on: Self.left))
         #expect(state.monitors.focused == Self.right, "the acting monitor is always one that exists")
+    }
+
+    /// A reconfiguration takes down **every** cover, not only the ones whose display left: the ground
+    /// the strip stands on moved, so nothing on any screen is travelling to where it now belongs — and
+    /// the shell rebuilds the overlay of every display a change touched, which would otherwise strand a
+    /// cover nobody dismissed.
+    @Test func aReconfigurationTakesDownTheSurvivingDisplaysCoverToo() {
+        let s = Self.sendToRight(Self.desktop(3))
+        var (state, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(state.motion.isTransitioning(on: Self.left))
+
+        // The same two displays, one of them resized — nobody left, and the cover still comes down.
+        let (after, fx) = Engine.reduce(state, .screensChanged([
+            MonitorInfo(id: Self.left, frame: Self.leftFrame),
+            MonitorInfo(id: Self.right, frame: Rect(x: 1000, y: 0, width: 1600, height: 1000)),
+        ]))
+        state = after
+        #expect(fx.contains(.endTransition(Self.left)))
+        #expect(!state.motion.isTransitioning)
+    }
+
+    /// …and a report that changes *nothing* changes nothing. `screensChanged` also arrives
+    /// redundantly, and closing a cover mid-raise there would write the truth plane with nothing on
+    /// the glass to hide it — the one thing the phase machine exists to prevent.
+    @Test func aRedundantReportLeavesALiveCoverAlone() {
+        let s = Self.sendToRight(Self.desktop(3))
+        var (state, _) = Engine.reduce(s, .command(.focus(.left)))
+        let same: [MonitorInfo] = [MonitorInfo(id: Self.left, frame: Self.leftFrame),
+                                   MonitorInfo(id: Self.right, frame: Self.rightFrame)]
+
+        let (after, fx) = Engine.reduce(state, .screensChanged(same))
+        state = after
+        #expect(!fx.contains(.endTransition(Self.left)))
+        #expect(state.motion.isTransitioning(on: Self.left))
+    }
+
+    /// The far end of `right`'s strip — a scroll offset that display can legally come to rest at, so a
+    /// reconfiguration's own clamp cannot be what a scroll-memory test is measuring.
+    static func scrolledToTheEnd(_ s: inout State) -> Double {
+        let metrics = s.metrics(of: right)!
+        let offset = s.workspaces[shownOnRight(s)].clampScrollOffset(.greatestFiniteMagnitude,
+                                                                     metrics: metrics)
+        s.motion.snapViewport(to: offset, on: right)
+        return offset
+    }
+
+    /// **A workspace keeps its scroll across an unplug.** A `Viewport` is where one screen's scroll
+    /// happens to be and does not survive its display, so the number has to be banked against the
+    /// *address* — which is what makes a display that comes back resume where it left off rather than
+    /// at the strip's origin.
+    @Test func aWorkspaceKeepsItsScrollAcrossAnUnplug() {
+        var s = Self.sendToRight(Self.desktop(4))
+        s = Self.sendToRight(s)
+        let address = Self.shownOnRight(s)
+        let offset = Self.scrolledToTheEnd(&s)
+        #expect(offset > 0, "the fixture has to have something to scroll to")
+
+        (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: Self.left, frame: Self.leftFrame)]))
+        (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: Self.left, frame: Self.leftFrame),
+                                                   MonitorInfo(id: Self.right, frame: Self.rightFrame)]))
+
+        #expect(s.monitors.shown(on: Self.right) == address, "D12 gives it its workspaces back…")
+        #expect(EngineFix.approxScalar(s.motion.offset(of: Self.right).current, offset),
+                "…and the address it shows remembers where it was scrolled to")
+    }
+
+    /// A lid close takes every display, and what comes back has to be the **focused** display's
+    /// workspace at the **focused** display's scroll. The two are separate records — one names the
+    /// address, one names the number — so a survivor's viewport standing in for the focused one's is a
+    /// desktop that returns showing the right strip in the wrong place.
+    @Test func aLidCloseReturnsTheFocusedDisplaysScrollAndNotAnothers() {
+        var s = Self.sendToRight(Self.desktop(4))
+        s = Self.sendToRight(s)
+        let address = Self.shownOnRight(s)
+        let offset = Self.scrolledToTheEnd(&s)
+        s.motion.snapViewport(to: 0, on: Self.left)      // the other display, deliberately elsewhere
+        s.monitors.focus(Self.right)
+        #expect(offset > 0)
+
+        (s, _) = Engine.reduce(s, .screensChanged([]))   // everything goes
+        #expect(s.monitors.shown == address, "the desktop keeps what the user was looking at")
+
+        (s, _) = Engine.reduce(s, .screensChanged([MonitorInfo(id: Self.right,
+                                                               frame: Self.rightFrame)]))
+        #expect(s.monitors.shown(on: Self.right) == address)
+        #expect(EngineFix.approxScalar(s.motion.offset(of: Self.right).current, offset))
+    }
+
+    /// …and a report that changes nothing must not disturb a scroll in flight, for the reason it must
+    /// not take a cover down: `screensChanged` also arrives redundantly, and re-seating every viewport
+    /// there would freeze a spring mid-travel.
+    @Test func aRedundantReportLeavesAScrollInFlightAlone() {
+        let s = Self.sendToRight(Self.desktop(3))
+        var (state, _) = Engine.reduce(s, .command(.focus(.left)))
+        let mid = state.motion.offset(of: Self.left)
+        let same = [MonitorInfo(id: Self.left, frame: Self.leftFrame),
+                    MonitorInfo(id: Self.right, frame: Self.rightFrame)]
+
+        (state, _) = Engine.reduce(state, .screensChanged(same))
+        #expect(state.motion.offset(of: Self.left).current == mid.current)
+        #expect(state.motion.offset(of: Self.left).target == mid.target)
     }
 
     /// A viewport is where one screen's scroll happens to be, so it goes with the display — but the

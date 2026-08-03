@@ -78,6 +78,13 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     /// what makes a swap read as a swap when two columns pass through each other. `nil` for a scroll or
     /// resize. Re-applied after every `extendCover`, since additions land on top.
     public private(set) var elevated: WindowId?
+    /// Windows this cover draws from **another display's** geometry — ones the edit that opened it
+    /// handed across the desktop. Their strips are not this display's, so what it holds cannot say
+    /// where they belong, and without naming them a departing window's layer freezes at the frame it
+    /// was captured at while the strip it left closes behind it.
+    ///
+    /// A set, because a held keybind rides several hand-overs on one cover.
+    public private(set) var carried: Set<WindowId> = []
 
     init(windows: [WindowId], elevated: WindowId? = nil) {
         self.phase = .capturing
@@ -91,6 +98,8 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     mutating func markCaptured(_ id: WindowId) { pendingCaptures.remove(id) }
 
     mutating func elevate(_ id: WindowId) { elevated = id }
+
+    mutating func carry(_ id: WindowId) { carried.insert(id) }
 
     /// Widen the scope, returning the ids actually added (already-scoped windows are skipped, so this is
     /// idempotent); each addition owes a capture in either phase. Additions land at the *end*, i.e. on
@@ -549,6 +558,12 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Name (or rename) the window `id`'s transition draws on top.
     public mutating func elevate(_ window: WindowId, on id: MonitorId?) {
         withViewport(id) { $0.transition?.elevate(window) }
+    }
+
+    /// Name a window `id`'s cover draws from **another display's** geometry — one handed across the
+    /// desktop by the edit that opened the session. Total, so call sites append it unconditionally.
+    public mutating func carry(_ window: WindowId, on id: MonitorId?) {
+        withViewport(id) { $0.transition?.carry(window) }
     }
 
     /// The layer `id`'s cover draws on top, or `nil` — no session, nothing elevated, or no cover yet.

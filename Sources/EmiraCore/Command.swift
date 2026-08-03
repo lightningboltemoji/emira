@@ -82,6 +82,23 @@ public enum WorkspaceRef: Sendable, Codable, Equatable {
     case previousOccupied
 }
 
+/// A user-facing way to name one of the attached displays — by its place in the enumeration, by where
+/// it sits relative to the one the user is on, or by stepping along the enumeration. A *reference*, not
+/// a `MonitorId`: nothing here names a display until `State.resolve(_:)` resolves it against the
+/// attached set and their geometry. Clamps rather than wrapping, exactly as `WorkspaceRef` does — a ref
+/// with nowhere to go resolves to the acting monitor, which every verb reads as the no-op it is.
+public enum MonitorRef: Sendable, Codable, Equatable {
+    /// The `n`-th display, 1-based, in system enumeration order.
+    case index(Int)
+    /// The display spatially nearest in a direction. Nothing that way is a no-op: the desktop has an
+    /// edge, where the strip does not.
+    case direction(Direction)
+    /// The next display in enumeration order.
+    case next
+    /// The previous display in enumeration order.
+    case previous
+}
+
 /// The complete set of operations emira can perform. The `Codable` shape is Swift's synthesized enum
 /// form (`{"focus":{"_0":"left"}}`); `EmiraProtocol` owns the outer envelope.
 public enum Command: Sendable, Codable, Equatable {
@@ -109,8 +126,19 @@ public enum Command: Sendable, Codable, Equatable {
     case fullscreen(Toggle)
     /// Toggle (or force) floating (untiled) for the focused window.
     case float(Toggle)
-    /// Switch the focused workspace.
+    /// Show a workspace and focus it, wherever it lives — focus follows to the display holding it.
     case focusWorkspace(WorkspaceRef)
+    /// Move the user to another display, whatever that display is showing.
+    case focusMonitor(MonitorRef)
+    /// Move the focused window to the workspace another display is *showing*, leaving focus behind.
+    case moveToMonitor(MonitorRef)
+    /// Move the focused window to the workspace another display is showing and follow it there.
+    case moveToMonitorAndFocus(MonitorRef)
+    /// Hand the focused workspace to another display, which shows it; this one falls back to another
+    /// of its own. The one verb whose subject is the focused *monitor* rather than the focused window.
+    case moveWorkspaceToMonitor(MonitorRef)
+    /// …and follow it to that display.
+    case moveWorkspaceToMonitorAndFocus(MonitorRef)
     /// Close the focused window.
     case closeWindow
     /// Scroll the strip so the focused column is centred in the viewport.

@@ -33,6 +33,29 @@ import EmiraCore
         #expect(model.title == "4")
     }
 
+    /// The title is one character, so on several displays it names the one the user is on and the
+    /// tooltip carries the rest. One display reads exactly as it always did — the absence of the others
+    /// is what keeps the common string unchanged rather than a branch.
+    @Test func theTooltipNamesWhatTheOtherDisplaysAreShowing() {
+        let alone = StatusModel(workspace: WorkspaceName("4")!)
+        #expect(alone.tooltip == "emira — workspace 4")
+
+        let desktop = StatusModel(workspace: WorkspaceName("4")!,
+                                  elsewhere: [WorkspaceName("7")!, .last])
+        #expect(desktop.title == "4", "the acting display keeps the one character there is")
+        #expect(desktop.tooltip == "emira — workspace 4 (also 7, z)")
+    }
+
+    /// …and a broken config still displaces the title, with every address kept in the tooltip: which
+    /// screen is showing what is not the fact the error replaces.
+    @Test func aBrokenConfigKeepsEveryDisplaysAddressInTheTooltip() {
+        let model = StatusModel(workspace: WorkspaceName("4")!, elsewhere: [WorkspaceName("7")!],
+                                configStatus: .broken("/tmp/emira.toml:3: bad"))
+        #expect(model.title == "!")
+        #expect(model.tooltip.contains("4"))
+        #expect(model.tooltip.contains("7"))
+    }
+
     /// A file that has never parsed takes the title on the same terms — but not the address with it.
     /// Nothing is being managed, so the workspace it would name holds no windows.
     @Test func aConfigThatNeverLoadedTakesTheTitleAndSaysWhy() {

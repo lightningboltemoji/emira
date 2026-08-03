@@ -56,6 +56,12 @@ extension Command {
         case .fullscreen(let toggle):         return ["fullscreen", toggle.rawValue]
         case .float(let toggle):              return ["float", toggle.rawValue]
         case .focusWorkspace(let ref):        return ["focus-workspace", ref.word]
+        case .focusMonitor(let ref):          return ["focus-monitor", ref.word]
+        case .moveToMonitor(let ref):         return ["move-to-monitor", ref.word]
+        case .moveToMonitorAndFocus(let r):   return ["move-to-monitor-and-focus", r.word]
+        case .moveWorkspaceToMonitor(let r):  return ["move-workspace-to-monitor", r.word]
+        case .moveWorkspaceToMonitorAndFocus(let r):
+            return ["move-workspace-to-monitor-and-focus", r.word]
         case .closeWindow:                    return ["close-window"]
         case .centerColumn:                   return ["center-column"]
         case .exec(let line):                 return ["exec", line]
@@ -170,7 +176,7 @@ extension Command {
         Verb("close-window", summary: "Close the focused window.", build: bare(.closeWindow)),
 
         Verb("focus-workspace", arguments: Grammar.workspace,
-             summary: "Switch the focused workspace.",
+             summary: "Switch to a workspace, wherever it lives.",
              build: { verb, args in .focusWorkspace(try workspaceRef(args, verb: verb)) }),
 
         Verb("move-to-workspace", arguments: Grammar.workspace,
@@ -180,6 +186,26 @@ extension Command {
         Verb("move-to-workspace-and-focus", arguments: Grammar.workspace,
              summary: "Move the focused window to a workspace and follow it.",
              build: { verb, args in .moveToWorkspaceAndFocus(try workspaceRef(args, verb: verb)) }),
+
+        Verb("focus-monitor", arguments: Grammar.monitor,
+             summary: "Move to another display, whatever it is showing.",
+             build: { verb, args in .focusMonitor(try monitorRef(args, verb: verb)) }),
+
+        Verb("move-to-monitor", arguments: Grammar.monitor,
+             summary: "Move the focused window to what another display is showing.",
+             build: { verb, args in .moveToMonitor(try monitorRef(args, verb: verb)) }),
+
+        Verb("move-to-monitor-and-focus", arguments: Grammar.monitor,
+             summary: "Move the focused window to another display and follow it.",
+             build: { verb, args in .moveToMonitorAndFocus(try monitorRef(args, verb: verb)) }),
+
+        Verb("move-workspace-to-monitor", arguments: Grammar.monitor,
+             summary: "Hand this workspace to another display.",
+             build: { verb, args in .moveWorkspaceToMonitor(try monitorRef(args, verb: verb)) }),
+
+        Verb("move-workspace-to-monitor-and-focus", arguments: Grammar.monitor,
+             summary: "Hand this workspace to another display and follow it.",
+             build: { verb, args in .moveWorkspaceToMonitorAndFocus(try monitorRef(args, verb: verb)) }),
 
         Verb("exec", arguments: Grammar.commandLine,
              summary: "Run a shell command line, without waiting for it.",
@@ -198,6 +224,7 @@ extension Command {
         // One bracket rather than listed flat: `usage` pads to the widest signature, and this fragment
         // sits on the longest verb in the table.
         static let workspace = "<0-9|a-z|(next|prev)[-non-empty]>"
+        static let monitor = "<N|left|right|up|down|next|prev>"
         static let delta = "<Npx|N%>"
         static let commandLine = "<shell command>"
     }
@@ -291,6 +318,25 @@ extension Command {
         }
     }
 
+    /// A display index (1-based), a direction, or one of the two enumeration steps. Numbers below 1
+    /// are refused rather than clamped: `focus-monitor 0` is a typo for `1`, and reading it as one
+    /// would make the off-by-one silent — the resolution, which clamps, is a different question from
+    /// the spelling.
+    private static func monitorRef(_ args: [String], verb: String) throws -> MonitorRef {
+        let word = try only(args, verb: verb, expected: Grammar.monitor)
+        switch word {
+        case "next": return .next
+        case "previous", "prev": return .previous
+        default:
+            if let direction = Direction(rawValue: word) { return .direction(direction) }
+            guard let index = Int(word), index >= 1 else {
+                throw CommandSyntaxError.badArgument(verb: verb, value: word,
+                                                     expected: Grammar.monitor)
+            }
+            return .index(index)
+        }
+    }
+
 }
 
 extension StringProtocol {
@@ -331,6 +377,18 @@ extension WorkspaceRef {
         case .previous: return "previous"
         case .nextOccupied: return "next-non-empty"
         case .previousOccupied: return "previous-non-empty"
+        }
+    }
+}
+
+extension MonitorRef {
+    /// How this reference is written as a single word (`"2"`, `"left"`, `"next"`, `"previous"`).
+    var word: String {
+        switch self {
+        case .index(let n): return String(n)
+        case .direction(let direction): return direction.rawValue
+        case .next: return "next"
+        case .previous: return "previous"
         }
     }
 }

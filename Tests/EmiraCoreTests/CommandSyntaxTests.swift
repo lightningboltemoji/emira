@@ -27,6 +27,12 @@ import Testing
         .focusWorkspace(.name(.first)), .focusWorkspace(.name(.last)),
         .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
+        .focusMonitor(.index(1)), .focusMonitor(.index(12)), .focusMonitor(.direction(.left)),
+        .focusMonitor(.direction(.down)), .focusMonitor(.next), .focusMonitor(.previous),
+        .moveToMonitor(.index(2)), .moveToMonitor(.direction(.right)),
+        .moveToMonitorAndFocus(.next), .moveToMonitorAndFocus(.direction(.up)),
+        .moveWorkspaceToMonitor(.previous), .moveWorkspaceToMonitor(.index(3)),
+        .moveWorkspaceToMonitorAndFocus(.next), .moveWorkspaceToMonitorAndFocus(.direction(.left)),
         .closeWindow, .centerColumn, .dumpState,
         .exec("ghostty"), .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]

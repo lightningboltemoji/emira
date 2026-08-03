@@ -110,31 +110,36 @@ public struct Workspaces: Sendable, Equatable, Codable {
         if strips[name] == nil { strips[name] = WorkspaceState() }
     }
 
-    /// The address a `WorkspaceRef` names, from `here` — the acting monitor's shown address — and, for
-    /// the two occupied motions, against which strips actually hold a window. **Total, clamping rather
-    /// than wrapping:** `next` at `"z"`, `previous` at `"0"` and an occupied motion with nothing ahead
-    /// all answer `here`, which the caller turns into a no-op in one place.
-    public func resolve(_ ref: WorkspaceRef, from here: WorkspaceName) -> WorkspaceName {
+    /// The address a `WorkspaceRef` names, from `here` — the address the acting monitor is showing —
+    /// **within** the addresses a relative motion may land on. `within` is a set only a caller that
+    /// knows about displays can supply (`Monitors.reachable`); an absolute name ignores it entirely,
+    /// which is the whole of "absolute refs are global, relative refs are not".
+    ///
+    /// **Total, clamping rather than wrapping:** `next` at the top of the set, `previous` at the
+    /// bottom and an occupied motion with nothing ahead all answer `here`, which the caller turns into
+    /// a no-op in one place.
+    public func resolve(_ ref: WorkspaceRef, from here: WorkspaceName,
+                        within reachable: [WorkspaceName]) -> WorkspaceName {
         switch ref {
         case .name(let name):     return name
-        case .next:               return here.next ?? here
-        case .previous:           return here.previous ?? here
-        case .nextOccupied:       return occupied(after: here) ?? here
-        case .previousOccupied:   return occupied(before: here) ?? here
+        case .next:               return reachable.first { $0 > here } ?? here
+        case .previous:           return reachable.last { $0 < here } ?? here
+        case .nextOccupied:       return occupied(within: reachable).first { $0 > here } ?? here
+        case .previousOccupied:   return occupied(within: reachable).last { $0 < here } ?? here
         }
     }
 
-    /// The first address after `name` holding a window, or `nil`. **Materialized-and-empty is not
-    /// occupied** — a workspace you passed through once should not keep answering `next-non-empty`
-    /// forever. Only a materialized address can be non-empty, so scanning `materialized` is complete.
-    private func occupied(after name: WorkspaceName) -> WorkspaceName? {
-        materialized.first { $0 > name && !self[$0].isEmpty }
-    }
+    /// Every materialized address holding a window, **in name order**. What `next-non-empty` walks and
+    /// what a display falling off an address would rather land on (`Monitors.show`).
+    ///
+    /// **Materialized-and-empty is not occupied** — a workspace you passed through once should not
+    /// keep answering `next-non-empty` forever. Only a materialized address can be non-empty, so
+    /// scanning `materialized` is complete.
+    public var occupied: [WorkspaceName] { materialized.filter { !self[$0].isEmpty } }
 
-    /// The mirror of `occupied(after:)`, taking the *last* candidate below `name` because
-    /// `materialized` runs upward.
-    private func occupied(before name: WorkspaceName) -> WorkspaceName? {
-        materialized.last { $0 < name && !self[$0].isEmpty }
+    private func occupied(within reachable: [WorkspaceName]) -> [WorkspaceName] {
+        let allowed = Set(reachable)
+        return occupied.filter(allowed.contains)
     }
 
     /// Every materialized address, **in name order** — sorted, because `strips` is a dictionary.

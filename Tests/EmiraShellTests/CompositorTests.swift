@@ -800,6 +800,45 @@ import EmiraCore
         #expect(timeline.entries.isEmpty)
     }
 
+    // Hot-plug — the display set changing under a live plane
+
+    /// A display that arrives gets its surface without anything else being rebuilt: the plane, the
+    /// executor and the runtime are wired once at launch and handed new contents.
+    @Test func aSurfaceAddedForANewDisplayStartsRoutingAtOnce() {
+        let (compositor, surfaces, timeline) = Self.plane(1)
+        let arriving = RecordingSurface(timeline, "@2")
+        compositor.setSurfaces([(MonitorId(1), surfaces[0]), (MonitorId(2), arriving)])
+
+        compositor.raiseCover(on: MonitorId(2), Self.otherBindings) { }
+        #expect(timeline.entries == ["raise@2(3)"])
+    }
+
+    /// A retired surface stops being routable **with its layers**: an id minted on it names nothing,
+    /// exactly as one from a closed cover does. Otherwise a `setLayerFrame` for a screen that has gone
+    /// would land on whichever surface later took its place.
+    @Test func retiringASurfaceDropsTheLayersMintedOnIt() {
+        let (compositor, surfaces, timeline) = Self.plane(2)
+        compositor.raiseCover(on: MonitorId(1), Self.bindings) { }
+        compositor.raiseCover(on: MonitorId(2), Self.otherBindings) { }
+
+        compositor.setSurfaces([(MonitorId(2), surfaces[1])])
+        compositor.setLayerFrame(LayerId(1), to: .zero)          // display 1's layer: nowhere to go
+        compositor.setLayerFrame(LayerId(3), to: Rect(x: 5, y: 0, width: 1, height: 1))
+        #expect(timeline.entries == ["raise@1(1,2)", "raise@2(3)", "blit@2(3@5)"])
+    }
+
+    /// A fence still owed on a retired surface is superseded rather than left armed: the generation
+    /// moves, so a callback arriving from the old display link reports nothing.
+    @Test func aFenceFromARetiredSurfaceIsDropped() {
+        let (compositor, surfaces, _) = Self.plane(2)
+        var reports = 0
+        compositor.raiseCover(on: MonitorId(1), Self.bindings) { reports += 1 }
+        compositor.setSurfaces([(MonitorId(2), surfaces[1])])
+
+        surfaces[0].heldFence?()
+        #expect(reports == 0)
+    }
+
     /// One display is the ordinary case and must cost nothing: the plane is a pass-through, and both
     /// reports land the moment its one surface makes them.
     @Test func aSingleSurfacePlaneIsAPassThrough() {

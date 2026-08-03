@@ -19,8 +19,9 @@ import EmiraCore
 @MainActor
 public final class Compositor: CoverPlane {
 
-    /// The surfaces, keyed by the display each covers.
-    private let surfaces: [MonitorId: any CoverSurface]
+    /// The surfaces, keyed by the display each covers. Mutable because the display set is: hot-plug
+    /// builds one for a display that arrives and takes down the one a departing display had.
+    private var surfaces: [MonitorId: any CoverSurface]
 
     /// Which display a `LayerId` was minted on — the route for every untagged layer call. Layers are
     /// minted from one watermark for the whole desktop, so an id names one layer on one screen, and an
@@ -52,6 +53,27 @@ public final class Compositor: CoverPlane {
     /// routing wants.
     public convenience init(monitor: MonitorId, surface: any CoverSurface) {
         self.init(surfaces: [(monitor, surface)])
+    }
+
+    /// Replace the plane's surfaces — hot-plug, and a display whose geometry changed under a rebuilt
+    /// overlay. Two things go with a surface that leaves: its **routes**, so a `LayerId` minted on it
+    /// stops naming anything, and its **generations**, bumped rather than dropped so a fence or a fade
+    /// still in flight on the retired surface is answered as superseded rather than as current.
+    ///
+    /// The core has already closed every session by the time this is called (`State.setMonitors`), so
+    /// no cover is in flight to be stranded — but a report can still be on its way.
+    public func setSurfaces(_ surfaces: [(monitor: MonitorId, surface: any CoverSurface)]) {
+        self.surfaces = Dictionary(surfaces.map { ($0.monitor, $0.surface) },
+                                   uniquingKeysWith: { first, _ in first })
+        let live = Set(self.surfaces.keys)
+        route = route.filter { live.contains($0.value) }
+        fenceOwed = fenceOwed.filter(live.contains)
+        for monitor in raiseGeneration.keys where !live.contains(monitor) {
+            raiseGeneration[monitor]? &+= 1
+        }
+        for monitor in dismissGeneration.keys where !live.contains(monitor) {
+            dismissGeneration[monitor]? &+= 1
+        }
     }
 
     public func beginFrame() {

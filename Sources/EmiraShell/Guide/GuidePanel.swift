@@ -221,6 +221,14 @@ public final class GuidePanel {
         window.orderFrontRegardless()
     }
 
+    /// Take this panel off the screen for good — its display has gone, or a replacement has been built
+    /// for a display whose geometry changed. Instant, and it outranks a fade in flight.
+    public func retire() {
+        generation &+= 1
+        isShown = false
+        window.orderOut(nil)
+    }
+
     /// Fade the guide away. `completion` runs exactly once per call, and `completed == false` means a
     /// newer show owns the panel now — the caller must not treat it as hidden.
     public func hide(over duration: TimeInterval,

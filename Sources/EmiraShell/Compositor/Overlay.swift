@@ -178,6 +178,19 @@ public final class Overlay: NSObject {
         fence()
     }
 
+    /// Take this overlay off the screen for good — the display it covers has gone, or its geometry
+    /// changed and a replacement has been built. The fence link is **invalidated** rather than paused:
+    /// it belongs to a screen that may no longer exist, and a paused link keeps this object alive
+    /// through its own target.
+    public func retire() {
+        cancelFence()
+        fenceLink?.invalidate()
+        fenceLink = nil
+        isRaised = false
+        generation &+= 1        // a fade still in flight owns nothing now
+        window.orderOut(nil)
+    }
+
     /// Cross-fade the cover away over `duration`, which must be positive — `completion` releases the
     /// stills and tears down the layer tree, and that must not ride on whether AppKit schedules a handler
     /// for an animation with no work to do. It runs exactly once per call, always: it acks

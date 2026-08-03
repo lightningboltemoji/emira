@@ -1074,6 +1074,52 @@ import EmiraCore
         #expect(a.baseRequested == [true, false])       // display 1's cover was still open
         #expect(b.baseRequested == [true])
     }
+
+    // Hot-plug — the capturers changing under a live store
+
+    /// A display that arrives is filmed by its own capturer from the next batch on. Nothing else is
+    /// rebuilt: the store, the cache and the deadline are the daemon's for its whole life.
+    @Test func aCapturerAddedForANewDisplayTakesItsOwnBatches() {
+        let (service, a, _, log) = Self.service()
+        let arriving = ManualCapturer()
+        service.setCapturers([(Self.left, a), (MonitorId(3), arriving)])
+
+        service.capture(windows: [WindowId(1)], on: MonitorId(3), feedback: log.sink)
+        #expect(arriving.requests.last?.map(\.id) == [WindowId(1)])
+        #expect(a.requests.isEmpty)
+    }
+
+    /// A departing display's **base** goes with it. A photograph of a screen that is gone is the one
+    /// thing in the store that cannot outlive its display: a re-plugged id at a new resolution would
+    /// otherwise raise its first cover onto the desktop as it was two configurations ago.
+    @Test func aRetiredDisplayLosesItsBaseAndItsOpenCover() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], on: Self.left, feedback: log.sink)
+        a.answer(with: [WindowId(1)])
+        #expect(service.base(of: Self.left) != nil)
+
+        service.setCapturers([(Self.right, b)])
+        #expect(service.base(of: Self.left) == nil)
+
+        // …and its cover is closed with it, so the next batch for that id opens a fresh one and takes
+        // a fresh base rather than growing a cover nothing is showing.
+        service.setCapturers([(Self.left, a), (Self.right, b)])
+        service.capture(windows: [WindowId(2)], on: Self.left, feedback: EventLog().sink)
+        #expect(a.baseRequested == [true, true])
+    }
+
+    /// A still two covers were showing survives one of their displays leaving — the same rule that
+    /// keeps one cover coming down from blanking a layer on the other.
+    @Test func aStillTheOtherDisplayIsStillShowingSurvivesTheRetirement() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], on: Self.left, feedback: log.sink)
+        a.answer(with: [WindowId(1)])
+        service.capture(windows: [WindowId(1)], on: Self.right, feedback: log.sink)
+        b.answer(with: [WindowId(1)])
+
+        service.setCapturers([(Self.right, b)])
+        #expect(service.surface(for: WindowId(1)) != nil)
+    }
 }
 
 /// The call shapes a single-cover test wants: ids alone, at a size no still was ever filmed at (so

@@ -107,6 +107,52 @@ public struct State: Sendable, Equatable, Codable {
     /// with no display attached, for the reason `Monitors.shown` is.
     public var viewport: Viewport { motion.viewport(of: monitors.focused) }
 
+    // Resolving a reference (where the two containers decide together what a verb's argument names)
+
+    /// The address a `WorkspaceRef` names. **Absolute refs are global, relative ones are not** (D1): a
+    /// name goes wherever it lives, switching displays if that is where it is — the "just work"
+    /// requirement — while `next` and its kin stay inside the acting monitor's own set, because the
+    /// monitor is the container and cycling should not leave it. Strictly a generalization: on one
+    /// display "held here or held by nobody" is all 36 addresses.
+    public func resolve(_ ref: WorkspaceRef) -> WorkspaceName {
+        workspaces.resolve(ref, from: monitors.shown, within: monitors.reachable)
+    }
+
+    /// The display a `MonitorRef` names — `nil` only with none attached. Total otherwise, and
+    /// **clamping rather than wrapping**, exactly as `WorkspaceRef` does: a ref with nowhere to go
+    /// answers the acting monitor, which every verb reads as the no-op it is.
+    public func resolve(_ ref: MonitorRef) -> MonitorId? {
+        let ids = monitors.ids
+        guard let acting = monitors.focused, let here = ids.firstIndex(of: acting) else { return nil }
+        switch ref {
+        case .index(let n):     return ids[min(max(n - 1, 0), ids.count - 1)]
+        case .next:             return ids[min(here + 1, ids.count - 1)]
+        case .previous:         return ids[max(here - 1, 0)]
+        case .direction(let d): return nearestMonitor(from: acting, towards: d) ?? acting
+        }
+    }
+
+    /// The display spatially nearest the acting one in `d`: among those whose frame centre lies
+    /// strictly in `d`'s half-plane, the smallest distance along `d`'s own axis, tie-broken on the
+    /// cross axis and then on enumeration order. `nil` when there is nothing that way — the desktop
+    /// has an edge, where the strip does not (D2).
+    private func nearestMonitor(from origin: MonitorId, towards d: Direction) -> MonitorId? {
+        guard let from = world.monitor(origin)?.frame.center else { return nil }
+        var best: (id: MonitorId, primary: Double, cross: Double)?
+        // Enumeration order, with a strict comparison, so the earliest display wins every tie.
+        for id in monitors.ids where id != origin {
+            guard let centre = world.monitor(id)?.frame.center else { continue }
+            // Core `y` grows *downward*, so `up` is the negative side of it.
+            let along = d == .left || d == .up ? -1.0 : 1.0
+            let primary = along * (d.axis == .horizontal ? centre.x - from.x : centre.y - from.y)
+            let cross = abs(d.axis == .horizontal ? centre.y - from.y : centre.x - from.x)
+            guard primary > 0 else { continue }
+            guard let current = best else { best = (id, primary, cross); continue }
+            if (primary, cross) < (current.primary, current.cross) { best = (id, primary, cross) }
+        }
+        return best?.id
+    }
+
     /// The acting monitor's transition, or `nil`. The projection `layout` is, one container over.
     public var transition: TransitionSession? { motion.transition(of: monitors.focused) }
 
@@ -162,22 +208,83 @@ public struct State: Sendable, Equatable, Codable {
     /// about a display `Monitors` does not is a desktop with no metrics and no route to any, so the
     /// ordering is structural rather than remembered.
     ///
-    /// - Returns: the displays whose cover left with them, which the caller owes an `endTransition`:
-    ///   the session is gone from the core, and the overlay it was drawing on has to be told.
+    /// **A report that moves the ground takes every cover down with it**, not only the covers of the
+    /// displays that left. Nothing on any screen is travelling to where it now belongs, which is the
+    /// same reason a display change snaps rather than animates — and the shell rebuilds the overlay of
+    /// every display a reconfiguration touched, which would otherwise strand covers nobody took down.
+    ///
+    /// A report that changes *nothing* changes nothing: `screensChanged` also arrives redundantly, and
+    /// tearing a cover down mid-raise there would write the truth plane with nothing on the glass to
+    /// hide it — the one thing the phase machine exists to prevent.
+    ///
+    /// - Returns: the displays owed an `endTransition` — the sessions are gone from the core, and the
+    ///   overlays they were drawing on have to be told.
     @discardableResult
     public mutating func setMonitors(_ infos: [MonitorInfo]) -> [MonitorId] {
+        let moved = !describesSameDisplays(as: infos)
+        if moved { bankViewports() }
         world.setMonitors(infos)
-        monitors.reconcile(materialized: workspaces.materialized, infos: infos)
+        monitors.reconcile(materialized: workspaces.materialized, occupied: workspaces.occupied,
+                           infos: infos)
         materializeShown()
-        return motion.reconcile(infos.map(\.id))
+        let departed = motion.reconcile(infos.map(\.id))
+        guard moved else { return departed }
+        let surviving = motion.transitioningMonitors
+        for monitor in surviving { motion.closeTransition(on: monitor) }
+        resumeViewports()
+        return departed + surviving
     }
 
-    /// Show `name` on the acting monitor. **One method, for the same reason `setMonitors` is one:** a
-    /// display claiming an address dispossesses whichever display held it, and that display then takes
-    /// one it can have — which may be an address nothing has ever materialized. So the strip the switch
-    /// asked for is not the only one it owes; every address left on a screen needs one.
-    public mutating func show(_ name: WorkspaceName) {
-        monitors.show(name)
+    /// Store every display's live scroll against the address it is showing — the write half of a
+    /// workspace switch (`Engine.switchWorkspace`), applied to every screen at once.
+    ///
+    /// **A reconfiguration is a switch on every display**, because each may come out showing a different
+    /// address: one that left hands its workspaces to a survivor, one that returns takes them back. So
+    /// the same two halves apply, and this is the one that has to run *before* the containers move,
+    /// while each display can still say what it was looking at. Without it a `Viewport` is the only
+    /// record of where a display was scrolled to, and a viewport does not survive its display — so a lid
+    /// close would return every workspace it took with it to the strip's origin.
+    /// Banked at the scroll's **target**, not where it happens to be: a reconfiguration takes every
+    /// cover down with it, and `closeTransition` snaps each viewport to exactly that. For a display at
+    /// rest the two are the same number, so this is the resting read everywhere else.
+    private mutating func bankViewports() {
+        for id in monitors.ids {
+            guard let shown = monitors.shown(on: id) else { continue }
+            workspaces[scrollOffsetOf: shown] = motion.offset(of: id).target
+        }
+    }
+
+    /// …and the read half: every display resumes at the memory of whatever it now shows. A display whose
+    /// address did not change reads back the number `bankViewports` just wrote, so the common
+    /// reconfiguration is an identity — and one that did, including a returning display reclaiming its
+    /// workspaces, arrives where it left off.
+    ///
+    /// Snapping is right for the same reason a display change snaps everything else: the ground the
+    /// strip stands on moved, so nothing is travelling to where it now belongs.
+    private mutating func resumeViewports() {
+        for id in monitors.ids {
+            guard let shown = monitors.shown(on: id) else { continue }
+            motion.snapViewport(to: workspaces[scrollOffsetOf: shown], on: id)
+        }
+    }
+
+    /// Whether `infos` reports the geometry `World` already holds, display for display and in order —
+    /// the difference between a reconfiguration and a repeat of one.
+    private func describesSameDisplays(as infos: [MonitorInfo]) -> Bool {
+        world.monitors.count == infos.count
+            && zip(world.monitors, infos).allSatisfy {
+                $0.id == $1.id && $0.frame == $1.frame && $0.struts == $1.struts
+            }
+    }
+
+    /// Show `name` on `id`, defaulting to the acting monitor. **One method, for the same reason
+    /// `setMonitors` is one:** a display claiming an address dispossesses whichever display held it,
+    /// and that display then takes one it can have — which may be an address nothing has ever
+    /// materialized. So the strip the switch asked for is not the only one it owes; every address left
+    /// on a screen needs one. Which of them is occupied is `Workspaces`' answer and decides the
+    /// fallback, so it is supplied here rather than remembered by the caller.
+    public mutating func show(_ name: WorkspaceName, on id: MonitorId? = nil) {
+        monitors.show(name, on: id ?? monitors.focused, occupied: workspaces.occupied)
         materializeShown()
     }
 
@@ -372,7 +479,7 @@ public enum Engine {
                 return (s, effects)
             }
             s.world.setFocus(snapshot.id)   // a new window takes focus (truth tracked always)
-            guard let before else { return (s, []) }   // no display known: nothing to place
+            guard !before.isEmpty else { return (s, []) }   // no display known: nothing to place
             // Bound to a local first — the same tuple-evaluation-order trap as `.command` above.
             let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before,
                                         width: rule.width, keepingWidth: snapshot.wasAlreadyOpen)
@@ -441,7 +548,7 @@ public enum Engine {
                 return (s, effects)
             }
             s.world.setFocus(id)            // restoring re-focuses, like a fresh window
-            guard let before else { return (s, []) }
+            guard !before.isEmpty else { return (s, []) }
             let effects = arriveOnStrip(&s, id, beside: beside, old: before)
             return (s, effects)
 
@@ -617,6 +724,21 @@ public enum Engine {
         case .moveToWorkspaceAndFocus(let ref):
             return handleMoveToWorkspace(&s, ref, follow: true)
 
+        case .focusMonitor(let ref):
+            return handleFocusMonitor(&s, ref)
+
+        case .moveToMonitor(let ref):
+            return handleMoveToMonitor(&s, ref, follow: false)
+
+        case .moveToMonitorAndFocus(let ref):
+            return handleMoveToMonitor(&s, ref, follow: true)
+
+        case .moveWorkspaceToMonitor(let ref):
+            return handleMoveWorkspaceToMonitor(&s, ref, follow: false)
+
+        case .moveWorkspaceToMonitorAndFocus(let ref):
+            return handleMoveWorkspaceToMonitor(&s, ref, follow: true)
+
         case .exec(let line):
             // Changes nothing, because a spawn is not a fact about the desktop — and opens no
             // transition for the same reason. Whatever window the process opens announces itself as
@@ -676,12 +798,15 @@ public enum Engine {
     /// captured once and used for *both* `naturalFrames` calls, so the scroll and any in-flight resize
     /// cancel in the difference and what survives is purely structural.
     private struct StructuralSnapshot {
+        /// The display this is the geometry of. An edit that changes what two screens show carries one
+        /// snapshot each, and each drives its own display's cover.
+        let monitor: MonitorId
         /// The in-flight column widths both calls resolve against.
         let widths: [ColumnId: Double]
-        /// Where every window on every workspace sat under the geometry we are leaving. The offset it was
-        /// read at is deliberately not kept — see `finishStructuralEdit`.
+        /// Where every window on every workspace **this display holds** sat under the geometry we are
+        /// leaving. The offset it was read at is deliberately not kept — see `finishStructuralEdit`.
         let frames: [WindowId: Rect]
-        /// What was on screen under that geometry — half of the two-geometry scope.
+        /// What was on this display's screen under that geometry — half of the two-geometry scope.
         let departing: [WindowId]
 
         /// The same snapshot plus an arriving window at the frame its app just opened it at — also the
@@ -689,21 +814,98 @@ public enum Engine {
         func including(_ id: WindowId, at frame: Rect) -> StructuralSnapshot {
             var frames = self.frames
             frames[id] = frame
-            return StructuralSnapshot(widths: widths, frames: frames, departing: departing)
+            return StructuralSnapshot(monitor: monitor, widths: widths, frames: frames,
+                                      departing: departing)
         }
     }
 
-    /// Read the old geometry, after `reconcile` and the handler's guards — taken before it, the membership
-    /// bridge's own churn would show up as a bogus displacement. Frames span every workspace the acting
-    /// monitor holds; `departing` is the focused strip's alone.
-    private static func structuralSnapshot(_ s: State, _ metrics: LayoutMetrics) -> StructuralSnapshot {
-        let start = s.viewport.offset.current
+    /// Read one display's old geometry, after `reconcile` and the handler's guards — taken before it,
+    /// the membership bridge's own churn would show up as a bogus displacement. Frames span every
+    /// workspace that display holds; `departing` is the strip it is showing.
+    ///
+    /// `nil` for a display that is not attached, which is what makes a snapshot list empty rather than
+    /// wrong when there is no geometry to leave.
+    ///
+    /// - Parameter travelling: an address about to change displays. **Both screens read it as their
+    ///   own here**, which is invariant 4's implementation: the hand-over is two independent workspace
+    ///   switches, and the destination's is a slide *in* from one screen away — which it can only be if
+    ///   the geometry it is leaving already places the workspace there.
+    private static func structuralSnapshot(_ s: State, on monitor: MonitorId,
+                                           travelling: WorkspaceName? = nil) -> StructuralSnapshot? {
+        guard let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return nil }
+        let start = s.motion.offset(of: monitor).current
         let widths = s.motion.currentColumnWidths
+        var drawn = s.monitors.owned(of: monitor)
+        if let travelling, !drawn.contains(travelling) { drawn.append(travelling) }
         return StructuralSnapshot(
+            monitor: monitor,
             widths: widths,
-            frames: s.workspaces.naturalFrames(shown: s.monitors.shown, among: s.monitors.owned,
+            frames: s.workspaces.naturalFrames(shown: shown, among: drawn,
                                                scrollOffset: start, metrics: metrics, widths: widths),
-            departing: s.layout.visibleWindowIds(scrollOffset: start, metrics: metrics))
+            departing: s.workspaces[shown].visibleWindowIds(scrollOffset: start, metrics: metrics))
+    }
+
+    /// One snapshot per display an edit is about to change, deduplicated and in the order given. A
+    /// cross-display verb names two and an ordinary one names the acting monitor twice over, so the
+    /// dedupe is the thing that keeps "one display" the special case of "several" rather than a branch.
+    ///
+    /// **Empty is the snap signal**: no display attached, and every caller reads it as "land this at
+    /// once" (`finishStructuralEdit`).
+    private static func snapshots(_ s: State, of monitors: [MonitorId?],
+                                  travelling: WorkspaceName? = nil) -> [StructuralSnapshot] {
+        var seen: Set<MonitorId> = []
+        return monitors.compactMap { $0 }.filter { seen.insert($0).inserted }
+            .compactMap { structuralSnapshot(s, on: $0, travelling: travelling) }
+    }
+
+    /// The acting monitor's snapshot alone — what every edit that changes one screen passes.
+    private static func actingSnapshot(_ s: State) -> [StructuralSnapshot] {
+        snapshots(s, of: [s.monitors.focused])
+    }
+
+    /// One window's journey **between displays**, or `nil` for one that stayed.
+    ///
+    /// The case each display's own difference cannot see: a window handed across the desktop is missing
+    /// from the *after* side on the display it left (whose strips no longer hold it) and from the
+    /// *before* side on the one it reached (whose strips did not hold it yet), so each screen sees one
+    /// frame and no travel — a hard cut on the arrival, a frozen layer on the departure.
+    ///
+    /// Both sides are natural frames, and natural frames on every display share **one global space**, so
+    /// this is a single difference that both covers read. That is also why `finishStructuralEdit` seeds
+    /// it once: the displacement animators are the desktop's, not a display's, and a second seed would
+    /// double the travel.
+    private struct Crossing {
+        let window: WindowId
+        /// The display now holding the window — whose viewport the arrival is aimed at.
+        let to: MonitorId
+        let was: Rect
+        let now: Rect
+    }
+
+    /// Where `id` was in the geometry being left, and where it belongs now — `nil` unless it genuinely
+    /// changed displays, which is a snapshot holding its old frame plus a *different* display holding
+    /// its workspace afterwards. A window that stayed is left to the ordinary per-display difference,
+    /// which already answers for it.
+    private static func crossing(_ s: State, _ id: WindowId, leaving snapshots: [StructuralSnapshot],
+                                 widths: [ColumnId: Double]) -> Crossing? {
+        guard let source = snapshots.first(where: { $0.frames[id] != nil }), let was = source.frames[id],
+              let home = s.workspaces.workspace(of: id),
+              let owner = s.monitors.monitor(of: home), owner != source.monitor,
+              let now = naturalFrame(s, of: id, on: owner, widths: widths) else { return nil }
+        return Crossing(window: id, to: owner, was: was, now: now)
+    }
+
+    /// `id`'s presentation-plane frame on the display that holds its workspace — the same global number
+    /// that display's own cover draws it at, which is what lets two covers agree about a window in
+    /// flight between them. `nil` for a window on no strip, or a display with no metrics.
+    private static func naturalFrame(_ s: State, of id: WindowId, on monitor: MonitorId,
+                                     widths: [ColumnId: Double]) -> Rect? {
+        guard let home = s.workspaces.workspace(of: id), let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return nil }
+        return s.workspaces.naturalFrames(shown: shown, among: [home],
+                                          scrollOffset: s.motion.offset(of: monitor).current,
+                                          metrics: metrics, widths: widths)[id]
     }
 
     /// Move the focused window one slot. Horizontal branches on whether it has company: a window alone in
@@ -713,11 +915,11 @@ public enum Engine {
     private static func handleMoveWindow(_ s: inout State, _ direction: Direction) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
         // Metrics guard before the mutation: with no display known there is no correct frame to land on.
-        guard let metrics = s.metrics(),
+        guard s.metrics() != nil,
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
-        let old = structuralSnapshot(s, metrics)
+        let old = actingSnapshot(s)
 
         // A copy (`ColumnLayout` is a value type) — never re-read it after the mutation. Passing
         // `s.layout.columns[…]` into a `mutating` call on `s.layout` would overlap access besides.
@@ -744,11 +946,11 @@ public enum Engine {
     /// expel still creates its column: the strip has an origin rather than an edge.
     private static func handleConsumeOrExpel(_ s: inout State, _ direction: Direction) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics(),
+        guard s.metrics() != nil,
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
-        let old = structuralSnapshot(s, metrics)
+        let old = actingSnapshot(s)
 
         let column = s.layout.columns[index]      // a copy; never re-read after the mutation
         let edit: LayoutEdit
@@ -789,79 +991,142 @@ public enum Engine {
     /// to zero. The scope spans two geometries (visible-before ∪ swept-after), so a column the edit evicts
     /// does not slide out as a hole showing wallpaper.
     ///
+    /// **One snapshot per display the edit changes, and each drives its own cover** (D7). A verb that
+    /// hands a window or a workspace across the desktop changes what two screens show, and the two are
+    /// two presentation planes: each decides for itself whether it has anything to animate, so one may
+    /// open a cover while the other lands its share at once. On one display that is the single-cover
+    /// path it always was.
+    ///
     /// - Parameter mover: the window drawn on top, `nil` for a departure — the thing that moved has left.
-    /// - Parameter focused: the window the viewport frames on afterwards, `nil` to keep the offset.
-    /// - Parameter old: the geometry being left, `nil` to snap (no display known, or a deliberate cut).
+    /// - Parameter focused: the window the viewport frames on afterwards, `nil` to keep the offset. Only
+    ///   the display whose strip actually holds it frames on it; the others keep the offset they have.
+    /// - Parameter snapshots: the geometry each display is leaving. Empty to snap (no display known, or
+    ///   a deliberate cut).
+    /// - Parameter travelling: a window this edit hands **across displays**. Named because it is the one
+    ///   term of the difference no single display can compute — see `Crossing`.
     /// - Parameter framedAt: an offset to come to rest at instead of the reveal `focused` would compute —
     ///   an un-fullscreen restoring a remembered viewport rather than framing on anything. Still subject
     ///   to the no-motion snap below, so a restore to where we already are is free.
     private static func finishStructuralEdit(_ s: inout State, _ edit: LayoutEdit,
                                              focused: WindowId?, mover: WindowId?,
-                                             animatingFrom old: StructuralSnapshot?,
+                                             animatingFrom snapshots: [StructuralSnapshot],
+                                             travelling: WindowId? = nil,
                                              framedAt: Double? = nil) -> [Effect] {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
-        guard let (monitor, metrics) = s.acting() else { return reassertTruthPlane(&s) }
 
-        // Re-read, not carried in the snapshot: for a workspace switch it must *not* be the number the
-        // snapshot was taken at, since switching snaps the offset to the incoming strip's remembered
-        // scroll in between — which is what makes the horizontal axis cancel out of the seed.
-        let start = s.viewport.offset.current
+        guard !snapshots.isEmpty else {          // not animating this one — land it at once
+            if let monitor = s.monitors.focused,
+               let end = restingOffset(s, on: monitor, focused: focused, framedAt: framedAt) {
+                s.motion.snapViewport(to: end, on: monitor)
+            }
+            return reassertTruthPlane(&s)
+        }
 
-        // No `end == start ⇒ snap` guard: a swap in full view moves the viewport not at all.
+        // Read against the widths the *first* snapshot captured, for the reason both `naturalFrames`
+        // calls below share one set: the scroll and any in-flight resize then cancel in the difference
+        // and what survives is purely the hand-over. Seeded once, before any display's own pass —
+        // both covers read this one displacement (see `Crossing`).
+        let crossed = travelling.flatMap {
+            crossing(s, $0, leaving: snapshots, widths: snapshots[0].widths)
+        }
+        if let crossed, s.config.transitionMode.animates {
+            s.motion.displaceWindow(crossed.window, by: crossed.was.delta(from: crossed.now),
+                                    params: s.config.moveSpring, on: crossed.to)
+        }
+
+        var effects: [Effect] = []
+        var snapped = false
+        for old in snapshots {
+            let monitor = old.monitor
+            // Metrics are re-read rather than carried in the snapshot: `cycle-height` forgets a
+            // column's corrections between the two, and the new geometry is the corrected one.
+            guard let metrics = s.metrics(of: monitor), let shown = s.monitors.shown(on: monitor),
+                  let end = restingOffset(s, on: monitor, focused: focused, framedAt: framedAt)
+            else { continue }
+            let strip = s.workspaces[shown]
+            // Re-read, not carried in the snapshot: for a workspace switch it must *not* be the number
+            // the snapshot was taken at, since switching snaps the offset to the incoming strip's
+            // remembered scroll in between — which makes the horizontal axis cancel out of the seed.
+            let start = s.motion.offset(of: monitor).current
+
+            let scope = scopeUnion(s, old.departing,
+                                   strip.sweptWindowIds(from: start, to: end, metrics: metrics))
+
+            guard s.motion.isTransitioning(on: monitor)
+                    || (s.config.transitionMode.covers && !scope.isEmpty) else {
+                s.motion.snapViewport(to: end, on: monitor)
+                snapped = true
+                continue
+            }
+
+            // The second half of the difference: the new geometry, at the live offset and the *same*
+            // widths. A window that changed displays appears in one side only and is skipped below —
+            // correctly, since there is no single travel for it and both covers already draw it.
+            let new = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
+                                                 scrollOffset: start, metrics: metrics,
+                                                 widths: old.widths)
+            // What the edit moves where someone could see it — scoped only, since a window with no
+            // layer has nothing to lag behind. A fact about the layout, so no mode changes it; only
+            // whether it is put in motion below. The travelling window is excluded because its own
+            // difference spans two displays and is already seeded above, once for both.
+            let moves: [(id: WindowId, delta: Rect)] = scope.compactMap { id in
+                guard id != crossed?.window, let was = old.frames[id], let now = new[id],
+                      !approximatelyEqual(was, now) else { return nil }
+                return (id, was.delta(from: now))
+            }
+            if s.config.transitionMode.animates {
+                for move in moves {
+                    s.motion.displaceWindow(move.id, by: move.delta, params: s.config.moveSpring,
+                                            on: monitor)
+                }
+            }
+
+            // An edit nothing on this screen can see needs no cover on it. The viewport is asked
+            // separately because closing the strip's *last* column displaces nobody, and the crossing
+            // separately again because it is the one travel not in `moves` — a window arriving on an
+            // otherwise-still screen is the whole of what that display has to animate.
+            let carries = crossed.map { scope.contains($0.window) } ?? false
+            let scrolls = !approximatelyEqualScalar(end, start)
+            guard !moves.isEmpty || carries || scrolls || s.motion.isTransitioning(on: monitor) else {
+                s.motion.snapViewport(to: end, on: monitor)
+                snapped = true
+                continue
+            }
+
+            effects += driveTransition(&s, on: monitor, to: end, scope: scope)
+            // After `driveTransition`: `elevate` no-ops without a session, and that is where one is
+            // born. Named on every cover that draws it — a window crossing displays is on two.
+            if let mover { s.motion.elevate(mover, on: monitor) }
+            // The display it *left* cannot place it from its own strips; the one it reached can, and
+            // marking both costs nothing (`emitLayerFrames` prefers its own geometry).
+            if carries, let crossed { s.motion.carry(crossed.window, on: monitor) }
+            // Emits nothing for a session still capturing, nor for a mover just pulled into scope.
+            effects += elevationEffects(s, on: monitor)
+        }
+        // One pass for however many displays landed their share at once; a display that opened a cover
+        // is held back by the gate inside it and teleports at `coverOnScreen` instead.
+        return snapped ? effects + reassertTruthPlane(&s) : effects
+    }
+
+    /// Where one display's viewport comes to rest after an edit: the offset revealing `focused` on the
+    /// strip that display is showing, or — for a display whose strip does not hold it — where it
+    /// already is. No `end == start ⇒ snap` guard: a swap in full view moves the viewport not at all.
+    ///
+    /// `framedAt` is the acting monitor's alone: it restores a viewport this verb remembered, and only
+    /// one display can be the subject of that.
+    private static func restingOffset(_ s: State, on monitor: MonitorId, focused: WindowId?,
+                                      framedAt: Double?) -> Double? {
+        guard let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return nil }
+        let strip = s.workspaces[shown]
+        let start = s.motion.offset(of: monitor).current
         let revealed = focused.flatMap {
             s.config.centerFocusedColumn
-                ? s.layout.scrollOffsetToCenter(window: $0, metrics: metrics)
-                : s.layout.scrollOffsetToReveal(window: $0, from: start, metrics: metrics)
+                ? strip.scrollOffsetToCenter(window: $0, metrics: metrics)
+                : strip.scrollOffsetToReveal(window: $0, from: start, metrics: metrics)
         }
-        let end = framedAt ?? revealed ?? start
-
-        guard let old else {                    // not animating this one — land it at once
-            s.motion.snapViewport(to: end, on: monitor)
-            return reassertTruthPlane(&s)
-        }
-
-        let scope = scopeUnion(s, old.departing,
-                               s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
-
-        guard s.motion.isTransitioning(on: monitor)
-                || (s.config.transitionMode.covers && !scope.isEmpty) else {
-            s.motion.snapViewport(to: end, on: monitor)
-            return reassertTruthPlane(&s)
-        }
-
-        // The second half of the difference: the new geometry, at the live offset and the *same* widths.
-        let new = s.workspaces.naturalFrames(shown: s.monitors.shown, among: s.monitors.owned,
-                                             scrollOffset: start, metrics: metrics, widths: old.widths)
-        // What the edit moves where someone could see it — scoped only, since a window with no layer has
-        // nothing to lag behind. A fact about the layout, so no mode changes it; only whether it is put
-        // in motion below.
-        let moves: [(id: WindowId, delta: Rect)] = scope.compactMap { id in
-            guard let was = old.frames[id], let now = new[id],
-                  !approximatelyEqual(was, now) else { return nil }
-            return (id, was.delta(from: now))
-        }
-        if s.config.transitionMode.animates {
-            for move in moves {
-                s.motion.displaceWindow(move.id, by: move.delta, params: s.config.moveSpring,
-                                        on: monitor)
-            }
-        }
-
-        // An edit nothing on screen can see needs no cover. The viewport is asked separately because
-        // closing the strip's *last* column displaces nobody.
-        let scrolls = !approximatelyEqualScalar(end, start)
-        guard !moves.isEmpty || scrolls || s.motion.isTransitioning(on: monitor) else {
-            s.motion.snapViewport(to: end, on: monitor)
-            return reassertTruthPlane(&s)
-        }
-
-        var effects = driveTransition(&s, on: monitor, to: end, scope: scope)
-        // After `driveTransition`: `elevate` no-ops without a session, and that is where one is born.
-        if let mover { s.motion.elevate(mover, on: monitor) }
-        // Emits nothing for a session still capturing, nor for a mover just pulled into scope.
-        effects += elevationEffects(s, on: monitor)
-        return effects
+        return (monitor == s.monitors.focused ? framedAt : nil) ?? revealed ?? start
     }
 
     /// `Effect.elevateLayer` for the window `monitor`'s transition draws on top, or nothing — no
@@ -876,15 +1141,26 @@ public enum Engine {
     // A workspace switch is a structural edit in `finishStructuralEdit`'s sense: one geometric term
     // (`Workspaces.verticalOffset`) plus the call `move-window` makes.
 
-    /// Switch the focused workspace. Resolving to the one we are already on is a silent no-op, which is
-    /// also how `next` at the last address comes out — `Workspaces.resolve` clamps rather than wrapping.
+    /// Switch to a workspace, **wherever it lives** (D1). Resolving to the one the acting monitor is
+    /// already showing is a silent no-op, which is also how `next` at the top of the monitor's own set
+    /// comes out — `State.resolve` clamps rather than wrapping.
     private static func handleFocusWorkspace(_ s: inout State, _ ref: WorkspaceRef) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        let destination = s.workspaces.resolve(ref, from: s.monitors.shown)
+        let destination = s.resolve(ref)
         guard destination != s.monitors.shown else { return [] }
-        // Read before `focused` moves: the geometry the switch is about to stop being true.
-        let old = s.metrics().map { structuralSnapshot(s, $0) }
-        return switchWorkspace(&s, to: destination, animatingFrom: old)
+        // Read before anything moves: the geometry the switch is about to stop being true, on the
+        // display that is going to do the switching.
+        return switchWorkspace(&s, to: destination, animatingFrom: snapshots(s, of: [host(s, destination)]))
+    }
+
+    /// Move the user to another display, whatever it is showing — the one verb that rearranges no
+    /// strip at all. Focus lands on that address's remembered window, or on nothing, which is exactly
+    /// what invariant 3 buys: an empty display can hold emira's focus, and the next window opens there.
+    private static func handleFocusMonitor(_ s: inout State, _ ref: MonitorRef) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let target = s.resolve(ref), target != s.monitors.focused,
+              let destination = s.monitors.shown(on: target) else { return [] }
+        return switchWorkspace(&s, to: destination, animatingFrom: snapshots(s, of: [target]))
     }
 
     /// Move the focused window to another workspace, optionally following it there. A window, not its
@@ -893,14 +1169,37 @@ public enum Engine {
     private static func handleMoveToWorkspace(_ s: inout State, _ ref: WorkspaceRef,
                                               follow: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        let destination = s.workspaces.resolve(ref, from: s.monitors.shown)
+        return moveToWorkspace(&s, s.resolve(ref), follow: follow)
+    }
+
+    /// Move the focused window to whatever `<mon>` is showing — `move-to-workspace` with the address
+    /// named by the display holding it rather than by its own letter.
+    private static func handleMoveToMonitor(_ s: inout State, _ ref: MonitorRef,
+                                            follow: Bool) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let target = s.resolve(ref), target != s.monitors.focused,
+              let destination = s.monitors.shown(on: target) else { return [] }
+        return moveToWorkspace(&s, destination, follow: follow)
+    }
+
+    /// The body both move-a-window verbs share.
+    ///
+    /// **The destination decides how many screens change**, and nothing here has to branch on it: an
+    /// address another display holds carries the window there, so both that display's geometry and this
+    /// one's are snapshotted and `finishStructuralEdit` gives each the cover it turns out to need. An
+    /// address nobody is showing takes the window straight to a parking lot, where there is nothing to
+    /// animate and that display lands its share at once.
+    private static func moveToWorkspace(_ s: inout State, _ destination: WorkspaceName,
+                                        follow: Bool) -> [Effect] {
         guard destination != s.monitors.shown,
               let moved = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: moved) else { return [] }
 
-        // Read before the edit: the geometry it invalidates, the column's id (to tell afterwards whether
-        // the departure emptied it), and its index, where focus falls back to if so.
-        let old = s.metrics().map { structuralSnapshot(s, $0) }
+        // Read before the edit: the geometry it invalidates on both displays, the column's id (to tell
+        // afterwards whether the departure emptied it), and its index, where focus falls back to if so.
+        // The destination's owner is read before `State.move`, which is what *gives* an unassigned
+        // address an owner — after it, every move would look like a same-display one.
+        let old = snapshots(s, of: [s.monitors.focused, s.monitors.monitor(of: destination)])
         let column = s.layout.columns[index].id
         let edit = s.move(window: moved, to: destination,
                           insertingAfter: s.workspaces[lastFocusOf: destination])
@@ -910,41 +1209,111 @@ public enum Engine {
 
         if follow {
             return switchWorkspace(&s, to: destination, focusing: moved, mover: moved,
-                                   animatingFrom: old)
+                                   animatingFrom: old, travelling: moved)
         }
 
         // Staying: focus left with the window, so it lands on the neighbour — or, on an emptied strip, off
         // the strip entirely, which `handleFocus`'s entry condition recovers from.
         let heir = successor(s.layout, column: column, at: index)
         s.world.setFocus(heir)
-        let effects = finishStructuralEdit(&s, edit, focused: heir, mover: moved, animatingFrom: old)
+        let effects = finishStructuralEdit(&s, edit, focused: heir, mover: moved, animatingFrom: old,
+                                           travelling: moved)
         return heir.map { effects + [.focus($0)] } ?? effects
     }
 
-    /// The body of a workspace switch — shared by `focus-workspace`, `move-to-workspace-and-focus`, and
-    /// the cross-workspace `focusChanged`. Store the live offset and strip focus into the outgoing record,
-    /// move `focused`, snap the viewport to the incoming record, pick the window to focus, then place
-    /// through `finishStructuralEdit` — between whose two `naturalFrames` reads those steps sit, making
-    /// the seed purely vertical.
+    /// Hand the acting monitor's workspace to another display, which shows it (D3). No window changes
+    /// strips: what travels is the **address**, so both screens switch — the destination to the
+    /// arriving workspace, the source to whatever `Monitors` falls it back to.
+    ///
+    /// Invariant 4 is why this is two independent switches rather than one animation: no workspace ever
+    /// travels *between* displays, so each screen runs the vertical slide it already has.
+    private static func handleMoveWorkspaceToMonitor(_ s: inout State, _ ref: MonitorRef,
+                                                     follow: Bool) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let source = s.monitors.focused, let target = s.resolve(ref),
+              target != source else { return [] }
+        let travelling = s.monitors.shown
+        let old = snapshots(s, of: [source, target], travelling: travelling)
+
+        // The live authority for the travelling address is the source's viewport, and the destination
+        // reads it back out of the strip's own memory — which is how a workspace keeps its scroll and
+        // its focus across the desktop (§8).
+        s.workspaces[scrollOffsetOf: travelling] = s.motion.offset(of: source).current
+        s.workspaces[lastFocusOf: travelling] = s.world.focusedWindow.flatMap {
+            s.workspaces[travelling].columnIndex(ofWindow: $0) == nil ? nil : $0
+        }
+        // One call for both halves: the claim moves `owned` with `shown`, and the source falls back to
+        // an address it can have — which may be one nothing has ever materialized, hence `State.show`.
+        s.show(travelling, on: target)
+
+        // Each display now shows its own address and needs its viewport at that address's memory.
+        if let landed = s.monitors.shown(on: source) {
+            s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: landed], on: source)
+        }
+        s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: travelling], on: target)
+
+        if follow { s.monitors.focus(target) }
+        // Focus follows the screen the user is on, not the workspace: staying means picking up whatever
+        // the source's fallback address remembers, which is the same rule `focus-monitor` runs on.
+        let landing = s.monitors.shown
+        let wanted = s.workspaces[lastFocusOf: landing] ?? s.workspaces[landing].allWindowIds.first
+        s.world.setFocus(wanted)
+        if let wanted { s.workspaces[lastFocusOf: landing] = wanted }
+
+        var effects = finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
+                                           focused: wanted, mover: nil, animatingFrom: old)
+        if let wanted { effects.append(.focus(wanted)) }
+        return effects
+    }
+
+    /// The display a destination address switches on: the one holding it, or the acting monitor for an
+    /// address nobody holds yet. The whole of D1 in one line — an absolute reference goes wherever the
+    /// workspace lives, and the user goes with it.
+    private static func host(_ s: State, _ destination: WorkspaceName) -> MonitorId? {
+        s.monitors.monitor(of: destination) ?? s.monitors.focused
+    }
+
+    /// The body of a workspace switch — shared by `focus-workspace`, `focus-monitor`,
+    /// `move-to-workspace-and-focus`, and the cross-workspace `focusChanged`. Store the live offset and
+    /// strip focus into the outgoing record, move `focused`, snap the viewport to the incoming record,
+    /// pick the window to focus, then place through `finishStructuralEdit` — between whose two
+    /// `naturalFrames` reads those steps sit, making the seed purely vertical.
+    ///
+    /// **Which display switches is the address's to decide (D1).** An address another display holds is
+    /// reached by going *there*: the user moves first, that display switches, and the display being left
+    /// keeps showing what it was showing. An address the acting monitor holds — or one nobody holds —
+    /// switches here, which is single-display behaviour to the letter.
     ///
     /// - Parameter mover: the window drawn on top; `nil` for a plain `focus-workspace`, whose strips never
     ///   overlap.
-    /// - Parameter old: the geometry being left, or `nil` to snap (see `finishStructuralEdit`).
+    /// - Parameter old: the geometry being left, or empty to snap (see `finishStructuralEdit`).
+    /// - Parameter travelling: a window this switch carries **across displays** — `move-to-workspace-and-focus`
+    ///   onto an address another screen holds, and nothing else.
     /// - Parameter announcingFocus: whether to emit `.focus`. `false` on the `focusChanged` path, where
     ///   the shell already moved focus — asking again is a redundant AX set and an echo to absorb.
     private static func switchWorkspace(_ s: inout State, to destination: WorkspaceName,
                                         focusing wanted: WindowId? = nil,
                                         mover: WindowId? = nil,
-                                        animatingFrom old: StructuralSnapshot?,
+                                        animatingFrom old: [StructuralSnapshot],
+                                        travelling: WindowId? = nil,
                                         announcingFocus: Bool = true) -> [Effect] {
-        // An unanimated switch must not leave a cover over a desktop it no longer pictures.
-        var effects = old == nil ? abandonTransition(&s) : []
+        // Focus is leaving the address the user is on, whichever display ends up switching — and on a
+        // cross-display switch that is *not* the address going off screen, so it is remembered here
+        // rather than beside the outgoing strip's scroll below. Only a window on that strip is worth
+        // remembering: a float has no column to return to.
+        let here = s.monitors.shown
+        s.workspaces[lastFocusOf: here] = s.world.focusedWindow.flatMap {
+            s.workspaces[here].columnIndex(ofWindow: $0) == nil ? nil : $0
+        }
+        // The user moves first, so every read below is the switching display's own.
+        if let owner = s.monitors.monitor(of: destination) { s.monitors.focus(owner) }
+
+        // An unanimated switch must not leave a cover over a desktop it no longer pictures — asked of
+        // the display that is about to change, which is why it follows the move.
+        var effects = old.isEmpty ? abandonTransition(&s) : []
 
         let outgoing = s.monitors.shown
         s.workspaces[scrollOffsetOf: outgoing] = s.viewport.offset.current
-        // Only a window on the outgoing *strip* is worth remembering: a float has no column to return to.
-        s.workspaces[lastFocusOf: outgoing] =
-            s.world.focusedWindow.flatMap { s.layout.columnIndex(ofWindow: $0) == nil ? nil : $0 }
 
         // The two halves of a switch: the monitor shows the new address (which claims it), and every
         // address left on a screen gets a strip. Neither container can do the other's half, which is
@@ -960,7 +1329,8 @@ public enum Engine {
         if let target { s.workspaces[lastFocusOf: destination] = target }
 
         effects += finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
-                                        focused: target, mover: mover, animatingFrom: old)
+                                        focused: target, mover: mover, animatingFrom: old,
+                                        travelling: travelling)
         if let target, announcingFocus { effects.append(.focus(target)) }
         return effects
     }
@@ -1056,9 +1426,9 @@ public enum Engine {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
         if let home = s.workspaces.workspace(of: id), home != s.monitors.shown {
             // Read before `focused` moves, exactly as `handleFocusWorkspace` does: the geometry the
-            // switch is about to stop being true.
-            let old = s.metrics().map { structuralSnapshot(s, $0) }
-            return switchWorkspace(&s, to: home, focusing: id, animatingFrom: old,
+            // switch is about to stop being true, on the display that is going to do the switching.
+            return switchWorkspace(&s, to: home, focusing: id,
+                                   animatingFrom: snapshots(s, of: [host(s, home)]),
                                    announcingFocus: false)
         }
         s.world.setFocus(id)
@@ -1104,7 +1474,7 @@ public enum Engine {
             let beside = stripAnchor(s)
             s.world.setFloating(focused, false)
             // Still off the strip (its app is hidden, or it is minimized): nothing to animate into.
-            guard s.world.participatesInStrip(focused), let before else { return reassertTruthPlane(&s) }
+            guard s.world.participatesInStrip(focused), !before.isEmpty else { return reassertTruthPlane(&s) }
             // No `.focus`: it already holds focus, and re-asserting it is an AX set that can make an
             // app raise a *different* window forward.
             return arriveOnStrip(&s, focused, beside: beside, old: before, announcingFocus: false)
@@ -1242,12 +1612,12 @@ public enum Engine {
     /// against the old share would hold the column at the shape it is trying to leave.
     private static func handleCycleHeight(_ s: inout State) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics(),
+        guard s.metrics() != nil,
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
         let windowIds = s.layout.columns[index].windowIds     // a copy; read before the mutation
-        let old = structuralSnapshot(s, metrics)
+        let old = actingSnapshot(s)
 
         s.workspaces.cycleHeight(of: focused, through: s.config.heightPresets)
         s.world.forgetCorrections(of: windowIds)
@@ -1341,7 +1711,7 @@ public enum Engine {
 
         // With stackmates, a structural edit — and the growth rides it rather than the width spring,
         // since the popped-out column is born at 100% and never resizes.
-        let old = structuralSnapshot(s, metrics)
+        let old = actingSnapshot(s)
         // In place, the column it leaves sliding right, so the anchor does not move under it.
         let edit = s.workspaces.extract(window: focused, toNewColumnAt: index)
         guard edit.moved, let popped = s.layout.columnIndex(ofWindow: focused) else { return [] }
@@ -1365,7 +1735,7 @@ public enum Engine {
             }
         }
 
-        let old = structuralSnapshot(s, metrics)
+        let old = actingSnapshot(s)
         // Cleared before the merge, so a merge that no-ops still leaves a width the user can act on.
         s.layout.setFullscreen(nil, ofColumn: column.id)
         let edit = s.layout.move(window: focused, toColumn: stack.column, at: stack.row)
@@ -1482,10 +1852,20 @@ public enum Engine {
     private static func emitLayerFrames(_ s: State, on monitor: MonitorId) -> [Effect] {
         guard let metrics = s.metrics(of: monitor), let shown = s.monitors.shown(on: monitor),
               let session = s.motion.transition(of: monitor) else { return [] }
-        let frames = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
+        var frames = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
                                                 scrollOffset: s.motion.offset(of: monitor).current,
                                                 metrics: metrics,
                                                 widths: s.motion.currentColumnWidths)
+        // A window handed to another display is still this cover's to draw: it is travelling *off* this
+        // screen, and nothing here can say where to. Asked of the display that holds it now, in the same
+        // global space and against the same shared displacement, so both covers draw the identical
+        // journey and it reads as one window crossing rather than two cutting.
+        for id in session.carried where frames[id] == nil {
+            guard let home = s.monitors.monitor(of: s.workspaces.workspace(of: id) ?? shown),
+                  let frame = naturalFrame(s, of: id, on: home,
+                                           widths: s.motion.currentColumnWidths) else { continue }
+            frames[id] = frame
+        }
         return session.bindings.compactMap { binding in
             frames[binding.window].map {
                 .setLayerFrame(binding.layer, $0.displaced(by: s.motion.displacement(of: binding.window)))
@@ -1536,11 +1916,10 @@ public enum Engine {
     }
 
     /// The strip's geometry as it stands right now, reconciled first — what an arrival is about to
-    /// change. `nil` with no display known, which is also the caller's signal that nothing can be placed.
-    private static func strandedGeometry(_ s: inout State) -> StructuralSnapshot? {
+    /// change. Empty with no display known, which is also the caller's signal that nothing can be placed.
+    private static func strandedGeometry(_ s: inout State) -> [StructuralSnapshot] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics() else { return nil }
-        return structuralSnapshot(s, metrics)
+        return actingSnapshot(s)
     }
 
     /// A window joining the strip — opened, restored, or unhidden — with the strip opening for it in
@@ -1554,7 +1933,7 @@ public enum Engine {
     /// - Parameter announcingFocus: whether to emit `.focus`. `false` when the window already holds it
     ///   (`float off`), where asking again is a redundant AX set that can make an app raise.
     private static func arriveOnStrip(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
-                                      old: StructuralSnapshot, width: PresetSize? = nil,
+                                      old: [StructuralSnapshot], width: PresetSize? = nil,
                                       keepingWidth: Bool = false,
                                       announcingFocus: Bool = true) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown, insertingAfter: anchor)
@@ -1566,7 +1945,7 @@ public enum Engine {
         seedWidth(&s, id, to: width, keepingExisting: keepingWidth)
 
         let opened = s.world.windows[id]?.frame
-        let seeded = opened.map { old.including(id, at: $0) } ?? old
+        let seeded = opened.map { frame in old.map { $0.including(id, at: frame) } } ?? old
         let edit = LayoutEdit(moved: true, destroyedColumn: nil)
         return finishStructuralEdit(&s, edit, focused: id, mover: id,
                                     animatingFrom: seeded) + announce
@@ -1613,7 +1992,7 @@ public enum Engine {
         // Focus is set *inside* the switch, never before it: `switchWorkspace` reads the current focus
         // to record what the outgoing workspace should return to, and a window on another strip reads
         // as nothing and wipes it.
-        return switchWorkspace(&s, to: destination, focusing: snapshot.id, animatingFrom: nil)
+        return switchWorkspace(&s, to: destination, focusing: snapshot.id, animatingFrom: [])
     }
 
     /// Seed a just-adopted column with the width its window already has, instead of the ladder's first
@@ -1654,7 +2033,7 @@ public enum Engine {
         // index, so focus can land where the window was; and the geometry we are leaving.
         let index = s.layout.columnIndex(ofWindow: id)
         let column = index.map { s.layout.columns[$0].id }
-        let old = s.metrics().map { structuralSnapshot(s, $0) }
+        let old = actingSnapshot(s)
 
         leave(&s)
         // The departed window's own lag is measured against a layout that no longer places it.
@@ -1669,7 +2048,7 @@ public enum Engine {
             refocus = [.focus(next)]
         }
 
-        guard let old, let column, let focused = s.world.focusedWindow else {
+        guard !old.isEmpty, let column, let focused = s.world.focusedWindow else {
             return reassertTruthPlane(&s) + refocus
         }
         let destroyed = s.layout.columnIndex(withId: column) == nil ? column : nil

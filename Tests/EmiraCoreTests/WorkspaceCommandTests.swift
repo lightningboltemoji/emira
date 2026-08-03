@@ -16,31 +16,36 @@ import Testing
     private let w1 = WindowId(1), w2 = WindowId(2)
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
+    /// What one display's `Monitors.reachable` answers: everything it holds plus everything nobody
+    /// holds, which on one screen is the whole domain. Relative motion inside a *subset* of it — the
+    /// per-monitor half of D1 — is `MonitorCommandTests`.
+    private let anywhere = WorkspaceName.all
+
     @Test func anAbsoluteNameResolvesToItselfFromAnywhere() {
         let ws = Workspaces()
-        #expect(ws.resolve(.name(name("c")), from: .first) == name("c"))
-        #expect(ws.resolve(.name(.first), from: name("c")) == .first)
-        #expect(ws.resolve(.name(.last), from: name("c")) == .last)
+        #expect(ws.resolve(.name(name("c")), from: .first, within: anywhere) == name("c"))
+        #expect(ws.resolve(.name(.first), from: name("c"), within: anywhere) == .first)
+        #expect(ws.resolve(.name(.last), from: name("c"), within: anywhere) == .last)
     }
 
     /// One address at a time, materialized or not — `next` is about the *domain*, so it walks straight
     /// through addresses nobody has ever visited, in key order (the number row runs into `0` first).
     @Test func nextAndPreviousStepOneAddressWhetherOrNotItExists() {
         let ws = Workspaces()                       // only the launch address materialized
-        #expect(ws.resolve(.next, from: .first) == name("2"))
+        #expect(ws.resolve(.next, from: .first, within: anywhere) == name("2"))
         #expect(ws.materialized == [.first])        // …and resolving materialized nothing
-        #expect(ws.resolve(.next, from: name("9")) == name("0"))
-        #expect(ws.resolve(.previous, from: name("9")) == name("8"))
+        #expect(ws.resolve(.next, from: name("9"), within: anywhere) == name("0"))
+        #expect(ws.resolve(.previous, from: name("9"), within: anywhere) == name("8"))
         // The digit/letter seam is after "0", not before it.
-        #expect(ws.resolve(.next, from: name("0")) == name("a"))
+        #expect(ws.resolve(.next, from: name("0"), within: anywhere) == name("a"))
     }
 
     /// Clamps, never wraps — the same rule `focus left|right` keeps at the strip's edges. Resolving to
     /// the workspace you are on is how "nowhere to go" is spelled; the reducer turns that into silence.
     @Test func relativeMotionClampsAtBothEndsOfTheDomain() {
         let ws = Workspaces()
-        #expect(ws.resolve(.previous, from: .first) == .first)   // at "1" — the launch address
-        #expect(ws.resolve(.next, from: .last) == .last)         // at "z"
+        #expect(ws.resolve(.previous, from: .first, within: anywhere) == .first)   // at "1" — the launch address
+        #expect(ws.resolve(.next, from: .last, within: anywhere) == .last)         // at "z"
     }
 
     /// `next-non-empty` walks what you have *open*, so it skips both never-visited addresses and
@@ -52,13 +57,13 @@ import Testing
         ws.reconcile(stripWindowIds: [w1, w2], onto: name("8")) // "8" holds one too
 
         #expect(ws.materialized == [.first, name("3"), name("5"), name("8")])
-        #expect(ws.resolve(.nextOccupied, from: .first) == name("3"))
-        #expect(ws.resolve(.next, from: .first) == name("2"))   // the plain motion does not skip
+        #expect(ws.resolve(.nextOccupied, from: .first, within: anywhere) == name("3"))
+        #expect(ws.resolve(.next, from: .first, within: anywhere) == name("2"))   // the plain motion does not skip
 
-        #expect(ws.resolve(.nextOccupied, from: name("3")) == name("8"))     // "5" is empty ⇒ passed over
-        #expect(ws.resolve(.previousOccupied, from: name("3")) == name("3")) // nothing below ⇒ stay put
-        #expect(ws.resolve(.previousOccupied, from: name("8")) == name("3"))
-        #expect(ws.resolve(.nextOccupied, from: name("8")) == name("8"))     // nothing above ⇒ stay put
+        #expect(ws.resolve(.nextOccupied, from: name("3"), within: anywhere) == name("8"))     // "5" is empty ⇒ passed over
+        #expect(ws.resolve(.previousOccupied, from: name("3"), within: anywhere) == name("3")) // nothing below ⇒ stay put
+        #expect(ws.resolve(.previousOccupied, from: name("8"), within: anywhere) == name("3"))
+        #expect(ws.resolve(.nextOccupied, from: name("8"), within: anywhere) == name("8"))     // nothing above ⇒ stay put
     }
 }
 

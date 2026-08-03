@@ -122,14 +122,8 @@ case .restart(let missing):
     exit(0)
 }
 
-let screens = NSScreen.screens
-if screens.isEmpty {
-    die("No displays are attached — there is nothing to manage.")
-}
-let geometry = ScreenGeometry.current()
-
-/// The attached displays as the core will know them — **read once, and this array is what both sides
-/// get.** It builds this process's overlays and guide panels below, and it is the `screensChanged`
+/// The attached displays as the core will know them — **read once, and this value is what every side
+/// gets.** It builds this process's overlays and guide panels, and it is the `screensChanged`
 /// dispatched at adoption; `NSScreen.visibleFrame` is live, so reading it a second time there would let
 /// a Dock that moved in between inset the cover by one number and the strip by another. Adoption can be
 /// held back for as long as a broken config file takes to fix, which is how far apart the two reads can
@@ -138,22 +132,36 @@ let geometry = ScreenGeometry.current()
 /// That shared number is load-bearing per display: the core lays that display's strip out inside its
 /// working area and its cover paints exactly that working area, so the chrome bands a cover leaves
 /// alone can never contain a window it should have hidden.
-let monitorInfos = geometry.monitors(screens)
-
-/// Every attached display, paired with the `MonitorId` the core knows it by. **The id is the same one
-/// `ScreenGeometry.monitors` reports**, so a screen the shell builds an overlay for and a monitor the
-/// core lays a strip out on are the same thing named twice, never two things that happen to line up.
-let displays: [(monitor: MonitorId, screen: NSScreen, struts: EdgeInsets)] =
-    zip(monitorInfos, screens).map { info, screen in
-        (info.id, screen, info.struts)
-    }
-
-/// One overlay per display, each with its own struts and backing scale. `Overlay`'s own doc comment
-/// has said "one per display" since it was written; this is that, finally.
-let overlays = displays.map { display in
-    (monitor: display.monitor,
-     overlay: Overlay(screen: display.screen, geometry: geometry, insets: display.struts))
+let bootDisplays = AttachedDisplays.current()
+if bootDisplays.screens.isEmpty {
+    die("No displays are attached — there is nothing to manage.")
 }
+
+/// Everything built per display, keyed by the id all of it is named by. **Rebuilt rather than
+/// adjusted:** an overlay's window frame, its base placement and its backing scale are all fixed at
+/// construction, so a display whose geometry moved gets a new one and the old one is retired.
+struct DisplayParts {
+    /// What this was built against — the equality that decides whether it can be kept.
+    let info: MonitorInfo
+    let overlay: Overlay
+    let reconstruction: Reconstruction
+    let capturer: SCKCapturer
+    let panel: GuidePanel
+    let guide: Guide
+}
+
+/// The live per-display machinery. Read by `on(_:)`, `applyShellConfig` and `onStateChanged`, all of
+/// which run after `syncDisplays` has filled it.
+var parts: [MonitorId: DisplayParts] = [:]
+
+/// The flip line the current parts were built against. It is the primary display's height, so a new
+/// primary — or a resolution change on it — moves it, and *every* overlay window frame derives from
+/// it. `nan` compares unequal to anything, which is what makes the boot build unconditional.
+var partsFlipHeight: Double = .nan
+
+/// The last display reading. `startManaging` dispatches this rather than the boot one, so a config
+/// broken for long enough to outlast a hot-plug still adopts the desktop that is actually there.
+var currentDisplays = bootDisplays
 
 // The truth plane's machinery
 //
@@ -190,51 +198,30 @@ let focusIntent = FocusIntent(scheduler: DispatchScheduler())
 
 // One cache for the daemon's life: it outlives every cover, which is the whole of what it is for.
 let surfaceCache = SurfaceCache()
-// One capturer per display: a base is a photograph of one screen. The window stills come from the
-// first, at its backing scale — `SCContentFilter(desktopIndependentWindow:)` is display-independent,
-// so a window is filmed once however many screens are covered.
-let capture = CaptureService(
-    registry: registry,
-    capturers: displays.enumerated().map { index, display in
-        (display.monitor,
-         SCKCapturer(displayId: ScreenGeometry.displayId(of: display.screen, at: index),
-                     scale: display.screen.backingScaleFactor) as any SurfaceCapturer)
-    },
-    scheduler: DispatchScheduler(),
-    cache: surfaceCache)
 
-/// One reconstruction per overlay, and the `Compositor` that drives them as one plane. The
-/// `CATransaction` lives up there rather than in each surface: two displays blitting inside two
-/// transactions are two frames, and the strips on them shear apart by a refresh.
-let reconstructions = overlays.map { entry in
-    (monitor: entry.monitor,
-     reconstruction: Reconstruction(overlay: entry.overlay, monitor: entry.monitor, store: capture))
-}
-let compositor = Compositor(surfaces: reconstructions.map { ($0.monitor, $0.reconstruction) })
-
-/// Hot-plug is not handled — no overlay, capturer or guide is built for a display that arrives after
-/// launch — but a display that *leaves* must not take the whole presentation plane with it. Its
-/// capturer can produce no base, and a head batch owing one abandons the cover; its overlay fences a
-/// raise on a display link for a screen that is gone. Both would degrade every transition on every
-/// remaining screen, for the rest of the session, rather than costing the display that left.
+/// The two containers the per-display machinery is handed to. Both start empty and are filled by
+/// `syncDisplays` — at launch and on every reconfiguration — so that everything holding *them* (the
+/// executor, the runtime) is wired once and never rebuilt.
 ///
-/// Read live rather than cached: nothing tells the daemon that the display list changed.
+/// The `Compositor` owns the `CATransaction` rather than each surface: two displays blitting inside
+/// two transactions are two frames, and the strips on them shear apart by a refresh.
+let capture = CaptureService(registry: registry, capturers: [], scheduler: DispatchScheduler(),
+                             cache: surfaceCache)
+let compositor = Compositor(surfaces: [])
+
+/// A display can leave between macOS reporting the reconfiguration and anything acting on it, and a
+/// departed display's capturer can produce no base at all while its overlay fences a raise on a
+/// display link for a screen that is gone. Both would degrade every transition on every remaining
+/// screen rather than costing the display that left, so both consult this and leave it out.
+///
+/// Read live rather than cached: this answers a question about *right now*, and `syncDisplays` runs a
+/// notification later.
 capture.isAttached = { ScreenGeometry.attached().contains($0) }
 compositor.isAttached = { ScreenGeometry.attached().contains($0) }
 
-//
-// One guide per display, each drawing whatever workspace *its* monitor is showing — the core's own
-// projection at another scale, so a display showing an empty address draws nothing at all.
-
-let guides = displays.map { display in
-    Guide(panel: GuidePanel(screen: display.screen, geometry: geometry, insets: display.struts),
-          monitor: display.monitor,
-          icons: GuideIcons(),
-          scheduler: DispatchScheduler(),
-          // A `preview` tile draws whatever a cover last left behind, at any size — see
-          // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to its icon.
-          still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
-}
+/// Watches for reconfigurations. A source, so it reports the new display set and nothing more; what
+/// the daemon does about it is `syncDisplays` plus one `Event.screensChanged`.
+let screenWatcher = ScreenWatcher()
 
 // The config, finished
 
@@ -301,13 +288,10 @@ let executor = CompositingExecutor(surface: compositor, store: capture, truth: t
 // and kept per display: two covers are two transitions, and one number for both describes neither.
 var captureHeadMs: [MonitorId: Double] = [:]
 
-/// Whether there is more than one display for a log line to be about. Read once: the shell builds its
-/// per-display machinery at launch, so this cannot change under a running daemon either.
-let namesDisplays = displays.count > 1
-
-/// Which display a line is about, or nothing at all while there is only one to be about.
-func on(_ monitor: MonitorId) -> String {
-    namesDisplays ? " [display \(monitor.raw)]" : ""
+/// Which display a line is about, or nothing at all while there is only one to be about. Asked per
+/// line rather than answered once: displays come and go under a running daemon.
+@MainActor func on(_ monitor: MonitorId) -> String {
+    parts.count > 1 ? " [display \(monitor.raw)]" : ""
 }
 
 capture.onBatchResolved = { report in
@@ -333,26 +317,32 @@ executor.onCoverDismissed = { monitor, frames, seconds in
                head, head + seconds * 1000))
 }
 
+/// One clock, on the **fastest** display attached (`AttachedDisplays.fastest`). Named rather than
+/// built inline because it is re-homed on every reconfiguration: the fastest display can change or be
+/// unplugged, and a `CADisplayLink` for a screen that has gone never fires again.
+let clock = DisplayLinkDriver(screen: bootDisplays.fastest ?? bootDisplays.screens[0])
+
 let runtime = Runtime(
     state: State(config: config),
     executor: executor,
-    // One clock, on the **fastest** display attached. `dt` is real elapsed time and the springs are
-    // analytic in it, so a 60 Hz screen fed at 120 Hz simply drops frames while a 120 Hz one fed at
-    // 60 Hz is visibly under-driven — picking the fastest means nobody is ever the latter.
-    clock: DisplayLinkDriver(screen: screens.max { $0.maximumFramesPerSecond
-                                                    < $1.maximumFramesPerSecond } ?? screens[0]),
+    clock: clock,
     // An AX write's landing depends on another process's run loop; this bounds the wait.
     hold: DispatchHoldTimer())
 
 // Once per drain, not once per event, and one closure for both peripherals: they display state rather
 // than change it, and a per-event observer would show them states the user never sees. `MenuBarItem`
 // diffs and `Guide` diffs its own trigger, so a scroll costs neither of them a redraw.
-menuBar.workspace = runtime.state.monitors.shown
-// Primed, not shown: a guide's first reaction should be the boot scan's arrivals, not its own birth.
-for guide in guides { guide.prime(runtime.state) }
+/// The acting display's address for the title, the rest for the tooltip — `shownWorkspaces` is already
+/// acting-monitor-first, which is the order both want.
+@MainActor func showWorkspaces(_ state: State) {
+    let shown = state.monitors.shownWorkspaces
+    menuBar.setWorkspaces(state.monitors.shown, elsewhere: Array(shown.dropFirst()))
+}
+
+showWorkspaces(runtime.state)
 runtime.onStateChanged = { state in
-    menuBar.workspace = state.monitors.shown
-    for guide in guides { guide.stateChanged(state) }
+    showWorkspaces(state)
+    for entry in parts.values { entry.guide.stateChanged(state) }
 }
 
 //
@@ -430,7 +420,7 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
 /// there would compile clean and read zeroed memory if it were ever called early. Keeping the
 /// definition after the last thing it touches makes that unrepresentable rather than merely avoided.
 @MainActor func applyShellConfig(_ config: Config) {
-    for entry in reconstructions { entry.reconstruction.animation = config.windowAnimation }
+    for entry in parts.values { entry.reconstruction.animation = config.windowAnimation }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
     // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
@@ -457,6 +447,87 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
 
 applyShellConfig(config)
 
+//
+// Hot-plug: one of every display-shaped thing, per display, reconciled against what is attached.
+// Defined here for `applyShellConfig`'s reason — it reaches `runtime` and `config`, both of which are
+// initialized above it, and a top-level function that reached a global below it would read zeroed
+// memory if it were ever called early.
+
+/// Build everything one display needs. `index` is only for `ScreenGeometry.displayId`, which falls
+/// back to the enumeration position for a screen AppKit gives no number.
+@MainActor func buildDisplay(_ info: MonitorInfo, _ screen: NSScreen, at index: Int,
+                             in geometry: ScreenGeometry) -> DisplayParts {
+    let overlay = Overlay(screen: screen, geometry: geometry, insets: info.struts)
+    let panel = GuidePanel(screen: screen, geometry: geometry, insets: info.struts)
+    let guide = Guide(panel: panel, monitor: info.id, icons: GuideIcons(),
+                      scheduler: DispatchScheduler(),
+                      // A `preview` tile draws whatever a cover last left behind, at any size — see
+                      // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to
+                      // its icon.
+                      still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
+    // Primed, not shown: a guide's first reaction should be what the desktop does next, not the fact
+    // that it has just been built. At launch that is the boot scan's arrivals; on a hot-plug it is
+    // whatever the user does after plugging the display in.
+    guide.prime(runtime.state)
+    return DisplayParts(
+        info: info,
+        overlay: overlay,
+        reconstruction: Reconstruction(overlay: overlay, monitor: info.id, store: capture),
+        capturer: SCKCapturer(displayId: ScreenGeometry.displayId(of: screen, at: index),
+                              scale: screen.backingScaleFactor),
+        panel: panel,
+        guide: guide)
+}
+
+/// Match the per-display machinery to what is attached: keep what still describes its display, build
+/// what does not, retire the rest, and hand the result to the two containers that route by display.
+///
+/// **Kept only on exact geometry**, because everything here is fixed at construction — a window frame,
+/// a base placement, a backing scale, a `CGDirectDisplayID` to film from. A display that merely
+/// changed resolution is as new as one just plugged in, and the flip line moving makes *every* display
+/// new, since every overlay frame is measured from it.
+@MainActor func syncDisplays(_ displays: AttachedDisplays) {
+    currentDisplays = displays
+    let flipped = displays.geometry.flipHeight != partsFlipHeight
+    partsFlipHeight = displays.geometry.flipHeight
+
+    var next: [MonitorId: DisplayParts] = [:]
+    for (index, info) in displays.monitors.enumerated() {
+        if !flipped, let kept = parts[info.id], kept.info == info {
+            next[info.id] = kept
+            continue
+        }
+        parts[info.id].map(retireDisplay)
+        next[info.id] = buildDisplay(info, displays.screens[index], at: index,
+                                     in: displays.geometry)
+    }
+    for (id, gone) in parts where next[id] == nil { retireDisplay(gone) }
+    parts = next
+
+    compositor.setSurfaces(parts.map { ($0.key, $0.value.reconstruction as any CoverSurface) })
+    capture.setCapturers(parts.map { ($0.key, $0.value.capturer as any SurfaceCapturer) })
+    if let fastest = displays.fastest { clock.retarget(to: fastest) }
+    for entry in parts.values { entry.reconstruction.animation = config.windowAnimation }
+}
+
+/// Take one display's machinery off the screen. Instant on both windows: a reconfiguration is not
+/// something to fade through, and the replacement is going up in the same turn.
+@MainActor func retireDisplay(_ gone: DisplayParts) {
+    gone.overlay.retire()
+    gone.panel.retire()
+}
+
+syncDisplays(bootDisplays)
+
+// The core is told *first*: `screensChanged` closes every cover, so each dismissal reaches the surface
+// that raised it rather than one already replaced. Only then are the surfaces swapped.
+screenWatcher.onChange = { displays in
+    log("displays: \(displays.monitors.map { "\($0.id.raw)" }.joined(separator: ", "))")
+    runtime.dispatch(.screensChanged(displays.monitors))
+    syncDisplays(displays)
+}
+screenWatcher.start()
+
 /// Whether the desktop has been adopted. A latch: adoption happens once, and the only open question
 /// is when.
 var isManaging = false
@@ -472,7 +543,7 @@ var isManaging = false
 @MainActor func startManaging() {
     guard !isManaging else { return }
     isManaging = true
-    runtime.dispatch(.screensChanged(monitorInfos))
+    runtime.dispatch(.screensChanged(currentDisplays.monitors))
     // Each app is scanned on its own AX lane, so boot costs the slowest app, not the sum. The report
     // lands back on the main actor after its windows have already been dispatched and placed.
     watcher.start { report in
@@ -551,6 +622,7 @@ var isShuttingDown = false
     log("shutting down")
 
     watcher.stop()          // our own placements stop being events that undo themselves
+    screenWatcher.stop()    // …and a display change mid-cascade stops re-placing the strip too
     // Directly, not through `Teardown`: that takes the truth executor and emits only
     // `setFrame`/`raise`/`focus`, and quitting is the one moment there is no next command to unhide on.
     pointer.restoreCursor()

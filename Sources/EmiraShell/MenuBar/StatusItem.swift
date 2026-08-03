@@ -38,14 +38,22 @@ public enum ConfigStatus: Equatable, Sendable {
 /// What the menu bar item displays, as pure data.
 public struct StatusModel: Equatable, Sendable {
 
-    /// The workspace the viewport is looking at — `state.workspaces.focused`.
+    /// The address the **acting** display is showing — `state.monitors.shown`. The title's one
+    /// character, so of the several addresses a multi-display desktop is showing this is the one that
+    /// gets it: the others are somewhere the user is not.
     public var workspace: WorkspaceName
+
+    /// What the **other** displays are showing, in enumeration order — empty on one display, which is
+    /// what keeps every string below unchanged there.
+    public var elsewhere: [WorkspaceName] = []
 
     /// What the last config load left behind.
     public var configStatus: ConfigStatus
 
-    public init(workspace: WorkspaceName = .first, configStatus: ConfigStatus = .loaded) {
+    public init(workspace: WorkspaceName = .first, elsewhere: [WorkspaceName] = [],
+                configStatus: ConfigStatus = .loaded) {
         self.workspace = workspace
+        self.elsewhere = elsewhere
         self.configStatus = configStatus
     }
 
@@ -53,15 +61,22 @@ public struct StatusModel: Equatable, Sendable {
     /// is replaced rather than annotated — a menu bar item has room for one character.
     public var title: String { configStatus.error == nil ? workspace.description : "!" }
 
-    /// What hovering says — where the address goes when `!` has taken the title. An emira that never
+    /// What hovering says — where the address goes when `!` has taken the title, and the only place a
+    /// desktop of several displays can say what the *other* screens are showing. An emira that never
     /// loaded a config says that instead: the address of a workspace holding no windows is not the
     /// fact the user is missing.
     public var tooltip: String {
         switch configStatus {
-        case .loaded:       return "emira — workspace \(workspace)"
-        case .broken:       return "emira — config error (workspace \(workspace))"
+        case .loaded:       return "emira — workspace \(addresses)"
+        case .broken:       return "emira — config error (workspace \(addresses))"
         case .neverLoaded:  return "emira — config error (not managing windows)"
         }
+    }
+
+    /// The acting display's address, and the others after it. One display reads as it always did.
+    private var addresses: String {
+        guard !elsewhere.isEmpty else { return workspace.description }
+        return "\(workspace) (also \(elsewhere.map(\.description).joined(separator: ", ")))"
     }
 
     /// What the failure means for the emira that is running, and `nil` when nothing is wrong — so
@@ -165,7 +180,17 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         render()
     }
 
-    /// The workspace on display. Assigning the value it already holds does nothing.
+    /// What each display is showing: the acting one's address, then the rest. One assignment rather
+    /// than two, so a desktop where both changed at once renders once. Assigning what it already holds
+    /// does nothing.
+    public func setWorkspaces(_ workspace: WorkspaceName, elsewhere: [WorkspaceName] = []) {
+        update {
+            $0.workspace = workspace
+            $0.elsewhere = elsewhere
+        }
+    }
+
+    /// The acting display's workspace, for a caller with only one to give.
     public var workspace: WorkspaceName {
         get { model.workspace }
         set { update { $0.workspace = newValue } }

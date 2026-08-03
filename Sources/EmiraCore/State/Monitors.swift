@@ -51,6 +51,15 @@ public struct Monitors: Sendable, Equatable, Codable {
     /// condition under which no record can answer.
     private var unattached: Assignment
 
+    /// What each departed display held, kept against the id it will come back as — invariant 4's
+    /// other half. A survivor owns those addresses meanwhile, so this is a **memory and never an
+    /// authority**: `monitor(of:)` still answers from `records` alone, and an entry is consumed the
+    /// moment its display returns.
+    ///
+    /// Distinct from `unattached`, which answers "what is the desktop showing" while there is no
+    /// display at all. That one has to be total; this one only has to be right.
+    private var detached: [MonitorId: Assignment] = [:]
+
     /// A set of addresses and the one of them on screen. The shape a record has, minus its identity,
     /// so "shown ∈ owned" reads the same in both places.
     struct Assignment: Sendable, Equatable, Codable {
@@ -91,6 +100,15 @@ public struct Monitors: Sendable, Equatable, Codable {
         focused.map { owned(of: $0) } ?? unattached.owned
     }
 
+    /// Where a **relative** workspace ref may land from the acting monitor: the addresses it holds,
+    /// plus every address no display holds at all. The monitor is the container, so `next` and its kin
+    /// stay inside it (D1) — and on one display "held here or held by nobody" is all 36 addresses, so
+    /// single-display behaviour is unchanged to the letter.
+    public var reachable: [WorkspaceName] {
+        let mine = Set(owned)
+        return WorkspaceName.all.filter { mine.contains($0) || monitor(of: $0) == nil }
+    }
+
     /// Every address currently on a screen, **acting monitor first**, then the rest in enumeration
     /// order. What `Workspaces.placementOrder` puts in front of the parked remainder, so a visible
     /// strip owns the low park ordinals and its nubs never renumber as another address fills up.
@@ -109,11 +127,17 @@ public struct Monitors: Sendable, Equatable, Codable {
     // Mutation
 
     /// Show `name` on `id`, claiming it from whichever display held it. The one mutator invariant 1
-    /// rests on: there is no way to move `shown` without moving `owned` with it.
+    /// rests on: there is no way to move `shown` without moving `owned` with it. Also the whole of
+    /// what `move-workspace-to-monitor` does here — handing an address to another display *is* that
+    /// display showing it, and the dispossessed one falling back.
+    ///
+    /// `occupied` is which addresses hold a window, which only `Workspaces` can answer: it decides
+    /// what the loser of the claim falls back to (see `fallback`), and nothing else.
     ///
     /// Total: an `id` naming no attached display writes the unattached set instead, which is what
     /// keeps a workspace switch working before the first `screensChanged`.
-    public mutating func show(_ name: WorkspaceName, on id: MonitorId?) {
+    public mutating func show(_ name: WorkspaceName, on id: MonitorId?,
+                              occupied: [WorkspaceName] = []) {
         guard let id, let index = records.firstIndex(where: { $0.id == id }) else {
             guard records.isEmpty else { return }
             unattached.shown = name
@@ -122,12 +146,8 @@ public struct Monitors: Sendable, Equatable, Codable {
         }
         claim(name, by: index)
         records[index].shown = name
-        repairShown(except: index)
+        repairShown(except: index, occupied: Set(occupied))
     }
-
-    /// Show `name` on the acting monitor — the whole of what a workspace switch does to this
-    /// container, and what `Workspaces.focus(_:)` used to be.
-    public mutating func show(_ name: WorkspaceName) { show(name, on: focused) }
 
     /// Give `name` a home on the acting monitor if no display holds it — **invariant 2 at the one
     /// moment it can break.** `show` claims what a display *shows*; this claims what a verb merely
@@ -159,16 +179,26 @@ public struct Monitors: Sendable, Equatable, Codable {
     ///   display to arrive is the exception that makes a one-display boot come out unchanged: it
     ///   adopts the unattached set whole, launch address included.
     /// - A departing display's addresses go to the first survivor, or — when it was the last one — to
-    ///   `unattached`, which is invariant 4 and what makes a lid close survivable.
+    ///   `unattached`, which is invariant 4 and what makes a lid close survivable. They are remembered
+    ///   in `detached` either way, and **a display that comes back takes them back**: sleep, lock,
+    ///   clamshell and KVM switches all return the same `CGDirectDisplayID`, and a desktop that
+    ///   re-scrambles on each is one the user rebuilds every lid close.
     /// - An address materialized by a verb that never touched this container is claimed by the acting
     ///   monitor, which is invariant 2 repaired rather than asserted.
-    public mutating func reconcile(materialized: [WorkspaceName], infos: [MonitorInfo]) {
+    public mutating func reconcile(materialized: [WorkspaceName], occupied: [WorkspaceName] = [],
+                                   infos: [MonitorInfo]) {
         let arriving = infos.map(\.id)
         let known = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         // Both read before `records` is rebuilt: a departed record is about to stop existing, and what
         // it held has to be re-homed rather than dropped.
         let orphaned = records.filter { !arriving.contains($0.id) }.flatMap(\.owned)
         let wasDetached = records.isEmpty
+
+        // Remembered before the departure is folded away, and against the id rather than the record:
+        // what comes back is an id, and this is the only thing that can tell it what it used to hold.
+        for record in records where !arriving.contains(record.id) {
+            detached[record.id] = Assignment(owned: record.owned, shown: record.shown)
+        }
 
         guard !arriving.isEmpty else {
             // The last display left. What the user was looking at is what a returning display shows.
@@ -195,6 +225,23 @@ public struct Monitors: Sendable, Equatable, Codable {
         }
         unattached.owned = []
 
+        // A display that has been here before takes its own addresses back, off whichever survivor
+        // adopted them (D12). Unconditional, and deliberately: a claim is what `show` does too, and
+        // any display it dispossesses falls back through `repairShown` below exactly as it would
+        // there. `shown` is set rather than checked for the same reason.
+        //
+        // The exception is the display that just adopted the detached desktop, which keeps
+        // `unattached.shown`: **what the user was looking at outranks what this screen was showing.**
+        // Every display departing into a zero-display state leaves a memory behind, so without this the
+        // reclaim always overrides the adoption and `unattached.shown` never survives the lid close it
+        // exists for. A display whose address that really was reclaims it from here in this same loop.
+        for index in records.indices {
+            guard let memory = detached.removeValue(forKey: records[index].id) else { continue }
+            for name in memory.owned { claim(name, by: index) }
+            guard !(wasDetached && index == 0) else { continue }
+            records[index].shown = memory.shown
+        }
+
         // A departing display's addresses go to the first survivor rather than being dropped.
         for name in orphaned where monitor(of: name) == nil {
             records[0].owned = inserting(name, into: records[0].owned)
@@ -206,7 +253,7 @@ public struct Monitors: Sendable, Equatable, Codable {
             records[acting].owned = inserting(name, into: records[acting].owned)
         }
 
-        repairShown(except: nil)
+        repairShown(except: nil, occupied: Set(occupied))
 
         // Drop assignments for addresses that no longer have a strip — never the shown one, which a
         // display holds by showing it whether or not anything has materialized it yet.
@@ -218,21 +265,57 @@ public struct Monitors: Sendable, Equatable, Codable {
     }
 
     /// Invariant 1, kept through the two mutators that can break it: a display showing an address it
-    /// does not hold takes one it can — its own first, then `takeable()` for a display that holds
-    /// nothing at all (an arrival, or the loser of a `show`).
+    /// does not hold takes one it can (`fallback`).
     ///
     /// Cannot cascade: the address taken is this display's, nobody's, or one another display owns but
     /// is not *looking at*, so the claim never dispossesses a display of what is on its screen.
     /// `except` is the display that just claimed, which must not be walked back.
-    private mutating func repairShown(except index: Int?) {
+    private mutating func repairShown(except index: Int?, occupied: Set<WorkspaceName>) {
         for other in records.indices where other != index {
             guard !records[other].owned.contains(records[other].shown) else { continue }
-            // Every address on a screen means there is nothing to take — 37 displays, so unreachable,
-            // but answered rather than trapped: the display keeps showing what it was showing.
-            guard let name = records[other].owned.first ?? takeable() else { continue }
+            guard let name = fallback(for: other, occupied: occupied) else { continue }
             claim(name, by: other)
             records[other].shown = name
         }
+    }
+
+    /// What a display falls back to when the address it was showing is claimed away — three rungs,
+    /// nearest first:
+    ///
+    ///  1. the **occupied** addresses it still holds. A display losing its screen should land on
+    ///     windows it already has rather than on an empty address it merely passed through.
+    ///  2. anything it holds, or that nobody holds. Claiming an unassigned address costs nothing.
+    ///  3. an address another display holds but is **not showing** — the rung that makes invariant 1
+    ///     total, since `show` claims and never releases, so two displays exhaust the unassigned set
+    ///     long before the 36 addresses run out. Taking what nobody is looking at costs its owner
+    ///     nothing it can see, so no repair cascades from it.
+    ///
+    /// "Nearest" is `WorkspaceName` distance from the address being left, **forward winning ties** —
+    /// `next`'s own bias, so a display losing `2` lands on `3` rather than on `1`.
+    ///
+    /// `nil` only when all 36 addresses are on a screen at once, which needs 37 displays: answered
+    /// rather than trapped, and the display keeps showing what it was showing.
+    private func fallback(for index: Int, occupied: Set<WorkspaceName>) -> WorkspaceName? {
+        let from = records[index].shown
+        let mine = records[index].owned
+        let onScreen = Set(records.map(\.shown))
+        let rungs = [
+            mine.filter(occupied.contains),
+            mine + WorkspaceName.all.filter { monitor(of: $0) == nil },
+            WorkspaceName.all.filter { !onScreen.contains($0) },
+        ]
+        return rungs.lazy.compactMap { nearest(to: from, among: $0) }.first
+    }
+
+    /// The address in `names` closest to `origin` in rank, forward winning ties.
+    private func nearest(to origin: WorkspaceName, among names: [WorkspaceName]) -> WorkspaceName? {
+        names.min { (distance($0, origin)) < (distance($1, origin)) }
+    }
+
+    /// Rank distance, with the tie-break folded in: a lower second component wins, and forward
+    /// carries `0` where backward carries `1`.
+    private func distance(_ name: WorkspaceName, _ origin: WorkspaceName) -> (Int, Int) {
+        (abs(name.rank - origin.rank), name.rank < origin.rank ? 1 : 0)
     }
 
     /// Take `name` away from every other holder and give it to `index`, in name order.
@@ -242,22 +325,6 @@ public struct Monitors: Sendable, Equatable, Codable {
         }
         unattached.owned.removeAll { $0 == name }
         records[index].owned = inserting(name, into: records[index].owned)
-    }
-
-    /// The lowest address a display with none of its own may take: one nobody holds, failing that one
-    /// another display holds but is not showing.
-    ///
-    /// The second rung is what keeps invariant 1 total. `show` claims and never releases, so the acting
-    /// monitor accumulates every address it has ever shown, and **two** displays with enough switching
-    /// between them exhaust the unassigned set long before the 36 addresses run out. Taking an address
-    /// its owner is not looking at costs that owner nothing it can see, and leaves it showing one it
-    /// still holds, so no repair follows.
-    ///
-    /// `nil` only when all 36 are *on screen*, which does need 37 displays.
-    private func takeable() -> WorkspaceName? {
-        if let free = WorkspaceName.all.first(where: { monitor(of: $0) == nil }) { return free }
-        let onScreen = Set(records.map(\.shown))
-        return WorkspaceName.all.first { !onScreen.contains($0) }
     }
 
     /// `names` with `name` in it, in name order and once.

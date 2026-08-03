@@ -252,7 +252,7 @@ public final class CaptureService: CaptureStore {
     /// thing §8 says a cross-display move must get right. A window's own surface is display-independent,
     /// so a window owed by two covers is filmed once per cover and the second film is what carries the
     /// second display's scale.
-    private let capturers: [MonitorId: any SurfaceCapturer]
+    private var capturers: [MonitorId: any SurfaceCapturer]
     /// Whether a display this was built for is still attached. **A departed display's capturer can
     /// produce no base at all**, and a head batch owing one abandons that cover — so without this an
     /// unplug would put every transition for the rest of the session on the `snap` path. The shell's
@@ -373,6 +373,24 @@ public final class CaptureService: CaptureStore {
                             deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.init(registry: registry, capturers: [(monitor, capturer)], scheduler: scheduler,
                   cache: cache, mode: mode, keepsStills: keepsStills, deadline: deadline)
+    }
+
+    /// Replace the capturers — hot-plug, and a display whose backing scale changed under it. A
+    /// departing display's cover session is over, so its stills and its base go with it; the store is
+    /// the only thing here keyed by display, and leaving a base behind would let the next cover on a
+    /// re-plugged id raise onto a photograph of the desktop as it was two configurations ago.
+    ///
+    /// A batch still in flight for a retired display keeps owing its acks and pays them from `finish`
+    /// (rule 1) — its images simply never reach the store, which is what `isCurrent` already decides.
+    public func setCapturers(_ capturers: [(monitor: MonitorId, capturer: any SurfaceCapturer)]) {
+        self.capturers = Dictionary(capturers.map { ($0.monitor, $0.capturer) },
+                                    uniquingKeysWith: { first, _ in first })
+        let live = Set(self.capturers.keys)
+        for monitor in openCovers.subtracting(live) {
+            openCovers.remove(monitor)
+            coverGeneration[monitor, default: 0] &+= 1   // pixels still in flight belong to nothing
+            clearStore(of: monitor)
+        }
     }
 
     public func surface(for window: WindowId) -> CapturedSurface? { surfaces[window] }

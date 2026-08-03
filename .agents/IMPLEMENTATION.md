@@ -285,6 +285,21 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
   without it is not a cover.
 - **Sweep is not `visibleWindowIds`.** That query means "what is on screen" and the reducer parks its
   complement; a shouldered answer there would put two parked columns on the strip.
+- **A window handed across displays is the one term of the difference no display can compute.** A structural
+  edit animates `before − after`, and each display's geometry answers only for the strips it holds — so a
+  travelling window is missing from the _after_ side on the screen it left and from the _before_ side on the
+  one it reached, and each sees one frame and no travel at all. `Engine.Crossing` reads the pair instead:
+  the frame the source snapshot holds, and the frame the display that now owns its workspace lays it out at.
+  Natural frames on every display share **one global space**, so this is a single difference, seeded **once**
+  — the displacement animators are the desktop's, and a second seed would double the journey — and read by
+  both covers, which is what makes it one window crossing rather than two cutting. The arrival is also the
+  only thing an otherwise-still destination has to animate, so it is asked separately from `moves` when
+  deciding whether that screen covers at all.
+- **A cover names what it draws from elsewhere** (`TransitionSession.carried`). Its own strips cannot place a
+  window that has left them, so without this the departing layer freezes at the frame it was captured at
+  while the strip it left closes behind it. Set by the edit that hands the window over, read per frame by
+  `emitLayerFrames`, and answered from the display that holds it now — the same global number that display's
+  own cover draws it at.
 
 ### Degradation — every exit owes a placement
 
@@ -294,6 +309,14 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
 | `coverUnavailable`  | the capture plane produced no base     | abandon **before anything moved**, snap                 |
 | `axFailed`          | the app refused or timed out the write | mark the window's frame unverified, resolve its landing |
 | `abandonTransition` | a switch handed no before-geometry     | close, with `finishStructuralEdit` placing behind it    |
+| `screensChanged`    | the ground the strip stands on moved   | close **every** cover, `endTransition` each, re-place   |
+
+The last one is quantified over the desktop rather than over the displays that left, and it is the only
+exit that is: nothing on any screen is travelling to where it now belongs, and the shell rebuilds the
+overlay of every display a reconfiguration touched, so a cover left open would be drawing on a surface
+nobody can see. A report that changes **nothing** is exempt, and has to be — `screensChanged` also
+arrives redundantly, and closing a cover mid-raise there would write the truth plane with nothing on
+the glass to hide it.
 
 `axFailed` records that _we don't know where the window is_. Placement writes its target into `World`
 optimistically, which is what keeps a repeated idle event from re-emitting forever; a timed-out write generally
@@ -347,9 +370,11 @@ touches two of them, the pair is not something a caller may be trusted to rememb
   re-homes the workspaces around whatever arrived or left, and every address a display ends up showing is
   materialized. A `World` that knows about a display `Monitors` does not is a desktop with geometry, no acting
   monitor and therefore no metrics at all.
-- **`show`** switches the acting monitor's address. Not one strip per call: the claim dispossesses whichever
-  display held that address, and _that_ display falls back to one nothing may ever have materialized, so what
-  the switch owes a strip to is every address left on a screen.
+- **`show`** switches a monitor's address — the acting one unless a verb names another
+  (`move-workspace-to-monitor`). Not one strip per call: the claim dispossesses whichever display held that
+  address, and _that_ display falls back to one nothing may ever have materialized, so what the switch owes a
+  strip to is every address left on a screen. Which addresses are **occupied** rides along, because the
+  fallback prefers one holding a window and only `Workspaces` can answer that.
 - **`move`** lands a window on another address, which materializes it — and an address with a strip belongs to
   a display (invariant 2). `Workspaces.move` is internal for exactly this reason: a container that cannot know
   about displays must not be the way in.
@@ -392,6 +417,16 @@ Departures, arrivals, close, minimize, hide, `move-window`, `consume-or-expel`, 
 adoptions all ride the one structural-edit path. A departure simply lacks a _mover_; an arrival is seeded with
 **the frame its app opened it at**, which is also the frame the cover captures — that equality is why the raise
 does not pop, and it makes a newcomer _travel_ rather than appear.
+
+**An edit carries one before-geometry per display it changes, and each drives its own cover.** A verb that
+hands a window or a workspace across the desktop changes what two screens show, and two screens are two
+presentation planes: each decides for itself whether it has anything to animate, so one may open a cover
+while the other lands its share at once. One display is that with a list of one. Two consequences are worth
+recognising: a window that changed displays appears in one side of the difference only, so no displacement is
+seeded for it and both covers simply draw it where their own strip says it belongs; and an address changing
+displays is read as **each screen's own** in the before-geometry, which is invariant 4's implementation — the
+hand-over is two independent workspace switches, and the destination's is a slide *in* from one screen away,
+which it can only be if the geometry it is leaving already places it there.
 
 ### Layout
 
@@ -492,13 +527,17 @@ Four invariants, the first two kept structurally rather than checked:
    can have in the same call. "A monitor with no workspaces" is unrepresentable; the honest state is a
    monitor showing an _empty_ workspace, which every verb already handles.
 
-   What the loser can take is a three-rung ladder: its own addresses, then one nobody holds, then one
-   another display holds but is **not showing**. The third rung is what makes the invariant hold, because
-   `show` claims and never releases — the acting monitor accumulates every address it has ever shown, so
-   two displays and enough switching exhaust the unassigned set long before the 36 addresses run out.
-   Taking an address its owner is not looking at costs that owner nothing it can see, so no repair
-   cascades from it. Only every address being _on a screen_ leaves nothing to take, and that needs 37
-   displays.
+   What the loser can take is a three-rung ladder, **nearest first**: the occupied addresses it still
+   holds, then anything it holds or nobody holds, then one another display holds but is **not showing**.
+   Rung 1 is why a display losing its screen lands on windows it already has rather than on an address it
+   passed through once. Rung 3 is what makes the invariant hold, because `show` claims and never releases
+   — the acting monitor accumulates every address it has ever shown, so two displays and enough switching
+   exhaust the unassigned set long before the 36 addresses run out. Taking an address its owner is not
+   looking at costs that owner nothing it can see, so no repair cascades from it. Only every address being
+   _on a screen_ leaves nothing to take, and that needs 37 displays.
+
+   "Nearest" is `WorkspaceName` distance from the address being left, **forward winning ties** — `next`'s
+   own bias, so a display losing `5` lands on `7` rather than on `3`.
 2. **Materialized ⇒ assigned**, and kept where it can break rather than repaired later. Two mutators hold
    it: `show` claims what a display shows, `assign` claims what a verb only _materializes_ — `State.move`
    is the join, since `Workspaces.move` gives an address a strip and cannot know about displays. An
@@ -509,11 +548,45 @@ Four invariants, the first two kept structurally rather than checked:
    no AX target, and emira's focus must still be able to sit there — which is what makes the next window
    spawn land on it, for free, through the unchanged newcomer rule.
 4. **A display's assignments outlive the display being gone.** Sleep, lock, clamshell and KVM switches produce
-   transient zero-display states, and dropping the desktop's arrangement on each would scramble it every lid
-   close. With none attached the whole set is held detached, and the display that returns takes it back.
+   transient zero- and one-display states, and dropping the desktop's arrangement on each would scramble it
+   every lid close. Two records carry it, and they answer different questions: `unattached` is what the
+   desktop is showing while **nothing** is attached, which has to be total; `detached` is what each departed
+   display held, keyed by the id it will come back as, which only has to be right. A survivor owns those
+   addresses meanwhile — the memory is never an authority — and **a returning id takes them back**,
+   dispossessing whoever adopted them exactly as a `show` would, with the same repair behind it.
+
+   Where the two meet, **the adoption outranks the reclaim**: the first display back from a zero-display
+   state shows `unattached.shown` rather than its own memory, because what the user was *looking at*
+   outranks what that particular screen happened to be showing, and every display departing into that state
+   leaves a memory behind — so a reclaim that always won would mean the address `unattached` exists to
+   choose never survives the lid close it exists for. A display whose address it really was takes it back in
+   the same pass.
+
+**A viewport does not survive its display; the address it was showing does.** A reconfiguration is a workspace
+switch on every screen at once — each may come out showing a different address — so it runs the same two halves
+a switch does: every display banks its scroll against the address it is showing before the containers move, and
+every display resumes at the memory of whatever it shows afterwards. Banked at the scroll's **target**, since
+the same report takes every cover down and `closeTransition` snaps each viewport to exactly that. A display
+whose address did not change reads back the number it just wrote, so the ordinary reconfiguration is an
+identity, and the whole thing is skipped for a report that changes nothing — re-seating a viewport there would
+freeze a spring mid-travel, for the reason closing a cover there would write the truth plane onto bare glass.
 
 `Monitors.shown` is **total**, including with no display attached: every verb reads `State.layout`, so a `nil`
 there would be a crash at boot rather than the no-op `metrics()` already gives.
+
+**Resolving a reference is where the two containers decide together**, and both halves live on `State`:
+
+- **`WorkspaceRef` — absolute is global, relative is per-monitor.** A name goes wherever the workspace
+  lives, switching displays if that is where it is; `next` and its kin stay inside `Monitors.reachable`,
+  which is the acting monitor's addresses plus every address no display holds. The monitor is the container,
+  and cycling should not leave it. Strictly a generalization: on one display that set is all 36 addresses.
+- **`MonitorRef` — index, direction, or a step along the enumeration**, and **it clamps rather than
+  wrapping**, exactly as `WorkspaceRef` does: a ref with nowhere to go answers the acting monitor, which
+  every verb reads as the no-op it is. A direction is spatial — the nearest display whose frame centre lies
+  in that half-plane, by distance along the direction's own axis, tie-broken on the cross axis and then on
+  enumeration order — so `focus-monitor down` finds the display *under* this one even when it sorts after
+  the one beside it. The desktop has an edge where the strip does not, which is why nothing that way is
+  silence rather than a wrap.
 
 ### Focus policy
 
@@ -565,7 +638,7 @@ close, position remembered.
 | `Compositor/`             | an overlay + reconstruction per display, the plane over them, the Y-flip, effect routing                 | `CoverSurface` / `CoverPlane`                        |
 | `Guide/`                  | one transient minimap per display; `GuideModel` is the arithmetic, `GuidePanel` the AppKit               | `GuideModel` is pure                                |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
-| `Display/`                | `CADisplayLink` → `tick(dt)`, and one hold deadline per cover                                            | `FrameClock`, `HoldTimer`                           |
+| `Display/`                | `CADisplayLink` → `tick(dt)`, a hold deadline per cover, and the display set as a source                 | `FrameClock`, `HoldTimer`                           |
 | `Input/`                  | Carbon `RegisterEventHotKey`; a press produces `Event.command`                                           | `HotkeyBinder`                                      |
 | `Config/`                 | the half that needs a disk: read → watch → report                                                        | `FileWatcher`                                       |
 | `Ipc/`                    | unix socket, JSON-lines, `Request` → `Reply`                                                             | a real socket, in-test                              |
@@ -662,12 +735,37 @@ A surface builds a layer for every binding it is handed, and every binding it is
 belongs to one display, so the session that minted them named its monitor. A guide draws only the strips its
 own monitor owns. Both are the same rule: a per-display thing asks a per-display question.
 
-**A display that leaves must cost its own screen and no other.** The shell builds its overlays, capturers and
-guides once, at launch: hot-plug adds none, and that is phase 5's. But a *departed* display's capturer can
-produce no base at all and its overlay fences a raise on a display link for a screen that is gone — so a head
-batch owing it a base abandons every cover, and a report gated on its fence never comes. Both consult a live
-`isAttached` and leave it out, which keeps an unplug from putting the whole desktop on the `snap` path for
-the rest of the session. A dismissal is not gated that way: taking a cover down is always safe.
+**The menu bar is the exception, because it is one item for a desktop of several.** `StatusModel.title` is a
+single character and goes to the address the user is on; the rest go to the tooltip after it
+(`StatusModel.elsewhere`, in enumeration order). One display leaves that string exactly what it was, which is
+the absence of the others doing the work rather than a branch.
+
+**The set is reconciled, not fixed.** `ScreenWatcher` folds
+`NSApplication.didChangeScreenParametersNotification` into one reading of the displays, and the daemon's
+`syncDisplays` matches the machinery to it: keep what still describes its display, build what does not,
+retire the rest, and hand the result to the two containers that route by display (`Compositor.setSurfaces`,
+`CaptureService.setCapturers`). Everything holding *those* — the executor, the runtime — is wired once and
+never rebuilt. Four things follow:
+
+- **Kept only on exact geometry.** A window frame, a base placement, a backing scale and a
+  `CGDirectDisplayID` are all fixed at construction, so a display that merely changed resolution is as new
+  as one just plugged in — and a moved flip line makes every display new, since every overlay frame is
+  measured from it. Rebuilding is the cheap, boring option and it removes a whole class of half-updated
+  state.
+- **A retired surface stops being routable with its layers**, and its raise and dismiss generations move, so
+  a fence or a fade still in flight on it reports nothing. A retired capturer's **base** goes with it: a
+  photograph of a screen is the one thing in the store that cannot outlive its display.
+- **The core takes every cover down first** (`State.setMonitors`), so each dismissal reaches the surface
+  that raised it rather than one already replaced.
+- **One clock, re-homed.** The fastest display can change or be unplugged, and a `CADisplayLink` for a
+  screen that has gone never fires again, so `DisplayLinkDriver.retarget` invalidates and rebuilds — a
+  transition in flight loses at most a frame.
+
+**A display that leaves must still cost its own screen and no other**, in the window between macOS reporting
+the change and anything acting on it. A departed display's capturer can produce no base at all and its
+overlay fences a raise on a display link for a screen that is gone — so a head batch owing it a base would
+abandon every cover, and a report gated on its fence would never come. Both consult a live `isAttached` and
+leave it out. A dismissal is not gated that way: taking a cover down is always safe.
 
 **One frame clock, on the fastest display attached.** `dt` is real elapsed time and the springs are analytic
 in it, so a 60 Hz screen fed at 120 Hz simply drops frames while a 120 Hz screen fed at 60 Hz is visibly
@@ -858,7 +956,7 @@ emira/
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   ├── Guide/       GuideModel (pure) · GuidePanel · RoundedLayer · GuideIcons · Guide
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
-    │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer
+    │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer · ScreenWatcher
     │   ├── Input/       Hotkeys (policy) · CarbonHotkeys
     │   ├── Config/      ConfigLoader · ConfigFile
     │   ├── Ipc/         SocketServer · RequestRouter
@@ -891,10 +989,12 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   (height water-fill and its bounds), `ParkTests`, `LayoutTests`, `WorkspaceTests`, `MonitorTests`,
   `OuterGapTests`, `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast, exhaustive.
 
-  `MonitorTests` and the reducer's `MonitorSessionTests` earn their place the way `WorkspaceTests` does:
-  everything they assert — an address orphaned by a departure, the assignments a lid close has to survive, a
-  cover that stays on its own screen, a window held back while *its* display is mid-capture — is a **silent**
-  failure while there is one display, so this is the only place any of it can be proved at all.
+  `MonitorTests`, `MonitorCommandTests` and the reducer's `MonitorSessionTests` earn their place the way
+  `WorkspaceTests` does: everything they assert — an address orphaned by a departure, the assignments a lid
+  close and a replug have to survive, a cover that stays on its own screen, a window held back while *its*
+  display is mid-capture, a `MonitorRef` with more than one answer, a `next` that steps over another
+  screen's addresses — is a **silent** failure while there is one display, so this is the only place any of
+  it can be proved at all.
 - **`EmiraCoreTests` / the reducer** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`,
   `EngineTransitionTests`, `EngineResizeTests`, `EngineFullscreenTests`, `EngineRefusalTests`,
   `EngineStructuralEditTests`, `EnginePointerTests`, `EngineWarpTests`, `EngineConfigReplayTests`,

@@ -191,6 +191,110 @@ import Testing
         #expect(monitors.owned(of: m1) == [a, b, c])
     }
 
+    // Hot-plug — the assignments a replug has to survive (D12)
+
+    /// Two displays with the desktop split between them: `m1` holds `a`, `m2` holds `b`, `c` and
+    /// whatever address it was handed on arrival, showing `c`.
+    ///
+    /// Every address is kept materialized and handed back as `live`, because `reconcile` drops an
+    /// address with no strip — a reclaim test must not be able to pass or fail on the pruning step.
+    private func splitDesktop() -> (monitors: Monitors, live: [WorkspaceName]) {
+        var monitors = Monitors()
+        monitors.reconcile(materialized: [a, b, c], infos: [info(m1), info(m2, x: 1000)])
+        let live = ([a, b, c] + [monitors.shown(on: m2)!]).sorted()
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m2, x: 1000)])
+        monitors.show(b, on: m2)
+        monitors.show(c, on: m2)
+        return (monitors, live)
+    }
+
+    /// A display that comes back takes its own addresses off whichever survivor adopted them. Sleep,
+    /// lock, clamshell and KVM switches all return the same `CGDirectDisplayID`, and a desktop that
+    /// re-scrambles on each is one the user rebuilds every time.
+    @Test func aReturningDisplayReclaimsWhatItHeldBeforeItLeft() {
+        var (monitors, live) = splitDesktop()
+        let theirs = monitors.owned(of: m2)
+        #expect(theirs.contains(b) && theirs.contains(c))
+
+        monitors.reconcile(materialized: live, infos: [info(m1)])
+        #expect(monitors.owned(of: m1) == live, "the survivor holds the whole desktop meanwhile")
+
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m2, x: 1000)])
+        #expect(monitors.owned(of: m2) == theirs)
+        #expect(monitors.shown(on: m2) == c, "…and shows what it was showing")
+        #expect(monitors.owned(of: m1) == [a])
+    }
+
+    /// A display the user was *looking at* when the returning one comes back loses that address and
+    /// falls back — the same claim `show` makes, and the same repair, so nothing new can cascade.
+    @Test func aDisplayDispossessedByAReturningOneFallsBack() {
+        var (monitors, live) = splitDesktop()
+        monitors.reconcile(materialized: live, infos: [info(m1)])
+        monitors.show(c, on: m1)                        // the survivor takes over what m2 was showing
+
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m2, x: 1000)])
+        #expect(monitors.shown(on: m2) == c)
+        #expect(monitors.owned(of: m1).contains(monitors.shown(on: m1)!))
+        #expect(monitors.shown(on: m1) != c)
+    }
+
+    /// A display nobody has seen before is not a returning one: it owns nothing and takes nothing off
+    /// anybody, which is what keeps a *new* monitor from inheriting a dead one's desktop.
+    @Test func anArrivingDisplayWithNoHistoryStillTakesOnlyWhatIsFree() {
+        var (monitors, live) = splitDesktop()
+        monitors.reconcile(materialized: live, infos: [info(m1)])
+
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m3, x: 1000)])
+        #expect(monitors.owned(of: m1) == live)
+        #expect(!monitors.owned(of: m3).contains(c))
+        #expect(monitors.owned(of: m3).contains(monitors.shown(on: m3)!))
+    }
+
+    /// The two-display sleep: both go, both come back, and the split is what it was rather than one
+    /// display holding the whole desktop.
+    @Test func everyDisplayLeavingAndReturningRestoresTheSplit() {
+        var (monitors, live) = splitDesktop()
+        let before = (m1: monitors.owned(of: m1), m2: monitors.owned(of: m2))
+
+        monitors.reconcile(materialized: live, infos: [])
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m2, x: 1000)])
+        #expect(monitors.owned(of: m1) == before.m1)
+        #expect(monitors.owned(of: m2) == before.m2)
+    }
+
+    /// …and the **wrong** display coming back still shows what the user was looking at. `unattached`
+    /// records the focused display's address precisely so a lid close can be resumed on whatever screen
+    /// is available, and every display departing into a zero-display state also leaves a `detached`
+    /// memory — so the reclaim has to give way to the adoption on the one display that adopted it, or
+    /// the address `unattached` went to the trouble of choosing is never the one that comes back.
+    @Test func aLidCloseResumesOnWhicheverDisplayReturnsFirst() {
+        var (monitors, live) = splitDesktop()
+        monitors.focus(m2)
+        let watching = monitors.shown(on: m2)!
+        #expect(monitors.shown(on: m1) != watching)
+
+        monitors.reconcile(materialized: live, infos: [])
+        #expect(monitors.shown == watching, "the desktop keeps the focused display's address")
+
+        // Only the *other* display comes back.
+        monitors.reconcile(materialized: live, infos: [info(m1)])
+        #expect(monitors.shown(on: m1) == watching)
+    }
+
+    /// …but a display that returns *beside* the adopter takes its own address off it, which is the
+    /// reclaim doing its job and the fallback repairing what it dispossessed.
+    @Test func theDisplayThatOwnsTheResumedAddressTakesItBack() {
+        var (monitors, live) = splitDesktop()
+        monitors.focus(m2)
+        let watching = monitors.shown(on: m2)!
+
+        monitors.reconcile(materialized: live, infos: [])
+        monitors.reconcile(materialized: live, infos: [info(m1), info(m2, x: 1000)])
+        #expect(monitors.shown(on: m2) == watching)
+        #expect(monitors.shown(on: m1) != watching, "and the adopter fell back to one it can have")
+        #expect(monitors.owned(of: m1).contains(monitors.shown(on: m1)!))
+    }
+
     /// An address that lost its strip stops being owned — except the one a display is showing, which it
     /// holds by showing it whether or not anything has materialized it yet (invariant 1 outranks 2).
     @Test func addressesWithNoStripAreDroppedButNeverTheShownOne() {
