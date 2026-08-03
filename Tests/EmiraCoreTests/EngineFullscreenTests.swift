@@ -641,7 +641,7 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3, bundle: "com.other.app")))
         #expect(s.motion.phase == .idle)
         #expect(fx.contains(.endTransition))
-        #expect(s.workspaces.focused == WorkspaceName("3")!)
+        #expect(s.monitors.shown == WorkspaceName("3")!)
         // Every window answered for: the newcomer on the glass, the strip left behind parked. The stream
         // is a diff, so it names w2 leaving the glass and w3 arriving; w1 was already at its park slot.
         #expect(s.world.placedOnScreen == [WindowId(3)])

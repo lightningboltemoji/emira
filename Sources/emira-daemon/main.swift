@@ -127,15 +127,33 @@ if screens.isEmpty {
     die("No displays are attached — there is nothing to manage.")
 }
 let geometry = ScreenGeometry.current()
-// Must be the *same* display the core lays its strip out on — `State.metrics()` resolves against
-// `world.monitors.first`, i.e. `screens[0]`. Not `NSScreen.main`: on a two-display machine the cover
-// would go up over one screen while the real windows teleported on the other.
-let screen = screens[0]
-// Read once, used twice, and that shared number is load-bearing: the core lays the strip out inside
-// the working area and the cover paints exactly the working area, so the chrome bands the cover
-// leaves alone can never contain a window it should have hidden.
-let struts = ScreenGeometry.struts(of: screen)
-let overlay = Overlay(screen: screen, geometry: geometry, insets: struts)
+
+/// The attached displays as the core will know them — **read once, and this array is what both sides
+/// get.** It builds this process's overlays and guide panels below, and it is the `screensChanged`
+/// dispatched at adoption; `NSScreen.visibleFrame` is live, so reading it a second time there would let
+/// a Dock that moved in between inset the cover by one number and the strip by another. Adoption can be
+/// held back for as long as a broken config file takes to fix, which is how far apart the two reads can
+/// drift.
+///
+/// That shared number is load-bearing per display: the core lays that display's strip out inside its
+/// working area and its cover paints exactly that working area, so the chrome bands a cover leaves
+/// alone can never contain a window it should have hidden.
+let monitorInfos = geometry.monitors(screens)
+
+/// Every attached display, paired with the `MonitorId` the core knows it by. **The id is the same one
+/// `ScreenGeometry.monitors` reports**, so a screen the shell builds an overlay for and a monitor the
+/// core lays a strip out on are the same thing named twice, never two things that happen to line up.
+let displays: [(monitor: MonitorId, screen: NSScreen, struts: EdgeInsets)] =
+    zip(monitorInfos, screens).map { info, screen in
+        (info.id, screen, info.struts)
+    }
+
+/// One overlay per display, each with its own struts and backing scale. `Overlay`'s own doc comment
+/// has said "one per display" since it was written; this is that, finally.
+let overlays = displays.map { display in
+    (monitor: display.monitor,
+     overlay: Overlay(screen: display.screen, geometry: geometry, insets: display.struts))
+}
 
 // The truth plane's machinery
 //
@@ -170,27 +188,53 @@ let pointer = PointerExecutor(surface: SystemCursor())
 // asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
 let focusIntent = FocusIntent(scheduler: DispatchScheduler())
 
-let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
 // One cache for the daemon's life: it outlives every cover, which is the whole of what it is for.
 let surfaceCache = SurfaceCache()
+// One capturer per display: a base is a photograph of one screen. The window stills come from the
+// first, at its backing scale — `SCContentFilter(desktopIndependentWindow:)` is display-independent,
+// so a window is filmed once however many screens are covered.
 let capture = CaptureService(
     registry: registry,
-    capturer: SCKCapturer(displayId: displayId ?? CGMainDisplayID(),
-                          scale: screen.backingScaleFactor),
+    capturers: displays.enumerated().map { index, display in
+        (display.monitor,
+         SCKCapturer(displayId: ScreenGeometry.displayId(of: display.screen, at: index),
+                     scale: display.screen.backingScaleFactor) as any SurfaceCapturer)
+    },
     scheduler: DispatchScheduler(),
     cache: surfaceCache)
-let reconstruction = Reconstruction(overlay: overlay, store: capture)
+
+/// One reconstruction per overlay, and the `Compositor` that drives them as one plane. The
+/// `CATransaction` lives up there rather than in each surface: two displays blitting inside two
+/// transactions are two frames, and the strips on them shear apart by a refresh.
+let reconstructions = overlays.map { entry in
+    (monitor: entry.monitor,
+     reconstruction: Reconstruction(overlay: entry.overlay, monitor: entry.monitor, store: capture))
+}
+let compositor = Compositor(surfaces: reconstructions.map { ($0.monitor, $0.reconstruction) })
+
+/// Hot-plug is not handled — no overlay, capturer or guide is built for a display that arrives after
+/// launch — but a display that *leaves* must not take the whole presentation plane with it. Its
+/// capturer can produce no base, and a head batch owing one abandons the cover; its overlay fences a
+/// raise on a display link for a screen that is gone. Both would degrade every transition on every
+/// remaining screen, for the rest of the session, rather than costing the display that left.
+///
+/// Read live rather than cached: nothing tells the daemon that the display list changed.
+capture.isAttached = { ScreenGeometry.attached().contains($0) }
+compositor.isAttached = { ScreenGeometry.attached().contains($0) }
 
 //
-// The same display the overlay and the strip use — it reads the core's own projection at another scale,
-// so a second display would need a second strip before it needed a second guide.
+// One guide per display, each drawing whatever workspace *its* monitor is showing — the core's own
+// projection at another scale, so a display showing an empty address draws nothing at all.
 
-let guide = Guide(panel: GuidePanel(screen: screen, geometry: geometry, insets: struts),
-                  icons: GuideIcons(),
-                  scheduler: DispatchScheduler(),
-                  // A `preview` tile draws whatever a cover last left behind, at any size — see
-                  // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to its icon.
-                  still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
+let guides = displays.map { display in
+    Guide(panel: GuidePanel(screen: display.screen, geometry: geometry, insets: display.struts),
+          monitor: display.monitor,
+          icons: GuideIcons(),
+          scheduler: DispatchScheduler(),
+          // A `preview` tile draws whatever a cover last left behind, at any size — see
+          // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to its icon.
+          still: { [surfaceCache] id in surfaceCache.anySurface(for: id)?.image })
+}
 
 // The config, finished
 
@@ -198,13 +242,15 @@ let guide = Guide(panel: GuidePanel(screen: screen, geometry: geometry, insets: 
 /// the pointer's motion has to be observable. Read once — neither answer changes while the process runs.
 let canHidePointer = pointer.canHideCursor && observesPointerMotion
 
-/// The values a config file may not decide: the struts (the same number must reach the core and the
-/// overlay or the cover stops matching the strip), the Screen Recording grant, and the two settings
-/// that need the pointer — the last three capabilities rather than preferences. Re-applied on every
-/// reload, which is what notices macOS revoking the grant.
+/// The values a config file may not decide: the Screen Recording grant and the two settings that need
+/// the pointer, all three capabilities rather than preferences. Re-applied on every reload, which is
+/// what notices macOS revoking the grant.
+///
+/// The struts are *not* here: they are per display and they move under a running daemon (the Dock
+/// changes edge), so they ride on `Event.screensChanged` beside the frame they inset, where each
+/// display's overlay reads the same number the core lays that display's strip out with.
 func applyEnvironment(to config: Config) -> Config {
     var config = config
-    config.struts = struts
     // The whole ladder above `off`, not just `smooth`: a cover is captured pixels under either, so `snap`
     // needs the grant exactly as much. What runs under the cover is the core's own arithmetic and free.
     if !Permissions.screenRecording.isGranted { config.transitionMode = .off }
@@ -247,7 +293,7 @@ let truth = AXExecutor(registry: registry,
 let launcher = ShellLauncher()
 launcher.onOutcome = { log("exec: \($0)") }
 
-let executor = CompositingExecutor(surface: reconstruction, store: capture, truth: truth,
+let executor = CompositingExecutor(surface: compositor, store: capture, truth: truth,
                                    pointer: pointer, launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
@@ -279,19 +325,23 @@ executor.onCoverDismissed = { frames, seconds in
 let runtime = Runtime(
     state: State(config: config),
     executor: executor,
-    clock: DisplayLinkDriver(screen: screen),
+    // One clock, on the **fastest** display attached. `dt` is real elapsed time and the springs are
+    // analytic in it, so a 60 Hz screen fed at 120 Hz simply drops frames while a 120 Hz one fed at
+    // 60 Hz is visibly under-driven — picking the fastest means nobody is ever the latter.
+    clock: DisplayLinkDriver(screen: screens.max { $0.maximumFramesPerSecond
+                                                    < $1.maximumFramesPerSecond } ?? screens[0]),
     // An AX write's landing depends on another process's run loop; this bounds the wait.
     hold: DispatchHoldTimer())
 
 // Once per drain, not once per event, and one closure for both peripherals: they display state rather
 // than change it, and a per-event observer would show them states the user never sees. `MenuBarItem`
 // diffs and `Guide` diffs its own trigger, so a scroll costs neither of them a redraw.
-menuBar.workspace = runtime.state.workspaces.focused
-// Primed, not shown: the guide's first reaction should be the boot scan's arrivals, not its own birth.
-guide.prime(runtime.state)
+menuBar.workspace = runtime.state.monitors.shown
+// Primed, not shown: a guide's first reaction should be the boot scan's arrivals, not its own birth.
+for guide in guides { guide.prime(runtime.state) }
 runtime.onStateChanged = { state in
-    menuBar.workspace = state.workspaces.focused
-    guide.stateChanged(state)
+    menuBar.workspace = state.monitors.shown
+    for guide in guides { guide.stateChanged(state) }
 }
 
 //
@@ -369,7 +419,7 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
 /// there would compile clean and read zeroed memory if it were ever called early. Keeping the
 /// definition after the last thing it touches makes that unrepresentable rather than merely avoided.
 @MainActor func applyShellConfig(_ config: Config) {
-    reconstruction.animation = config.windowAnimation
+    for entry in reconstructions { entry.reconstruction.animation = config.windowAnimation }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
     // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
@@ -411,13 +461,13 @@ var isManaging = false
 @MainActor func startManaging() {
     guard !isManaging else { return }
     isManaging = true
-    runtime.dispatch(.screensChanged(geometry.monitors(screens)))
+    runtime.dispatch(.screensChanged(monitorInfos))
     // Each app is scanned on its own AX lane, so boot costs the slowest app, not the sum. The report
     // lands back on the main actor after its windows have already been dispatched and placed.
     watcher.start { report in
         log("enumerated \(report.summary)")
         log("managing \(runtime.state.layout.columns.count) columns on workspace "
-            + "\(runtime.state.workspaces.focused) of \(runtime.state.workspaces.materialized.count), "
+            + "\(runtime.state.monitors.shown) of \(runtime.state.workspaces.materialized.count), "
             + "\(runtime.state.world.monitors.count) display(s)")
     }
 }

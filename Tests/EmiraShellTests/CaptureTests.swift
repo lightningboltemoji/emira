@@ -13,6 +13,10 @@ import EmiraCore
 
 @Suite @MainActor struct CaptureServiceTests {
 
+    /// The display every single-screen fixture here covers — a base belongs to a screen now, so asking
+    /// for one has to say which.
+    static let display = MonitorId(1)
+
     /// A capturer that answers when told to, so a test can put a batch in flight. Sinks are kept per
     /// batch, not one at a time, because the interesting race needs two live at once: a batch that was
     /// superseded and then answers anyway.
@@ -25,17 +29,21 @@ import EmiraCore
         /// Whether each batch was asked for a base — what separates a cover being opened from one
         /// being grown.
         private(set) var baseRequested: [Bool] = []
+        /// Whether each batch was asked to *photograph* the windows it was handed, as against merely
+        /// cutting them out of its base. False for every capturer but the first.
+        private(set) var filmed: [Bool] = []
         private struct Sink {
             let piece: @MainActor (CapturePiece) -> Void
             let done: @MainActor () -> Void
         }
         private var sinks: [Sink] = []
 
-        func capture(_ requests: [CaptureRequest], includeBase: Bool,
+        func capture(_ requests: [CaptureRequest], filming: Bool, includeBase: Bool,
                      piece: @escaping @MainActor (CapturePiece) -> Void,
                      done: @escaping @MainActor () -> Void) {
             self.requests.append(requests)
             self.baseRequested.append(includeBase)
+            self.filmed.append(filming)
             sinks.append(Sink(piece: piece, done: done))
         }
 
@@ -269,7 +277,7 @@ import EmiraCore
         #expect(capturer.baseRequested == [true, false])
         capturer.answer(with: [WindowId(1), WindowId(2)], batch: 0)
         capturer.answer(with: [WindowId(3)], base: false, batch: 1)
-        #expect(service.base != nil)                            // the head's base, still there
+        #expect(service.base(of: Self.display) != nil)                            // the head's base, still there
         #expect(service.surface(for: WindowId(3)) != nil)       // and the newcomer merged in
     }
 
@@ -286,7 +294,7 @@ import EmiraCore
 
         #expect(capturer.baseRequested == [true, true])          // a second cover, a second base
         #expect(service.surface(for: WindowId(1)) == nil)        // the old cover's stills are gone
-        #expect(service.base == nil)
+        #expect(service.base(of: Self.display) == nil)
     }
 
     /// A command can arrive inside the 0.22 s cross-fade, so the new transition's stills must survive
@@ -302,7 +310,7 @@ import EmiraCore
         service.discard(token)                                   // …and the old fade finally lands
 
         #expect(service.surface(for: WindowId(2)) != nil)        // the new cover keeps its pixels
-        #expect(service.base != nil)
+        #expect(service.base(of: Self.display) != nil)
     }
 
     // No pixels ⇒ no cover (never a black one)
@@ -363,7 +371,7 @@ import EmiraCore
 
         #expect(log.capturedIds == [WindowId(1), WindowId(2)])   // acked like any other
         #expect(!log.events.contains(.coverUnavailable))
-        #expect(service.base != nil)                             // the cover is still opaque
+        #expect(service.base(of: Self.display) != nil)                             // the cover is still opaque
     }
 
     /// The head of a transition is invisible to frames-per-transition, which starts counting at the
@@ -395,7 +403,7 @@ import EmiraCore
     @Test func theStoreIsPopulatedBeforeTheFirstAckIsDelivered() {
         let (service, capturer, _, log) = Self.service([1, 2])
         var seen: [Bool] = []
-        log.onEvent = { seen.append(service.surface(for: WindowId(1)) != nil && service.base != nil) }
+        log.onEvent = { seen.append(service.surface(for: WindowId(1)) != nil && service.base(of: Self.display) != nil) }
 
         service.capture(windows: [WindowId(1), WindowId(2)], feedback: log.sink)
         capturer.answer(with: [WindowId(1), WindowId(2)])
@@ -419,7 +427,7 @@ import EmiraCore
 
         service.discard(service.closeCover())
         #expect(service.surface(for: WindowId(1)) == nil)
-        #expect(service.base == nil)
+        #expect(service.base(of: Self.display) == nil)
     }
 
     /// A window whose still failed while the rest of the batch succeeded: it is acked like any other
@@ -920,6 +928,148 @@ import EmiraCore
 
         #expect(cache.count == 0)
         #expect(cache.byteCount == 0)
+    }
+}
+
+/// Two displays' worth of capture plane: one base each, the windows filmed once by the first.
+///
+/// The point of every test here is a rule that is inert on one screen — a batch may not ack until
+/// *every* covered display has a base, and a head batch that ends one short abandons the cover rather
+/// than raising a black rectangle over that screen.
+@Suite @MainActor struct MultiDisplayCaptureTests {
+
+    typealias ManualCapturer = CaptureServiceTests.ManualCapturer
+    typealias ManualScheduler = CaptureServiceTests.ManualScheduler
+    typealias EventLog = CaptureServiceTests.EventLog
+    static let left = MonitorId(1), right = MonitorId(2)
+
+    static func service() -> (CaptureService, ManualCapturer, ManualCapturer, EventLog) {
+        let a = ManualCapturer(), b = ManualCapturer()
+        let service = CaptureService(registry: CaptureServiceTests.registry([1, 2]),
+                                     capturers: [(left, a), (right, b)],
+                                     scheduler: ManualScheduler(), deadline: 0.25)
+        return (service, a, b, EventLog())
+    }
+
+    /// A base is a photograph of one screen, so every covered display is asked for its own. A window's
+    /// own surface is display-independent, so it is filmed once — by the first capturer, whose backing
+    /// scale is the one the strip is laid out at.
+    @Test func everyDisplayIsAskedForABaseAndOnlyTheFirstForTheWindows() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1), WindowId(2)], feedback: log.sink)
+
+        #expect(a.filmed == [true])
+        #expect(b.filmed == [false])
+        #expect(a.baseRequested == [true])
+        #expect(b.baseRequested == [true])
+    }
+
+    /// **Every** capturer is told which windows the transition covers, filming or not: a base has to
+    /// have a hole where each of them was, on every screen. A window reaching two displays would
+    /// otherwise sit frozen in the second display's desktop *and* slide across it on a layer above.
+    @Test func everyDisplayCutsTheCoveredWindowsOutOfItsOwnBase() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1), WindowId(2)], feedback: log.sink)
+
+        #expect(a.requests.last?.map(\.id) == [WindowId(1), WindowId(2)])
+        #expect(b.requests.last?.map(\.id) == [WindowId(1), WindowId(2)])
+    }
+
+    /// A display that has left can produce no base, and a head batch owing one abandons the cover — so
+    /// it is dropped from the batch instead. Without this an unplug puts every transition on the snap
+    /// path for the rest of the session rather than costing the screen that went away.
+    @Test func aDepartedDisplayIsNotOwedABaseItCannotProduce() {
+        let (service, a, b, log) = Self.service()
+        service.isAttached = { $0 == Self.left }
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+
+        #expect(b.requests.isEmpty)                     // never asked
+        a.sendBase()
+        a.send(WindowId(1))
+        a.close()
+
+        #expect(log.events == [.captureReady(WindowId(1))])
+        #expect(service.base(of: Self.left) != nil)
+    }
+
+    /// Rule 2, generalized: no ack leaves a head batch until every base has landed. One display's cover
+    /// raised over another display's black fill is the failure this prevents.
+    @Test func noAckLeavesTheBatchUntilEveryBaseHasLanded() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+
+        a.sendBase()
+        a.send(WindowId(1))
+        #expect(log.events.isEmpty)                     // the second display has no desktop yet
+
+        b.sendBase()
+        #expect(log.events == [.captureReady(WindowId(1))])
+        #expect(service.base(of: Self.left) != nil)
+        #expect(service.base(of: Self.right) != nil)
+    }
+
+    /// …and a head batch that ends a base short abandons the cover, rather than raising one screen over
+    /// black. Conservative on purpose: an instant, correct placement on both beats a cover on one.
+    @Test func aHeadBatchMissingOneBaseAbandonsTheWholeCover() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+
+        a.sendBase()
+        a.send(WindowId(1))
+        a.close()
+        b.close()                                       // the second display never produced a base
+
+        #expect(log.events == [.coverUnavailable])
+        #expect(service.base(of: Self.left) == nil)     // …and the store is empty again
+        #expect(service.surface(for: WindowId(1)) == nil)
+    }
+
+    /// The batch resolves when the **last** capturer reports in, not the first: a display that is still
+    /// filming owes acks that a premature resolution would pay with nothing.
+    @Test func theBatchWaitsForEveryCapturerToFinish() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+
+        a.sendBase()
+        b.sendBase()
+        a.close()                                       // one done, one still out
+        #expect(log.events.isEmpty)                     // window 1's still never arrived, and is owed
+
+        b.close()
+        #expect(log.events == [.captureReady(WindowId(1))])   // paid on resolution, per rule 1
+    }
+
+    /// A batch that *grows* a raised cover takes no base at all — a second base taken mid-transition
+    /// would bake the first batch's windows, by then already teleported, into the desktop behind their
+    /// own sliding layers.
+    ///
+    /// So the other displays are not asked at all: bases are the only thing they were ever for, and an
+    /// `SCShareableContent` fetch each is what asking would cost, at the head of every retarget that
+    /// pulls a window into scope.
+    @Test func growingACoverAsksNobodyButTheDisplayThatFilms() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+        a.answer(with: [WindowId(1)])
+        b.answer()
+
+        service.capture(windows: [WindowId(2)], feedback: log.sink)
+        #expect(a.baseRequested == [true, false])
+        #expect(b.baseRequested == [true])               // not asked a second time
+        #expect(a.filmed == [true, true])
+    }
+
+    /// …and the growth still resolves, which is the part the reply count has to get right: a batch that
+    /// waited on capturers it never asked would sit out its whole deadline.
+    @Test func aGrowthResolvesOnTheOneCapturerItAsked() {
+        let (service, a, b, log) = Self.service()
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+        a.answer(with: [WindowId(1)])
+        b.answer()
+
+        let growth = EventLog()
+        service.capture(windows: [WindowId(2)], feedback: growth.sink)
+        a.send(WindowId(2), batch: 1)
+        #expect(growth.events == [.captureReady(WindowId(2))])
     }
 }
 

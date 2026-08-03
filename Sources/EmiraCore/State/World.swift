@@ -95,17 +95,25 @@ public struct AppState: Sendable, Equatable, Codable {
     }
 }
 
-/// The core's record of a display: identity + geometry. Struts (menu-bar/notch) are applied by the layout
-/// engine, not baked in here. Its own type, so World state doesn't depend on the `MonitorInfo` wire shape.
+/// The core's record of a display: identity plus the two geometry facts observation refreshes. Its own
+/// type, so World state doesn't depend on the `MonitorInfo` wire shape. Which *workspaces* a display
+/// holds is structure and lives in `Monitors`, the same split `World`/`Workspaces` already has.
 public struct MonitorState: Sendable, Equatable, Codable {
     public let id: MonitorId
     /// The display's full bounds in top-left virtual-strip coordinates.
     public var frame: Rect
+    /// The chrome this display reserves. Per display and live — the Dock moves between them — which is
+    /// why it is refreshed here rather than read once into `Config`.
+    public var struts: EdgeInsets
 
-    public init(id: MonitorId, frame: Rect) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero) {
         self.id = id
         self.frame = frame
+        self.struts = struts
     }
+
+    /// Where the strip is laid out on this display: its bounds minus its own chrome.
+    public var workingArea: Rect { frame.inset(by: struts) }
 }
 
 /// The truth-plane state: the live windows, the apps that own them, the displays, and where focus sits.
@@ -259,14 +267,20 @@ public struct World: Sendable, Equatable, Codable {
     }
 
     /// Fold `Event.screensChanged`. Order follows `infos` (authoritative); persisting ids carry their
-    /// record forward with the frame refreshed, so per-monitor truth survives a re-enumeration.
+    /// record forward with the geometry refreshed, so per-monitor truth survives a re-enumeration.
     public mutating func setMonitors(_ infos: [MonitorInfo]) {
         let existing = Dictionary(monitors.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         monitors = infos.map { info in
             var record = existing[info.id] ?? MonitorState(id: info.id, frame: info.frame)
             record.frame = info.frame
+            record.struts = info.struts
             return record
         }
+    }
+
+    /// The display `id` names, or `nil` — what `State.metrics(of:)` asks before it can lay anything out.
+    public func monitor(_ id: MonitorId) -> MonitorState? {
+        monitors.first { $0.id == id }
     }
 
     // Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)

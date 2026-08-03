@@ -195,16 +195,21 @@ public enum WindowRole: String, Sendable, Codable, CaseIterable, Equatable {
 }
 
 /// A display in the current hardware set — the core keys a strip per `MonitorId` and lays it out
-/// inside `frame`. Backing scale and colour space stay shell-side.
+/// inside `frame` minus `struts`. Backing scale and colour space stay shell-side.
 public struct MonitorInfo: Sendable, Equatable, Codable {
     /// The shell-minted display id (from display enumeration).
     public let id: MonitorId
-    /// The display's full bounds in top-left coordinates. Struts are applied by the layout engine.
+    /// The display's full bounds in top-left coordinates.
     public let frame: Rect
+    /// The chrome this display reserves — menu bar/notch at the top, Dock wherever it lives. Per
+    /// display and live: the Dock moves between them, so it rides on the observation rather than on
+    /// the config, which is also why it is the one geometry value a file may not decide.
+    public let struts: EdgeInsets
 
-    public init(id: MonitorId, frame: Rect) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero) {
         self.id = id
         self.frame = frame
+        self.struts = struts
     }
 }
 

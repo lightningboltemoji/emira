@@ -28,11 +28,15 @@ private struct CoverLayer {
 }
 
 /// The `CoverSurface` implementation: builds and animates the reconstruction inside an `Overlay`.
+/// One per display — the base is a photograph of *this* screen, and the layers are the windows that
+/// are on it.
 @MainActor
 public final class Reconstruction: CoverSurface {
 
     private let overlay: Overlay
-    /// Where the pixels come from — this transition's stills and its desktop base.
+    /// Which display this reconstruction covers — what picks its base out of the store.
+    private let monitor: MonitorId
+    /// Where the pixels come from — this transition's stills and this display's desktop base.
     private let store: any CaptureStore
     /// The current transition's layers, keyed by the core's `LayerId`.
     private var layers: [LayerId: CoverLayer] = [:]
@@ -41,26 +45,17 @@ public final class Reconstruction: CoverSurface {
     /// reload landing mid-transition changes the next cover, not the one on screen.
     public var animation: WindowAnimation
 
-    public init(overlay: Overlay, store: any CaptureStore, animation: WindowAnimation = .stretch) {
+    public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
+                animation: WindowAnimation = .stretch) {
         self.overlay = overlay
+        self.monitor = monitor
         self.store = store
         self.animation = animation
     }
 
-    public func beginFrame() {
-        CATransaction.begin()
-        // The core computes every frame's position; without this each blit starts an implicit 0.25 s
-        // animation between them.
-        CATransaction.setDisableActions(true)
-    }
-
-    public func endFrame() {
-        CATransaction.commit()
-    }
-
     public func raiseCover(_ bindings: [LayerBinding], onScreen: @escaping @MainActor () -> Void) {
         discardLayers()
-        overlay.setBase(store.base)
+        overlay.setBase(store.base(of: monitor))
         // The raise must be atomic — base swap, layer creation and initial placement reach the window
         // server together, inside the transaction `CompositingExecutor` has already opened.
         addLayers(bindings)                          // array order is z-order, bottom→top
@@ -116,10 +111,22 @@ public final class Reconstruction: CoverSurface {
 
     /// Mint and install one layer per binding, bottom→top. A binding whose layer already exists is
     /// skipped. A window with no still gets no layer, and the base shows through where it was.
+    ///
+    /// **A window that does not reach this display gets no layer either.** The bindings are the whole
+    /// transition's, so every surface is offered every window; the still's own captured frame is what
+    /// says which screens the window was on. Without the test each display would hold a clipped copy
+    /// of every other display's strip.
+    ///
+    /// `intersects`, not "belongs to": a window straddling the boundary gets a layer on **both**, which
+    /// is what draws it whole across the seam — `Effect.setLayerFrame` stays untagged, so the two
+    /// halves move in lockstep and each overlay clips its own. That is also why every capturer excludes
+    /// the transition's windows from its base, whether or not it filmed them: a display drawing a layer
+    /// for a window whose frozen copy is still in its desktop would show it twice.
     private func addLayers(_ bindings: [LayerBinding]) {
         for binding in bindings {
             guard layers[binding.layer] == nil,
-                  let surface = store.surface(for: binding.window) else { continue }
+                  let surface = store.surface(for: binding.window),
+                  surface.frame.intersects(overlay.displayFrame) else { continue }
             let layer = makeLayer(for: binding.window, with: surface)
             layers[binding.layer] = layer
             overlay.addLayer(layer.root)

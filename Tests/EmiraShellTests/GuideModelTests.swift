@@ -10,6 +10,9 @@ import EmiraCore
 
     /// A 1000×800 working area at the origin, which makes every projected number readable by eye.
     static let working = Rect(x: 0, y: 0, width: 1000, height: 800)
+    /// The one display every fixture here builds — the guide is per monitor now, so a projection has
+    /// to say which one it is of.
+    static let display = MonitorId(1)
 
     static func settings(style: GuideStyle = .placeholder, position: GuidePosition = .topRight,
                          width: Double = 0.3, span: Double = 3, gap: Double = 16,
@@ -255,7 +258,7 @@ import EmiraCore
     @Test func aRealStripCarriesItsBoundariesProjectedWithEverythingElse() throws {
         // Two full-width columns, so the one boundary sits on the seam between them — at `k = 0.1`,
         // 100 pt along a 200 pt ribbon, running its full height.
-        let layout = try #require(GuideModel.layout(for: Self.world()))
+        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
         #expect(layout.separators.count == 1)
         #expect(Self.approx(layout.separators[0], Rect(x: 100, y: 0, width: 0, height: 80)))
     }
@@ -360,15 +363,17 @@ import EmiraCore
 
     @Test func theGuideOffHasNoLayoutAndNoTrigger() {
         var state = State(config: Config(guide: Self.settings(style: .off)))
-        state.world.setMonitors([MonitorInfo(id: MonitorId(1), frame: Self.working)])
-        #expect(GuideModel.layout(for: state) == nil)
-        #expect(GuideModel.trigger(for: state) == nil)
+        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: Self.working)])
+        #expect(GuideModel.layout(for: state, on: Self.display) == nil)
+        #expect(GuideModel.trigger(for: state, on: Self.display) == nil)
     }
 
     @Test func noDisplayYetMeansNothingToProjectOnto() {
         let state = State(config: Config(guide: Self.settings()))
-        #expect(GuideModel.layout(for: state) == nil)   // no metrics until the first `screensChanged`
-        #expect(GuideModel.trigger(for: state) != nil)  // …but the guide is still on
+        // No metrics *and* nothing to be about: a guide belongs to a display, and before the first
+        // `screensChanged` there is no display for it to belong to.
+        #expect(GuideModel.layout(for: state, on: Self.display) == nil)
+        #expect(GuideModel.trigger(for: state, on: Self.display) == nil)
     }
 
     // A layout over a real strip
@@ -378,7 +383,7 @@ import EmiraCore
         var state = State(config: Config(widthPresets: PresetCycle([.proportion(1.0)]),
                                          transitionMode: .off,
                                          guide: settings(style: style)))
-        state.world.setMonitors([MonitorInfo(id: MonitorId(1), frame: working)])
+        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: working)])
         for raw in UInt64(1)...2 {
             let (next, _) = Engine.reduce(state, .windowCreated(
                 WindowSnapshot(id: WindowId(raw), bundleId: "com.test.app", title: "w",
@@ -386,6 +391,64 @@ import EmiraCore
             state = next
         }
         return state
+    }
+
+    // One guide per display
+
+    /// `Self.world()`, plus a second display. Everything the core manages is still on the first, which
+    /// is what "N in the shell, one managed" means.
+    static func twoDisplays() -> State {
+        var state = world()
+        state.setMonitors([
+            MonitorInfo(id: display, frame: working),
+            MonitorInfo(id: MonitorId(2), frame: Rect(x: 1000, y: 0, width: 800, height: 600)),
+        ])
+        return state
+    }
+
+    /// A guide draws the strips **its own display holds** and no others. On a second screen showing an
+    /// empty address that is nothing at all — the panel is the bare viewport indicator, with none of
+    /// the managed display's windows leaking into a panel they have nothing to do with.
+    @Test func aSecondDisplayDrawsNoneOfTheFirstsWindows() throws {
+        let state = Self.twoDisplays()
+        let second = MonitorId(2)
+        #expect(state.monitors.shown(on: second) != state.monitors.shown(on: Self.display))
+        #expect(state.workspaces[state.monitors.shown(on: second)!].isEmpty)
+
+        #expect(try #require(GuideModel.layout(for: state, on: Self.display)).tiles.count == 2)
+        let empty = try #require(GuideModel.layout(for: state, on: second))
+        #expect(empty.tiles.isEmpty)
+        #expect(empty.separators.isEmpty)
+    }
+
+    /// …and each display's guide is *about* its own address, so two guides on one desktop diff
+    /// independently. `focused` is per display for the same reason: there is one focused window, and a
+    /// screen that does not hold it must not summon a HUD because focus moved on the other one.
+    @Test func eachDisplaysTriggerNamesItsOwnWorkspaceAndItsOwnFocus() throws {
+        let state = Self.twoDisplays()
+        let first = try #require(GuideModel.trigger(for: state, on: Self.display))
+        let second = try #require(GuideModel.trigger(for: state, on: MonitorId(2)))
+        #expect(first.workspace == state.monitors.shown(on: Self.display))
+        #expect(second.workspace == state.monitors.shown(on: MonitorId(2)))
+        #expect(first.focused == state.world.focusedWindow)
+        #expect(second.focused == nil)
+        #expect(first != second)
+        #expect(second.columns.isEmpty)
+    }
+
+    /// The ring follows focus, not the panel: only the display holding the focused window draws one.
+    @Test func onlyTheDisplayHoldingFocusDrawsARing() throws {
+        let state = Self.settled(Self.twoDisplays())
+        #expect(try #require(GuideModel.layout(for: state, on: Self.display)).ring != nil)
+        #expect(try #require(GuideModel.layout(for: state, on: MonitorId(2))).ring == nil)
+    }
+
+    /// A display that has left answers nothing at all, rather than projecting onto stale geometry.
+    @Test func aDetachedDisplayHasNeitherALayoutNorATrigger() {
+        var state = Self.twoDisplays()
+        state.setMonitors([MonitorInfo(id: Self.display, frame: Self.working)])
+        #expect(GuideModel.layout(for: state, on: MonitorId(2)) == nil)
+        #expect(GuideModel.trigger(for: state, on: MonitorId(2)) == nil)
     }
 
     /// …with the focus ring arrived, which the arrivals themselves set travelling.
@@ -396,14 +459,14 @@ import EmiraCore
     }
 
     @Test func aTilePerWindowCarriesItsAppAndItsRectangle() throws {
-        let layout = try #require(GuideModel.layout(for: Self.world()))
+        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
         #expect(layout.tiles.count == 2)
         #expect(layout.tiles.allSatisfy { $0.bundleId == "com.test.app" })
         #expect(layout.tiles.map(\.window) == [WindowId(1), WindowId(2)])   // sorted, so the pool is stable
     }
 
     @Test func theViewportIndicatorIsTheWorkingAreaProjected() throws {
-        let layout = try #require(GuideModel.layout(for: Self.world()))
+        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
         #expect(Self.approx(layout.viewport, Rect(x: 100, y: 0, width: 100, height: 80)))
     }
 
@@ -411,21 +474,21 @@ import EmiraCore
         // Settled first: the second window's *arrival* is itself a focus change, so a freshly built
         // world already has a ring in flight.
         let state = Self.settled(Self.world())
-        let atRest = try #require(GuideModel.layout(for: state))
+        let atRest = try #require(GuideModel.layout(for: state, on: Self.display))
         // At rest the ring sits exactly on the focused window's tile.
         #expect(Self.approx(try #require(atRest.ring),
                             try #require(atRest.tiles.first { $0.window == WindowId(2) }?.rect),
                             tol: GuideModel.separation * 2 + 0.001))
 
         let (moved, _) = Engine.reduce(state, .command(.focus(.left)))
-        let seeded = try #require(GuideModel.layout(for: moved))
+        let seeded = try #require(GuideModel.layout(for: moved, on: Self.display))
         // The instant focus moves, the ring is still drawn over the window it is *leaving* — that
         // equality is what makes the travel read as travel rather than as a jump-then-slide.
         let departed = try #require(seeded.tiles.first { $0.window == WindowId(2) }?.rect)
         #expect(abs(try #require(seeded.ring).minX - departed.minX) < GuideModel.separation * 2 + 0.001)
 
         // …and it arrives on the newly focused one.
-        let arrived = try #require(GuideModel.layout(for: Self.settled(moved)))
+        let arrived = try #require(GuideModel.layout(for: Self.settled(moved), on: Self.display))
         let target = try #require(arrived.tiles.first { $0.window == WindowId(1) }?.rect)
         #expect(abs(try #require(arrived.ring).minX - target.minX) < GuideModel.separation * 2 + 0.5)
     }
@@ -433,17 +496,17 @@ import EmiraCore
     @Test func theGuideShrinksToWhatIsActuallyOnTheStrip() throws {
         // Two full-width columns is two screens of strip, so at the default `span = 3` the ribbon is
         // two thirds of `width` rather than `width` with a third of it empty.
-        let two = try #require(GuideModel.layout(for: Self.world()))
+        let two = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
         #expect(abs(two.panel.width - 200) < 0.001)
 
         // Close one, and it shrinks again.
         let (one, _) = Engine.reduce(Self.world(), .windowDestroyed(WindowId(2)))
-        #expect(abs(try #require(GuideModel.layout(for: one)).panel.width - 100) < 0.001)
+        #expect(abs(try #require(GuideModel.layout(for: one, on: Self.display)).panel.width - 100) < 0.001)
     }
 
     @Test func focusOnNothingLeavesNoRingToDraw() throws {
         let (blurred, _) = Engine.reduce(Self.world(), .focusChanged(nil, origin: .system))
-        let layout = try #require(GuideModel.layout(for: blurred))
+        let layout = try #require(GuideModel.layout(for: blurred, on: Self.display))
         #expect(layout.ring == nil)
         #expect(layout.tiles.count == 2)                // the strip is still there
     }
@@ -452,18 +515,18 @@ import EmiraCore
         let state = Self.world()
         // A title change, and an AX landing: neither is a reason to summon a HUD.
         let (retitled, _) = Engine.reduce(state, .axLanded(WindowId(1)))
-        #expect(GuideModel.trigger(for: retitled) == GuideModel.trigger(for: state))
+        #expect(GuideModel.trigger(for: retitled, on: Self.display) == GuideModel.trigger(for: state, on: Self.display))
 
         let (refocused, _) = Engine.reduce(state, .command(.focus(.left)))
-        #expect(GuideModel.trigger(for: refocused) != GuideModel.trigger(for: state))
+        #expect(GuideModel.trigger(for: refocused, on: Self.display) != GuideModel.trigger(for: state, on: Self.display))
     }
 
     @Test func theTriggerDoesNotMoveWithTheScrollsCurrentValue() {
         // It carries the scroll's *target*: a target moves once per command, a current value 120 times
         // a second — and a trigger that moved per frame would re-arm the dwell forever.
         var state = Self.world()
-        let before = GuideModel.trigger(for: state)
+        let before = GuideModel.trigger(for: state, on: Self.display)
         state.motion.advance(by: 1.0 / 120)
-        #expect(GuideModel.trigger(for: state) == before)
+        #expect(GuideModel.trigger(for: state, on: Self.display) == before)
     }
 }

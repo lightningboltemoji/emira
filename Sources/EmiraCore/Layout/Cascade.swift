@@ -76,7 +76,7 @@ extension State {
 
     /// Every strip window, back-to-front: placement order with the focused window moved to the end.
     private func cascadeOrder() -> [WindowId] {
-        let ids = workspaces.allWindowIds
+        let ids = workspaces.windowIds(inPlacementOrder: monitors.shownWorkspaces)
         guard let focused = world.focusedWindow, ids.contains(focused) else { return ids }
         return ids.filter { $0 != focused } + [focused]
     }

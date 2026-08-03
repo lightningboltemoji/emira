@@ -189,6 +189,28 @@ import Testing
         ])
         #expect(world.monitors.map(\.id) == [MonitorId(2), MonitorId(3)])
         #expect(world.monitors.first?.frame == Rect(x: 0, y: 0, width: 3000, height: 2000))
+        #expect(world.monitor(MonitorId(3))?.frame == Rect(x: 3000, y: 0, width: 1080, height: 1920))
+        #expect(world.monitor(MonitorId(1)) == nil)
+    }
+
+    /// The struts are refreshed on every enumeration, not carried forward: the Dock moves between
+    /// displays under a running daemon, and a stale inset lays the strip out under it.
+    @Test func setMonitorsRefreshesEachDisplaysOwnStruts() {
+        var world = World()
+        let menuBar = EdgeInsets(top: 25, left: 0, bottom: 0, right: 0)
+        let dock = EdgeInsets(top: 25, left: 0, bottom: 70, right: 0)
+        world.setMonitors([MonitorInfo(id: MonitorId(1),
+                                       frame: Rect(x: 0, y: 0, width: 1920, height: 1080),
+                                       struts: menuBar)])
+        #expect(world.monitor(MonitorId(1))?.workingArea
+                == Rect(x: 0, y: 25, width: 1920, height: 1055))
+
+        world.setMonitors([MonitorInfo(id: MonitorId(1),
+                                       frame: Rect(x: 0, y: 0, width: 1920, height: 1080),
+                                       struts: dock)])
+        #expect(world.monitor(MonitorId(1))?.struts == dock)
+        #expect(world.monitor(MonitorId(1))?.workingArea
+                == Rect(x: 0, y: 25, width: 1920, height: 985))
     }
 
     // serialization (state dump / golden replay)

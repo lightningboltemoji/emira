@@ -73,13 +73,13 @@ import EmiraMotion
         // Build a two-window column by hand, then focus down.
         let world = { () -> World in
             var w = World()
-            w.setMonitors([MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame)])
             w.insert(EngineFix.snapshot(1)); w.insert(EngineFix.snapshot(2))
             w.setFocus(WindowId(1))
             return w
         }()
         let layout = Layout(columns: [ColumnLayout(id: ColumnId(1), windowIds: [WindowId(1), WindowId(2)])])
-        let state = State(world: world, layout: layout, motion: Motion(), config: Config())
+        var state = State(world: world, layout: layout, motion: Motion(), config: Config())
+        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame)])
 
         let (s, fx) = Engine.reduce(state, .command(.focus(.down)))
         #expect(s.world.focusedWindow == WindowId(2))
@@ -92,9 +92,9 @@ import EmiraMotion
     @Test func focusWithNothingFocusedTakesTheFirstWindow() {
         // Insert two windows directly with no focus set, then a focus command grabs the first.
         var world = World()
-        world.setMonitors([MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame)])
         world.insert(EngineFix.snapshot(1)); world.insert(EngineFix.snapshot(2))
-        let state = State(world: world, layout: Layout(), motion: Motion(), config: Config())
+        var state = State(world: world, layout: Layout(), motion: Motion(), config: Config())
+        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame)])
 
         let (s, fx) = Engine.reduce(state, .command(.focus(.right)))
         #expect(s.world.focusedWindow == WindowId(1))

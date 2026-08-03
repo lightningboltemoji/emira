@@ -24,7 +24,9 @@ import EmiraCore
 // closure returns early unless it is still the current one. No new seam, at the price of one inert
 // closure per frame of motion.
 
-/// The guide: a transient minimap of the focused strip, above the cover and outliving it.
+/// The guide: a transient minimap of one display's strip, above the cover and outliving it. One per
+/// display, each drawing the workspace its own monitor is showing — so a second screen showing an
+/// empty address draws nothing, and switching *it* is what puts a guide there.
 @MainActor
 public final class Guide {
 
@@ -34,6 +36,8 @@ public final class Guide {
     private static let fade: TimeInterval = 0.35
 
     private let panel: GuidePanel
+    /// The display this guide is on, and therefore the workspace it draws.
+    private let monitor: MonitorId
     private let icons: GuideIcons
     private let scheduler: any DelayScheduler
     /// Where a `preview` tile's pixels come from — the stills a cover left behind. Returns `nil` for a
@@ -44,9 +48,11 @@ public final class Guide {
     /// Bumped by every re-arm; a scheduled dwell that is no longer current does nothing.
     private var dwell = 0
 
-    public init(panel: GuidePanel, icons: GuideIcons, scheduler: any DelayScheduler,
+    public init(panel: GuidePanel, monitor: MonitorId, icons: GuideIcons,
+                scheduler: any DelayScheduler,
                 still: @escaping @MainActor (WindowId) -> CGImage? = { _ in nil }) {
         self.panel = panel
+        self.monitor = monitor
         self.icons = icons
         self.scheduler = scheduler
         self.still = still
@@ -56,18 +62,18 @@ public final class Guide {
     /// `onStateChanged`, so the boot scan's own arrivals are the first thing the guide reacts to rather
     /// than the fact that it has just been built.
     public func prime(_ state: State) {
-        trigger = GuideModel.trigger(for: state)
+        trigger = GuideModel.trigger(for: state, on: monitor)
     }
 
     /// One drain's worth of state.
     public func stateChanged(_ state: State) {
         let style = state.config.guide.style
         guard style != .off else { return retire() }
-        // No display known yet (boot, or a reload racing a display change): nothing to project onto,
-        // and nothing to say about it either.
-        guard let layout = GuideModel.layout(for: state) else { return }
+        // Nothing to project onto: no display known yet (boot, or a reload racing a display change),
+        // this display gone, or the address it is showing empty.
+        guard let layout = GuideModel.layout(for: state, on: monitor) else { return }
 
-        let next = GuideModel.trigger(for: state)
+        let next = GuideModel.trigger(for: state, on: monitor)
         let moved = next != trigger
         trigger = next
         if moved { panel.show() }

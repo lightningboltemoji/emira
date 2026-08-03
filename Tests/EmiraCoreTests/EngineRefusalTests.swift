@@ -18,7 +18,8 @@ import EmiraMotion
     /// ⅓-width columns on a 1000 pt viewport: three fit, the fourth is scrolled off and parks.
     static func parkedWorld() -> (State, WindowId, Rect) {
         let s = EngineFix.world(4)
-        let frames = s.workspaces.targetFrames(scrollOffset: s.motion.viewportOffset.current,
+        let frames = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces,
+                                               scrollOffset: s.motion.viewportOffset.current,
                                                metrics: s.metrics()!)
         let parked = s.workspaces.allWindowIds.first { !s.world.placedOnScreen.contains($0) }
         let id = try! #require(parked, "the fixture is meant to leave a window parked")

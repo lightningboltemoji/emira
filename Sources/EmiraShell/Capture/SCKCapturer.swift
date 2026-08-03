@@ -44,7 +44,7 @@ public final class SCKCapturer: SurfaceCapturer {
         self.scale = scale
     }
 
-    public func capture(_ requests: [CaptureRequest], includeBase: Bool,
+    public func capture(_ requests: [CaptureRequest], filming: Bool, includeBase: Bool,
                         piece: @escaping @MainActor (CapturePiece) -> Void,
                         done: @escaping @MainActor () -> Void) {
         let numbers = Dictionary(requests.map { ($0.number, $0.id) }, uniquingKeysWith: { first, _ in first })
@@ -53,7 +53,7 @@ public final class SCKCapturer: SurfaceCapturer {
 
         Task {
             await grab(windows: Set(numbers.keys), display: displayId, scale: scale,
-                       includeBase: includeBase) { shot in
+                       filming: filming, includeBase: includeBase) { shot in
                 switch shot {
                 case .base(let image):
                     await piece(.base(image))
@@ -97,9 +97,13 @@ private enum Piece: Sendable {
 /// the enumeration cost back at the head of the transition. `onScreenWindowsOnly: true` is safe for a
 /// parked column because macOS never lets a window leave the screen entirely — it keeps its ~1 px sliver
 /// and stays in this list.
+///
+/// `windows` is the exclusion set whatever `filming` says: a base has to have a hole where every covered
+/// window was, on every screen, or the one that reaches two displays appears frozen on the second.
 private func grab(windows: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
+                  filming: Bool,
                   includeBase: Bool,
                   deliver: @Sendable (Piece) async -> Void) async {
     let content: SCShareableContent
@@ -111,7 +115,7 @@ private func grab(windows: Set<CGWindowID>,
         return
     }
 
-    let targets = content.windows.filter { windows.contains($0.windowID) }
+    let targets = filming ? content.windows.filter { windows.contains($0.windowID) } : []
     let mine = ProcessInfo.processInfo.processIdentifier
     // The base excludes what we are about to animate *and* our own overlay. See the file header.
     let excluded = content.windows.filter {

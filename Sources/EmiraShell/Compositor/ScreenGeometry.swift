@@ -85,13 +85,40 @@ public struct ScreenGeometry: Sendable, Equatable {
                    right: max(Double(frame.maxX - visible.maxX), 0))
     }
 
-    /// The attached displays as the core's `MonitorInfo`, in AppKit enumeration order — the order the
-    /// core reads `monitors.first` out of. The id is the `CGDirectDisplayID`.
+    /// A screen's display id, and the `MonitorId` the core knows it by — **one reader, because they
+    /// have to be the same number.** ScreenCaptureKit films from the `CGDirectDisplayID`, the overlay
+    /// covers that screen and the core lays a strip out on that `MonitorId`; a second reader with its
+    /// own fallback is how the three quietly stop being the same display.
+    ///
+    /// `index` is the enumeration position, standing in for a screen AppKit gives no number — which is
+    /// not a display SCK can film either, so the core still gets a distinct id and the capture fails
+    /// honestly rather than landing on somebody else's screen.
+    public static func displayId(of screen: NSScreen, at index: Int = 0) -> CGDirectDisplayID {
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        return number ?? CGDirectDisplayID(index)
+    }
+
+    public static func monitorId(of screen: NSScreen, at index: Int = 0) -> MonitorId {
+        MonitorId(UInt64(displayId(of: screen, at: index)))
+    }
+
+    /// The displays currently attached, by the id every display-shaped subsystem keys on. Read live:
+    /// the shell builds its overlays and capturers once, and this is how one of them finds out that
+    /// the screen it was built for has gone.
+    public static func attached(_ screens: [NSScreen] = NSScreen.screens) -> Set<MonitorId> {
+        Set(screens.enumerated().map { monitorId(of: $1, at: $0) })
+    }
+
+    /// The attached displays as the core's `MonitorInfo`, in AppKit enumeration order — which is the
+    /// order `Monitors` keeps its records in. The id is the `CGDirectDisplayID`.
+    ///
+    /// Each display carries its own struts, so the core and that display's overlay lay out against the
+    /// same working area — the invariant that licenses an unpainted chrome band, stated per monitor.
     public func monitors(_ screens: [NSScreen]) -> [MonitorInfo] {
         screens.enumerated().map { index, screen in
-            let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
-            return MonitorInfo(id: MonitorId(UInt64(number ?? CGDirectDisplayID(index))),
-                               frame: core(screen.frame))
+            MonitorInfo(id: Self.monitorId(of: screen, at: index),
+                        frame: core(screen.frame),
+                        struts: Self.struts(of: screen))
         }
     }
 }

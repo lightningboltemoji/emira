@@ -253,7 +253,7 @@ import EmiraMotion
         // covers the shared `ColumnAllocator`, so a handler that minted a `ColumnId` on its way to doing
         // nothing is caught here too.
         var reconciled = s.workspaces
-        reconciled.reconcile(stripWindowIds: s.world.stripWindowIds)
+        reconciled.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
         for command in Self.structuralCommands {
             let (n, fx) = Engine.reduce(s, .command(command))
             #expect(fx.isEmpty, "\(command)")

@@ -211,6 +211,7 @@ enum EngineFix {
             guard state.motion.isCovered, let metrics = state.metrics() else { return 0 }
             let view = metrics.workingArea
             let frames = state.workspaces.naturalFrames(
+                shown: state.monitors.shown,
                 scrollOffset: state.motion.viewportOffset.current,
                 metrics: metrics,
                 widths: state.motion.currentColumnWidths)

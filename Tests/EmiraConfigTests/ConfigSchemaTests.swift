@@ -81,11 +81,12 @@ import EmiraCore
         })
     }
 
-    /// **`struts` is not a key and must not become one** — it is read off `NSScreen.visibleFrame`, and a
-    /// user who wants a margin wants `outer-gap` (`Config.swift` says so at the field). It is the whole
-    /// of the list: everything else in `Config` is either a schema entry or one of the three sections
-    /// the table doesn't describe.
-    static let notKeys: Set<String> = ["struts"]
+    /// **Empty, and that is the claim**: every stored property of `Config` is either a schema entry or
+    /// one of the three sections the table doesn't describe. A field added here needs a reason in
+    /// writing, and the bar is that the file genuinely may not decide it — the struts were the last
+    /// entry, and they left `Config` entirely rather than staying as an exemption, because they are per
+    /// display and live (`MonitorInfo.struts`).
+    static let notKeys: Set<String> = []
 
     /// A file that disagrees with the default about *everything*: every schema entry, driven off the
     /// table, plus the three bespoke sections by hand. Any field of `Config` still at its default after

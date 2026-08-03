@@ -17,56 +17,48 @@ import Testing
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
     @Test func anAbsoluteNameResolvesToItselfFromAnywhere() {
-        var ws = Workspaces()
-        #expect(ws.resolve(.name(name("c"))) == name("c"))
-        ws.focus(name("c"))
-        #expect(ws.resolve(.name(.first)) == .first)
-        #expect(ws.resolve(.name(.last)) == .last)
+        let ws = Workspaces()
+        #expect(ws.resolve(.name(name("c")), from: .first) == name("c"))
+        #expect(ws.resolve(.name(.first), from: name("c")) == .first)
+        #expect(ws.resolve(.name(.last), from: name("c")) == .last)
     }
 
     /// One address at a time, materialized or not — `next` is about the *domain*, so it walks straight
     /// through addresses nobody has ever visited, in key order (the number row runs into `0` first).
     @Test func nextAndPreviousStepOneAddressWhetherOrNotItExists() {
-        var ws = Workspaces()                       // only the launch address materialized
-        #expect(ws.resolve(.next) == name("2"))
+        let ws = Workspaces()                       // only the launch address materialized
+        #expect(ws.resolve(.next, from: .first) == name("2"))
         #expect(ws.materialized == [.first])        // …and resolving materialized nothing
-        ws.focus(name("9"))
-        #expect(ws.resolve(.next) == name("0"))
-        #expect(ws.resolve(.previous) == name("8"))
-        ws.focus(name("0"))
-        #expect(ws.resolve(.next) == name("a"))     // the digit/letter seam is after "0", not before it
+        #expect(ws.resolve(.next, from: name("9")) == name("0"))
+        #expect(ws.resolve(.previous, from: name("9")) == name("8"))
+        // The digit/letter seam is after "0", not before it.
+        #expect(ws.resolve(.next, from: name("0")) == name("a"))
     }
 
     /// Clamps, never wraps — the same rule `focus left|right` keeps at the strip's edges. Resolving to
     /// the workspace you are on is how "nowhere to go" is spelled; the reducer turns that into silence.
     @Test func relativeMotionClampsAtBothEndsOfTheDomain() {
-        var ws = Workspaces()
-        #expect(ws.resolve(.previous) == .first)    // at "1" — the launch address — already
-        ws.focus(.last)
-        #expect(ws.resolve(.next) == .last)         // at "z"
+        let ws = Workspaces()
+        #expect(ws.resolve(.previous, from: .first) == .first)   // at "1" — the launch address
+        #expect(ws.resolve(.next, from: .last) == .last)         // at "z"
     }
 
     /// `next-non-empty` walks what you have *open*, so it skips both never-visited addresses and
     /// visited-then-emptied ones. Being materialized is not being occupied.
     @Test func theOccupiedMotionsSkipEmptyAddressesIncludingVisitedOnes() {
         var ws = Workspaces()
-        ws.focus(name("3"))
-        ws.reconcile(stripWindowIds: [w1])          // "3" holds a window
-        ws.focus(name("5"))                         // materialized, and left empty
-        ws.focus(name("8"))
-        ws.reconcile(stripWindowIds: [w1, w2])      // "8" holds one too
-        ws.focus(.first)
+        ws.reconcile(stripWindowIds: [w1], onto: name("3"))     // "3" holds a window
+        ws.materialize(name("5"))                               // materialized, and left empty
+        ws.reconcile(stripWindowIds: [w1, w2], onto: name("8")) // "8" holds one too
 
         #expect(ws.materialized == [.first, name("3"), name("5"), name("8")])
-        #expect(ws.resolve(.nextOccupied) == name("3"))
-        #expect(ws.resolve(.next) == name("2"))               // the plain motion does not skip
+        #expect(ws.resolve(.nextOccupied, from: .first) == name("3"))
+        #expect(ws.resolve(.next, from: .first) == name("2"))   // the plain motion does not skip
 
-        ws.focus(name("3"))
-        #expect(ws.resolve(.nextOccupied) == name("8"))      // "5" is empty, so it is passed over
-        #expect(ws.resolve(.previousOccupied) == name("3"))  // nothing occupied below ⇒ stay put
-        ws.focus(name("8"))
-        #expect(ws.resolve(.previousOccupied) == name("3"))
-        #expect(ws.resolve(.nextOccupied) == name("8"))      // nothing above ⇒ stay put
+        #expect(ws.resolve(.nextOccupied, from: name("3")) == name("8"))     // "5" is empty ⇒ passed over
+        #expect(ws.resolve(.previousOccupied, from: name("3")) == name("3")) // nothing below ⇒ stay put
+        #expect(ws.resolve(.previousOccupied, from: name("8")) == name("3"))
+        #expect(ws.resolve(.nextOccupied, from: name("8")) == name("8"))     // nothing above ⇒ stay put
     }
 }
 
@@ -143,7 +135,7 @@ import Testing
         let (afterSwitch, fx) = run(s, [focusWorkspace(other)])
         s = afterSwitch
 
-        #expect(s.workspaces.focused == other)
+        #expect(s.monitors.shown == other)
         #expect(s.workspaces[.first].allWindowIds == [WindowId(1), WindowId(2)])
         #expect(s.workspaces[other].isEmpty)
         #expect(onScreen(s).isEmpty)                          // the whole desktop is parked
@@ -152,7 +144,7 @@ import Testing
 
         // …and back: the two windows tile again, nothing is parked.
         let (back, backFx) = run(s, [focusWorkspace(home)])
-        #expect(back.workspaces.focused == .first)
+        #expect(back.monitors.shown == .first)
         #expect(onScreen(back) == [WindowId(1), WindowId(2)])
         #expect(tiled(in: backFx) == [WindowId(1), WindowId(2)])
         #expect(parked(in: backFx).isEmpty)
@@ -287,7 +279,7 @@ import Testing
         #expect(s.world.focusedWindow == WindowId(2))
 
         let (after, fx) = run(s, [.command(.moveToWorkspace(.next))])
-        #expect(after.workspaces.focused == .first)                    // did *not* follow
+        #expect(after.monitors.shown == .first)                    // did *not* follow
         #expect(after.world.focusedWindow == WindowId(3))              // the column that slid into place
         #expect(focused(in: fx) == [WindowId(3)])
         #expect(after.workspaces[other].allWindowIds == [WindowId(2)])
@@ -310,7 +302,7 @@ import Testing
         let moved = s.world.focusedWindow!
         let (after, fx) = run(s, [.command(.moveToWorkspaceAndFocus(.name(name("a"))))])
 
-        #expect(after.workspaces.focused == name("a"))
+        #expect(after.monitors.shown == name("a"))
         #expect(after.world.focusedWindow == moved)
         #expect(focused(in: fx) == [moved])
         #expect(onScreen(after) == [moved])                            // on screen where we followed it
@@ -375,10 +367,10 @@ import Testing
         s = run(s, [moveToWorkspace(other)]).0
         let away = WindowId(2)
         #expect(s.workspaces.workspace(of: away) == other)
-        #expect(s.workspaces.focused == .first)
+        #expect(s.monitors.shown == .first)
 
         let (after, fx) = run(s, [.focusChanged(away, origin: .system)])
-        #expect(after.workspaces.focused == other)
+        #expect(after.monitors.shown == other)
         #expect(after.world.focusedWindow == away)
         #expect(tiled(in: fx) == [away])
         #expect(parked(in: fx) == [WindowId(1)])
@@ -415,11 +407,11 @@ import Testing
         var s = world(3)
         s = run(s, [.command(.focus(.left))]).0                 // focus window 2 at home
         s = run(s, [.command(.moveToWorkspaceAndFocus(.name(name("5"))))]).0
-        #expect(s.workspaces.focused == name("5"))
+        #expect(s.monitors.shown == name("5"))
 
         // Cmd-Tab back to a window that lives at home — window 1, not the one we left focused.
         s = run(s, [.focusChanged(WindowId(1), origin: .system)]).0
-        #expect(s.workspaces.focused == .first)
+        #expect(s.monitors.shown == .first)
         // "5" remembers the window we were on when we were pulled away.
         #expect(s.workspaces[lastFocusOf: name("5")] == WindowId(2))
     }
@@ -430,7 +422,7 @@ import Testing
     @Test func externalFocusOnThisWorkspaceStillJustReveals() {
         let s = world(3)
         let (after, fx) = run(s, [.focusChanged(WindowId(1), origin: .system)])
-        #expect(after.workspaces.focused == .first)
+        #expect(after.monitors.shown == .first)
         #expect(after.world.focusedWindow == WindowId(1))
         #expect(focused(in: fx).isEmpty)
         #expect(tiled(in: fx).contains(WindowId(1)))
@@ -449,7 +441,8 @@ import Testing
         #expect(s.workspaces.materialized.count == 3)
 
         let metrics = s.metrics()!
-        let frames = s.workspaces.targetFrames(scrollOffset: s.motion.viewportOffset.current,
+        let frames = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces,
+                                               scrollOffset: s.motion.viewportOffset.current,
                                                metrics: metrics)
         #expect(frames.count == 6)
         let visible = Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
@@ -490,7 +483,7 @@ import Testing
         #expect(!s.motion.isTransitioning)
 
         let (after, fx) = Engine.reduce(s, .focusChanged(away, origin: .system))
-        #expect(after.workspaces.focused == other)
+        #expect(after.monitors.shown == other)
         #expect(after.motion.isTransitioning, "an external focus cut across the switch")
         #expect(EngineFix.hasEffect(fx) { if case .capture = $0 { return true }; return false })
 
@@ -503,7 +496,7 @@ import Testing
         // And it still lands where the snap landed — the motion is the only thing that changed.
         let rested = EngineFix.settle(after, fx)
         #expect(rested.world.placedOnScreen == [away])
-        #expect(rested.workspaces.focused == other)
+        #expect(rested.monitors.shown == other)
     }
 }
 
@@ -576,7 +569,7 @@ import Testing
         for _ in 0..<2 { s = Self.settled(s, .moveToWorkspace(.name(other))) }
         s = Self.settled(s, .focusWorkspace(.name(other)))
         s = Self.settled(s, .focusWorkspace(.name(home)))
-        #expect(s.workspaces.focused == home)
+        #expect(s.monitors.shown == home)
         #expect(s.workspaces[home].allWindowIds.count == 2)
         #expect(s.workspaces[other].allWindowIds.count == 2)
         #expect(!s.motion.isTransitioning)
@@ -590,14 +583,14 @@ import Testing
     @Test func theVerticalOffsetIsASignAndNeverAMultiple() {
         var s = Self.smoothWorld(1)
         let metrics = s.metrics()!
-        s.workspaces.focus(name("5"))
-        #expect(s.workspaces.verticalOffset(of: name("5"), metrics: metrics) == 0)
+        let shown = name("5")
+        #expect(s.workspaces.verticalOffset(of: shown, from: shown, metrics: metrics) == 0)
         for after in ["6", "9", "0", "a", "z"] {
-            #expect(s.workspaces.verticalOffset(of: name(Character(after)), metrics: metrics)
+            #expect(s.workspaces.verticalOffset(of: name(Character(after)), from: shown, metrics: metrics)
                     == Self.screen, "\(after)")
         }
         for before in ["4", "1"] {
-            #expect(s.workspaces.verticalOffset(of: name(Character(before)), metrics: metrics)
+            #expect(s.workspaces.verticalOffset(of: name(Character(before)), from: shown, metrics: metrics)
                     == -Self.screen, "\(before)")
         }
     }
@@ -609,11 +602,11 @@ import Testing
                                               outerGaps: EdgeInsets(uniform: 20)))
         let metrics = s.metrics()!
         #expect(metrics.contentArea.height < metrics.workingArea.height)
-        s.workspaces.focus(other)
-        #expect(s.workspaces.verticalOffset(of: home, metrics: metrics) == -metrics.workingArea.height)
+        #expect(s.workspaces.verticalOffset(of: home, from: other, metrics: metrics)
+                == -metrics.workingArea.height)
 
         // …and a window on the strip above really does clear the screen rather than stopping in the gap.
-        let frames = s.workspaces.naturalFrames(scrollOffset: 0, metrics: metrics)
+        let frames = s.workspaces.naturalFrames(shown: other, scrollOffset: 0, metrics: metrics)
         #expect(frames[WindowId(1)]!.maxY <= metrics.workingArea.minY)
     }
 
@@ -625,7 +618,7 @@ import Testing
         let s = twoPopulatedWorkspaces()
         let (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
 
-        #expect(after.workspaces.focused == other)
+        #expect(after.monitors.shown == other)
         // Two windows leaving, two arriving — and nothing else in the world to be in scope.
         #expect(Set(after.motion.transition!.windows) == Set(after.workspaces.allWindowIds))
 
@@ -642,7 +635,7 @@ import Testing
     /// back down the address space, both strips fall instead of rising.
     @Test func theDirectionFollowsTheLexicographicMove() {
         let s = Self.settled(twoPopulatedWorkspaces(), .focusWorkspace(.name(other)))
-        #expect(s.workspaces.focused == other)
+        #expect(s.monitors.shown == other)
 
         let (after, _) = raiseCover(s, .focusWorkspace(.name(home)))
         for id in after.workspaces.allWindowIds {
@@ -715,7 +708,7 @@ import Testing
         #expect(!EngineFix.hasEffect(switchFx) { if case .endTransition = $0 { return true }; return false })
         #expect(after.motion.isCovered, "the switch tore the cover down")
         #expect(before.isSubset(of: Set(after.motion.transition!.windows)))
-        #expect(after.workspaces.focused == other)
+        #expect(after.monitors.shown == other)
 
         // …and it settles onto the truth with nothing left in flight.
         let (done, _) = EngineFix.drive(after)
@@ -741,7 +734,7 @@ import Testing
         #expect(midFlight.minY < Self.screen && midFlight.minY > 0, "the fixture never got mid-flight")
 
         let (again, _) = Engine.reduce(after, .command(.focusWorkspace(.next)))
-        #expect(again.workspaces.focused == name("3"))
+        #expect(again.monitors.shown == name("3"))
         #expect(again.motion.isCovered, "the second press opened a second session")
         // `2` is the outgoing strip now: the nudge *adds* the new screen to what was still in flight,
         // so the layer never jumps — one continuous motion through two addresses.
@@ -776,7 +769,7 @@ import Testing
         let moved = s.world.focusedWindow!
         let (after, fx) = raiseCover(s, .moveToWorkspace(.name(other)))
 
-        #expect(after.workspaces.focused == home)
+        #expect(after.monitors.shown == home)
         #expect(after.workspaces[other].allWindowIds == [moved])
         // One screen *down*, because `other` sorts after the workspace we are still on — and the seed
         // carries the horizontal move too, because it flies to where it will genuinely be: the
@@ -799,7 +792,7 @@ import Testing
         let moved = s.world.focusedWindow!
         let (after, _) = raiseCover(s, .moveToWorkspaceAndFocus(.name(other)))
 
-        #expect(after.workspaces.focused == other)
+        #expect(after.monitors.shown == other)
         #expect(after.world.focusedWindow == moved)
         #expect(EngineFix.approxScalar(seed(after, moved)?.minY ?? 0, 0),
                 "the followed window travelled vertically")

@@ -140,7 +140,7 @@ import Testing
         let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.apple.Safari")])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
-        #expect(after.workspaces.focused == .first)
+        #expect(after.monitors.shown == .first)
     }
 
     /// A rule naming the workspace you are already on is the ordinary arrival too, not a move to
@@ -160,7 +160,7 @@ import Testing
         let s = EngineFix.booted(config: Self.slackToThree)
         let (after, fx) = EngineFix.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
 
-        #expect(after.workspaces.focused == name("3"))
+        #expect(after.monitors.shown == name("3"))
         #expect(after.world.focusedWindow == WindowId(1))
         #expect(fx.contains(.focus(WindowId(1))))
     }
@@ -173,7 +173,7 @@ import Testing
             s, [arrival(1, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true)])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("3"))
-        #expect(after.workspaces.focused == .first)         // still home
+        #expect(after.monitors.shown == .first)         // still home
         #expect(after.world.focusedWindow == nil)           // and focus was never claimed
         #expect(!fx.contains(.focus(WindowId(1))))
     }
@@ -188,6 +188,7 @@ import Testing
         ])
 
         let frames = after.workspaces.targetFrames(
+            shown: after.monitors.shownWorkspaces,
             scrollOffset: after.motion.viewportOffset.current, metrics: after.metrics()!)
         #expect(frames[WindowId(1)] != nil)
         #expect(frames[WindowId(1)] != frames[WindowId(2)])
@@ -198,7 +199,7 @@ import Testing
     @Test func theRuleIsNeverConsultedTwice() {
         let s = EngineFix.booted(config: Self.slackToThree)
         var (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.tinyspeck.slackmacgap")])
-        #expect(after.workspaces.focused == name("3"))
+        #expect(after.monitors.shown == name("3"))
 
         // Moved by hand to "7" — the freedom the whole design is for.
         (after, _) = EngineFix.run(after, [.command(.moveToWorkspace(.name(name("7"))))])
@@ -222,7 +223,7 @@ import Testing
             s, [.windowCreated(EngineFix.snapshot(1, bundle: "com.test.app", role: .dialog))])
 
         #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
-        #expect(after.workspaces.focused == .first)
+        #expect(after.monitors.shown == .first)
     }
 
     /// A boot-adopted window keeps the width it already had (`PRINCIPLES.md` §4) even though it is

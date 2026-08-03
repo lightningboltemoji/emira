@@ -23,8 +23,8 @@ Guiding bias, restated: **stay small.** emira is not a platform.
                     │                                                  │
   · CLI command     │   reduce(State, Event) -> (State, [Effect])      │   · setFrame / park       [AX]
   · hotkey command  │                                                  │   · focus / raise         [AX]
-  · AX observation  │   State = World (truth) + Workspaces (structure) │   · capture               [SCK]
-  · display tick dt │           + Motion + Config + Pointer            │   · begin/endTransition   [CA]
+  · AX observation  │   State = World (truth) + Workspaces + Monitors  │   · capture               [SCK]
+  · display tick dt │           (structure) + Motion + Config + Pointer│   · begin/endTransition   [CA]
   · config reload   │                                                  │   · setLayerFrame         [CA]
                     └──────────────────────────────────────────────────┘   · setCursorHidden/warp  [CG]
                              ▲                              │              · exec                  [sh]
@@ -293,16 +293,35 @@ _contents_ that settles no gate. `SurfaceCache` holds what a cover leaves behind
 ## 6. State — what lives where
 
 ```swift
-State = World         // truth: monitors, apps, windows, focus, frames, corrections, placedOnScreen
-      + Workspaces    // structure: 36 strips, which is focused, the shared ColumnId allocator
+State = World         // truth: displays (frame + struts), apps, windows, focus, frames, corrections
+      + Workspaces    // structure: 36 strips, the shared ColumnId allocator
+      + Monitors      // structure: which display owns which workspaces, shows which, and is focused
       + Motion        // animation: viewport offset, column widths, per-window displacement, the session
       + Config        // the parsed values the reducer reads
       + Pointer       // intent the shell is owed: a pending warp, a wanted hide
 ```
 
-`State.layout` is a **settable computed projection** of the focused strip — single storage, not a second
-authority. Only the genuinely cross-strip queries bypass it: reconcile, `targetFrames`, the placement walks, and
-the mutators that mint a `ColumnId`.
+`State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
+second authority. Only the genuinely cross-strip queries bypass it: reconcile, `targetFrames`, the placement
+walks, and the mutators that mint a `ColumnId`.
+
+**Three joins, and each is one method on `State` because the containers must move together.** Where a step
+touches two of them, the pair is not something a caller may be trusted to remember:
+
+- **`setMonitors`** folds `Event.screensChanged`. `World` takes the geometry observation reports, `Monitors`
+  re-homes the workspaces around whatever arrived or left, and every address a display ends up showing is
+  materialized. A `World` that knows about a display `Monitors` does not is a desktop with geometry, no acting
+  monitor and therefore no metrics at all.
+- **`show`** switches the acting monitor's address. Not one strip per call: the claim dispossesses whichever
+  display held that address, and _that_ display falls back to one nothing may ever have materialized, so what
+  the switch owes a strip to is every address left on a screen.
+- **`move`** lands a window on another address, which materializes it — and an address with a strip belongs to
+  a display (invariant 2). `Workspaces.move` is internal for exactly this reason: a container that cannot know
+  about displays must not be the way in.
+
+**Shown ⇒ materialized** is what the first two hold between them, and it is the assumption every cross-strip
+query makes — `placementOrder(shown:)` and `targetFrames(shown:)` are handed the on-screen list, and a name in
+it with no strip is a hole in the placement walk and a park ordinal handed out against nothing.
 
 `Pointer` is separate from `World` because every field of `World` is refreshed by observation and these cannot
 be: no public API reports cursor visibility, and the window server discards a background hide on activation
@@ -388,18 +407,69 @@ animation identity hang on.
 ### Workspaces
 
 36 addresses in **key** order (`1`–`9`, `0`, then `a`–`z`), a fixed named domain rather than minted tokens.
-One focused, the rest parked in full. Nothing persists across restart.
+The addresses on screen tile; the rest are parked in full. Nothing persists across restart.
 
-- **A switch is `focused` moving plus a placement pass.** "Everything not focused is parked" was already what
-  `targetFrames` meant, so the verbs needed no new `Effect` and nothing in `EmiraShell`. What they needed was
-  _memory_: each strip's scroll offset and last-focused window.
+**Which strip is on screen is not a fact this container holds.** A workspace is shown because a _monitor_
+shows it, so every query that turns on the difference between the strip in view and the parked remainder
+takes the shown address as an argument. That is what keeps `Workspaces` a pure structure joined to the
+displays by a name, rather than a second opinion about which display is looking at what.
+
+- **A switch is `Monitors.show` plus `Workspaces.materialize` plus a placement pass.** "Everything not shown
+  is parked" was already what `targetFrames` meant, so the verbs needed no new `Effect` and nothing in
+  `EmiraShell`. What they needed was _memory_: each strip's scroll offset and last-focused window. Neither
+  container can do the other's half of a switch, which is the join working.
 - **One park-ordinal run across the whole set**, threaded as a cursor — per-strip ordinals would give two
-  windows the same nub, breaking the identity join and the no-overlap invariant silently.
-- **The vertical term is a _sign_, not a distance** (`Workspaces.verticalOffset`): every unfocused workspace
+  windows the same nub, breaking the identity join and the no-overlap invariant silently. The run and the
+  placement walk take the **same** on-screen list, so an address a second display shows keeps its low
+  ordinal in both; two answers to "what is on screen" would surface only as a nub that renumbers when the
+  other screen switches.
+- **The vertical term is a _sign_, not a distance** (`Workspaces.verticalOffset`): every off-screen workspace
   sits exactly one screen away, so `1 → z` animates the same screen as `1 → 2`. Presentation-plane only — on the
   truth plane an off-workspace window is simply parked.
 - **The cross-strip move is one call**, because the decomposition passes through a state with a window on _no_
-  strip, where a placement pass landing in between leaves a real window wherever it happens to be.
+  strip, where a placement pass landing in between leaves a real window wherever it happens to be. Internal,
+  so `State.move` is the only way in — see the joins in §6.
+- **Membership and stacking are two queries.** `allWindowIds` answers which windows exist, in name order;
+  `windowIds(inPlacementOrder:)` answers what stacks over what, the shown addresses first. One order served
+  both while there was one screen looking at one strip.
+
+### Monitors
+
+Displays as **containers of workspaces**: a workspace lives on exactly one monitor, and a verb naming a
+workspace works whichever monitor holds it. Its own container beside `Workspaces`, joined to it by a
+`WorkspaceName` exactly as `World` and `Workspaces` are joined by a `WindowId`. Geometry is _not_ here —
+`World.monitors` holds each display's frame and struts, because those are what observation refreshes, and
+`State.metrics(of:)` is where the two meet.
+
+Four invariants, the first two kept structurally rather than checked:
+
+1. **A monitor always shows exactly one address, and showing it claims it.** `show` is the only way to move
+   `shown`, and it moves `owned` with it — including for the _loser_ of a claim, which takes an address it
+   can have in the same call. "A monitor with no workspaces" is unrepresentable; the honest state is a
+   monitor showing an _empty_ workspace, which every verb already handles.
+
+   What the loser can take is a three-rung ladder: its own addresses, then one nobody holds, then one
+   another display holds but is **not showing**. The third rung is what makes the invariant hold, because
+   `show` claims and never releases — the acting monitor accumulates every address it has ever shown, so
+   two displays and enough switching exhaust the unassigned set long before the 36 addresses run out.
+   Taking an address its owner is not looking at costs that owner nothing it can see, so no repair
+   cascades from it. Only every address being _on a screen_ leaves nothing to take, and that needs 37
+   displays.
+2. **Materialized ⇒ assigned**, and kept where it can break rather than repaired later. Two mutators hold
+   it: `show` claims what a display shows, `assign` claims what a verb only _materializes_ — `State.move`
+   is the join, since `Workspaces.move` gives an address a strip and cannot know about displays. An
+   address some display already holds keeps it, which is what lets a window sent to one travel to
+   whichever screen that is. `reconcile` still repairs what neither saw: orphans from a departed display
+   land on the first survivor, and an address that lost its strip is dropped unless it is being shown.
+3. **`focused` is stored, not derived from `World.focusedWindow`.** A monitor showing an empty workspace has
+   no AX target, and emira's focus must still be able to sit there — which is what makes the next window
+   spawn land on it, for free, through the unchanged newcomer rule.
+4. **A display's assignments outlive the display being gone.** Sleep, lock, clamshell and KVM switches produce
+   transient zero-display states, and dropping the desktop's arrangement on each would scramble it every lid
+   close. With none attached the whole set is held detached, and the display that returns takes it back.
+
+`Monitors.shown` is **total**, including with no display attached: every verb reads `State.layout`, so a `nil`
+there would be a crash at boot rather than the no-op `metrics()` already gives.
 
 ### Focus policy
 
@@ -448,8 +518,8 @@ close, position remembered.
 | `WindowRegistry.swift`    | window identity: mints `WindowId`, binds AX ↔ `CGWindowID`                                               | — (pure joins live in `WindowIdentity`)             |
 | `WorldWatcher.swift`      | the live world's _policy_: boot scan → adopt → watch → reconcile                                         | driven entirely through the three AX seams          |
 | `Capture/`                | SCK stills, the batch deadline, the `WindowId`-keyed store, `SurfaceCache`                               | `SurfaceCapturer`, `CaptureStore`                   |
-| `Compositor/`             | the overlay window, the layered reconstruction, the Y-flip, plane routing                                | `CoverSurface`                                      |
-| `Guide/`                  | the transient minimap; `GuideModel` is the arithmetic, `GuidePanel` the AppKit                           | `GuideModel` is pure                                |
+| `Compositor/`             | an overlay + reconstruction per display, the plane over them, the Y-flip, effect routing                 | `CoverSurface` / `CoverPlane`                        |
+| `Guide/`                  | one transient minimap per display; `GuideModel` is the arithmetic, `GuidePanel` the AppKit               | `GuideModel` is pure                                |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
 | `Display/`                | `CADisplayLink` → `tick(dt)`, and the hold deadline                                                      | `FrameClock`, `HoldTimer`                           |
 | `Input/`                  | Carbon `RegisterEventHotKey`; a press produces `Event.command`                                           | `HotkeyBinder`                                      |
@@ -506,8 +576,64 @@ and "a window moved" is not a frame (AX never says where to). Both responses are
 **The cover is the working area, not the display.** Our overlay is `.floating` (level 3); the menu bar is
 `.mainMenu` (level 24) and always composites on top of it, over the base capture's own copy of it. So the
 overlay is **inset by the struts** and the chrome bands show the real, live menu bar and Dock — safe for exactly
-the reason the strut exists. This is why the daemon reads the struts _once_ and hands the same value to both the
-core and the overlay: the invariant holds only while the two agree.
+the reason the strut exists. The struts reach the core on `Event.screensChanged`, beside the frame they inset,
+so a display's overlay and that display's strip are laid out against one number: the invariant holds only
+while the two agree, and it is stated per monitor. Which is why the daemon reads the display set **once** and
+hands that same array to both — `NSScreen.visibleFrame` is live, so a second read for the core's copy would
+let a Dock that moved in between inset the cover by one number and the strip by another, and adoption can be
+held back for as long as a broken config file takes to fix. A display's **identity** has one reader for the same
+reason (`ScreenGeometry.displayId`): the `MonitorId` the core keys a strip on, the `CGDirectDisplayID`
+ScreenCaptureKit films from and the `NSScreen` the overlay covers are one number under three names, and a
+second reader with its own fallback is how they quietly stop naming the same display.
+
+**One of every display-shaped thing, per display.** An `Overlay` + `Reconstruction` each (its own struts, its
+own backing scale, its own base capture), a `GuidePanel` + `Guide` each, an `SCKCapturer` each. Three seams
+carry the plural:
+
+- **`CoverSurface` is one display's layer tree; `CoverPlane` is all of them plus the frame boundary.** The
+  `CATransaction` lives on the plane (`Compositor`), because with N surfaces a transaction wrapping one of
+  them is not a frame — two displays blitting inside two transactions are two frames, and the strips on them
+  shear apart by exactly one refresh. A composite of surfaces being a surface is what leaves
+  `CompositingExecutor` unchanged in shape.
+- **The two reports are gated on every surface, not the first.** `coverOnScreen` entitles the reducer to
+  teleport a real window, so it is owed until the cover is up everywhere; `crossfadeDone` waits for the last
+  dissolve, because a cover half down is still a cover. A fence that never fires leaves the report unmade and
+  the hold deadline to rescue it.
+- **A base is per display; a window still is not.** `SCContentFilter(desktopIndependentWindow:)` is
+  display-independent, so a window is filmed once however many screens are covered — at the first display's
+  backing scale, which is the seam a cross-display move has to move. Every capturer yields its own base,
+  because a base is a photograph of one screen, and a head batch that ends one base short abandons the whole
+  cover rather than raising one screen over its own black fill. **Filming and excluding are separate
+  instructions**: every capturer is told the transition's windows so each can cut them out of its base,
+  and only one is told to photograph them. A display that drew a layer for a window still frozen in its own
+  desktop would show it twice, which is what a window straddling the boundary between two screens is.
+
+A surface builds a layer for every window whose capture frame **reaches** its display — `intersects`, not
+"belongs to", so a straddling window is drawn whole across the seam by a layer on each side moving in
+lockstep under one untagged `setLayerFrame`. A guide draws only the strips its own monitor owns. Both are the
+same rule: a per-display thing asks a per-display question.
+
+**Only a head batch reaches past the first capturer.** Bases are the only thing the others are for, and a
+batch growing a raised cover takes none — asking them anyway would buy nothing and cost an
+`SCShareableContent` fetch each, at the head of every retarget that pulls a window into scope.
+
+**A display that leaves must cost its own screen and no other.** The shell builds its overlays, capturers and
+guides once, at launch: hot-plug adds none, and that is phase 5's. But a *departed* display's capturer can
+produce no base at all and its overlay fences a raise on a display link for a screen that is gone — so a head
+batch owing it a base abandons every cover, and a report gated on its fence never comes. Both consult a live
+`isAttached` and leave it out, which keeps an unplug from putting the whole desktop on the `snap` path for
+the rest of the session. A dismissal is not gated that way: taking a cover down is always safe.
+
+**One frame clock, on the fastest display attached.** `dt` is real elapsed time and the springs are analytic
+in it, so a 60 Hz screen fed at 120 Hz simply drops frames while a 120 Hz screen fed at 60 Hz is visibly
+under-driven — picking the fastest means nobody is ever the latter.
+
+**What a second display costs today, before sessions are per monitor.** One core session covers every screen,
+so a transition anywhere raises an opaque cover **everywhere** and holds it for the whole of it — a video
+playing on the other display freezes for its length. The capture head roughly doubles with it: a base and an
+`SCShareableContent` fetch per covered screen, which cannot be shared (the type is not `Sendable`). Both are
+the conservative reading of the quantified gate, and both stop being paid when a session can name its own
+monitor.
 
 **A raised cover holds `alpha 0.999`.** A window at full alpha marks everything beneath it _occluded_, and an
 occluded app may stop feeding a separately-composited plane — a playing video comes back dark for the first
@@ -642,12 +768,14 @@ the **parsed `Config`**, not a change to the file.
 
 **Two functions the daemon owns, and both matter for correctness:**
 
-- **`applyEnvironment`** — the values a file may not decide. `struts` come from `NSScreen.visibleFrame` and the
-  same number must reach the core _and_ the overlay. `transitionMode` is a preference answerable to the Screen
+- **`applyEnvironment`** — the values a file may not decide, all three of them capabilities rather than
+  preferences. `transitionMode` is a preference answerable to the Screen
   Recording _capability_ (no grant ⇒ `off`; `snap` is out of reach exactly as `smooth` is, both being made of
   captured pixels). `hidesCursor` needs two conjuncts — the private cursor property resolves _and_ the pointer
   motion monitor installed — because the only exit from a hidden pointer is seeing the mouse move, and emira
-  will not enter a state it has no exit from. A setting asked for and clamped away is logged once.
+  will not enter a state it has no exit from. A setting asked for and clamped away is logged once. **The
+  struts are not here**: they are per display and they move under a running daemon (the Dock changes edge),
+  so they ride on `Event.screensChanged` beside the frame they inset rather than through `Config`.
 - **`applyShellConfig`** — the values that reach the shell rather than the reducer (`windowAnimation`,
   `coverMode`, `transitionMode`, the kept stills, the pointer rung and its monitor). One function, called at
   launch and again from `ConfigLoader.onLoad`. Two call sites assigning a property each is where "the reducer
@@ -673,7 +801,7 @@ emira/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
     │                    Event · Effect · Config · Rules · Engine
-    │   ├── State/       World · Motion · RectAnimator · Pointer
+    │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer
     │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
@@ -683,7 +811,8 @@ emira/
     │   ├── AX/          AXAccess · AXClient · AXEnumerator · AXWriter · AXExecutor
     │   │                Observation · AXObservers · FocusIntent · EnhancedUI
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
-    │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction · CompositingExecutor
+    │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
+    │   │                Compositor (the N-surface plane) · CompositingExecutor
     │   ├── Guide/       GuideModel (pure) · GuidePanel · RoundedLayer · GuideIcons · Guide
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
     │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer
@@ -716,8 +845,12 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraMotionTests`** — `SpringTests`, `AnimatorTests`, `EasingTests`: feed synthetic `dt`, assert
   convergence, no overshoot past tolerance, and that `retarget()` preserves velocity.
 - **`EmiraCoreTests` / layout** — `StripTests` (scroll math, visibility, detents), `PresetTests`, `ColumnTests`
-  (height water-fill and its bounds), `ParkTests`, `LayoutTests`, `WorkspaceTests`, `OuterGapTests`,
-  `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast, exhaustive.
+  (height water-fill and its bounds), `ParkTests`, `LayoutTests`, `WorkspaceTests`, `MonitorTests`,
+  `OuterGapTests`, `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast, exhaustive.
+
+  `MonitorTests` earns its place the way `WorkspaceTests` does: everything it asserts — an address orphaned
+  by a departure, `shown` claiming what it shows, the assignments a lid close has to survive — is a **silent**
+  failure while there is one display, so this is the only place it can be proved at all.
 - **`EmiraCoreTests` / the reducer** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`,
   `EngineTransitionTests`, `EngineResizeTests`, `EngineFullscreenTests`, `EngineRefusalTests`,
   `EngineStructuralEditTests`, `EnginePointerTests`, `EngineWarpTests`, `EngineConfigReplayTests`,
@@ -737,9 +870,10 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   `emira.example.toml` matches its golden).
 - **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
-  identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture, compositing, the
-  pointer plane, `GuideModel`, hotkeys, config loading, onboarding, teardown. Everything runs against the seams
-  in §7 — the shell's untestable calls are one file deep at every boundary.
+  identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
+  per-display bases in `MultiDisplayCaptureTests`), compositing (including the N-surface fan-out and its two
+  gates in `CompositorTests`), the pointer plane, `GuideModel`, hotkeys, config loading, onboarding, teardown.
+  Everything runs against the seams in §7 — the shell's untestable calls are one file deep at every boundary.
 
 The reducer suites run with **`MockExecutor`**, which records effects instead of touching macOS: the entire
 interrupt/retarget brain is verified with no AX, CA or SCK in sight.

@@ -6,17 +6,14 @@ import EmiraCore
 // filesystem (config). Order is preserved by chunking into maximal contiguous same-plane runs rather
 // than partitioning by plane, so cover-before-teleport holds because the reducer emits it that way.
 // One `CATransaction` per presentation run, since a tick's blits must reach the screen as one frame
-// or the lockstep motion shears; the surface opens it, keeping this file framework-free.
+// or the lockstep motion shears — and with a display's worth of it each, one frame across *every*
+// surface, or two screens shear apart instead of two layers. The plane opens it, keeping this file
+// framework-free.
 
-/// The presentation plane's mechanism: raise a cover built from the core's layer bindings, blit layer
-/// frames, cross-fade away. `Reconstruction` is the real one; tests use a recording double.
+/// One display's presentation mechanism: raise a cover built from the core's layer bindings, blit
+/// layer frames, cross-fade away. `Reconstruction` is the real one; tests use a recording double.
 @MainActor
 public protocol CoverSurface: AnyObject {
-    /// Open the frame every subsequent call in this run blits inside. Always balanced by `endFrame()`.
-    func beginFrame()
-
-    func endFrame()
-
     /// Build the reconstruction from the core's ordered bindings (z-order bottom→top) and show it. The
     /// cover is opaque from this moment but not yet *visible*: `onScreen` is the report that the display
     /// has shown it, which is what entitles the real windows to teleport behind it. At most once per
@@ -43,6 +40,19 @@ public protocol CoverSurface: AnyObject {
     /// animation, not a layer blit. `duration` is how long the dissolve lasts; every length reveals the
     /// same desktop, since a cover is only ever taken down once the reals have landed under it.
     func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void)
+}
+
+/// The whole presentation plane — every display's surface, plus the frame boundary their blits share.
+///
+/// A `CoverSurface` is one display's layer tree; a `CoverPlane` is all of them at once, which is why
+/// the transaction lives here and not there: with N surfaces a frame is only a frame if it wraps the
+/// whole fan-out. `Compositor` is the real one, over one surface or twenty.
+@MainActor
+public protocol CoverPlane: CoverSurface {
+    /// Open the frame every subsequent call in this run blits inside. Always balanced by `endFrame()`.
+    func beginFrame()
+
+    func endFrame()
 }
 
 /// The `Executor` that splits an effect batch across the two planes.
@@ -86,7 +96,7 @@ public final class CompositingExecutor: Executor {
         }
     }
 
-    private let surface: any CoverSurface
+    private let surface: any CoverPlane
     private let store: any CaptureStore
     private let truth: any Executor
     private let pointer: any Executor
@@ -96,7 +106,7 @@ public final class CompositingExecutor: Executor {
     private var coverRaisedAt = Date()
 
     /// `store` is the same object that backs `surface`'s pixels.
-    public init(surface: any CoverSurface, store: any CaptureStore, truth: any Executor,
+    public init(surface: any CoverPlane, store: any CaptureStore, truth: any Executor,
                 pointer: any Executor, launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
         self.store = store

@@ -207,15 +207,12 @@ public struct Config: Sendable, Equatable, Codable {
     public var columnGap: Double
     /// Points between vertically-adjacent windows within a column (inter-window only).
     public var windowGap: Double
-    /// Points of margin held clear at the edges of the working area. Not a strut, though `struts` is
-    /// the same arithmetic: a strut is forbidden ground, while an outer gap is empty at rest and
-    /// *crossed in motion*, which is why the cover must not shrink with it. Additive with `struts`
-    /// and applied after it, so `outer-gap-top` measures down from the menu bar, not the screen.
+    /// Points of margin held clear at the edges of the working area. Not a strut, though
+    /// `MonitorState.struts` is the same arithmetic: a strut is forbidden ground, while an outer gap is
+    /// empty at rest and *crossed in motion*, which is why the cover must not shrink with it. Additive
+    /// with the struts and applied after them, so `outer-gap-top` measures down from the menu bar,
+    /// not the screen.
     public var outerGaps: EdgeInsets
-    /// The reserved region around the working area — menu bar/notch, Dock edge. Top-left origin, so
-    /// `top` is the menu-bar edge. A fact about the hardware read off `NSScreen.visibleFrame`, and
-    /// deliberately not a config key; a user who wants a margin wants `outerGaps`.
-    public var struts: EdgeInsets
     /// The spring driving the viewport-offset scroll, seeding `Motion.viewportOffset`.
     public var scrollSpring: SpringParams
     /// The spring driving a resizing column's resolved width (`Motion.columnWidths`).
@@ -282,7 +279,6 @@ public struct Config: Sendable, Equatable, Codable {
         columnGap: Double = 0,
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
-        struts: EdgeInsets = .zero,
         scrollSpring: SpringParams = .smooth,
         resizeSpring: SpringParams = .smooth,
         moveSpring: SpringParams = .smooth,
@@ -305,7 +301,6 @@ public struct Config: Sendable, Equatable, Codable {
         self.columnGap = columnGap
         self.windowGap = windowGap
         self.outerGaps = outerGaps
-        self.struts = struts
         self.scrollSpring = scrollSpring
         self.resizeSpring = resizeSpring
         self.moveSpring = moveSpring

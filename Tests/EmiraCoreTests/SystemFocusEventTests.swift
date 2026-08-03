@@ -82,7 +82,7 @@ import Testing
         s = run(s, [moveToWorkspace("3")]).0        // window 2 leaves; focus falls to window 1
         let away = WindowId(2)
         #expect(s.workspaces.workspace(of: away) == WorkspaceName("3")!)
-        #expect(s.workspaces.focused == .first)
+        #expect(s.monitors.shown == .first)
         #expect(s.world.focusedWindow == WindowId(1))
 
         expectRefused(s, systemEvent(away))
@@ -96,7 +96,7 @@ import Testing
         let away = WindowId(2)
 
         let (after, fx) = Engine.reduce(s, systemEvent(away))
-        #expect(after.workspaces.focused == WorkspaceName("3")!)
+        #expect(after.monitors.shown == WorkspaceName("3")!)
         #expect(after.world.focusedWindow == away)
         #expect(focused(in: fx).isEmpty, "the shell already moved focus; asking again is an echo")
     }
@@ -170,7 +170,7 @@ import Testing
         var s = world(2, .onScreen)
         s = run(s, [systemEvent(WindowId(2))]).0
         s.world.setAppHidden("com.test.app", true)
-        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds)
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
         #expect(!s.world.participatesInStrip(WindowId(1)))
 
         expectRefused(s, systemEvent(WindowId(1)))
@@ -305,7 +305,7 @@ import Testing
     @Test func aRefusalOnAnEmptyWorkspaceIsSilentButStillARefusal() {
         var s = world(2, .ignore, Self.oneColumn)
         s = run(s, [moveToWorkspace("3"), moveToWorkspace("3")]).0   // both leave; this strip is empty
-        let home = s.workspaces.focused
+        let home = s.monitors.shown
         #expect(s.layout.columns.isEmpty, "nothing on the focused strip to anchor to")
         #expect(s.world.focusedWindow == nil)
         #expect(s.world.lastStripFocus == WindowId(1), "a stale anchor, now two strips away")
@@ -313,7 +313,7 @@ import Testing
         // A report naming the *other* window over there, so the stale anchor is not simply the subject.
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(2)))
         #expect(fx.isEmpty, "nothing to restore to is not consent")
-        #expect(after.workspaces.focused == home)
+        #expect(after.monitors.shown == home)
         #expect(after == s)
     }
 
@@ -324,14 +324,14 @@ import Testing
     @Test func aDockClickFromAnEmptyWorkspaceStaysPut() {
         var s = world(2, .onScreen, Self.oneColumn)
         s = run(s, [.command(.focusWorkspace(.name(WorkspaceName("2")!)))]).0
-        let home = s.workspaces.focused
+        let home = s.monitors.shown
         #expect(s.layout.columns.isEmpty)
         #expect(s.world.focusedWindow == nil)
 
         for clicked in [WindowId(1), WindowId(2)] {
             let (after, fx) = Engine.reduce(s, systemEvent(clicked))
             #expect(fx.isEmpty, "clicking \(clicked) emitted \(fx)")
-            #expect(after.workspaces.focused == home, "clicking \(clicked) moved the desktop")
+            #expect(after.monitors.shown == home, "clicking \(clicked) moved the desktop")
             #expect(after == s)
         }
     }
@@ -342,7 +342,7 @@ import Testing
         s = run(s, [.command(.focusWorkspace(.name(WorkspaceName("2")!)))]).0
 
         let (after, _) = Engine.reduce(s, systemEvent(WindowId(1)))
-        #expect(after.workspaces.focused == .first)
+        #expect(after.monitors.shown == .first)
         #expect(after.world.focusedWindow == WindowId(1))
     }
 
@@ -355,13 +355,13 @@ import Testing
         var s = world(2, .onScreen, Self.oneColumn)
         s = run(s, [moveToWorkspace("3")]).0             // window 2 goes away; focus falls to window 1
         let away = WindowId(2)
-        let home = s.workspaces.focused
+        let home = s.monitors.shown
         #expect(s.world.focusedWindow == WindowId(1))
 
         s = run(s, [systemEvent(nil)]).0                 // the clear the activation rides in on
         let (after, fx) = Engine.reduce(s, systemEvent(away))
 
-        #expect(after.workspaces.focused == home, "the desktop followed a report it had refused")
+        #expect(after.monitors.shown == home, "the desktop followed a report it had refused")
         #expect(fx == [.focus(WindowId(1))])
         #expect(after == s)
     }

@@ -88,7 +88,7 @@ import EmiraCore
                               executor: executor)
 
         var reports: [WorkspaceName] = []
-        runtime.onStateChanged = { reports.append($0.workspaces.focused) }
+        runtime.onStateChanged = { reports.append($0.monitors.shown) }
 
         // One event that cascades several events deep (capture → raise → teleport → landings). The
         // observer must see the settled end of it, once.

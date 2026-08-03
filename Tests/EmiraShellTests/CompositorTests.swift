@@ -96,7 +96,7 @@ import EmiraCore
         func record(_ entry: String) { entries.append(entry) }
     }
 
-    @MainActor final class RecordingSurface: CoverSurface {
+    @MainActor final class RecordingSurface: CoverPlane {
         let timeline: Timeline
         /// Hold the dismissal open instead of completing it, to model a cross-fade in flight.
         var completesDismissal = true
@@ -179,7 +179,7 @@ import EmiraCore
             timeline.record("capture[\(targets.map { "\($0.id.raw)" }.joined(separator: ","))]")
         }
         func surface(for window: WindowId) -> CapturedSurface? { nil }
-        var base: CGImage? { nil }
+        func base(of monitor: MonitorId) -> CGImage? { nil }
         func closeCover() -> CoverToken {
             closes += 1
             nextToken += 1
@@ -605,5 +605,144 @@ import EmiraCore
                           .endTransition], feedback: log.sink)
 
         #expect(truth.batches.isEmpty)
+    }
+}
+
+/// The plane as N surfaces. `Compositor` decides two things and nothing else: that a fan-out happens
+/// inside **one** frame, and that the two calls with an answer to give back are gated on every surface
+/// rather than the first one to report.
+@Suite @MainActor struct CompositorTests {
+
+    typealias Timeline = CompositingExecutorTests.Timeline
+    typealias RecordingSurface = CompositingExecutorTests.RecordingSurface
+
+    static let bindings = CompositingExecutorTests.bindings
+
+    /// Two surfaces sharing one timeline, so a fan-out's order is visible.
+    static func plane(_ count: Int) -> (Compositor, [RecordingSurface], Timeline) {
+        let timeline = Timeline()
+        let surfaces = (0..<count).map { _ in RecordingSurface(timeline) }
+        let compositor = Compositor(surfaces: surfaces.enumerated().map {
+            (MonitorId(UInt64($0.offset + 1)), $0.element as any CoverSurface)
+        })
+        return (compositor, surfaces, timeline)
+    }
+
+    @Test func everySurfaceSeesEveryBlitInDisplayOrder() {
+        let (compositor, _, timeline) = Self.plane(2)
+        compositor.setLayerFrame(LayerId(1), to: Rect(x: 10, y: 0, width: 1, height: 1))
+        compositor.elevate(LayerId(1))
+        compositor.refreshLayer(LayerId(1))
+        compositor.extendCover(Self.bindings)
+        #expect(timeline.entries == ["blit(1@10)", "blit(1@10)", "elevate(1)", "elevate(1)",
+                                     "refresh(1)", "refresh(1)", "extend(1,2)", "extend(1,2)"])
+    }
+
+    /// The reason the transaction moved up here: a tick's blits must reach the screen as one frame
+    /// across every display, or two strips shear apart by exactly one refresh. The surfaces know
+    /// nothing about frames at all any more.
+    @Test func theFrameBoundaryIsThePlanesAndNotEachSurfaces() {
+        let (compositor, _, timeline) = Self.plane(2)
+        compositor.beginFrame()
+        compositor.setLayerFrame(LayerId(1), to: Rect(x: 7, y: 0, width: 1, height: 1))
+        compositor.endFrame()
+        // The transaction is the plane's own and reaches no surface: two blits, no frame markers.
+        #expect(timeline.entries == ["blit(1@7)", "blit(1@7)"])
+    }
+
+    /// `coverOnScreen` is what entitles the reducer to teleport a real window, so it is owed until the
+    /// cover is up on **every** display — one screen still showing the truth is a window moving in the
+    /// open on it.
+    @Test func theOnScreenReportWaitsForEverySurface() {
+        let (compositor, surfaces, _) = Self.plane(3)
+        var reports = 0
+        compositor.raiseCover(Self.bindings) { reports += 1 }
+        #expect(reports == 0)                                   // every fence still held
+
+        surfaces[0].heldFence?()
+        surfaces[2].heldFence?()
+        #expect(reports == 0)                                   // one display still has no cover up
+        surfaces[1].heldFence?()
+        #expect(reports == 1)
+    }
+
+    /// …and exactly once. A fence firing twice would otherwise count as two displays arriving.
+    @Test func theOnScreenReportIsMadeOnlyOnce() {
+        let (compositor, surfaces, _) = Self.plane(2)
+        var reports = 0
+        compositor.raiseCover(Self.bindings) { reports += 1 }
+        surfaces[0].heldFence?()
+        surfaces[1].heldFence?()
+        surfaces[0].heldFence?()
+        surfaces[1].heldFence?()
+        #expect(reports == 1)
+    }
+
+    /// A fence from a superseded raise must not count against the current one, or a cover that replaced
+    /// another would be reported on screen a display early.
+    @Test func aFenceFromASupersededRaiseIsDropped() {
+        let (compositor, surfaces, _) = Self.plane(2)
+        var first = 0, second = 0
+        compositor.raiseCover(Self.bindings) { first += 1 }
+        let stale = surfaces[0].heldFence
+        compositor.raiseCover(Self.bindings) { second += 1 }
+
+        stale?()                                                // the old raise's fence, arriving late
+        #expect(first == 0 && second == 0)
+        surfaces[0].heldFence?()
+        surfaces[1].heldFence?()
+        #expect(first == 0 && second == 1)
+    }
+
+    /// A departed display's overlay fences its raise on a display link for a screen that is gone, so a
+    /// report gated on it never comes and the hold deadline rescues **every** transition. It is left
+    /// out of the raise instead, which keeps an unplug costing the screen that left and nothing else.
+    @Test func aDepartedDisplayIsNotWaitedOnAndIsNotRaised() {
+        let (compositor, surfaces, timeline) = Self.plane(2)
+        compositor.isAttached = { $0 == MonitorId(1) }
+
+        var reports = 0
+        compositor.raiseCover(Self.bindings) { reports += 1 }
+        #expect(timeline.entries == ["raise(1,2)"])              // the second surface was left alone
+        surfaces[0].heldFence?()
+        #expect(reports == 1)
+    }
+
+    /// A dismissal is not gated the same way: taking a cover down is always safe, and a surface that
+    /// was never raised completes at once — so every one of them is told, and none can be left holding
+    /// a stale photograph for a display that comes back.
+    @Test func aDismissalStillReachesEverySurface() {
+        let (compositor, _, timeline) = Self.plane(2)
+        compositor.isAttached = { $0 == MonitorId(1) }
+        compositor.dismiss(over: 0.2) { }
+        #expect(timeline.entries == ["dismiss", "dismiss"])
+    }
+
+    /// A cover half down is still a cover, so `crossfadeDone` waits for the last dissolve.
+    @Test func theDismissalCompletesOnlyWhenEverySurfaceHasFaded() {
+        let (compositor, surfaces, _) = Self.plane(2)
+        for surface in surfaces { surface.completesDismissal = false }
+        var done = 0
+        compositor.dismiss(over: 0.22) { done += 1 }
+        #expect(surfaces.allSatisfy { $0.dismissedOver == 0.22 })
+
+        surfaces[0].heldCompletion?()
+        #expect(done == 0)
+        surfaces[1].heldCompletion?()
+        #expect(done == 1)
+    }
+
+    /// One display is the ordinary case and must cost nothing: the plane is a pass-through, and both
+    /// reports land the moment its one surface makes them.
+    @Test func aSingleSurfacePlaneIsAPassThrough() {
+        let timeline = Timeline()
+        let surface = RecordingSurface(timeline)
+        let compositor = Compositor(monitor: MonitorId(1), surface: surface)
+        var onScreen = 0, done = 0
+        compositor.raiseCover(Self.bindings) { onScreen += 1 }
+        surface.heldFence?()
+        compositor.dismiss(over: 0.04) { done += 1 }
+        #expect(onScreen == 1 && done == 1)
+        #expect(timeline.entries == ["raise(1,2)", "dismiss"])
     }
 }

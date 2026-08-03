@@ -105,51 +105,76 @@ public enum GuideModel {
     /// different gaps, because there is one geometry authority.
     static let separation = 1.5
 
-    /// A frame of the guide, or `nil` when there is nothing to draw — the guide is off, or no display
-    /// is known yet.
-    public static func layout(for state: State) -> GuideLayout? {
+    /// A frame of `monitor`'s guide, or `nil` when there is nothing to draw — the guide is off, the
+    /// display is not attached, or the strip it is showing is empty.
+    ///
+    /// **Everything is asked of `monitor`**: its metrics, the address it is showing, and that strip's
+    /// extent. A display showing an empty workspace projects nothing and so draws no guide, which is
+    /// the right answer and not a special case.
+    public static func layout(for state: State, on monitor: MonitorId) -> GuideLayout? {
         let settings = state.config.guide
-        guard settings.style != .off, let metrics = state.metrics() else { return nil }
+        guard settings.style != .off, let metrics = state.metrics(of: monitor),
+              let shown = state.monitors.shown(on: monitor) else { return nil }
 
-        let frames = state.workspaces.naturalFrames(scrollOffset: state.motion.viewportOffset.current,
+        let frames = state.workspaces.naturalFrames(shown: shown,
+                                                    scrollOffset: state.motion.viewportOffset.current,
                                                     metrics: metrics,
                                                     widths: state.motion.currentColumnWidths)
-        // The **focused** strip's extent, not every workspace's: a long strip on a workspace you cannot
+        // The **shown** strip's extent, not every workspace's: a long strip on a workspace you cannot
         // see would otherwise size the guide for one you can. During a switch this is already the strip
         // being switched *to*, which is the one the guide should be sizing itself for.
-        let strip = state.layout.columns.flatMap(\.windowIds)
+        let strip = state.workspaces[shown].columns.flatMap(\.windowIds)
             .compactMap { frames[$0] }
             .reduce(Rect.zero) { $0.union($1) }
         guard let projection = projection(settings: settings, working: metrics.workingArea,
                                           strip: strip) else { return nil }
 
+        // **This display's workspaces only.** `naturalFrames` answers for the whole set, which is what
+        // makes a switch slide the outgoing strip through the panel — but those neighbours are the
+        // ones *this* monitor holds, and another display's strips have nothing to do with this panel.
+        let mine = windows(of: state, on: monitor)
         // Sorted, so a rebuild of the layer pool is driven by the id *set* changing and never by
         // dictionary iteration order.
-        let tiles = frames.keys.sorted().compactMap { id -> GuideTile? in
+        let tiles = frames.keys.sorted().filter(mine.contains).compactMap { id -> GuideTile? in
             guard let window = state.world.windows[id] else { return nil }
             guard let frame = frames[id] else { return nil }
             return GuideTile(window: id, bundleId: window.bundleId,
                              rect: separated(projection.project(frame)))
         }
 
-        let ring = state.world.focusedWindow
+        let ring = focusedWindow(of: state, among: mine)
             .flatMap { frames[$0] }
             .map { projection.project($0.displaced(by: state.motion.focusRingDisplacement)) }
 
         return GuideLayout(panel: projection.panel, tiles: tiles,
-                           separators: boundaries(of: state.layout.columns, frames: frames)
+                           separators: boundaries(of: state.workspaces[shown].columns, frames: frames)
                                .map(projection.project),
                            ring: ring, viewport: projection.project(metrics.workingArea))
     }
 
-    /// What the guide is *about* right now, or `nil` when it is off.
-    public static func trigger(for state: State) -> GuideTrigger? {
-        guard state.config.guide.style != .off else { return nil }
+    /// What `monitor`'s guide is *about* right now, or `nil` when it is off or the display has left.
+    ///
+    /// Every field is this display's, `focused` included: there is one focused window on the desktop,
+    /// and a display that does not hold it must not summon a HUD because focus moved on another screen.
+    public static func trigger(for state: State, on monitor: MonitorId) -> GuideTrigger? {
+        guard state.config.guide.style != .off,
+              let shown = state.monitors.shown(on: monitor) else { return nil }
         return GuideTrigger(
-            focused: state.world.focusedWindow,
-            workspace: state.workspaces.focused,
-            columns: state.layout.columns.map { .init(id: $0.id, windows: $0.windowIds) },
+            focused: focusedWindow(of: state, among: windows(of: state, on: monitor)),
+            workspace: shown,
+            columns: state.workspaces[shown].columns.map { .init(id: $0.id, windows: $0.windowIds) },
             offset: state.motion.viewportOffset.target)
+    }
+
+    /// Every window on a strip `monitor` holds — the set both the tiles and the ring are drawn from.
+    private static func windows(of state: State, on monitor: MonitorId) -> Set<WindowId> {
+        Set(state.monitors.owned(of: monitor).flatMap { state.workspaces[$0].allWindowIds })
+    }
+
+    /// The focused window if this display holds it, else `nil`. The ring is single because focus is;
+    /// only the monitor holding it draws one.
+    private static func focusedWindow(of state: State, among mine: Set<WindowId>) -> WindowId? {
+        state.world.focusedWindow.flatMap { mine.contains($0) ? $0 : nil }
     }
 
     /// A tile with its separation taken out of it. Never more than a quarter of an extent, so a tile at
