@@ -112,21 +112,14 @@ public final class Reconstruction: CoverSurface {
     /// Mint and install one layer per binding, bottom→top. A binding whose layer already exists is
     /// skipped. A window with no still gets no layer, and the base shows through where it was.
     ///
-    /// **A window that does not reach this display gets no layer either.** The bindings are the whole
-    /// transition's, so every surface is offered every window; the still's own captured frame is what
-    /// says which screens the window was on. Without the test each display would hold a clipped copy
-    /// of every other display's strip.
-    ///
-    /// `intersects`, not "belongs to": a window straddling the boundary gets a layer on **both**, which
-    /// is what draws it whole across the seam — `Effect.setLayerFrame` stays untagged, so the two
-    /// halves move in lockstep and each overlay clips its own. That is also why every capturer excludes
-    /// the transition's windows from its base, whether or not it filmed them: a display drawing a layer
-    /// for a window whose frozen copy is still in its desktop would show it twice.
+    /// **Every binding here belongs to this display**, because a cover does: the session that minted
+    /// them names its monitor and `Compositor` routes on it, so the windows offered are the ones on the
+    /// strips this screen holds. What a window reaching *past* this display costs is stated in
+    /// `SurfaceCapturer`: its far half is left in the neighbouring desktop.
     private func addLayers(_ bindings: [LayerBinding]) {
         for binding in bindings {
             guard layers[binding.layer] == nil,
-                  let surface = store.surface(for: binding.window),
-                  surface.frame.intersects(overlay.displayFrame) else { continue }
+                  let surface = store.surface(for: binding.window) else { continue }
             let layer = makeLayer(for: binding.window, with: surface)
             layers[binding.layer] = layer
             overlay.addLayer(layer.root)

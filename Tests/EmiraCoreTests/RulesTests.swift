@@ -187,9 +187,7 @@ import Testing
             arrival(2, bundle: "com.tinyspeck.slackmacgap", alreadyOpen: true),
         ])
 
-        let frames = after.workspaces.targetFrames(
-            shown: after.monitors.shownWorkspaces,
-            scrollOffset: after.motion.viewportOffset.current, metrics: after.metrics()!)
+        let frames = after.workspaces.targetFrames(after.placements())
         #expect(frames[WindowId(1)] != nil)
         #expect(frames[WindowId(1)] != frames[WindowId(2)])
     }

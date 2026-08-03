@@ -51,7 +51,7 @@ import Testing
 
     /// The windows on screen right now, asked of the *state* rather than of an effect diff.
     private func onScreen(_ s: State) -> Set<WindowId> {
-        Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
+        Set(s.layout.visibleWindowIds(scrollOffset: s.viewport.offset.current,
                                       metrics: s.metrics()!))
     }
 
@@ -404,7 +404,7 @@ import Testing
         for id in EngineFix.capturedIds(in: fx) {
             (moving, _) = Engine.reduce(moving, .captureReady(id))
         }
-        (moving, _) = Engine.reduce(moving, .coverOnScreen)
+        (moving, _) = Engine.reduce(moving, .coverOnScreen(MonitorId(1)))
         s = moving
         #expect(s.motion.isTransitioning)
         let target = WindowId(1)
@@ -428,9 +428,9 @@ import Testing
         // `focus left` opens a session aimed a screen away. No capture has answered, so the cover is not
         // up, nothing has been teleported, and window 3 is still the one the user is looking at.
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        #expect(s.motion.phase == .capturing)
+        #expect(s.motion.phase(of: s.monitors.focused) == .capturing)
         #expect(s.world.focusedWindow == WindowId(2))
-        #expect(s.motion.viewportOffset.target != s.motion.viewportOffset.current)
+        #expect(s.viewport.offset.target != s.viewport.offset.current)
 
         // Changing your mind and clicking straight back onto window 3 must be honoured.
         expectAdmitted(s, systemEvent(WindowId(3)), WindowId(3))
@@ -447,8 +447,8 @@ import Testing
         let placed = s.world.placedOnScreen
 
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        #expect(s.motion.phase == .capturing)
-        #expect(s.motion.viewportOffset.current == s.motion.viewportOffset.target, "snap aims by arriving")
+        #expect(s.motion.phase(of: s.monitors.focused) == .capturing)
+        #expect(s.viewport.offset.current == s.viewport.offset.target, "snap aims by arriving")
         #expect(s.world.placedOnScreen == placed, "but no window has been asked to go anywhere")
 
         expectAdmitted(s, systemEvent(WindowId(3)), WindowId(3))
@@ -469,11 +469,11 @@ import Testing
         #expect(onScreen(s) == [WindowId(3)])       // three full-width columns; w3 fills the screen
 
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        #expect(s.motion.phase == .capturing)
+        #expect(s.motion.phase(of: s.monitors.focused) == .capturing)
 
         // The leftmost column closes while the head is still open: -1000 pt of strip, nothing teleported.
         (s, _) = Engine.reduce(s, .windowDestroyed(WindowId(1)))
-        #expect(s.motion.phase == .capturing, "still no cover, so still nothing has been asked to move")
+        #expect(s.motion.phase(of: s.monitors.focused) == .capturing, "still no cover, so still nothing has been asked to move")
         #expect(onScreen(s).isEmpty, "the offset now points past the end of the strip it was measured on")
         #expect(s.world.placedOnScreen == [WindowId(3)], "but w3 is where the placement left it")
 

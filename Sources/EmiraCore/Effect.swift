@@ -26,7 +26,9 @@ public enum Effect: Sendable, Equatable, Codable {
     // per-frame writes driven by `Event.tick(dt)` while a transition session is open.
 
     /// Place a reconstruction layer this frame. Keyed by `LayerId`, not `WindowId`: a window may back
-    /// several layers, and the wallpaper layer backs no window at all.
+    /// several layers, and the wallpaper layer backs no window at all. **Untagged, and deliberately**:
+    /// ids are minted from one watermark for every display, so the compositor routes each to the
+    /// surface it built it on and the hottest path in the reducer carries nothing extra.
     case setLayerFrame(LayerId, Rect)
 
     // Capture — ScreenCaptureKit
@@ -35,22 +37,29 @@ public enum Effect: Sendable, Equatable, Codable {
     /// `Event.captureReady`. Gating on that ack is what makes the cover opaque before any real
     /// window teleports behind it.
     ///
+    /// **The `MonitorId` is whose cover these pixels are for**, and it is here for one thing the store
+    /// cannot otherwise know: which display's desktop *base* a batch opening a cover owes. The still
+    /// itself is not per display — `SCContentFilter(desktopIndependentWindow:)` is display-independent,
+    /// so a window owed by two covers is filmed once and its untagged `captureReady` settles both.
+    ///
     /// `size` is the window's size *now*, which decides whether a still kept from an earlier cover may
     /// stand in for this one (`CoverMode.immediate`) — a window that merely moved is showing the pixels
     /// it was filmed with. Zero for a window the world has lost, which no kept still matches.
-    case capture(WindowId, size: Size)
+    case capture(MonitorId, WindowId, size: Size)
 
     // Transition lifecycle — the layered reconstruction (Compositor)
 
-    /// Open a transition session: build the layered reconstruction and raise it. Carries the ordered
-    /// `LayerBinding`s that compose the cover, one per scoped window, z-order bottom→top.
-    case beginTransition([LayerBinding])
+    /// Open a transition session on one display: build the layered reconstruction and raise it. Carries
+    /// the ordered `LayerBinding`s that compose that cover, one per scoped window, z-order bottom→top.
+    /// The `MonitorId` is also what binds each `LayerId` to a surface, which is what lets the
+    /// per-frame `setLayerFrame` stay untagged.
+    case beginTransition(MonitorId, [LayerBinding])
 
     /// Add layers to an already-raised cover, on top, for windows that entered scope after it opened
     /// — an interrupting command retargets the scroll, and the new destination sweeps windows the
     /// original scope never named. Immediately followed by a `setLayerFrame` for every binding, so a
     /// newcomer is created and placed within one frame.
-    case extendCover([LayerBinding])
+    case extendCover(MonitorId, [LayerBinding])
 
     /// Swap one layer's stand-in for the window's own still, which has since landed — a cross-fade of
     /// *contents*, at whatever rect the last tick left the layer at. Emitted only under
@@ -64,9 +73,9 @@ public enum Effect: Sendable, Equatable, Codable {
     /// `extendCover`, which would otherwise bury the mover.
     case elevateLayer(LayerId)
 
-    /// Close the transition session: cross-fade back to the real desktop and drop the cover. Acks
-    /// with `Event.crossfadeDone`.
-    case endTransition
+    /// Close one display's transition session: cross-fade back to the real desktop and drop that
+    /// cover. Acks with `Event.crossfadeDone`.
+    case endTransition(MonitorId)
 
     // Focus & stacking — AX + `NSRunningApplication`
 

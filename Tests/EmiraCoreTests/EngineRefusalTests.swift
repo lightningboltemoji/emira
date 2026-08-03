@@ -18,9 +18,7 @@ import EmiraMotion
     /// ⅓-width columns on a 1000 pt viewport: three fit, the fourth is scrolled off and parks.
     static func parkedWorld() -> (State, WindowId, Rect) {
         let s = EngineFix.world(4)
-        let frames = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces,
-                                               scrollOffset: s.motion.viewportOffset.current,
-                                               metrics: s.metrics()!)
+        let frames = s.workspaces.targetFrames(s.placements())
         let parked = s.workspaces.allWindowIds.first { !s.world.placedOnScreen.contains($0) }
         let id = try! #require(parked, "the fixture is meant to leave a window parked")
         return (s, id, try! #require(frames[id]))
@@ -259,11 +257,11 @@ import EmiraMotion
         let column = s.layout.columns[1].id
         #expect(s.motion.columnWidth(column)?.target == 500)
 
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; fx += f
         }
-        (s, _) = Engine.reduce(s, .coverOnScreen)
-        #expect(s.motion.isCovered)
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
         // The app takes 600 instead of the 500 it was just teleported to.
         let (next, _) = Engine.reduce(s, .placementCorrected(
@@ -402,13 +400,13 @@ import EmiraMotion
         s = EngineFix.settle(s)
 
         (s, _) = Engine.reduce(s, .command(.cycleWidth))               // open a session
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             (s, _) = Engine.reduce(s, .captureReady(w))
         }
-        (s, _) = Engine.reduce(s, .coverOnScreen)
-        #expect(s.motion.isCovered)
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
-        let asked = try! #require(s.layout.targetFrames(scrollOffset: s.motion.viewportOffset.target,
+        let asked = try! #require(s.layout.targetFrames(scrollOffset: s.viewport.offset.target,
                                                         metrics: s.metrics()!)[WindowId(2)])
         var short = asked
         short.size.height = 200

@@ -386,11 +386,11 @@ import Testing
         s = EngineFix.settle(Engine.reduce(s, .windowCreated(
             EngineFix.snapshot(99, role: .dialog, frame: frame))).0)
         s = EngineFix.settle(Engine.reduce(s, .pointerEntered(try #require(s.world.stripWindowIds.first))).0)
-        let offset = s.motion.viewportOffset.current
+        let offset = s.viewport.offset.current
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(WindowId(99)))
         #expect(effects == [.focus(WindowId(99))])
-        #expect(next.motion.viewportOffset.current == offset)
+        #expect(next.viewport.offset.current == offset)
     }
 
     @Test func withTheSettingOffACrossingChangesNothing() throws {

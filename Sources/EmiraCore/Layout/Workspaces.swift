@@ -287,34 +287,30 @@ public struct Workspaces: Sendable, Equatable, Codable {
 
     // Geometry across the whole set
 
-    /// The truth-plane target frame for **every** window on **every** workspace at `scrollOffset`, with
-    /// `shown` the addresses on screen — **the same list the placement walk is given**, acting monitor
-    /// first, so there is one answer to what is on screen rather than two that agree by coincidence.
+    /// The truth-plane target frame for **every** window on **every** workspace, one strip per
+    /// `StripPlacement` in the order given: an address on screen tiles at its own display's offset and
+    /// metrics, everything else parks in full against the metrics of the display that holds it.
     ///
-    /// The first tiles its on-viewport columns and parks the rest; everything else parks in full, at the
-    /// size it would have if it were the one in view. Another display's address parks with them because
-    /// there is still one viewport and one metrics to tile against — what being on screen buys it is its
-    /// place near the front of the park run, and no more.
+    /// **The supply is per display and the run is not.** The ordinals form **one run** across the whole
+    /// set, in the order handed in, so no two parked windows anywhere share a nub — mirrored displays
+    /// report the same frame, so per-lot cursors would silently break both the ±2 pt first-sight
+    /// identity join a daemon restart depends on and the no-overlap invariant. One cursor makes
+    /// uniqueness unconditional; the cost is that a later display's nubs start in a higher lane.
     ///
-    /// The ordinals form **one run** across the whole set, in `placementOrder(shown:)`, so no two parked
-    /// windows anywhere share a nub — a shared park frame would silently break both the ±2 pt
-    /// first-sight identity join a daemon restart depends on and the no-overlap invariant.
-    public func targetFrames(shown: [WorkspaceName], scrollOffset: Double,
-                             metrics: LayoutMetrics) -> [WindowId: Rect] {
-        let order = placementOrder(shown: shown)
-        // Total: `shown` empty and nothing materialized is unreachable — the launch state materializes
-        // one address — but answered rather than trapped.
-        guard let tiling = order.first else { return [:] }
-        // One cursor, carried through every strip: a window with a park floor takes the first slot tall
-        // enough for it and leaves the skipped ones unused, so how far a strip advanced the run is
-        // something only the run knows — counting its windows from out here would hand out a slot twice.
+    /// The cursor is carried *through* each strip rather than advanced by counting windows out here: a
+    /// window with a park floor takes the first slot tall enough for it and leaves the skipped ones
+    /// unused, so how far a strip advanced the run is something only the run knows.
+    public func targetFrames(_ placements: [StripPlacement]) -> [WindowId: Rect] {
         var cursor = 0
-        var frames = self[tiling].targetFrames(scrollOffset: scrollOffset, metrics: metrics,
-                                               parkingFrom: &cursor)
-        for name in order.dropFirst() {
+        var frames: [WindowId: Rect] = [:]
+        for placement in placements {
+            let strip = self[placement.name]
             // Disjoint by construction — a window is on exactly one strip — so the merge rule is
             // unreachable, not a policy.
-            frames.merge(self[name].parkedFrames(metrics: metrics, parkingFrom: &cursor)) { existing, _ in existing }
+            let theirs = placement.scrollOffset.map {
+                strip.targetFrames(scrollOffset: $0, metrics: placement.metrics, parkingFrom: &cursor)
+            } ?? strip.parkedFrames(metrics: placement.metrics, parkingFrom: &cursor)
+            frames.merge(theirs) { existing, _ in existing }
         }
         return frames
     }
@@ -334,18 +330,24 @@ public struct Workspaces: Sendable, Equatable, Codable {
         return name > shown ? metrics.workingArea.height : -metrics.workingArea.height
     }
 
-    /// The **presentation-plane** frame for every window on every workspace — `Layout.naturalFrames`
-    /// across the set, each off-screen strip pushed one screen off by `verticalOffset(of:from:metrics:)`.
+    /// The **presentation-plane** frame for every window on the strips one display holds —
+    /// `Layout.naturalFrames` across `owned`, each off-screen strip pushed one screen off by
+    /// `verticalOffset(of:from:metrics:)`.
+    ///
+    /// **Restricted to `owned`, because this answers for one display's cover.** A strip another screen
+    /// holds is drawn by that screen's cover, at its metrics and its offset; laid out here it would put
+    /// a second copy of itself a screen above or below this display's viewport.
     ///
     /// **Each off-screen strip resolves at its own stored `scrollOffset`, not at the live animator.**
     /// The parameter is `shown`'s; applying it to a strip that is leaving would slide that strip
     /// sideways as it goes instead of straight up or down. `widths` does reach every strip, since
     /// `ColumnId`s are one space across the set and a resize should keep animating as it leaves.
-    public func naturalFrames(shown: WorkspaceName, scrollOffset: Double, metrics: LayoutMetrics,
+    public func naturalFrames(shown: WorkspaceName, among owned: [WorkspaceName], scrollOffset: Double,
+                              metrics: LayoutMetrics,
                               widths: [ColumnId: Double] = [:]) -> [WindowId: Rect] {
         var frames = self[shown].naturalFrames(scrollOffset: scrollOffset, metrics: metrics,
                                                widths: widths)
-        for name in materialized where name != shown {
+        for name in owned where name != shown {
             let dy = verticalOffset(of: name, from: shown, metrics: metrics)
             for (id, frame) in self[name].naturalFrames(scrollOffset: self[scrollOffsetOf: name],
                                                         metrics: metrics, widths: widths) {
@@ -356,15 +358,35 @@ public struct Workspaces: Sendable, Equatable, Codable {
     }
 
     /// The size the layout would give each window **if nobody had answered back**, for every window on
-    /// every strip. Asking only the strip on screen would leave every parked window elsewhere unable to
-    /// match its own recorded answer, and so re-placed on every event forever.
-    public func uncorrectedSizes(metrics: LayoutMetrics) -> [WindowId: Size] {
+    /// every strip, each against the metrics of the display that holds it. Asking only the strip on
+    /// screen would leave every parked window elsewhere unable to match its own recorded answer, and so
+    /// re-placed on every event forever.
+    public func uncorrectedSizes(_ placements: [StripPlacement]) -> [WindowId: Size] {
         var sizes: [WindowId: Size] = [:]
-        for name in materialized {
-            for (id, frame) in self[name].naturalFrames(scrollOffset: 0, metrics: metrics.uncorrected) {
+        for placement in placements {
+            for (id, frame) in self[placement.name].naturalFrames(scrollOffset: 0,
+                                                                  metrics: placement.metrics.uncorrected) {
                 sizes[id] = frame.size
             }
         }
         return sizes
+    }
+}
+
+/// One address's place in a placement pass: the geometry it is laid out against, and — for an address
+/// on screen — the offset its display's viewport is at. `nil` parks the strip in full.
+///
+/// The supply that lets `Workspaces` stay a pure structure while the desktop has several displays: it
+/// carries the answers `Monitors` and `Motion` hold (whose display, at what offset) without this
+/// container having to know either of them exists. Built by `State.placements()`, which is the join.
+public struct StripPlacement: Sendable, Equatable {
+    public let name: WorkspaceName
+    public let metrics: LayoutMetrics
+    public let scrollOffset: Double?
+
+    public init(name: WorkspaceName, metrics: LayoutMetrics, scrollOffset: Double?) {
+        self.name = name
+        self.metrics = metrics
+        self.scrollOffset = scrollOffset
     }
 }

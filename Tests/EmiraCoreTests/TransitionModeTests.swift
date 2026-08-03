@@ -37,12 +37,12 @@ import Testing
     static func completeCaptures(_ s: State) -> (State, [Effect]) {
         var s = s
         var fx: [Effect] = []
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             let (next, out) = Engine.reduce(s, .captureReady(w))
             s = next
             fx += out
         }
-        let (onScreen, teleports) = Engine.reduce(s, .coverOnScreen)
+        let (onScreen, teleports) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
         return (onScreen, fx + teleports)
     }
 
@@ -60,7 +60,7 @@ import Testing
 
         let raised: [Effect]
         (s, raised) = Self.completeCaptures(s)
-        #expect(s.motion.isCovered)
+        #expect(s.motion.isCovered(on: s.monitors.focused))
         #expect(EngineFix.hasEffect(raised) { if case .beginTransition = $0 { return true }; return false })
     }
 
@@ -75,8 +75,8 @@ import Testing
         #expect(s.motion.windowAnimators.isEmpty)
         #expect(s.motion.columnWidths.isEmpty)
         #expect(s.motion.isSettled, "the scroll is already at its target, so nothing is in flight")
-        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current,
-                                       s.motion.viewportOffset.target))
+        #expect(EngineFix.approxScalar(s.viewport.offset.current,
+                                       s.viewport.offset.target))
     }
 
     /// The visible claim. The cover's first blit is the *finished* strip — `emitLayerFrames` reads the
@@ -88,7 +88,7 @@ import Testing
         let snapRaise: [Effect]
         (snap, snapRaise) = Self.completeCaptures(snap)
 
-        let layer = try! #require(snap.motion.layerId(for: WindowId(2)))
+        let layer = try! #require(snap.motion.layerIds(for: WindowId(2)).first)
         let framed = try! #require(EngineFix.layerFrame(of: layer, in: snapRaise))
         // w2 is the column being revealed: at rest it fills the viewport from the working-area origin.
         #expect(EngineFix.approx(framed, Rect(x: 0, y: 0, width: 1000, height: 800)))
@@ -100,7 +100,7 @@ import Testing
         let smoothRaise: [Effect]
         (smooth, smoothRaise) = Self.completeCaptures(smooth)
 
-        let smoothLayer = try! #require(smooth.motion.layerId(for: WindowId(2)))
+        let smoothLayer = try! #require(smooth.motion.layerIds(for: WindowId(2)).first)
         let smoothFramed = try! #require(EngineFix.layerFrame(of: smoothLayer, in: smoothRaise))
         #expect(EngineFix.approx(smoothFramed, Rect(x: -1000, y: 0, width: 1000, height: 800)))
     }
@@ -112,18 +112,18 @@ import Testing
         var s = Self.world(.snap)
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
         (s, _) = Self.completeCaptures(s)
-        #expect(s.motion.isCovered)
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
         var fx: [Effect] = []
-        for w in s.motion.transition?.awaitingLanding ?? [] {
+        for w in s.transition?.awaitingLanding ?? [] {
             let (next, out) = Engine.reduce(s, .axLanded(w))
             s = next
             fx += out
         }
 
         #expect(!s.motion.isTransitioning, "landings alone close it — no tick was fed")
-        #expect(fx.contains(.endTransition))
-        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current, 1000))
+        #expect(fx.contains(.endTransition(MonitorId(1))))
+        #expect(EngineFix.approxScalar(s.viewport.offset.current, 1000))
     }
 
     /// The tick guard, from the other side: a covered-but-settled tick repeats no frame and emits
@@ -135,7 +135,7 @@ import Testing
 
         let (ticked, tfx) = Engine.reduce(s, .tick(dt: 1.0 / 120))
         #expect(tfx.isEmpty, "nothing is in motion, so there is no new frame to blit")
-        #expect(ticked.motion.isCovered, "and it does not close either — the reals have not landed")
+        #expect(ticked.motion.isCovered(on: ticked.monitors.focused), "and it does not close either — the reals have not landed")
     }
 
     /// What all three modes owe: the same resting world. A mode decides what is on screen during the
@@ -149,7 +149,7 @@ import Testing
             let fx: [Effect]
             (s, fx) = Engine.reduce(s, .command(.focus(.left)))
             s = EngineFix.settle(s, fx)
-            resting[mode] = s.motion.viewportOffset.current
+            resting[mode] = s.viewport.offset.current
             frames[mode] = s.world.windows[WindowId(2)]?.frame
         }
         #expect(EngineFix.approxScalar(resting[.snap] ?? -1, resting[.smooth] ?? -2))

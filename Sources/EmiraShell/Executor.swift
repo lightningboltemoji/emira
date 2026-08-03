@@ -91,7 +91,7 @@ public final class MockExecutor: Executor {
             feedback(.axLanded(id))
 
         // Capture: the still is in the (imaginary) image cache.
-        case .capture(let id, _):
+        case .capture(_, let id, _):
             feedback(.captureReady(id))
 
         // The real shell moves focus via AX and the observers echo it back, so the core absorbs its own
@@ -101,12 +101,12 @@ public final class MockExecutor: Executor {
             feedback(.focusChanged(id, origin: .ours))
 
         // The cover is on the glass, instantly — a display an infinitely fast system composes on.
-        case .beginTransition:
-            feedback(.coverOnScreen)
+        case .beginTransition(let monitor, _):
+            feedback(.coverOnScreen(monitor))
 
         // The cross-fade finished and the cover is down.
-        case .endTransition:
-            feedback(.crossfadeDone)
+        case .endTransition(let monitor):
+            feedback(.crossfadeDone(monitor))
 
         // No reply by contract: layer blits are writes the core already knows it made, and growing or
         // re-stacking a cover has no observable completion. `closeWindow` is unacked for a different

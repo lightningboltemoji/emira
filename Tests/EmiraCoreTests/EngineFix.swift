@@ -50,8 +50,8 @@ enum EngineFix {
             var feedback: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let w, _): feedback.append(.captureReady(w))
-                case .beginTransition: feedback.append(.coverOnScreen)
+                case .capture(_, let w, _): feedback.append(.captureReady(w))
+                case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 default: continue
                 }
@@ -126,7 +126,7 @@ enum EngineFix {
 
     /// The window ids a run of `.capture` effects requested, in order.
     static func capturedIds(in fx: [Effect]) -> [WindowId] {
-        fx.compactMap { if case .capture(let w, _) = $0 { return w }; return nil }
+        fx.compactMap { if case .capture(_, let w, _) = $0 { return w }; return nil }
     }
 
     /// The `Rect` a `.setLayerFrame` targeted the given layer with (last wins), or `nil`.
@@ -147,9 +147,14 @@ enum EngineFix {
         var fx: [Effect] = []
         func feed(_ e: Event) { let (n, f) = Engine.reduce(s, e); s = n; fx += f }
 
-        for w in s.motion.transition?.windows ?? [] { feed(.captureReady(w)) }
-        feed(.coverOnScreen)
-        for w in s.motion.transition?.awaitingLanding ?? [] { feed(.axLanded(w)) }
+        // Every display with a cover in flight, since a command can leave more than one open.
+        for monitor in s.motion.transitioningMonitors {
+            for w in s.motion.transition(of: monitor)?.windows ?? [] { feed(.captureReady(w)) }
+            feed(.coverOnScreen(monitor))
+        }
+        for monitor in s.motion.transitioningMonitors {
+            for w in s.motion.transition(of: monitor)?.awaitingLanding ?? [] { feed(.axLanded(w)) }
+        }
         var guardCount = 0
         while s.motion.isTransitioning && guardCount < 5000 {
             feed(.tick(dt: 1.0 / 120))
@@ -182,10 +187,10 @@ enum EngineFix {
             state = next
             for e in fx {
                 switch e {
-                case .capture(let w, _):
+                case .capture(_, let w, _):
                     inbox[frame + captureLatency, default: []].append(.captureReady(w))
-                case .beginTransition:
-                    inbox[frame + coverLatency, default: []].append(.coverOnScreen)
+                case .beginTransition(let m, _):
+                    inbox[frame + coverLatency, default: []].append(.coverOnScreen(m))
                 case .setFrame(let w, _), .park(let w, _):
                     inbox[frame + axLatency, default: []].append(.axLanded(w))
                 default: break
@@ -208,15 +213,17 @@ enum EngineFix {
         /// off screen, so a horizontal-only measure would read as a permanent full-width hole. The
         /// shorter side is how far into the screen the exposure actually reaches.
         func hole() -> Double {
-            guard state.motion.isCovered, let metrics = state.metrics() else { return 0 }
+            guard let monitor = state.monitors.focused, state.motion.isCovered(on: monitor),
+                  let metrics = state.metrics() else { return 0 }
             let view = metrics.workingArea
             let frames = state.workspaces.naturalFrames(
                 shown: state.monitors.shown,
-                scrollOffset: state.motion.viewportOffset.current,
+                among: state.monitors.owned,
+                scrollOffset: state.viewport.offset.current,
                 metrics: metrics,
                 widths: state.motion.currentColumnWidths)
             var worst = 0.0
-            for id in state.workspaces.allWindowIds where state.motion.layerId(for: id) == nil {
+            for id in state.workspaces.allWindowIds where state.motion.layerIds(for: id).isEmpty {
                 guard let natural = frames[id] else { continue }
                 // Exactly the rect `Engine.emitLayerFrames` would blit, if this window had a layer.
                 let f = natural.displaced(by: state.motion.displacement(of: id))

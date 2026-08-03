@@ -95,15 +95,81 @@ public struct State: Sendable, Equatable, Codable {
         monitors.focused.flatMap(metrics(of:))
     }
 
-    /// Fold `Event.screensChanged` into all three containers. **One method, because they must move
+    /// The acting monitor and its metrics together — what a verb naming no monitor works against, and
+    /// the one guard it needs: `nil` is a desktop with no display, where there is no correct frame to
+    /// land on and nothing to open a cover over.
+    public func acting() -> (monitor: MonitorId, metrics: LayoutMetrics)? {
+        guard let monitor = monitors.focused, let metrics = metrics(of: monitor) else { return nil }
+        return (monitor, metrics)
+    }
+
+    /// The acting monitor's viewport — the scroll every verb naming no monitor moves. Total, including
+    /// with no display attached, for the reason `Monitors.shown` is.
+    public var viewport: Viewport { motion.viewport(of: monitors.focused) }
+
+    /// The acting monitor's transition, or `nil`. The projection `layout` is, one container over.
+    public var transition: TransitionSession? { motion.transition(of: monitors.focused) }
+
+    /// The placement plan for this instant: every materialized address, in placement order, carrying
+    /// the geometry it is laid out against and — for an address on screen — the offset its display's
+    /// viewport is at. **Where `Monitors`, `Motion` and `Workspaces` meet**, so that the layout
+    /// container can lay out a desktop of several displays without knowing that displays exist.
+    ///
+    /// A covered display supplies the scroll's **end** and every other display where its viewport
+    /// **rests**, which is the one rule behind both placement passes: behind a raised cover the reals
+    /// belong where the motion is going, everywhere else they belong where the strip is.
+    ///
+    /// Empty with no display attached — the placement no-op `metrics()` already gives.
+    public func placements() -> [StripPlacement] {
+        let shown = Set(monitors.shownWorkspaces)
+        return workspaces.placementOrder(shown: monitors.shownWorkspaces).compactMap { name in
+            // The fallback is unreachable while invariant 2 holds (materialized ⇒ assigned) and is an
+            // answer rather than a trap: an orphan is laid out by the display the user is on.
+            guard let owner = monitors.monitor(of: name) ?? monitors.focused,
+                  let metrics = metrics(of: owner) else { return nil }
+            let live = motion.offset(of: owner)
+            return StripPlacement(name: name, metrics: metrics,
+                                  scrollOffset: shown.contains(name)
+                                      ? (motion.isCovered(on: owner) ? live.target : live.current)
+                                      : nil)
+        }
+    }
+
+    /// The animated things one display is responsible for — every window on a strip it holds, plus the
+    /// columns they sit in, plus whatever its own cover still has in scope. The membership `Motion`
+    /// cannot answer for itself, since its displacements and widths are keyed by ids that outlive both
+    /// a workspace and a display.
+    ///
+    /// The scope is unioned in because a cover is answerable for everything it *draws*: a window that
+    /// left this display's strips mid-transition is still sliding on its layers.
+    public func contents(of id: MonitorId) -> MonitorContents {
+        var windows: Set<WindowId> = []
+        var columns: Set<ColumnId> = []
+        for name in monitors.owned(of: id) {
+            for column in workspaces[name].columns {
+                columns.insert(column.id)
+                windows.formUnion(column.windowIds)
+            }
+        }
+        windows.formUnion(motion.transition(of: id)?.windows ?? [])
+        return MonitorContents(windows: windows, columns: columns)
+    }
+
+    /// Fold `Event.screensChanged` into all four containers. **One method, because they must move
     /// together:** `World` takes the geometry observation just reported, `Monitors` re-homes the
-    /// workspaces around whatever arrived or left, and every address a display ends up showing is
-    /// materialized. A `World` that knows about a display `Monitors` does not is a desktop with no
-    /// metrics and no route to any, so the ordering is structural rather than remembered.
-    public mutating func setMonitors(_ infos: [MonitorInfo]) {
+    /// workspaces around whatever arrived or left, every address a display ends up showing is
+    /// materialized, and `Motion` drops the viewports of displays that have gone. A `World` that knows
+    /// about a display `Monitors` does not is a desktop with no metrics and no route to any, so the
+    /// ordering is structural rather than remembered.
+    ///
+    /// - Returns: the displays whose cover left with them, which the caller owes an `endTransition`:
+    ///   the session is gone from the core, and the overlay it was drawing on has to be told.
+    @discardableResult
+    public mutating func setMonitors(_ infos: [MonitorInfo]) -> [MonitorId] {
         world.setMonitors(infos)
         monitors.reconcile(materialized: workspaces.materialized, infos: infos)
         materializeShown()
+        return motion.reconcile(infos.map(\.id))
     }
 
     /// Show `name` on the acting monitor. **One method, for the same reason `setMonitors` is one:** a
@@ -208,6 +274,8 @@ public enum Engine {
             s.pointer.pendingWarp = s.config.mouseFollowsFocus.warps(pointerCaused: pointerCaused)
                 ? s.world.focusedWindow : nil
         }
+        // Across every display, not the acting one: a cover anywhere is a desktop the user is not
+        // being shown, and the visit is owed until every one of them is down.
         guard let owed = s.pointer.pendingWarp, !s.motion.isTransitioning else { return }
         // Dropped whether or not it produces an effect: a window that closed, parked or went off-screen
         // while the cover was up is not one to send the pointer to, and nothing here retries.
@@ -229,12 +297,17 @@ public enum Engine {
         guard after.config.guide.style != .off else { return after.motion.clearFocusRing() }
         guard before.world.focusedWindow != after.world.focusedWindow else { return }
         guard after.world.focusedWindow != nil else { return after.motion.clearFocusRing() }
+        // Each read is the acting monitor's own — its metrics, its address, its strips. When focus
+        // crossed displays those are two different screens, and the delta between them is the
+        // inter-display vector: the ring flies in from the direction focus left, for free.
         guard let metrics = after.metrics(), let old = before.metrics() else { return }
-        let now = after.workspaces.naturalFrames(shown: after.monitors.shown, scrollOffset: 0,
+        let now = after.workspaces.naturalFrames(shown: after.monitors.shown,
+                                                 among: after.monitors.owned, scrollOffset: 0,
                                                  metrics: metrics)
         // A float, or a window off the strip entirely, has no frame to ring and nothing to travel to.
         guard let arriving = after.world.focusedWindow.flatMap({ now[$0] }) else { return }
-        let was = before.workspaces.naturalFrames(shown: before.monitors.shown, scrollOffset: 0,
+        let was = before.workspaces.naturalFrames(shown: before.monitors.shown,
+                                                  among: before.monitors.owned, scrollOffset: 0,
                                                   metrics: old)
         guard let leaving = before.world.focusedWindow.flatMap({ was[$0] }) else { return }
         after.motion.nudgeFocusRing(by: leaving.delta(from: arriving), params: after.config.moveSpring)
@@ -258,17 +331,24 @@ public enum Engine {
             // tick inert — and never inside `advance`, which must not move the strip during a capture
             // head.
             s.motion.advanceFocusRing(by: dt)
-            guard s.motion.isCovered else { return (s, []) }
+            // One clock for every display (D9), so one tick drives every cover that is up. A display
+            // still capturing is not among them: its seeds must not decay before its cover raises onto
+            // them, which is what makes `advance` scoped rather than global.
+            let covered = s.motion.coveredMonitors.map { (monitor: $0, contents: s.contents(of: $0)) }
+            guard !covered.isEmpty else { return (s, []) }
             // Settled already ⇒ advancing moves nothing and the frame would repeat the last one. That is
             // every tick of a `snap` transition, which has no animator to advance, and the tail of a
-            // `smooth` one still waiting on an AX set after its motion is over.
-            guard !s.motion.isSettled else {
-                let effects = maybeCloseTransition(&s)      // local first — the `.command` trap above
-                return (s, effects)
+            // `smooth` one still waiting on an AX set after its motion is over. Asked per display, so a
+            // scroll on one screen does not re-blit a finished cover on the other.
+            let moving = covered.filter { !s.motion.isSettled(on: $0.monitor, holding: $0.contents) }
+            var effects: [Effect] = []
+            if !moving.isEmpty {
+                s.motion.advance(by: dt, on: moving.map(\.monitor),
+                                 holding: moving.map(\.contents).reduce(MonitorContents()) { $0.union($1) })
+                for entry in moving { effects += emitLayerFrames(s, on: entry.monitor) }
             }
-            s.motion.advance(by: dt)
-            var effects = emitLayerFrames(s)
-            effects += maybeCloseTransition(&s)
+            for entry in covered { effects += maybeCloseTransition(&s, on: entry.monitor,
+                                                                   holding: entry.contents) }
             return (s, effects)
 
         // Truth-plane observations — reality folded into `World`, then re-placed
@@ -382,68 +462,74 @@ public enum Engine {
             return (s, effects)
 
         case .screensChanged(let infos):
-            s.setMonitors(infos)
+            // A display that left took its session with it, and the overlay it was drawing on still
+            // has to be told — a dismissal is the one call that is safe for a screen that is gone.
+            let abandoned = s.setMonitors(infos).map { Effect.endTransition($0) }
             if let focused = s.world.focusedWindow {
                 let effects = reveal(&s, focused, center: s.config.centerFocusedColumn)
-                return (s, effects)
+                return (s, abandoned + effects)
             }
             let effects = reassertTruthPlane(&s)
-            return (s, effects)
+            return (s, abandoned + effects)
 
         // Effect feedback — every effect's result is just another event
 
         case .captureReady(let id):
-            // A scoped still completes one of two waits: the *last* raises the cover and teleports the
-            // reals behind it; one a retarget pulled into scope grows a raised cover. Neither ⇒ no-op.
+            // A scoped still completes one of two waits: the *last* raises that display's cover and
+            // teleports the reals behind it; one a retarget pulled into scope grows a raised cover.
+            // **Untagged, so it is marked in every session waiting on it** (D10) — one still serves
+            // however many covers show that window, and either of them may be the one it completes.
             s.motion.markCaptured(id)
-            if s.motion.isReadyToRaise {
-                s.motion.raiseCover()
-                guard let session = s.motion.transition else { return (s, []) }
-                var effects: [Effect] = [.beginTransition(session.bindings)]
-                effects += elevationEffects(s)      // z-order the bindings alone can't express
-                // A layer starts at its capture-time frame, which is wrong for a column captured at its
-                // park sliver. Presentation only: the reals move at `coverOnScreen`.
-                effects += emitLayerFrames(s)
-                return (s, effects)
+            var effects: [Effect] = []
+            for monitor in s.motion.transitioningMonitors {
+                if s.motion.isReadyToRaise(on: monitor) {
+                    s.motion.raiseCover(on: monitor)
+                    guard let session = s.motion.transition(of: monitor) else { continue }
+                    effects.append(.beginTransition(monitor, session.bindings))
+                    effects += elevationEffects(s, on: monitor)   // z-order the bindings can't express
+                    // A layer starts at its capture-time frame, which is wrong for a column captured at
+                    // its park sliver. Presentation only: the reals move at `coverOnScreen`.
+                    effects += emitLayerFrames(s, on: monitor)
+                } else if s.motion.isReadyToExtend(on: monitor) {
+                    let added = s.motion.extendCover(on: monitor)
+                    guard !added.isEmpty else { continue }
+                    // The `setLayerFrame`s ride along so a newcomer's layer is created *and* positioned
+                    // in one `CATransaction`; the re-elevation does because `extendCover` appends on top.
+                    effects += [.extendCover(monitor, added)] + elevationEffects(s, on: monitor)
+                        + emitLayerFrames(s, on: monitor)
+                }
             }
-            if s.motion.isReadyToExtend {
-                let added = s.motion.extendCover()
-                guard !added.isEmpty else { return (s, []) }
-                // The `setLayerFrame`s ride along so a newcomer's layer is created *and* positioned in
-                // one `CATransaction`; the re-elevation does because `extendCover` appends on top.
-                return (s, [.extendCover(added)] + elevationEffects(s) + emitLayerFrames(s))
-            }
-            return (s, [])
+            return (s, effects)
 
         case .captureRefreshed(let id):
             // The window's own pixels, for a layer already standing in with older ones. No gate reads
             // this and no geometry follows from it — a window with no layer yet (its still beat the
             // raise) needs nothing either, because the raise reads the store and will find the fresh
-            // one waiting there.
-            guard let layer = s.motion.layerId(for: id) else { return (s, []) }
-            return (s, [.refreshLayer(layer)])
+            // one waiting there. Every layer showing it repaints: a window in two covers has one in each.
+            return (s, s.motion.layerIds(for: id).map { .refreshLayer($0) })
 
-        case .coverOnScreen:
-            // The cover is where the eye can see it, so the reals may move. Gated on the phase
-            // advancing rather than on `isCovered`: this teleport *replaces* the landing wait, so a
-            // repeated report would free sets still in flight.
-            guard s.motion.phase == .raising else { return (s, []) }
-            s.motion.confirmCover()
-            let effects = teleportBehindCover(&s, initial: true)
+        case .coverOnScreen(let monitor):
+            // This display's cover is where the eye can see it, so the windows it shows may move. Gated
+            // on the phase advancing rather than on `isCovered`: this teleport *replaces* that session's
+            // landing wait, so a repeated report would free sets still in flight.
+            guard s.motion.phase(of: monitor) == .raising else { return (s, []) }
+            s.motion.confirmCover(on: monitor)
+            let effects = teleportBehindCover(&s, on: monitor)
             return (s, effects)
 
-        case .coverUnavailable:
-            // No pixels from the capture plane; raising anyway would black out the display. Nothing has
-            // moved yet, so abandon and snap.
-            guard s.motion.phase == .capturing else { return (s, []) }
-            s.motion.abortTransition()          // snaps the viewport to its target
+        case .coverUnavailable(let monitor):
+            // No pixels from the capture plane; raising anyway would black out that display. Nothing has
+            // moved there yet, so abandon and snap — on that screen alone.
+            guard s.motion.phase(of: monitor) == .capturing else { return (s, []) }
+            s.motion.abortTransition(on: monitor)   // snaps its viewport to its target
             let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         case .axLanded(let id):
-            // A real window arrived at its AX target. No session ⇒ no-op (an idle set's ack).
+            // A real window arrived at its AX target — marked in every session waiting on it, for the
+            // reason `captureReady` is untagged. No session ⇒ no-op (an idle set's ack).
             s.motion.markLanded(id)
-            let effects = maybeCloseTransition(&s)
+            let effects = closeSettledTransitions(&s)
             return (s, effects)
 
         case .placementCorrected(let id, let requested, let actual):
@@ -459,18 +545,19 @@ public enum Engine {
             // cover open, and mark its recorded frame a guess so the next placement re-issues the set.
             s.world.markUnverified(id)
             s.motion.markLanded(id)
-            let effects = maybeCloseTransition(&s)
+            let effects = closeSettledTransitions(&s)
             return (s, effects)
 
-        case .holdTimeout:
-            // Bound the wait: close regardless, letting unlanded AX sets finish in the open.
-            guard s.motion.isTransitioning else { return (s, []) }
-            s.motion.closeTransition()
+        case .holdTimeout(let monitor):
+            // Bound the wait: close that cover regardless, letting unlanded AX sets finish in the open.
+            // One deadline per display, so a hung app under one cover costs the other screen nothing.
+            guard s.motion.isTransitioning(on: monitor) else { return (s, []) }
+            s.motion.closeTransition(on: monitor)
             // A session that timed out *before* its cover reached the glass never moved a window, and
             // closing it snapped the viewport to a destination nothing has travelled to. Free for a
             // covered session, which teleported at `coverOnScreen` and is already there.
             let effects = reassertTruthPlane(&s)
-            return (s, [.endTransition] + effects)
+            return (s, [.endTransition(monitor)] + effects)
 
         case .crossfadeDone:
             // The cover is fully down; steady state resumed at `endTransition`.
@@ -607,14 +694,15 @@ public enum Engine {
     }
 
     /// Read the old geometry, after `reconcile` and the handler's guards — taken before it, the membership
-    /// bridge's own churn would show up as a bogus displacement. Frames span every workspace; `departing`
-    /// is the focused strip's alone.
+    /// bridge's own churn would show up as a bogus displacement. Frames span every workspace the acting
+    /// monitor holds; `departing` is the focused strip's alone.
     private static func structuralSnapshot(_ s: State, _ metrics: LayoutMetrics) -> StructuralSnapshot {
-        let start = s.motion.viewportOffset.current
+        let start = s.viewport.offset.current
         let widths = s.motion.currentColumnWidths
         return StructuralSnapshot(
             widths: widths,
-            frames: s.workspaces.naturalFrames(shown: s.monitors.shown, scrollOffset: start, metrics: metrics, widths: widths),
+            frames: s.workspaces.naturalFrames(shown: s.monitors.shown, among: s.monitors.owned,
+                                               scrollOffset: start, metrics: metrics, widths: widths),
             departing: s.layout.visibleWindowIds(scrollOffset: start, metrics: metrics))
     }
 
@@ -713,12 +801,12 @@ public enum Engine {
                                              framedAt: Double? = nil) -> [Effect] {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
-        guard let metrics = s.metrics() else { return reassertTruthPlane(&s) }
+        guard let (monitor, metrics) = s.acting() else { return reassertTruthPlane(&s) }
 
         // Re-read, not carried in the snapshot: for a workspace switch it must *not* be the number the
         // snapshot was taken at, since switching snaps the offset to the incoming strip's remembered
         // scroll in between — which is what makes the horizontal axis cancel out of the seed.
-        let start = s.motion.viewportOffset.current
+        let start = s.viewport.offset.current
 
         // No `end == start ⇒ snap` guard: a swap in full view moves the viewport not at all.
         let revealed = focused.flatMap {
@@ -729,20 +817,22 @@ public enum Engine {
         let end = framedAt ?? revealed ?? start
 
         guard let old else {                    // not animating this one — land it at once
-            s.motion.snapViewport(to: end)
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
 
         let scope = scopeUnion(s, old.departing,
                                s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
 
-        guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
-            s.motion.snapViewport(to: end)
+        guard s.motion.isTransitioning(on: monitor)
+                || (s.config.transitionMode.covers && !scope.isEmpty) else {
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
 
         // The second half of the difference: the new geometry, at the live offset and the *same* widths.
-        let new = s.workspaces.naturalFrames(shown: s.monitors.shown, scrollOffset: start, metrics: metrics, widths: old.widths)
+        let new = s.workspaces.naturalFrames(shown: s.monitors.shown, among: s.monitors.owned,
+                                             scrollOffset: start, metrics: metrics, widths: old.widths)
         // What the edit moves where someone could see it — scoped only, since a window with no layer has
         // nothing to lag behind. A fact about the layout, so no mode changes it; only whether it is put
         // in motion below.
@@ -753,30 +843,31 @@ public enum Engine {
         }
         if s.config.transitionMode.animates {
             for move in moves {
-                s.motion.displaceWindow(move.id, by: move.delta, params: s.config.moveSpring)
+                s.motion.displaceWindow(move.id, by: move.delta, params: s.config.moveSpring,
+                                        on: monitor)
             }
         }
 
         // An edit nothing on screen can see needs no cover. The viewport is asked separately because
         // closing the strip's *last* column displaces nobody.
         let scrolls = !approximatelyEqualScalar(end, start)
-        guard !moves.isEmpty || scrolls || s.motion.isTransitioning else {
-            s.motion.snapViewport(to: end)
+        guard !moves.isEmpty || scrolls || s.motion.isTransitioning(on: monitor) else {
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
 
-        var effects = driveTransition(&s, to: end, scope: scope)
+        var effects = driveTransition(&s, on: monitor, to: end, scope: scope)
         // After `driveTransition`: `elevate` no-ops without a session, and that is where one is born.
-        if let mover { s.motion.elevate(mover) }
+        if let mover { s.motion.elevate(mover, on: monitor) }
         // Emits nothing for a session still capturing, nor for a mover just pulled into scope.
-        effects += elevationEffects(s)
+        effects += elevationEffects(s, on: monitor)
         return effects
     }
 
-    /// `Effect.elevateLayer` for the window this transition draws on top, or nothing — no session,
-    /// nothing elevated, or no cover up. Total, so call sites append it unconditionally.
-    private static func elevationEffects(_ s: State) -> [Effect] {
-        guard let layer = s.motion.elevatedLayer else { return [] }
+    /// `Effect.elevateLayer` for the window `monitor`'s transition draws on top, or nothing — no
+    /// session, nothing elevated, or no cover up. Total, so call sites append it unconditionally.
+    private static func elevationEffects(_ s: State, on monitor: MonitorId) -> [Effect] {
+        guard let layer = s.motion.elevatedLayer(on: monitor) else { return [] }
         return [.elevateLayer(layer)]
     }
 
@@ -850,7 +941,7 @@ public enum Engine {
         var effects = old == nil ? abandonTransition(&s) : []
 
         let outgoing = s.monitors.shown
-        s.workspaces[scrollOffsetOf: outgoing] = s.motion.viewportOffset.current
+        s.workspaces[scrollOffsetOf: outgoing] = s.viewport.offset.current
         // Only a window on the outgoing *strip* is worth remembering: a float has no column to return to.
         s.workspaces[lastFocusOf: outgoing] =
             s.world.focusedWindow.flatMap { s.layout.columnIndex(ofWindow: $0) == nil ? nil : $0 }
@@ -859,7 +950,7 @@ public enum Engine {
         // address left on a screen gets a strip. Neither container can do the other's half, which is
         // the join working — and the claim can re-home another display, so the halves are not 1:1.
         s.show(destination)
-        s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: destination])
+        s.motion.snapViewport(to: s.workspaces[scrollOffsetOf: destination], on: s.monitors.focused)
 
         // An empty workspace focuses nothing, written rather than skipped: focus is every verb's subject,
         // so leaving it on the strip being left aims them at a window the user cannot see. `handleFocus`
@@ -983,9 +1074,9 @@ public enum Engine {
     /// snapped cross-workspace switch. `closeTransition` snaps the viewport to where the abandoned scroll
     /// would have come to rest, which is what the outgoing workspace then remembers.
     private static func abandonTransition(_ s: inout State) -> [Effect] {
-        guard s.motion.isTransitioning else { return [] }
-        s.motion.closeTransition()
-        return [.endTransition]
+        guard let monitor = s.monitors.focused, s.motion.isTransitioning(on: monitor) else { return [] }
+        s.motion.closeTransition(on: monitor)
+        return [.endTransition(monitor)]
     }
 
     // Floating (leaving the strip on purpose)
@@ -1035,18 +1126,18 @@ public enum Engine {
     /// cannot snap the viewport out from under a raised cover.
     private static func reveal(_ s: inout State, _ id: WindowId, center: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics() else { return [] }
-        let start = s.motion.viewportOffset.current
+        guard let (monitor, metrics) = s.acting() else { return [] }
+        let start = s.viewport.offset.current
         let offset = center
             ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
             : s.layout.scrollOffsetToReveal(window: id, from: start, metrics: metrics)
-        if s.motion.isTransitioning {
+        if s.motion.isTransitioning(on: monitor) {
             // A window with no column (a float taking focus) reveals to nowhere: keep the destination.
-            let end = offset ?? s.motion.viewportOffset.target
-            return driveTransition(&s, to: end,
+            let end = offset ?? s.viewport.offset.target
+            return driveTransition(&s, on: monitor, to: end,
                                    scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
         }
-        if let offset { s.motion.snapViewport(to: offset) }
+        if let offset { s.motion.snapViewport(to: offset, on: monitor) }
         return reassertTruthPlane(&s)
     }
 
@@ -1059,15 +1150,15 @@ public enum Engine {
     /// is scoped to every window the viewport sweeps between start and end.
     private static func scrollReveal(_ s: inout State, to id: WindowId, center: Bool) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics() else { return [] }
-        let start = s.motion.viewportOffset.current
+        guard let (monitor, metrics) = s.acting() else { return [] }
+        let start = s.viewport.offset.current
         let end = center
             ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
             : s.layout.scrollOffsetToReveal(window: id, from: start, metrics: metrics)
         guard let end else { return [] }
 
-        if s.motion.isTransitioning {
-            return driveTransition(&s, to: end,
+        if s.motion.isTransitioning(on: monitor) {
+            return driveTransition(&s, on: monitor, to: end,
                                    scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
         }
 
@@ -1077,50 +1168,53 @@ public enum Engine {
 
         // No capture capability ⇒ no cover worth raising. Checked *before* the scope is computed.
         guard s.config.transitionMode.covers else {
-            s.motion.snapViewport(to: end)
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
 
         let scope = s.layout.sweptWindowIds(from: start, to: end, metrics: metrics)
         guard !scope.isEmpty else {                 // defensive: nothing to cover → snap
-            s.motion.snapViewport(to: end)
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
-        return driveTransition(&s, to: end, scope: scope)
+        return driveTransition(&s, on: monitor, to: end, scope: scope)
     }
 
-    /// Open a transition aimed at `end` over `scope`, or redirect a running one there. The single place a
-    /// session is opened or re-aimed; the caller owns the snap decisions. On a redirect the scope is
-    /// widened, never replaced — a window the old destination swept is already mid-flight on the
-    /// presentation plane and mid-teleport on the truth plane — and each newcomer owes a `capture`.
-    private static func driveTransition(_ s: inout State, to end: Double, scope: [WindowId]) -> [Effect] {
-        guard s.motion.isTransitioning else {
-            s.motion.openTransition(scope: scope)
-            aimViewport(&s, at: end)
-            return captures(s, scope)
+    /// Open a transition on `monitor` aimed at `end` over `scope`, or redirect a running one there. The
+    /// single place a session is opened or re-aimed; the caller owns the snap decisions. On a redirect
+    /// the scope is widened, never replaced — a window the old destination swept is already mid-flight on
+    /// the presentation plane and mid-teleport on the truth plane — and each newcomer owes a `capture`.
+    private static func driveTransition(_ s: inout State, on monitor: MonitorId, to end: Double,
+                                        scope: [WindowId]) -> [Effect] {
+        guard s.motion.isTransitioning(on: monitor) else {
+            s.motion.openTransition(scope: scope, on: monitor)
+            aimViewport(&s, at: end, on: monitor)
+            return captures(s, scope, on: monitor)
         }
-        aimViewport(&s, at: end)
-        let newcomers = s.motion.extendTransition(scope: scope)
-        var effects: [Effect] = captures(s, newcomers)
-        if s.motion.isCovered { effects += teleportBehindCover(&s) }
+        aimViewport(&s, at: end, on: monitor)
+        let newcomers = s.motion.extendTransition(scope: scope, on: monitor)
+        var effects: [Effect] = captures(s, newcomers, on: monitor)
+        if s.motion.isCovered(on: monitor) { effects += teleportBehindCover(&s, on: monitor) }
         return effects
     }
 
-    /// Aim the scroll at `end` — in motion under `smooth`, already arrived under `snap`, which is what puts
-    /// a snapped cover's first blit at the finished geometry (`emitLayerFrames` reads `.current`). Both
-    /// paths bump `retargetGeneration`, so a redirect re-arms the hold timer under either.
-    private static func aimViewport(_ s: inout State, at end: Double) {
+    /// Aim `monitor`'s scroll at `end` — in motion under `smooth`, already arrived under `snap`, which is
+    /// what puts a snapped cover's first blit at the finished geometry (`emitLayerFrames` reads
+    /// `.current`). Both paths bump that display's `retargetGeneration`, so a redirect re-arms its hold
+    /// timer under either.
+    private static func aimViewport(_ s: inout State, at end: Double, on monitor: MonitorId) {
         if s.config.transitionMode.animates {
-            s.motion.retargetViewport(to: end)
+            s.motion.retargetViewport(to: end, on: monitor)
         } else {
-            s.motion.snapViewport(to: end)
+            s.motion.snapViewport(to: end, on: monitor)
         }
     }
 
-    /// Ask the capture plane for each of `ids`, carrying the size the world currently records for it —
-    /// the one fact that decides whether a kept still may stand in for a fresh capture (`Effect.capture`).
-    private static func captures(_ s: State, _ ids: [WindowId]) -> [Effect] {
-        ids.map { .capture($0, size: s.world.windows[$0]?.frame.size ?? .zero) }
+    /// Ask the capture plane for each of `ids`, naming the cover the pixels are for and carrying the size
+    /// the world currently records — the one fact that decides whether a kept still may stand in for a
+    /// fresh capture (`Effect.capture`).
+    private static func captures(_ s: State, _ ids: [WindowId], on monitor: MonitorId) -> [Effect] {
+        ids.map { .capture(monitor, $0, size: s.world.windows[$0]?.frame.size ?? .zero) }
     }
 
     // The animated resize (the strip's own geometry in motion)
@@ -1182,7 +1276,7 @@ public enum Engine {
                                            sign: Double) -> [Effect] {
         // The resting offset, to pair with the resting widths `layout` still holds: mid-flight the two
         // describe different strips, and the notch is a fact about the one being left.
-        let offset = s.motion.viewportOffset.target
+        let offset = s.viewport.offset.target
         let detent = s.config.resizeDetent
         let centered = s.config.centerFocusedColumn
         return resizeFocusedColumn(&s) { layout, column, metrics, from in
@@ -1235,7 +1329,7 @@ public enum Engine {
                                         at index: Int, _ metrics: LayoutMetrics) -> [Effect] {
         let anchor = Fullscreen.Anchor(
             column: column.id,
-            dx: s.layout.strip(metrics: metrics).leftEdge(of: index) - s.motion.viewportOffset.target)
+            dx: s.layout.strip(metrics: metrics).leftEdge(of: index) - s.viewport.offset.target)
 
         guard column.windowIds.count > 1,
               let row = column.windowIds.firstIndex(of: focused) else {
@@ -1308,7 +1402,7 @@ public enum Engine {
         _ retarget: (inout Layout, ColumnLayout, LayoutMetrics, Double) -> Void
     ) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics(),
+        guard let (monitor, metrics) = s.acting(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
@@ -1318,7 +1412,7 @@ public enum Engine {
         let fromWidth = s.layout.resolvedWidth(of: column, metrics: metrics)
 
         // Asked *before* the width changes: what is on screen under the geometry we are leaving.
-        let start = s.motion.viewportOffset.current
+        let start = s.viewport.offset.current
         let departing = s.layout.visibleWindowIds(scrollOffset: start, metrics: metrics)
 
         retarget(&s.layout, column, metrics, fromWidth)
@@ -1345,8 +1439,9 @@ public enum Engine {
                                s.layout.sweptWindowIds(from: start, to: end, metrics: asked))
 
         // No cover to make, or an empty scope: resize at once, on the same final width.
-        guard s.motion.isTransitioning || (s.config.transitionMode.covers && !scope.isEmpty) else {
-            s.motion.snapViewport(to: end)
+        guard s.motion.isTransitioning(on: monitor)
+                || (s.config.transitionMode.covers && !scope.isEmpty) else {
+            s.motion.snapViewport(to: end, on: monitor)
             return reassertTruthPlane(&s)
         }
 
@@ -1354,9 +1449,9 @@ public enum Engine {
         // preset the layout now holds — the finished width, from the cover's first frame.
         if s.config.transitionMode.animates {
             s.motion.animateColumnWidth(column.id, from: fromWidth, to: toWidth,
-                                        params: s.config.resizeSpring)
+                                        params: s.config.resizeSpring, on: monitor)
         }
-        return driveTransition(&s, to: end, scope: scope)
+        return driveTransition(&s, on: monitor, to: end, scope: scope)
     }
 
     /// Two scoped window sets merged and re-sorted into layout order, which is the cover's z-order.
@@ -1369,30 +1464,26 @@ public enum Engine {
             .filter { wanted.contains($0) }
     }
 
-    /// Teleport the real windows to their frames at the scroll's end (`viewportOffset.target`) behind the
-    /// raised cover, and re-arm the landing wait to the scoped windows that moved. All strip windows are
-    /// repositioned — `writeTruthPlane` is indifferent to the session — but only scoped moves are waited
-    /// on, park→park motion being invisible.
-    ///
-    /// - Parameter initial: the teleport at the cover's raise, which *replaces* the scope-wide landing
-    ///   wait the session was born with. Later re-teleports only add to it — earlier sets may be in flight.
-    private static func teleportBehindCover(_ s: inout State, initial: Bool = false) -> [Effect] {
+    /// Teleport the real windows behind `monitor`'s newly-raised cover, *replacing* that session's
+    /// scope-wide landing wait with the windows the pass actually moved. The pass itself is the whole
+    /// desktop's — every display writes what its own phase entitles it to — but the wait it replaces is
+    /// this one session's, and only scoped moves are waited on, park→park motion being invisible.
+    private static func teleportBehindCover(_ s: inout State, on monitor: MonitorId) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics(), let scope = s.motion.transition?.windows else { return [] }
-        let scopeSet = Set(scope)
-        let write = writeTruthPlane(&s, at: s.motion.viewportOffset.target, metrics: metrics)
-        s.motion.armLandings(write.moved.filter(scopeSet.contains), replacing: initial)
-        return write.effects
+        return placeTruthPlane(&s, replacingFor: monitor)
     }
 
-    /// Blit one `setLayerFrame` per reconstruction layer this frame — the cover's stand-ins sliding to
-    /// their *natural* (un-parked) positions at the current scroll offset, so a window scrolling off-view
-    /// glides off the screen edge here while its real counterpart sits at a corner sliver. A pure read, in
-    /// z-order, over the whole workspace set. Each frame is one derived rect plus three independent
-    /// animated quantities: scroll offset, column widths (resize only), displacement (structural edit).
-    private static func emitLayerFrames(_ s: State) -> [Effect] {
-        guard let metrics = s.metrics(), let session = s.motion.transition else { return [] }
-        let frames = s.workspaces.naturalFrames(shown: s.monitors.shown, scrollOffset: s.motion.viewportOffset.current,
+    /// Blit one `setLayerFrame` per reconstruction layer on `monitor` this frame — that cover's stand-ins
+    /// sliding to their *natural* (un-parked) positions at its current scroll offset, so a window
+    /// scrolling off-view glides off the screen edge here while its real counterpart sits at a corner
+    /// sliver. A pure read, in z-order, over the strips this display holds. Each frame is one derived
+    /// rect plus three independent animated quantities: scroll offset, column widths (resize only),
+    /// displacement (structural edit).
+    private static func emitLayerFrames(_ s: State, on monitor: MonitorId) -> [Effect] {
+        guard let metrics = s.metrics(of: monitor), let shown = s.monitors.shown(on: monitor),
+              let session = s.motion.transition(of: monitor) else { return [] }
+        let frames = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
+                                                scrollOffset: s.motion.offset(of: monitor).current,
                                                 metrics: metrics,
                                                 widths: s.motion.currentColumnWidths)
         return session.bindings.compactMap { binding in
@@ -1402,12 +1493,24 @@ public enum Engine {
         }
     }
 
-    /// Cross-fade out iff the transition is fully done — cover raised, every scoped AX set landed, every
-    /// animator settled. Snaps the viewport to its target so resting state matches the reveal.
-    private static func maybeCloseTransition(_ s: inout State) -> [Effect] {
-        guard s.motion.isReadyToClose else { return [] }
-        s.motion.closeTransition()
-        return [.endTransition]
+    /// Cross-fade `monitor`'s cover out iff its transition is fully done — cover raised, every scoped AX
+    /// set landed, every animator *it* is waiting on settled. Snaps that viewport to its target so
+    /// resting state matches the reveal.
+    private static func maybeCloseTransition(_ s: inout State, on monitor: MonitorId,
+                                             holding contents: MonitorContents) -> [Effect] {
+        guard s.motion.isReadyToClose(on: monitor, holding: contents) else { return [] }
+        s.motion.closeTransition(on: monitor)
+        return [.endTransition(monitor)]
+    }
+
+    /// Try to close every open cover — what an untagged `axLanded` owes, since the window it names may
+    /// have been the last one any number of sessions were waiting on.
+    private static func closeSettledTransitions(_ s: inout State) -> [Effect] {
+        var effects: [Effect] = []
+        for monitor in s.motion.transitioningMonitors {
+            effects += maybeCloseTransition(&s, on: monitor, holding: s.contents(of: monitor))
+        }
+        return effects
     }
 
     /// The window on the focused strip a decision falls back to when focus is on nothing that has a
@@ -1579,19 +1682,21 @@ public enum Engine {
 
     /// Fold a tiled landing that came back a different size than we asked for: record the truth, remember
     /// the answer, re-place. The guards below decline to learn from a stale report and from position-only
-    /// drift; staleness is compared on *size* alone, since `placeAtRest` writes at
-    /// `viewportOffset.current` and `teleportBehindCover` at `.target`. Keying the record on the question
-    /// makes it self-invalidating.
+    /// drift; staleness is compared on *size* alone, since a resting display writes at its viewport's
+    /// `current` and a covered one at its `target`. Keying the record on the question makes it
+    /// self-invalidating.
+    ///
+    /// **Everything here is asked of the display holding the window, not the acting one**: a window that
+    /// answered back is placed by the screen it is on, whichever screen the user is working from.
     private static func handlePlacementCorrected(_ s: inout State, _ id: WindowId,
                                                  requested: Rect, actual: Rect) -> [Effect] {
         s.world.updateFrame(id, to: actual)          // truth first, exactly as `windowFrameChanged` does
 
         // Whichever workspace holds the window, not the focused one: a parked window elsewhere is still
         // placed by us, and ignoring its refusal would re-set it on every event, forever.
-        guard let metrics = s.metrics(),
-              let (name, column) = s.workspaces.column(containing: id),
-              let live = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces, scrollOffset: s.motion.viewportOffset.target,
-                                                   metrics: metrics)[id],
+        guard let (name, column) = s.workspaces.column(containing: id),
+              let monitor = s.monitors.monitor(of: name), let metrics = s.metrics(of: monitor),
+              let live = s.workspaces.targetFrames(s.placements())[id],
               approximatelyEqualSize(requested.size, live.size),      // not stale
               !approximatelyEqualSize(actual.size, requested.size),   // actually about size
               let question = s.workspaces[name].uncorrectedSize(of: id, metrics: metrics)
@@ -1609,17 +1714,18 @@ public enum Engine {
         let before = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
         let stackedBefore = s.workspaces[name].naturalFrames(scrollOffset: 0, metrics: metrics)
         s.world.noteCorrection(id, wanted: question, actual: actual.size)
-        guard let corrected = s.metrics() else { return [] }
+        guard let corrected = s.metrics(of: monitor) else { return [] }
         let after = s.workspaces[name].resolvedWidth(of: column, metrics: corrected)
-        springHeightChange(&s, on: name, column, from: stackedBefore, to: corrected)
+        springHeightChange(&s, on: name, column, from: stackedBefore, to: corrected, monitor: monitor)
 
         // Under a cover every layer frame is re-derived from the strip's geometry each tick, so a column
         // that changes width between two frames jumps. Put the change under the resize spring instead.
-        if s.motion.isTransitioning, !approximatelyEqualScalar(before, after) {
-            s.motion.animateColumnWidth(column.id, from: before, to: after, params: s.config.resizeSpring)
+        if s.motion.isTransitioning(on: monitor), !approximatelyEqualScalar(before, after) {
+            s.motion.animateColumnWidth(column.id, from: before, to: after,
+                                        params: s.config.resizeSpring, on: monitor)
             // Re-aim too: scroll targets derive from the column widths this just changed, so a session
             // keeping its old destination comes to rest past the strip's end, showing phantom desktop.
-            return reaimViewport(&s, corrected)
+            return reaimViewport(&s, on: monitor, corrected)
         }
 
         return reassertTruthPlane(&s)
@@ -1643,7 +1749,8 @@ public enum Engine {
         // An answer about the nub, or a window that isn't at our corner at all? A park writes the slot's
         // left edge as well, so an app that also moved itself horizontally is refusing to park rather
         // than stating a floor, and has nothing to teach a lot that only allocates chrome.
-        guard let metrics = s.metrics(),
+        guard let name = s.workspaces.workspace(of: id),
+              let monitor = s.monitors.monitor(of: name), let metrics = s.metrics(of: monitor),
               approximatelyEqualScalar(actual.minX, requested.minX),
               actual.minY < requested.minY - 0.5
         else { return [] }
@@ -1669,30 +1776,37 @@ public enum Engine {
     private static func springHeightChange(_ s: inout State, on name: WorkspaceName,
                                            _ column: ColumnLayout,
                                            from stackedBefore: [WindowId: Rect],
-                                           to corrected: LayoutMetrics) {
-        guard s.motion.isTransitioning else { return }
+                                           to corrected: LayoutMetrics, monitor: MonitorId) {
+        guard s.motion.isTransitioning(on: monitor) else { return }
         let stackedAfter = s.workspaces[name].naturalFrames(scrollOffset: 0, metrics: corrected)
         for window in column.windowIds {
             guard let was = stackedBefore[window], let now = stackedAfter[window] else { continue }
             let delta = Rect(x: 0, y: was.minY - now.minY, width: 0, height: was.height - now.height)
             guard delta != .zero else { continue }
-            s.motion.displaceWindow(window, by: delta, params: s.config.resizeSpring)
+            s.motion.displaceWindow(window, by: delta, params: s.config.resizeSpring, on: monitor)
         }
     }
 
-    /// Re-derive where an open transition is travelling to, after something changed the geometry its
-    /// destination came from — `resizeFocusedColumn`'s opening arithmetic, applied again when the answer
-    /// changes what the resize meant. With nothing focused there is no column to frame on, so the
-    /// destination stands and only the truth plane is re-asserted against it.
-    private static func reaimViewport(_ s: inout State, _ metrics: LayoutMetrics) -> [Effect] {
-        guard let focused = s.world.focusedWindow else { return reassertTruthPlane(&s) }
-        let start = s.motion.viewportOffset.current
+    /// Re-derive where `monitor`'s open transition is travelling to, after something changed the geometry
+    /// its destination came from — `resizeFocusedColumn`'s opening arithmetic, applied again when the
+    /// answer changes what the resize meant.
+    ///
+    /// The strip is that display's own, and framing on the focused window is only meaningful while focus
+    /// is on it — a correction arriving for a window on another screen has no column here to frame on,
+    /// so the destination stands and only the truth plane is re-asserted against it.
+    private static func reaimViewport(_ s: inout State, on monitor: MonitorId,
+                                      _ metrics: LayoutMetrics) -> [Effect] {
+        guard let shown = s.monitors.shown(on: monitor) else { return reassertTruthPlane(&s) }
+        let strip = s.workspaces[shown]
+        guard let focused = s.world.focusedWindow,
+              strip.columnIndex(ofWindow: focused) != nil else { return reassertTruthPlane(&s) }
+        let start = s.motion.offset(of: monitor).current
         let end = (s.config.centerFocusedColumn
-            ? s.layout.scrollOffsetToCenter(window: focused, metrics: metrics)
-            : s.layout.scrollOffsetToReveal(window: focused, from: start, metrics: metrics))
-            ?? s.motion.viewportOffset.target
-        return driveTransition(&s, to: end,
-                               scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
+            ? strip.scrollOffsetToCenter(window: focused, metrics: metrics)
+            : strip.scrollOffsetToReveal(window: focused, from: start, metrics: metrics))
+            ?? s.motion.offset(of: monitor).target
+        return driveTransition(&s, on: monitor, to: end,
+                               scope: strip.sweptWindowIds(from: start, to: end, metrics: metrics))
     }
 
     /// Whether a window needs no set: it is already at its target, or it is at the answer we know it gives
@@ -1713,71 +1827,104 @@ public enum Engine {
             && approximatelyEqualScalar(known.minY, target.minY)
     }
 
-    /// Re-place every managed window, through whichever writer the truth plane currently answers to — the
-    /// one entry point, since a re-place is asked for by events that arrive on their own schedule.
+    /// Re-place every managed window the truth plane currently answers for — the one entry point, since
+    /// a re-place is asked for by events that arrive on their own schedule.
     ///
-    /// Only **idle** places at `viewportOffset.current`. **Covered**, that number is the spring's, fed to
-    /// the layers; the reals went to the scroll's end at `coverOnScreen`, so `teleportBehindCover` is the
-    /// caller that knows where they belong (and is idempotent — usually it emits nothing). **Capturing**
-    /// and **raising**, no real window has moved yet and none may — there is nothing on the glass to hide
-    /// a write — so the wait's own teleport reads whatever this would have written.
+    /// The four phases still decide everything, but **per display** rather than for the desktop: an idle
+    /// screen's windows are written where its viewport rests, a covered one's at the scroll's end its
+    /// cover is travelling to, and a screen mid-capture or mid-raise writes nothing at all, because
+    /// there is nothing on its glass to hide a write and its own teleport will read whatever this would
+    /// have written. `placements()` carries the first two; `writeTruthPlane` holds back the third.
     private static func reassertTruthPlane(_ s: inout State) -> [Effect] {
-        switch s.motion.phase {
-        case .idle:                  return placeAtRest(&s)
-        case .capturing, .raising:   return []
-        case .covered:               return teleportBehindCover(&s)
-        }
-    }
-
-    /// The idle placement pass: re-place every window at the *resting* scroll offset, having first brought
-    /// that offset back inside a strip that may have shrunk. Reconciles first.
-    private static func placeAtRest(_ s: inout State) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        guard let metrics = s.metrics() else { return [] }
-
-        // The strip can shrink with nothing asking to reveal anything (close a column left of the viewport,
-        // minimize one, narrow the presets). There is no transition to tear here; `reassertTruthPlane`
-        // routes one away. Not when centering: a column in the middle at the strip's end *means* showing
-        // space past it.
-        if !s.config.centerFocusedColumn {
-            let clamped = s.layout.clampScrollOffset(s.motion.viewportOffset.current, metrics: metrics)
-            if !approximatelyEqualScalar(clamped, s.motion.viewportOffset.current) {
-                s.motion.snapViewport(to: clamped)
-            }
-        }
-        return writeTruthPlane(&s, at: s.motion.viewportOffset.current, metrics: metrics).effects
+        clampRestingViewports(&s)
+        return placeTruthPlane(&s)
     }
 
-    /// Write the truth plane at `offset`: the `setFrame`/`park` sets that bring every managed window to the
-    /// frame it has there, and the record of which of them that put on the glass. A window whose column
-    /// overlaps the viewport is `setFrame`d to its tiled frame; one scrolled off-view is `park`ed at its
-    /// sliver slot. Only windows that need to move are emitted, diffed within a sub-pixel tolerance, and
-    /// they are what `moved` returns. `World` frames are updated optimistically — a failure comes back as
-    /// `axFailed` — which keeps a repeated idle event from re-emitting forever.
+    /// Bring every **resting** viewport back inside a strip that may have shrunk — closing a column left
+    /// of the viewport, minimizing one, narrowing the presets. A display mid-transition is left alone:
+    /// its offset belongs to the spring, and `reassertTruthPlane` is not what tears a session down.
+    ///
+    /// Not when centering: a column in the middle at the strip's end *means* showing space past it.
+    private static func clampRestingViewports(_ s: inout State) {
+        guard !s.config.centerFocusedColumn else { return }
+        for id in s.monitors.ids where !s.motion.isTransitioning(on: id) {
+            guard let metrics = s.metrics(of: id), let shown = s.monitors.shown(on: id) else { continue }
+            let live = s.motion.offset(of: id).current
+            let clamped = s.workspaces[shown].clampScrollOffset(live, metrics: metrics)
+            if !approximatelyEqualScalar(clamped, live) { s.motion.snapViewport(to: clamped, on: id) }
+        }
+    }
+
+    /// One placement pass over the whole desktop, and every open landing wait re-armed from what it
+    /// moved. A window a covered session scoped is waited on wherever the pass moved it, which is what
+    /// keeps the close gate honest when two covers are up over one window.
+    ///
+    /// - Parameter replacingFor: the display whose cover has just reached the glass, whose scope-wide
+    ///   wait this pass *replaces*. Every other wait only grows — earlier sets may be in flight, and a
+    ///   re-teleport that moves nothing must not free them.
+    private static func placeTruthPlane(_ s: inout State, replacingFor: MonitorId? = nil) -> [Effect] {
+        let write = writeTruthPlane(&s)
+        for monitor in s.motion.coveredMonitors {
+            guard let scope = s.motion.transition(of: monitor)?.windows else { continue }
+            let scoped = Set(scope)
+            s.motion.armLandings(write.moved.filter(scoped.contains),
+                                 replacing: monitor == replacingFor, on: monitor)
+        }
+        return write.effects
+    }
+
+    /// Write the truth plane: the `setFrame`/`park` sets that bring every managed window to the frame it
+    /// has under `State.placements()`, and the record of which of them that put on the glass. A window
+    /// whose column overlaps its display's viewport is `setFrame`d to its tiled frame; one scrolled
+    /// off-view is `park`ed at its sliver slot in its own display's lot. Only windows that need to move
+    /// are emitted, diffed within a sub-pixel tolerance, and they are what `moved` returns. `World`
+    /// frames are updated optimistically — a failure comes back as `axFailed` — which keeps a repeated
+    /// idle event from re-emitting forever.
+    ///
+    /// **D8's gate lives here**: a real window may move only when the cover is up on every display it is
+    /// visible on before *or* after the move. A workspace lives on one display, so that is the display
+    /// holding it — and a display still capturing or raising is *held*, its windows skipped entirely,
+    /// exactly as the whole desktop used to be.
     ///
     /// The reducer's **only** `setFrame`/`park`, which is what entitles it to call `notePlaced` — a second
     /// place that moved a real window would make `World.placedOnScreen` a lie by omission. The record is
     /// the `setFrame`-vs-`park` switch itself rather than the offset behind it, because a reader asking
     /// "can the user see this window" would otherwise have to re-derive that switch against a *live*
     /// layout, and the two inputs come apart: a structural edit in a capture head restructures the strip
-    /// with no real window moving. The two callers differ over which offset is the truth (`placeAtRest`
-    /// the resting one, `teleportBehindCover` the scroll's end) and over what they do with `moved`, and
-    /// over nothing here.
-    private static func writeTruthPlane(_ s: inout State, at offset: Double,
-                                        metrics: LayoutMetrics) -> (effects: [Effect], moved: [WindowId]) {
-        let frames = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces, scrollOffset: offset, metrics: metrics)
-        let visible = Set(s.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
-        let questions = s.workspaces.uncorrectedSizes(metrics: metrics)
+    /// with no real window moving. A held display contributes what it was already showing, so the record
+    /// stays the whole desktop's while the writes are only what the gate allows.
+    private static func writeTruthPlane(_ s: inout State) -> (effects: [Effect], moved: [WindowId]) {
+        let placements = s.placements()
+        let frames = s.workspaces.targetFrames(placements)
+        let questions = s.workspaces.uncorrectedSizes(placements)
 
         var effects: [Effect] = []
         var moved: [WindowId] = []
-        // `visible` is the focused strip's on-screen set and nothing else's: the rest are parked.
-        for id in s.workspaces.windowIds(inPlacementOrder: s.monitors.shownWorkspaces) {
-            guard let target = frames[id] else { continue }
-            if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
-            effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
-            s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
-            moved.append(id)
+        var visible: Set<WindowId> = []
+        for placement in placements {
+            let strip = s.workspaces[placement.name]
+            let owner = s.monitors.monitor(of: placement.name)
+            switch s.motion.phase(of: owner) {
+            case .capturing, .raising:
+                // Nothing has moved on this display and nothing may, so its share of the on-screen
+                // record is the one the last completed pass made.
+                visible.formUnion(strip.allWindowIds.filter(s.world.isOnScreen))
+                continue
+            case .idle, .covered:
+                break
+            }
+            if let offset = placement.scrollOffset {
+                visible.formUnion(strip.visibleWindowIds(scrollOffset: offset,
+                                                         metrics: placement.metrics))
+            }
+            for id in strip.allWindowIds {
+                guard let target = frames[id] else { continue }
+                if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
+                effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
+                s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
+                moved.append(id)
+            }
         }
         // Every managed window was just answered for, including the ones already standing correctly, so
         // this describes the whole desktop rather than the subset that needed a set.

@@ -9,42 +9,56 @@ import EmiraMotion
 @Suite struct MotionTests {
     static let dt = 1.0 / 120.0
 
+    /// The one display these tests are about, unless they say otherwise.
+    static let one = MonitorId(1)
+
+    /// Everything a test here animates. In the daemon this membership comes from `State.contents(of:)`
+    /// — `Motion` cannot answer it, its displacements and widths being keyed by ids that outlive both a
+    /// workspace and a display.
+    static let everything = MonitorContents(windows: Set((1...9).map { WindowId(UInt64($0)) }),
+                                            columns: Set((1...9).map { ColumnId(UInt64($0)) }))
+
     private func advance(_ m: inout Motion, frames: Int) {
-        for _ in 0..<frames { m.advance(by: Self.dt) }
+        for _ in 0..<frames { m.advance(by: Self.dt, on: [Self.one], holding: Self.everything) }
     }
 
     // Viewport scroll (the one scalar)
 
+    /// The launch viewport is the *detached* one — there is no display yet to hold a scroll — and the
+    /// first display to arrive takes it whole, which is what makes a lid close and its reopening one
+    /// continuous scroll rather than a jump home.
     @Test func startsIdleAndSettled() {
-        let m = Motion(viewportOffset: 300)
-        #expect(m.viewportOffset.current == 300)
+        var m = Motion(viewportOffset: 300)
+        #expect(m.offset(of: nil).current == 300)
+        m.reconcile([Self.one])
+        #expect(m.offset(of: Self.one).current == 300)
         #expect(m.isSettled)
         #expect(!m.isTransitioning)
-        #expect(m.transition == nil)
+        #expect(m.transition(of: Self.one) == nil)
     }
 
     @Test func retargetViewportPreservesVelocityMidScroll() {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.retargetViewport(to: 100)
+        m.retargetViewport(to: 100, on: Self.one)
         advance(&m, frames: 10)
-        let before = m.viewportOffset
+        let before = m.offset(of: Self.one)
         #expect(before.velocity != 0)             // genuinely in flight
 
-        m.retargetViewport(to: -50)               // interrupt
-        #expect(m.viewportOffset.current == before.current)   // position untouched
-        #expect(m.viewportOffset.velocity == before.velocity) // velocity carried
-        #expect(m.viewportOffset.target == -50)
+        m.retargetViewport(to: -50, on: Self.one)               // interrupt
+        #expect(m.offset(of: Self.one).current == before.current)   // position untouched
+        #expect(m.offset(of: Self.one).velocity == before.velocity) // velocity carried
+        #expect(m.offset(of: Self.one).target == -50)
     }
 
     @Test func snapViewportKillsMotion() {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.retargetViewport(to: 100)
+        m.retargetViewport(to: 100, on: Self.one)
         advance(&m, frames: 10)
         #expect(!m.isSettled)
 
-        m.snapViewport(to: 250)
-        #expect(m.viewportOffset.current == 250)
-        #expect(m.viewportOffset.velocity == 0)
+        m.snapViewport(to: 250, on: Self.one)
+        #expect(m.offset(of: Self.one).current == 250)
+        #expect(m.offset(of: Self.one).velocity == 0)
         #expect(m.isSettled)
     }
 
@@ -54,11 +68,11 @@ import EmiraMotion
 
     @Test func advanceMovesTheViewportAndEveryDisplacement() {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.retargetViewport(to: 100)
-        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy)
+        m.retargetViewport(to: 100, on: Self.one)
+        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy, on: Self.one)
 
         advance(&m, frames: 10)
-        #expect(m.viewportOffset.current > 0)                 // strip scrolled
+        #expect(m.offset(of: Self.one).current > 0)                 // strip scrolled
         #expect(m.displacement(of: WindowId(1)).minX > -200)  // and the lag is closing, independently
     }
 
@@ -66,7 +80,7 @@ import EmiraMotion
     /// stays `Layout`'s. That is what makes dropping a settled animator a no-op rather than a decision.
     @Test func aDisplacementDecaysToZeroOnEveryComponent() {
         var m = Motion()
-        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy)
+        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy, on: Self.one)
         #expect(m.displacement(of: WindowId(1)) == Self.displacement)   // t = 0 is the full lag
 
         advance(&m, frames: 3000)
@@ -79,7 +93,7 @@ import EmiraMotion
 
     @Test func isSettledConsidersDisplacements() {
         var m = Motion()
-        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy)
+        m.displaceWindow(WindowId(1), by: Self.displacement, params: .snappy, on: Self.one)
         #expect(!m.isSettled)                     // viewport idle, but a window is rearranging
 
         advance(&m, frames: 3000)
@@ -91,7 +105,7 @@ import EmiraMotion
     /// Velocity is the other half: rebuilding would restart from a dead stop.
     @Test func displacingAgainMidFlightAddsToThePositionAndKeepsTheVelocity() {
         var m = Motion()
-        m.displaceWindow(WindowId(1), by: Rect(x: -600, y: 0, width: 0, height: 0), params: .snappy)
+        m.displaceWindow(WindowId(1), by: Rect(x: -600, y: 0, width: 0, height: 0), params: .snappy, on: Self.one)
         advance(&m, frames: 6)
 
         let midX = m.displacement(of: WindowId(1)).minX
@@ -99,7 +113,7 @@ import EmiraMotion
         #expect(midX > -600 && midX < 0)          // genuinely mid-flight
         #expect(midVelocity != 0)
 
-        m.displaceWindow(WindowId(1), by: Rect(x: -600, y: 0, width: 0, height: 0), params: .snappy)
+        m.displaceWindow(WindowId(1), by: Rect(x: -600, y: 0, width: 0, height: 0), params: .snappy, on: Self.one)
         #expect(abs(m.displacement(of: WindowId(1)).minX - (midX - 600)) < 1e-9)   // added, not reset
         #expect(m.windowAnimator(WindowId(1))?.x.velocity == midVelocity)          // carried through
     }
@@ -117,17 +131,17 @@ import EmiraMotion
     /// or a live transition would re-arm its deadline every tick and could never time out.
     @Test func theRetargetGenerationMovesOnEveryReAimAndNotOnAdvance() {
         var m = Motion()
-        let start = m.retargetGeneration
+        let start = m.retargetGeneration(of: Self.one)
 
-        m.retargetViewport(to: 100)
-        m.snapViewport(to: 0)
-        m.animateColumnWidth(ColumnId(1), from: 300, to: 600)
-        m.displaceWindow(WindowId(1), by: Self.displacement)
-        #expect(m.retargetGeneration == start &+ 4)
+        m.retargetViewport(to: 100, on: Self.one)
+        m.snapViewport(to: 0, on: Self.one)
+        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, on: Self.one)
+        m.displaceWindow(WindowId(1), by: Self.displacement, on: Self.one)
+        #expect(m.retargetGeneration(of: Self.one) == start &+ 4)
 
-        let afterAiming = m.retargetGeneration
+        let afterAiming = m.retargetGeneration(of: Self.one)
         advance(&m, frames: 20)
-        #expect(m.retargetGeneration == afterAiming)   // frames are not decisions
+        #expect(m.retargetGeneration(of: Self.one) == afterAiming)   // frames are not decisions
     }
 
     /// The cover comes down when the motion *looks* finished, not when the arithmetic is finished. A
@@ -137,16 +151,16 @@ import EmiraMotion
     @Test func aScrollSettlesAssoonAsItLooksFinished() {
         // One column pitch on a laptop display — the everyday scroll distance.
         var m = Motion(viewportOffset: 0, params: .smooth)
-        m.retargetViewport(to: 900)
+        m.retargetViewport(to: 900, on: Self.one)
 
         let dt = 1.0 / 120
         var elapsed = 0.0
         var lookedFinished: Double?
         while !m.isSettled && elapsed < 5 {
-            m.advance(by: dt)
+            m.advance(by: dt, on: [Self.one], holding: Self.everything)
             elapsed += dt
             // Within a pixel of the target: from here on, no frame differs from the last one visibly.
-            if lookedFinished == nil, abs(m.viewportOffset.current - 900) < 1 { lookedFinished = elapsed }
+            if lookedFinished == nil, abs(m.offset(of: Self.one).current - 900) < 1 { lookedFinished = elapsed }
         }
 
         #expect(m.isSettled)                                   // it settles at all (not a hang)
@@ -160,7 +174,7 @@ import EmiraMotion
         var m = Motion()
         #expect(m.currentColumnWidths.isEmpty)                 // no override ⇒ the layout's presets
 
-        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, params: .snappy)
+        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, params: .snappy, on: Self.one)
         #expect(m.currentColumnWidths[ColumnId(1)] == 300)     // starts at the width it is leaving
         #expect(!m.isSettled)                                  // …and holds the cover up while it moves
 
@@ -178,14 +192,14 @@ import EmiraMotion
     /// press started from before setting off again. Same property the viewport interrupt has.
     @Test func cyclingAgainMidFlightRetargetsInsteadOfRestarting() {
         var m = Motion()
-        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, params: .snappy)
+        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, params: .snappy, on: Self.one)
         advance(&m, frames: 8)
         let cMid = try! #require(m.columnWidth(ColumnId(1))?.current)
         let vMid = try! #require(m.columnWidth(ColumnId(1))?.velocity)
         #expect(vMid > 0)
 
         // Second press: 600 → 900. `from` is the *new* preset's predecessor and must be ignored.
-        m.animateColumnWidth(ColumnId(1), from: 600, to: 900, params: .snappy)
+        m.animateColumnWidth(ColumnId(1), from: 600, to: 900, params: .snappy, on: Self.one)
         #expect(m.columnWidth(ColumnId(1))?.current == cMid)   // position untouched
         #expect(m.columnWidth(ColumnId(1))?.velocity == vMid)  // velocity carried
         #expect(m.columnWidth(ColumnId(1))?.target == 900)
@@ -199,9 +213,9 @@ import EmiraMotion
     /// A kept animator would be a second authority on a number `Layout` owns.
     @Test func closingATransitionDropsTheWidthOverrides() {
         var m = Motion()
-        m.openTransition(scope: [WindowId(1)])
-        m.animateColumnWidth(ColumnId(1), from: 300, to: 600)
-        m.closeTransition()
+        m.openTransition(scope: [WindowId(1)], on: Self.one)
+        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, on: Self.one)
+        m.closeTransition(on: Self.one)
         #expect(m.currentColumnWidths.isEmpty)
         #expect(m.columnWidth(ColumnId(1)) == nil)
         #expect(m.isSettled)
@@ -212,7 +226,7 @@ import EmiraMotion
         m.removeWindowAnimator(WindowId(99))      // never installed → no-op, no crash
         #expect(m.windowAnimator(WindowId(99)) == nil)
 
-        m.displaceWindow(WindowId(1), by: Self.displacement)
+        m.displaceWindow(WindowId(1), by: Self.displacement, on: Self.one)
         m.removeWindowAnimator(WindowId(1))
         #expect(m.windowAnimator(WindowId(1)) == nil)
         m.removeWindowAnimator(WindowId(1))       // repeat remove → no-op
@@ -224,7 +238,7 @@ import EmiraMotion
     /// absence and the gate it stops holding.
     @Test func removingAColumnWidthAnimatorIsTotalAndUngatesTheSettle() {
         var m = Motion()
-        m.animateColumnWidth(ColumnId(1), from: 300, to: 600)
+        m.animateColumnWidth(ColumnId(1), from: 300, to: 600, on: Self.one)
         #expect(!m.isSettled)                     // the in-flight width holds the gate
 
         m.removeColumnWidthAnimator(ColumnId(1))
@@ -242,126 +256,126 @@ import EmiraMotion
 
     @Test func openTransitionEntersCapturingScopedToTheWindowSet() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
-        let t = try! #require(m.transition)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        let t = try! #require(m.transition(of: Self.one))
         #expect(m.isTransitioning)
         #expect(t.phase == .capturing)
         #expect(t.pendingCaptures == Set(Self.scope))
         #expect(t.awaitingLanding == Set(Self.scope))
         #expect(t.bindings.isEmpty)               // no layers until the cover is raised
-        #expect(!m.isReadyToRaise)                // captures still outstanding
+        #expect(!m.isReadyToRaise(on: Self.one))                // captures still outstanding
     }
 
     @Test func secondOpenIsANoOpOneSessionAtATime() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         m.markCaptured(WindowId(1))
-        m.openTransition(scope: [WindowId(9)])    // ignored — a session is already open
-        let t = try! #require(m.transition)
+        m.openTransition(scope: [WindowId(9)], on: Self.one)    // ignored — a session is already open
+        let t = try! #require(m.transition(of: Self.one))
         #expect(t.windows == Self.scope)
         #expect(t.pendingCaptures == Set([WindowId(2), WindowId(3)]))   // progress preserved
     }
 
     @Test func capturesCompleteGatesTheRaise() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         m.markCaptured(WindowId(1))
         m.markCaptured(WindowId(2))
-        #expect(!m.isReadyToRaise)
+        #expect(!m.isReadyToRaise(on: Self.one))
         m.markCaptured(WindowId(3))
-        #expect(m.isReadyToRaise)                 // every capture in
+        #expect(m.isReadyToRaise(on: Self.one))                 // every capture in
         m.markCaptured(WindowId(3))               // repeat / unknown is total
         m.markCaptured(WindowId(42))
-        #expect(m.isReadyToRaise)
+        #expect(m.isReadyToRaise(on: Self.one))
     }
 
     @Test func raiseCoverMintsOneOrderedUniqueLayerPerWindow() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
 
-        let t = try! #require(m.transition)
+        let t = try! #require(m.transition(of: Self.one))
         #expect(t.phase == .raising)              // built and handed over; not yet on the glass
-        #expect(!m.isReadyToRaise)                // already raised
+        #expect(!m.isReadyToRaise(on: Self.one))                // already raised
         // Deterministic minting from a fresh Motion: L1, L2, L3 in window z-order.
         #expect(t.bindings.map(\.window) == Self.scope)
         #expect(t.bindings.map(\.layer) == [LayerId(1), LayerId(2), LayerId(3)])
-        #expect(m.layerId(for: WindowId(2)) == LayerId(2))
-        #expect(m.layerId(for: WindowId(42)) == nil)   // not scoped
+        #expect(m.layerIds(for: WindowId(2)).first == LayerId(2))
+        #expect(m.layerIds(for: WindowId(42)).first == nil)   // not scoped
     }
 
     /// The raise is two steps, and only the second one lets a real window move. Between them the layers
     /// exist — the cover is real, just not composed yet — which is what `hasLayers` separates out.
     @Test func theCoverOwnsTheRealsOnlyOnceItIsOnScreen() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
 
-        #expect(!m.isCovered)                     // committed is not composed
-        #expect(m.hasLayers)                      // …but the layer tree is up and can be extended
-        m.confirmCover()
-        #expect(m.isCovered)
-        #expect(m.phase == .covered)
+        #expect(!m.isCovered(on: Self.one))                     // committed is not composed
+        #expect(m.hasLayers(on: Self.one))                      // …but the layer tree is up and can be extended
+        m.confirmCover(on: Self.one)
+        #expect(m.isCovered(on: Self.one))
+        #expect(m.phase(of: Self.one) == .covered)
     }
 
     @Test func confirmingIsANoOpOutsideTheRaise() {
         var m = Motion()
-        m.confirmCover()                          // no session at all
+        m.confirmCover(on: Self.one)                          // no session at all
         #expect(!m.isTransitioning)
 
-        m.openTransition(scope: Self.scope)
-        m.confirmCover()                          // still capturing — no cover to confirm
-        #expect(m.phase == .capturing)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        m.confirmCover(on: Self.one)                          // still capturing — no cover to confirm
+        #expect(m.phase(of: Self.one) == .capturing)
 
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
-        m.confirmCover()
-        m.confirmCover()                          // a second report changes nothing
-        #expect(m.phase == .covered)
+        m.raiseCover(on: Self.one)
+        m.confirmCover(on: Self.one)
+        m.confirmCover(on: Self.one)                          // a second report changes nothing
+        #expect(m.phase(of: Self.one) == .covered)
     }
 
     @Test func raiseCoverBeforeAnOpenSessionIsANoOp() {
         var m = Motion()
-        m.raiseCover()                            // no session
+        m.raiseCover(on: Self.one)                            // no session
         #expect(!m.isTransitioning)
-        #expect(m.layerId(for: WindowId(1)) == nil)
+        #expect(m.layerIds(for: WindowId(1)).first == nil)
     }
 
     // The scope that grows
 
     @Test func extendingBeforeTheRaiseAddsToTheBatchTheCoverWaitsOn() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        #expect(m.isReadyToRaise)
+        #expect(m.isReadyToRaise(on: Self.one))
 
-        #expect(m.extendTransition(scope: [WindowId(4), WindowId(2)]) == [WindowId(4)])  // 2 already in
-        #expect(!m.isReadyToRaise)                // the newcomer owes a still, so the raise waits
+        #expect(m.extendTransition(scope: [WindowId(4), WindowId(2)], on: Self.one) == [WindowId(4)])  // 2 already in
+        #expect(!m.isReadyToRaise(on: Self.one))                // the newcomer owes a still, so the raise waits
         m.markCaptured(WindowId(4))
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
         // One cover, built in one piece, with the newcomer last in z-order.
-        #expect(m.transition?.bindings.map(\.window) == Self.scope + [WindowId(4)])
+        #expect(m.transition(of: Self.one)?.bindings.map(\.window) == Self.scope + [WindowId(4)])
     }
 
     @Test func extendingAfterTheRaiseGrowsTheCoverWithFreshLayerIds() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
-        #expect(m.extendCover().isEmpty)          // nothing unbound — the cover is complete
+        m.raiseCover(on: Self.one)
+        #expect(m.extendCover(on: Self.one).isEmpty)          // nothing unbound — the cover is complete
 
-        _ = m.extendTransition(scope: [WindowId(4)])
-        #expect(!m.isReadyToExtend)               // …not until its still lands
+        _ = m.extendTransition(scope: [WindowId(4)], on: Self.one)
+        #expect(!m.isReadyToExtend(on: Self.one))               // …not until its still lands
         m.markCaptured(WindowId(4))
-        #expect(m.isReadyToExtend)
+        #expect(m.isReadyToExtend(on: Self.one))
 
-        let added = m.extendCover()
+        let added = m.extendCover(on: Self.one)
         #expect(added == [LayerBinding(window: WindowId(4), layer: LayerId(4))])   // minted, not reused
-        #expect(!m.isReadyToExtend)               // idempotent: nothing left unbound
-        #expect(m.extendCover().isEmpty)
-        #expect(m.layerId(for: WindowId(4)) == LayerId(4))
+        #expect(!m.isReadyToExtend(on: Self.one))               // idempotent: nothing left unbound
+        #expect(m.extendCover(on: Self.one).isEmpty)
+        #expect(m.layerIds(for: WindowId(4)).first == LayerId(4))
     }
 
     /// A still binds as soon as it lands, whatever else is outstanding. A session-wide gate starves under
@@ -370,96 +384,96 @@ import EmiraMotion
     /// be made to wait for it.
     @Test func aPendingCaptureDoesNotHoldBackALayerWhoseStillHasLanded() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
 
-        _ = m.extendTransition(scope: [WindowId(4)])
-        _ = m.extendTransition(scope: [WindowId(5)])     // a second interrupt, before the first answers
-        #expect(!m.isReadyToExtend)                      // neither still is in yet
+        _ = m.extendTransition(scope: [WindowId(4)], on: Self.one)
+        _ = m.extendTransition(scope: [WindowId(5)], on: Self.one)     // a second interrupt, before the first answers
+        #expect(!m.isReadyToExtend(on: Self.one))                      // neither still is in yet
 
         m.markCaptured(WindowId(4))
-        #expect(m.isReadyToExtend)                       // w4 binds now; w5 is still out
-        #expect(m.extendCover().map(\.window) == [WindowId(4)])
-        #expect(m.layerId(for: WindowId(4)) != nil)
-        #expect(m.layerId(for: WindowId(5)) == nil)      // not named, so its one chance is not spent
+        #expect(m.isReadyToExtend(on: Self.one))                       // w4 binds now; w5 is still out
+        #expect(m.extendCover(on: Self.one).map(\.window) == [WindowId(4)])
+        #expect(m.layerIds(for: WindowId(4)).first != nil)
+        #expect(m.layerIds(for: WindowId(5)).first == nil)      // not named, so its one chance is not spent
 
         m.markCaptured(WindowId(5))
-        #expect(m.extendCover().map(\.window) == [WindowId(5)])
-        #expect(m.layerId(for: WindowId(5)) != nil)
-        #expect(!m.isReadyToExtend)
+        #expect(m.extendCover(on: Self.one).map(\.window) == [WindowId(5)])
+        #expect(m.layerIds(for: WindowId(5)).first != nil)
+        #expect(!m.isReadyToExtend(on: Self.one))
     }
 
     @Test func extendAndExtendCoverAreTotal() {
         var m = Motion()
-        #expect(m.extendTransition(scope: [WindowId(1)]).isEmpty)   // no session
-        #expect(m.extendCover().isEmpty)
+        #expect(m.extendTransition(scope: [WindowId(1)], on: Self.one).isEmpty)   // no session
+        #expect(m.extendCover(on: Self.one).isEmpty)
 
-        m.openTransition(scope: Self.scope)
-        #expect(m.extendTransition(scope: Self.scope).isEmpty)      // all already in scope
-        #expect(m.extendCover().isEmpty)                            // not covered yet
+        m.openTransition(scope: Self.scope, on: Self.one)
+        #expect(m.extendTransition(scope: Self.scope, on: Self.one).isEmpty)      // all already in scope
+        #expect(m.extendCover(on: Self.one).isEmpty)                            // not covered yet
     }
 
     // Abandoning a session that never got a cover
 
     @Test func abortTransitionTearsDownAPreCoverSessionAndSnaps() {
         var m = Motion(viewportOffset: 0, params: .smooth)
-        m.openTransition(scope: Self.scope)
-        m.retargetViewport(to: 900)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        m.retargetViewport(to: 900, on: Self.one)
         advance(&m, frames: 3)
-        #expect(m.viewportOffset.current > 0 && m.viewportOffset.current < 900)
+        #expect(m.offset(of: Self.one).current > 0 && m.offset(of: Self.one).current < 900)
 
-        m.abortTransition()
+        m.abortTransition(on: Self.one)
         #expect(!m.isTransitioning)
-        #expect(m.viewportOffset.current == 900)  // snapped to the destination the spring was aiming at
+        #expect(m.offset(of: Self.one).current == 900)  // snapped to the destination the spring was aiming at
     }
 
     /// A raised cover can only be taken down by the cross-fade — dropping the session under it would
     /// leave a full-screen overlay up with nothing driving its layers.
     @Test func abortTransitionRefusesOnceTheCoverIsUp() {
         var m = Motion()
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
 
-        m.abortTransition()
-        #expect(m.phase == .raising, "a cover on its way to the glass is still a cover")
+        m.abortTransition(on: Self.one)
+        #expect(m.phase(of: Self.one) == .raising, "a cover on its way to the glass is still a cover")
 
-        m.confirmCover()
-        m.abortTransition()
-        #expect(m.isCovered)
+        m.confirmCover(on: Self.one)
+        m.abortTransition(on: Self.one)
+        #expect(m.isCovered(on: Self.one))
     }
 
     @Test func closeIsGatedOnLandingAndSettle() {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
-        m.confirmCover()
-        m.retargetViewport(to: 400)               // the strip is scrolling under the cover
+        m.raiseCover(on: Self.one)
+        m.confirmCover(on: Self.one)
+        m.retargetViewport(to: 400, on: Self.one)               // the strip is scrolling under the cover
         advance(&m, frames: 5)
 
-        #expect(!m.isReadyToClose)                // animating and nothing landed
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))                // animating and nothing landed
         for w in Self.scope { m.markLanded(w) }
-        #expect(!m.isReadyToClose)                // landed, but still animating
-        m.snapViewport(to: 400)                   // motion arrives
-        #expect(m.isReadyToClose)                 // covered + landed + settled
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))                // landed, but still animating
+        m.snapViewport(to: 400, on: Self.one)                   // motion arrives
+        #expect(m.isReadyToClose(on: Self.one, holding: Self.everything))                 // covered + landed + settled
     }
 
     @Test func closeTransitionTearsDownAndSnapsToTruth() {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.displaceWindow(WindowId(7), by: Self.displacement)
-        m.openTransition(scope: Self.scope)
+        m.displaceWindow(WindowId(7), by: Self.displacement, on: Self.one)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
-        m.retargetViewport(to: 400)
+        m.raiseCover(on: Self.one)
+        m.retargetViewport(to: 400, on: Self.one)
         advance(&m, frames: 5)                    // mid-flight when the timeout closes it
 
-        m.closeTransition()
+        m.closeTransition(on: Self.one)
         #expect(!m.isTransitioning)
-        #expect(m.transition == nil)
+        #expect(m.transition(of: Self.one) == nil)
         #expect(m.windowAnimators.isEmpty)        // displacements dropped — resting value is zero
-        #expect(m.viewportOffset.current == 400)  // snapped to target = revealed truth
+        #expect(m.offset(of: Self.one).current == 400)  // snapped to target = revealed truth
         #expect(m.isSettled)
     }
 
@@ -467,35 +481,35 @@ import EmiraMotion
         var m = Motion()
         m.markCaptured(WindowId(1))               // all no-op with no open session
         m.markLanded(WindowId(1))
-        m.closeTransition()
+        m.closeTransition(on: Self.one)
         #expect(!m.isTransitioning)
-        #expect(!m.isReadyToRaise)
-        #expect(!m.isReadyToClose)
+        #expect(!m.isReadyToRaise(on: Self.one))
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))
     }
 
     @Test func layerIdsStayUniqueAcrossSuccessiveTransitions() {
         var m = Motion()
-        m.openTransition(scope: [WindowId(1), WindowId(2)])
+        m.openTransition(scope: [WindowId(1), WindowId(2)], on: Self.one)
         m.markCaptured(WindowId(1)); m.markCaptured(WindowId(2))
-        m.raiseCover()                            // mints L1, L2
-        m.closeTransition()
+        m.raiseCover(on: Self.one)                            // mints L1, L2
+        m.closeTransition(on: Self.one)
 
-        m.openTransition(scope: [WindowId(1)])
+        m.openTransition(scope: [WindowId(1)], on: Self.one)
         m.markCaptured(WindowId(1))
-        m.raiseCover()                            // watermark continues → L3, not a reused L1
-        #expect(m.layerId(for: WindowId(1)) == LayerId(3))
+        m.raiseCover(on: Self.one)                            // watermark continues → L3, not a reused L1
+        #expect(m.layerIds(for: WindowId(1)).first == LayerId(3))
     }
 
     // Serialization (State dumps / replay)
 
     @Test func populatedMotionRoundTripsThroughCodable() throws {
         var m = Motion(viewportOffset: 0, params: .snappy)
-        m.retargetViewport(to: 250)
-        m.displaceWindow(WindowId(7), by: Self.displacement, params: .snappy)
+        m.retargetViewport(to: 250, on: Self.one)
+        m.displaceWindow(WindowId(7), by: Self.displacement, params: .snappy, on: Self.one)
         advance(&m, frames: 6)                    // in-flight: non-zero velocities to serialize
-        m.openTransition(scope: Self.scope)
+        m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover()
+        m.raiseCover(on: Self.one)
         m.markLanded(WindowId(1))
 
         let data = try JSONEncoder().encode(m)

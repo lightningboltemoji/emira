@@ -21,9 +21,9 @@ import EmiraMotion
 
         (s, fx) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))
         for effect in fx {                                      // raise the cover
-            if case .capture(let w, _) = effect { (s, _) = Engine.reduce(s, .captureReady(w)) }
+            if case .capture(_, let w, _) = effect { (s, _) = Engine.reduce(s, .captureReady(w)) }
         }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and put it on the glass
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and put it on the glass
         for _ in 0..<8 { (s, _) = Engine.reduce(s, .tick(dt: 1.0 / 120)) }
         return s
     }
@@ -83,13 +83,13 @@ import EmiraMotion
     /// invented and the cross-fade would reveal it as a jump backwards.
     @Test func aMouseUpMidTransitionDoesNotDragTheRealsToTheSpringsOffset() {
         var s = Self.midScroll()
-        let mid = s.motion.viewportOffset.current
+        let mid = s.viewport.offset.current
         #expect(mid > 0 && mid < 1000, "the spring is between the two columns")
 
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .dragEnded)
         #expect(fx.isEmpty, "the reals are already where the cover is taking them")
-        #expect(s.motion.viewportOffset.current == mid, "and the animation is untouched")
+        #expect(s.viewport.offset.current == mid, "and the animation is untouched")
     }
 
     /// The other half: a window genuinely dragged off-target mid-transition still snaps back — to the
@@ -116,8 +116,8 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(2)),
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))      // aimed at w1; cover not up yet
-        #expect(s.motion.phase == .capturing)
-        let scope = s.motion.transition?.windows ?? []
+        #expect(s.motion.phase(of: s.monitors.focused) == .capturing)
+        let scope = s.transition?.windows ?? []
 
         // A drag lands w2 somewhere of its own, and the mouse-up arrives before the stills do.
         (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(2), Rect(x: 640, y: 480, width: 300, height: 300)))
@@ -128,15 +128,15 @@ import EmiraMotion
         var raised: [Effect] = []
         for w in scope { let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; raised += f }
         let teleports: [Effect]
-        (s, teleports) = Engine.reduce(s, .coverOnScreen)
+        (s, teleports) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
         raised += teleports
-        #expect(s.motion.phase == .covered)
+        #expect(s.motion.phase(of: s.monitors.focused) == .covered)
         // w2 belongs off-view at the destination, so the teleport parks it — carrying the drag with it.
         let parked = EngineFix.placement(of: WindowId(2), in: raised)
         #expect(parked != nil, "the raise picked the drag up; the deferral lost nothing")
 
         let done = EngineFix.settle(s, raised)
-        #expect(EngineFix.approxScalar(done.motion.viewportOffset.current, 0))
+        #expect(EngineFix.approxScalar(done.viewport.offset.current, 0))
         #expect(done.world.windows[WindowId(2)]?.frame == parked, "and w2 came to rest there")
     }
 
@@ -150,10 +150,10 @@ import EmiraMotion
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
         var raise: [Effect] = []
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; raise += f
         }
-        #expect(s.motion.phase == .raising)
+        #expect(s.motion.phase(of: s.monitors.focused) == .raising)
         #expect(!raise.contains { switch $0 { case .setFrame, .park: true; default: false } })
 
         // Every event that would otherwise re-place the world, while the cover is in flight.
@@ -168,8 +168,8 @@ import EmiraMotion
 
         // …and the teleport that was owed all along arrives with the report, carrying the drag.
         let teleports: [Effect]
-        (s, teleports) = Engine.reduce(s, .coverOnScreen)
-        #expect(s.motion.isCovered)
+        (s, teleports) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
+        #expect(s.motion.isCovered(on: s.monitors.focused))
         #expect(EngineFix.placement(of: WindowId(2), in: teleports) != nil)
     }
 

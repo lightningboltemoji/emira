@@ -17,7 +17,7 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(3)),
         ])
         #expect(s.world.focusedWindow == WindowId(3))
-        #expect(s.motion.viewportOffset.current == 2000)
+        #expect(s.viewport.offset.current == 2000)
 
         // focus left → w2. Focus moves *immediately* (truth), but the scroll now animates: a transition
         // opens, aimed at offset 1000, with the viewport not yet moved.
@@ -26,9 +26,9 @@ import EmiraMotion
         #expect(s.world.focusedWindow == WindowId(2))            // focus is a truth change, not animated
         #expect(fx.contains(.focus(WindowId(2))))
         #expect(s.motion.isTransitioning)
-        #expect(s.motion.isCovered == false)                    // still capturing — cover not raised
-        #expect(s.motion.viewportOffset.target == 1000)         // aimed left one viewport
-        #expect(s.motion.viewportOffset.current == 2000)        // hasn't moved yet (no ticks)
+        #expect(s.motion.isCovered(on: s.monitors.focused) == false)                    // still capturing — cover not raised
+        #expect(s.viewport.offset.target == 1000)         // aimed left one viewport
+        #expect(s.viewport.offset.current == 2000)        // hasn't moved yet (no ticks)
         // Scope = {w2, w3} swept, plus w1 as the left shoulder — the column one further `focus left`
         // would pull in, captured now because a capture requested then would arrive too late. No real
         // teleport yet: nothing is exposed before the cover is up.
@@ -39,7 +39,7 @@ import EmiraMotion
         // Drive it home: w2 revealed at offset 1000, cover down.
         let (done, _) = EngineFix.drive(s)
         #expect(done.motion.isTransitioning == false)
-        #expect(EngineFix.approxScalar(done.motion.viewportOffset.current, 1000))
+        #expect(EngineFix.approxScalar(done.viewport.offset.current, 1000))
     }
 
     @Test func focusWithNoViewportMotionIsASnap() {
@@ -55,8 +55,8 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .command(.focus(.left)))       // w3 → w2, both visible
         #expect(s.world.focusedWindow == WindowId(2))
         #expect(s.motion.isTransitioning == false)                // snap, not a transition
-        #expect(s.motion.viewportOffset.velocity == 0)
-        #expect(s.motion.viewportOffset.current == s.motion.viewportOffset.target)  // settled, not moving
+        #expect(s.viewport.offset.velocity == 0)
+        #expect(s.viewport.offset.current == s.viewport.offset.target)  // settled, not moving
         #expect(EngineFix.capturedIds(in: fx).isEmpty)                 // no cover ⇒ no captures
     }
 
@@ -85,7 +85,7 @@ import EmiraMotion
         #expect(s.world.focusedWindow == WindowId(2))
         #expect(fx.contains(.focus(WindowId(2))))
         #expect(fx.contains(.raise(WindowId(2))))
-        #expect(s.motion.viewportOffset.current == 0)                 // no scroll
+        #expect(s.viewport.offset.current == 0)                 // no scroll
         #expect(!fx.contains { if case .setFrame = $0 { return true }; return false })  // no re-place
     }
 
@@ -110,21 +110,21 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .command(.focus(.left)))       // w2 → w1, both visible ⇒ snap
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(s.motion.isTransitioning == false)
-        #expect(s.motion.viewportOffset.current == 0)
+        #expect(s.viewport.offset.current == 0)
 
         // centerColumn: column 0 is [0,500]; centering it in a 1000 viewport ⇒ −(1000−500)/2 = −250.
         // That's a real scroll now, so it animates rather than snapping.
         let (c, fx) = Engine.reduce(s, .command(.centerColumn))
         #expect(c.motion.isTransitioning)                        // animated, not snapped
-        #expect(c.motion.viewportOffset.target == -250)          // aimed at the centered offset
-        #expect(c.motion.viewportOffset.current == 0)            // hasn't moved yet
+        #expect(c.viewport.offset.target == -250)          // aimed at the centered offset
+        #expect(c.viewport.offset.current == 0)            // hasn't moved yet
         #expect(!EngineFix.capturedIds(in: fx).isEmpty)               // captures requested (a cover is coming)
         #expect(!fx.contains(.focus(WindowId(1))))               // centering never re-focuses
 
         // And it lands where it aimed.
         let (done, _) = EngineFix.drive(c)
         #expect(done.motion.isTransitioning == false)
-        #expect(EngineFix.approxScalar(done.motion.viewportOffset.current, -250))
+        #expect(EngineFix.approxScalar(done.viewport.offset.current, -250))
     }
 
     @Test func externalFocusRevealsUnderACoverWithoutEmittingFocus() {
@@ -139,11 +139,11 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(s.motion.isTransitioning)
-        #expect(s.motion.viewportOffset.target == 0)     // aimed back at w1
-        #expect(s.motion.viewportOffset.current == 500)  // and has not jumped there
+        #expect(s.viewport.offset.target == 0)     // aimed back at w1
+        #expect(s.viewport.offset.current == 500)  // and has not jumped there
         #expect(!fx.contains(.focus(WindowId(1))))       // shell-initiated: no focus effect
         #expect(fx.contains { if case .capture = $0 { return true }; return false })
-        #expect(EngineFix.settle(s, fx).motion.viewportOffset.current == 0)
+        #expect(EngineFix.settle(s, fx).viewport.offset.current == 0)
     }
 
     /// The order macOS actually produces when the focused window closes: the app hands key status to a
@@ -156,20 +156,20 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(1)),
             .windowCreated(EngineFix.snapshot(2)),   // focus w2, scrolled to offset 1000
         ])
-        #expect(s.motion.viewportOffset.current == 1000)
+        #expect(s.viewport.offset.current == 1000)
 
         var fx: [Effect]
         (s, fx) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
         var pending = fx                                   // the session's captures are still owed
         #expect(s.motion.isTransitioning)
-        #expect(s.motion.viewportOffset.current == 1000)   // aimed at w1, not standing on it
+        #expect(s.viewport.offset.current == 1000)   // aimed at w1, not standing on it
 
         (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
         pending += fx
         #expect(s.motion.isTransitioning, "the close rides the session it found open")
-        #expect(s.motion.viewportOffset.target == 0)
-        #expect(s.motion.viewportOffset.current == 1000, "and still nothing has jumped")
-        #expect(EngineFix.settle(s, pending).motion.viewportOffset.current == 0)
+        #expect(s.viewport.offset.target == 0)
+        #expect(s.viewport.offset.current == 1000, "and still nothing has jumped")
+        #expect(EngineFix.settle(s, pending).viewport.offset.current == 0)
     }
 
     @Test func externalFocusToNilJustClearsFocus() {

@@ -290,7 +290,7 @@ import EmiraMotion
         // *next* placement asks. It still emits nothing; re-placing here would busy-loop a hung app.
         let (s0, _) = EngineFix.run(EngineFix.booted(), [.windowCreated(EngineFix.snapshot(1))])
         for event: Event in [.tick(dt: 0.016), .axLanded(WindowId(1)),
-                             .captureReady(WindowId(1)), .crossfadeDone, .holdTimeout] {
+                             .captureReady(WindowId(1)), .crossfadeDone(MonitorId(1)), .holdTimeout(MonitorId(1))] {
             let (s1, fx) = Engine.reduce(s0, event)
             #expect(fx.isEmpty)
             #expect(s1 == s0)

@@ -526,7 +526,8 @@ import EmiraCore
         // a second — and a trigger that moved per frame would re-arm the dwell forever.
         var state = Self.world()
         let before = GuideModel.trigger(for: state, on: Self.display)
-        state.motion.advance(by: 1.0 / 120)
+        state.motion.advance(by: 1.0 / 120, on: [Self.display],
+                             holding: state.contents(of: Self.display))
         #expect(GuideModel.trigger(for: state, on: Self.display) == before)
     }
 }

@@ -297,14 +297,25 @@ let executor = CompositingExecutor(surface: compositor, store: capture, truth: t
                                    pointer: pointer, launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
-// the raise, but the capture batch before it is time the user waits through. Stitched together below.
-var captureHeadMs = 0.0
+// the raise, but the capture batch before it is time the user waits through. Stitched together below,
+// and kept per display: two covers are two transitions, and one number for both describes neither.
+var captureHeadMs: [MonitorId: Double] = [:]
+
+/// Whether there is more than one display for a log line to be about. Read once: the shell builds its
+/// per-display machinery at launch, so this cannot change under a running daemon either.
+let namesDisplays = displays.count > 1
+
+/// Which display a line is about, or nothing at all while there is only one to be about.
+func on(_ monitor: MonitorId) -> String {
+    namesDisplays ? " [display \(monitor.raw)]" : ""
+}
 
 capture.onBatchResolved = { report in
     // The head is when the batch stopped blocking the raise, not when it finished; under
     // `CoverMode.immediate` those are different numbers.
-    if report.isHead { captureHeadMs = (report.gate ?? report.elapsed) * 1000 }
-    log(String(format: "capture: %@%d window%@ — raise at %@, done at %.0f ms%@%@%@",
+    if report.isHead { captureHeadMs[report.monitor] = (report.gate ?? report.elapsed) * 1000 }
+    log(String(format: "capture:%@ %@%d window%@ — raise at %@, done at %.0f ms%@%@%@",
+               on(report.monitor),
                report.isHead ? "" : "+", report.windows, report.windows == 1 ? "" : "s",
                report.gate.map { String(format: "%.0f ms", $0 * 1000) } ?? "never",
                report.elapsed * 1000,
@@ -315,10 +326,10 @@ capture.onBatchResolved = { report in
         + (report.timedOut ? " — DEADLINE" : ""))
 }
 
-executor.onCoverDismissed = { frames, seconds in
-    let head = captureHeadMs
-    log(String(format: "transition: %d frames in %.0f ms (%.0f fps); %.0f ms capture head → %.0f ms",
-               frames, seconds * 1000, Double(frames) / max(seconds, 0.001),
+executor.onCoverDismissed = { monitor, frames, seconds in
+    let head = captureHeadMs[monitor] ?? 0
+    log(String(format: "transition:%@ %d frames in %.0f ms (%.0f fps); %.0f ms capture head → %.0f ms",
+               on(monitor), frames, seconds * 1000, Double(frames) / max(seconds, 0.001),
                head, head + seconds * 1000))
 }
 

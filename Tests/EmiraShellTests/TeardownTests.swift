@@ -68,7 +68,7 @@ import EmiraCore
             var events: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let id, _): events.append(.captureReady(id))
+                case .capture(_, let id, _): events.append(.captureReady(id))
                 case .setFrame(let id, _), .park(let id, _): events.append(.axLanded(id))
                 default: continue
                 }

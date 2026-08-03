@@ -78,7 +78,7 @@ import EmiraCore
         let executor = MockExecutor()
         let runtime = Runtime(state: Self.booted(), executor: executor)
 
-        runtime.dispatch(.crossfadeDone)                       // inert when idle
+        runtime.dispatch(.crossfadeDone(MonitorId(1)))                       // inert when idle
         runtime.dispatch(.windowFrameChanged(WindowId(9), Rect(x: 0, y: 0, width: 10, height: 10)))
         runtime.dispatch(.command(.dumpState))                 // deferred command, no-op
 
@@ -152,11 +152,11 @@ import EmiraCore
 
         runtime.dispatch(.command(.focus(.left)))               // window 3 → window 2: a real scroll
 
-        #expect(runtime.state.motion.isCovered)                 // captures in, cover up
+        #expect(runtime.state.motion.isCovered(on: runtime.state.monitors.focused))                 // captures in, cover up
         #expect(runtime.state.world.focusedWindow == WindowId(2))
         // Captured every scoped window — the two the scroll sweeps, plus w1 as the shoulder past its
         // left end (`Layout.sweptWindowIds`) — then raised.
-        let bindings = executor.effects.compactMap { if case .beginTransition(let b) = $0 { return b }; return nil }
+        let bindings = executor.effects.compactMap { if case .beginTransition(_, let b) = $0 { return b }; return nil }
         #expect(bindings.count == 1)
         #expect(bindings.first?.map(\.window) == [WindowId(1), WindowId(2), WindowId(3)])
         // …and the reals teleported behind it, in the same turn.
@@ -183,9 +183,9 @@ import EmiraCore
         // Layers were blitted…
         #expect(executor.effects.contains { if case .setLayerFrame = $0 { return true }; return false })
         // …and the last thing the shell was asked to do was cross-fade the cover away.
-        #expect(executor.effects.last == .endTransition)
+        #expect(executor.effects.last == .endTransition(MonitorId(1)))
         // The strip came to rest at the scroll's destination: column 1 (window 2) fills the viewport.
-        #expect(abs(runtime.state.motion.viewportOffset.current - 1000) < 0.5)
+        #expect(abs(runtime.state.viewport.offset.current - 1000) < 0.5)
     }
 
     @Test func idleWorkNeverStartsTheClock() {
@@ -219,7 +219,7 @@ import EmiraCore
         #expect(clock.startCount == 1 && clock.stopCount == 1)
         #expect(!runtime.state.motion.isTransitioning)
         #expect(runtime.state.world.focusedWindow == WindowId(3))
-        #expect(abs(runtime.state.motion.viewportOffset.current - 2000) < 0.5)
+        #expect(abs(runtime.state.viewport.offset.current - 2000) < 0.5)
     }
 
     /// The ordinary shape: a session opens, the deadline is armed once, and closing on time cancels it.
@@ -246,7 +246,7 @@ import EmiraCore
         let hold = ManualHoldTimer()
         let runtime = Runtime(state: Self.booted(config: Self.halfWidth, windows: 2),
                               executor: MockExecutor(mode: .simulate), clock: clock, hold: hold)
-        let resting = runtime.state.motion.viewportOffset.target
+        let resting = runtime.state.viewport.offset.target
 
         runtime.dispatch(.command(.moveWindow(.left)))          // [w2, w1]
         #expect(hold.armCount == 1)
@@ -254,11 +254,35 @@ import EmiraCore
 
         for _ in 0..<3 { clock.fire() }
         runtime.dispatch(.command(.moveWindow(.right)))         // back to [w1, w2]
-        #expect(runtime.state.motion.viewportOffset.target == resting)   // the viewport never moved
+        #expect(runtime.state.viewport.offset.target == resting)   // the viewport never moved
         #expect(hold.armCount == 2)                                      // …and it re-armed anyway
 
         Self.runClock(clock)
         #expect(!runtime.state.motion.isTransitioning)
+    }
+
+    /// **One deadline per cover** (D7): the arm names the display whose session opened, so an app
+    /// hanging under one screen's cover bounds that screen's wait and no other. Cancelling is by
+    /// absence — the sync walks what the core says is in flight, and drops what is armed and is not.
+    @Test func theDeadlineIsArmedAndCancelledPerDisplay() {
+        let clock = ManualFrameClock()
+        let hold = ManualHoldTimer()
+        var state = Self.booted(config: Self.fullWidth, windows: 3)
+        // A second display, so the acting monitor is a choice rather than the only answer.
+        (state, _) = Engine.reduce(state, .screensChanged([
+            MonitorInfo(id: MonitorId(1), frame: Self.display),
+            MonitorInfo(id: MonitorId(2), frame: Rect(x: 1000, y: 0, width: 1200, height: 900)),
+        ]))
+        let runtime = Runtime(state: state, executor: MockExecutor(mode: .simulate),
+                              clock: clock, hold: hold)
+
+        runtime.dispatch(.command(.focus(.left)))
+        #expect(hold.armCount == 1)
+        #expect(hold.lastMonitor == MonitorId(1), "the deadline belongs to the screen that scrolled")
+
+        Self.runClock(clock)
+        #expect(!runtime.state.motion.isTransitioning)
+        #expect(hold.cancelCount == 1)
     }
 }
 

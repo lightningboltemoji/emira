@@ -116,8 +116,8 @@ public enum GuideModel {
         guard settings.style != .off, let metrics = state.metrics(of: monitor),
               let shown = state.monitors.shown(on: monitor) else { return nil }
 
-        let frames = state.workspaces.naturalFrames(shown: shown,
-                                                    scrollOffset: state.motion.viewportOffset.current,
+        let frames = state.workspaces.naturalFrames(shown: shown, among: state.monitors.owned(of: monitor),
+                                                    scrollOffset: state.motion.offset(of: monitor).current,
                                                     metrics: metrics,
                                                     widths: state.motion.currentColumnWidths)
         // The **shown** strip's extent, not every workspace's: a long strip on a workspace you cannot
@@ -129,13 +129,13 @@ public enum GuideModel {
         guard let projection = projection(settings: settings, working: metrics.workingArea,
                                           strip: strip) else { return nil }
 
-        // **This display's workspaces only.** `naturalFrames` answers for the whole set, which is what
-        // makes a switch slide the outgoing strip through the panel — but those neighbours are the
-        // ones *this* monitor holds, and another display's strips have nothing to do with this panel.
+        // **This display's workspaces only**, which `naturalFrames` is already asked for: the neighbours
+        // that slide through the panel during a switch are the ones *this* monitor holds, and another
+        // display's strips have nothing to do with this panel.
         let mine = windows(of: state, on: monitor)
         // Sorted, so a rebuild of the layer pool is driven by the id *set* changing and never by
         // dictionary iteration order.
-        let tiles = frames.keys.sorted().filter(mine.contains).compactMap { id -> GuideTile? in
+        let tiles = frames.keys.sorted().compactMap { id -> GuideTile? in
             guard let window = state.world.windows[id] else { return nil }
             guard let frame = frames[id] else { return nil }
             return GuideTile(window: id, bundleId: window.bundleId,
@@ -163,7 +163,7 @@ public enum GuideModel {
             focused: focusedWindow(of: state, among: windows(of: state, on: monitor)),
             workspace: shown,
             columns: state.workspaces[shown].columns.map { .init(id: $0.id, windows: $0.windowIds) },
-            offset: state.motion.viewportOffset.target)
+            offset: state.motion.offset(of: monitor).target)
     }
 
     /// Every window on a strip `monitor` holds — the set both the tiles and the ring are drawn from.

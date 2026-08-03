@@ -359,7 +359,7 @@ import EmiraCore
         let writer = ScriptedWriter()
         let events = Recorder()
 
-        AXExecutor(registry: registry, writer: writer).execute([.capture(id, size: .zero)], feedback: events.sink)
+        AXExecutor(registry: registry, writer: writer).execute([.capture(MonitorId(1), id, size: .zero)], feedback: events.sink)
 
         #expect(events.events.isEmpty)
         #expect(writer.placements.isEmpty)
@@ -373,9 +373,9 @@ import EmiraCore
         let events = Recorder()
 
         AXExecutor(registry: registry, writer: writer).execute(
-            [.beginTransition([LayerBinding(window: id, layer: LayerId(1))]),
+            [.beginTransition(MonitorId(1), [LayerBinding(window: id, layer: LayerId(1))]),
              .setLayerFrame(LayerId(1), Self.rect(0)),
-             .endTransition],
+             .endTransition(MonitorId(1))],
             feedback: events.sink)
 
         #expect(events.events.isEmpty)
@@ -394,7 +394,7 @@ import EmiraCore
                               clock: clock)
 
         runtime.dispatch(.command(.focus(.left)))
-        #expect(runtime.state.motion.isCovered)     // captures ack instantly, so the cover is up
+        #expect(runtime.state.motion.isCovered(on: state.monitors.focused))     // captures ack instantly, so the cover is up
         #expect(!writer.placements.isEmpty)         // and the reals were teleported behind it
 
         RuntimeTests.runClock(clock, budget: 600)
@@ -475,7 +475,7 @@ import EmiraCore
         #expect(runtime.state.motion.isTransitioning)
 
         #expect(hold.fire())
-        #expect(executor.effects.contains(.endTransition))
+        #expect(executor.effects.contains(.endTransition(MonitorId(1))))
         #expect(!runtime.state.motion.isTransitioning)
         #expect(!clock.isRunning)
     }
@@ -657,8 +657,8 @@ final class InstantCover: Executor {
         inner.execute(effects, feedback: feedback)
         for effect in effects {
             switch effect {
-            case .capture(let id, _):  feedback(.captureReady(id))
-            case .beginTransition:     feedback(.coverOnScreen)
+            case .capture(_, let id, _):  feedback(.captureReady(id))
+            case .beginTransition:     feedback(.coverOnScreen(MonitorId(1)))
             default:                   continue
             }
         }
@@ -694,13 +694,17 @@ final class ManualHoldTimer: HoldTimer {
 
     var isArmed: Bool { sink != nil }
 
-    func arm(after seconds: TimeInterval, sink: EventSink) {
+    /// The display the last arm named — one deadline per cover, so a test can say *whose* wait it is.
+    private(set) var lastMonitor: MonitorId?
+
+    func arm(after seconds: TimeInterval, on monitor: MonitorId, sink: EventSink) {
         armCount += 1
         lastDuration = seconds
+        lastMonitor = monitor
         self.sink = sink
     }
 
-    func cancel() {
+    func cancel(on monitor: MonitorId) {
         cancelCount += 1
         sink = nil
     }
@@ -711,7 +715,7 @@ final class ManualHoldTimer: HoldTimer {
     func fire() -> Bool {
         guard let sink else { return false }
         self.sink = nil
-        sink(.holdTimeout)
+        sink(.holdTimeout(MonitorId(1)))
         return true
     }
 }

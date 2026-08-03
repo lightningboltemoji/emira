@@ -138,8 +138,8 @@ import EmiraCore
         let executor = PointerExecutor(surface: cursor)
         let log = EventLog()
 
-        executor.execute([.setFrame(WindowId(1), .zero), .focus(WindowId(1)), .endTransition,
-                          .capture(WindowId(1), size: .zero), .exec("true")], feedback: log.sink)
+        executor.execute([.setFrame(WindowId(1), .zero), .focus(WindowId(1)), .endTransition(MonitorId(1)),
+                          .capture(MonitorId(1), WindowId(1), size: .zero), .exec("true")], feedback: log.sink)
         #expect(cursor.calls.isEmpty)
         #expect(log.events.isEmpty)
     }
@@ -516,8 +516,8 @@ import EmiraCore
                 var feedback: [Event] = []
                 for effect in effects {
                     switch effect {
-                    case .capture(let w, _):  feedback.append(.captureReady(w))
-                    case .beginTransition:    feedback.append(.coverOnScreen)
+                    case .capture(_, let w, _):  feedback.append(.captureReady(w))
+                    case .beginTransition:    feedback.append(.coverOnScreen(MonitorId(1)))
                     case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                     default: continue
                     }
@@ -575,11 +575,11 @@ import EmiraCore
         let target = try #require(state.world.placedOnScreen.sorted().first)
         let inside = Self.point(in: state, of: target)
         // Force the covered phase the way a real transition reaches it.
-        state.motion.openTransition(scope: state.world.stripWindowIds)
+        state.motion.openTransition(scope: state.world.stripWindowIds, on: state.monitors.focused)
         for id in state.world.stripWindowIds { state.motion.markCaptured(id) }
-        state.motion.raiseCover()
-        state.motion.confirmCover()
-        #expect(state.motion.isCovered)
+        state.motion.raiseCover(on: state.monitors.focused)
+        state.motion.confirmCover(on: state.monitors.focused)
+        #expect(state.motion.isCovered(on: state.monitors.focused))
 
         let log = PointerTests.EventLog()
         let focus = Self.reader({ state }, log.sink)
@@ -595,10 +595,10 @@ import EmiraCore
         let target = try #require(covered.world.placedOnScreen.sorted().first)
         let inside = Self.point(in: covered, of: target)
         let uncovered = covered
-        covered.motion.openTransition(scope: covered.world.stripWindowIds)
+        covered.motion.openTransition(scope: covered.world.stripWindowIds, on: covered.monitors.focused)
         for id in covered.world.stripWindowIds { covered.motion.markCaptured(id) }
-        covered.motion.raiseCover()
-        covered.motion.confirmCover()
+        covered.motion.raiseCover(on: covered.monitors.focused)
+        covered.motion.confirmCover(on: covered.monitors.focused)
 
         var current = covered
         let log = PointerTests.EventLog()

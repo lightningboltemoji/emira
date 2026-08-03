@@ -37,7 +37,7 @@ import EmiraMotion
         var slower = Config()
         slower.scrollSpring = SpringParams(stiffness: 100, dampingRatio: 1.0)
         let (next, _) = Engine.reduce(s, .configChanged(slower))
-        #expect(next.motion.viewportOffset.params.stiffness == 100)
+        #expect(next.viewport.offset.params.stiffness == 100)
     }
 
     /// A reload mid-scroll must not snap the viewport out from under a raised cover — the same rule
@@ -49,18 +49,18 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(3)),
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
         (s, _) = Engine.reduce(s, .tick(dt: 1.0 / 120))
         #expect(s.motion.isTransitioning)
-        let mid = s.motion.viewportOffset.current
+        let mid = s.viewport.offset.current
 
         var gapped = EngineFix.fullWidth
         gapped.columnGap = 12
         let (after, _) = Engine.reduce(s, .configChanged(gapped))
         // Still one session, still travelling from where it was — not teleported to the new target.
         #expect(after.motion.isTransitioning)
-        #expect(after.motion.viewportOffset.current == mid)
+        #expect(after.viewport.offset.current == mid)
     }
 
     /// `cycleWidth` animates the *resize* spring, which exists so it can differ from the scroll's.

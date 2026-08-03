@@ -33,10 +33,10 @@ import Testing
         .axLanded(WindowId(6)),
         .axFailed(WindowId(7)),
         .captureReady(WindowId(8)),
-        .coverOnScreen,
-        .coverUnavailable,
-        .crossfadeDone,
-        .holdTimeout,
+        .coverOnScreen(MonitorId(1)),
+        .coverUnavailable(MonitorId(1)),
+        .crossfadeDone(MonitorId(1)),
+        .holdTimeout(MonitorId(1)),
     ]
 
     @Test func everyEventRoundTrips() throws {
@@ -108,7 +108,7 @@ import Testing
             decoding: try encoder.encode(Event.windowDestroyed(WindowId(4))), as: UTF8.self)
         #expect(destroyed == #"{"windowDestroyed":{"_0":4}}"#)
 
-        let timeout = String(decoding: try encoder.encode(Event.holdTimeout), as: UTF8.self)
-        #expect(timeout == #"{"holdTimeout":{}}"#)
+        let timeout = String(decoding: try encoder.encode(Event.holdTimeout(MonitorId(1))), as: UTF8.self)
+        #expect(timeout == #"{"holdTimeout":{"_0":1}}"#)
     }
 }

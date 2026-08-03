@@ -67,8 +67,8 @@ import Testing
             var feedback: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let w, _): feedback.append(.captureReady(w))
-                case .beginTransition: feedback.append(.coverOnScreen)
+                case .capture(_, let w, _): feedback.append(.captureReady(w))
+                case .beginTransition: feedback.append(.coverOnScreen(MonitorId(1)))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 case .warpPointer(let rect): seen.append(rect)
                 default: continue
@@ -110,7 +110,7 @@ import Testing
         let (next, _) = Engine.reduce(s, .command(.focus(.left)))
         #expect(next.pointer.pendingWarp != nil)
 
-        let (closed, effects) = Engine.reduce(next, .holdTimeout)
+        let (closed, effects) = Engine.reduce(next, .holdTimeout(MonitorId(1)))
         #expect(Self.warps(effects).count == 1)
         #expect(closed.pointer.pendingWarp == nil)
     }
@@ -318,7 +318,7 @@ import Testing
         #expect(Self.warps(effects).isEmpty)
 
         // And the session closing afterwards pays nothing, which is the half that would have leaked.
-        let (closed, out) = Engine.reduce(next, .holdTimeout)
+        let (closed, out) = Engine.reduce(next, .holdTimeout(MonitorId(1)))
         #expect(Self.warps(out).isEmpty)
         #expect(closed.pointer.pendingWarp == nil)
     }

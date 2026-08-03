@@ -104,20 +104,22 @@ public enum Event: Sendable, Equatable, Codable {
     /// `captureReady`, so this asks for a content swap and changes no geometry.
     case captureRefreshed(WindowId)
 
-    /// The cover a `beginTransition` built is on the glass — committing a frame is not displaying one,
-    /// and until this arrives nothing is hiding the desktop. The gate on every teleport, reported once
-    /// per raise.
-    case coverOnScreen
+    /// The cover a `beginTransition` built is on this display's glass — committing a frame is not
+    /// displaying one, and until this arrives nothing is hiding that desktop. The gate on every teleport
+    /// of a window that display shows, reported once per raise.
+    case coverOnScreen(MonitorId)
 
-    /// The capture plane could not produce a cover at all. Arrives *instead of* that batch's
-    /// `captureReady` acks, so the core never counts down to a raise it has no pixels for.
-    case coverUnavailable
+    /// The capture plane could not produce a cover for this display at all. Arrives *instead of* that
+    /// batch's `captureReady` acks, so the core never counts down to a raise it has no pixels for.
+    case coverUnavailable(MonitorId)
 
-    /// The `endTransition` cross-fade finished; the cover is down and steady state resumes.
-    case crossfadeDone
+    /// The `endTransition` cross-fade finished on this display; its cover is down and steady state
+    /// resumes there.
+    case crossfadeDone(MonitorId)
 
-    /// The transition hold-timeout fired: close the session regardless, and keep reconciling.
-    case holdTimeout
+    /// This display's transition hold-timeout fired: close that session regardless, and keep
+    /// reconciling. One deadline per cover, since one hung app must not bound another screen's wait.
+    case holdTimeout(MonitorId)
 }
 
 /// Who moved focus — the one thing a focus report does not say about itself, and the only fact

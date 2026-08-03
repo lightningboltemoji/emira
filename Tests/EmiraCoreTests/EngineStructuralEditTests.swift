@@ -153,7 +153,7 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.right)))
         #expect(s.layout.columns.map(\.windowIds) == arrangement)
-        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current, 0))
+        #expect(EngineFix.approxScalar(s.viewport.offset.current, 0))
     }
 
     /// `down` consumes and `up` expels — the vertical axis is not one idea with two ends here, which
@@ -291,8 +291,8 @@ import EmiraMotion
             // Nothing has moved on the truth plane yet: the reals wait for the cover.
             #expect(!EngineFix.hasEffect(fx) { if case .setFrame = $0 { return true }; return false },
                     "\(command)")
-            #expect(EngineFix.approxScalar(n.motion.viewportOffset.target,
-                                           s.motion.viewportOffset.current), "\(command)")
+            #expect(EngineFix.approxScalar(n.viewport.offset.target,
+                                           s.viewport.offset.current), "\(command)")
         }
     }
 
@@ -324,16 +324,16 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(2)),
         ])
         let metrics = try! #require(s.metrics())
-        let before = s.layout.naturalFrames(scrollOffset: s.motion.viewportOffset.current,
+        let before = s.layout.naturalFrames(scrollOffset: s.viewport.offset.current,
                                             metrics: metrics)
 
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
         var fx: [Effect] = []
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; fx += f
         }
-        (s, _) = Engine.reduce(s, .coverOnScreen)
-        #expect(s.motion.isCovered)
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
         // The raise emits no blit, so the first frame is the next tick's — with dt small enough that
         // the springs have not meaningfully moved.
@@ -341,7 +341,7 @@ import EmiraMotion
         _ = ticked
         for effect in tickFx {
             guard case .setLayerFrame(let layer, let rect) = effect else { continue }
-            let window = try! #require(s.motion.transition?.bindings.first { $0.layer == layer }?.window)
+            let window = try! #require(s.transition?.bindings.first { $0.layer == layer }?.window)
             let was = try! #require(before[window])
             #expect(EngineFix.approx(rect, was), "layer for \(window) popped at the raise")
         }
@@ -356,13 +356,13 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(2)),          // focused, alone in column 1
         ])
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
-        #expect(s.motion.transition?.elevated == WindowId(2))
+        #expect(s.transition?.elevated == WindowId(2))
 
         var fx: [Effect] = []
-        for w in s.motion.transition?.windows ?? [] {
+        for w in s.transition?.windows ?? [] {
             let (n, f) = Engine.reduce(s, .captureReady(w)); s = n; fx += f
         }
-        let movers = try! #require(s.motion.layerId(for: WindowId(2)))
+        let movers = try! #require(s.motion.layerIds(for: WindowId(2)).first)
         #expect(fx.contains(.elevateLayer(movers)))
 
         // …and the elevation is emitted *inside* the raise's presentation run, before any teleport, so
@@ -390,10 +390,10 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(5)),          // focused, rightmost
         ])
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
-        #expect(s.motion.isCovered)
-        let scoped = Set(s.motion.transition?.windows ?? [])
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
+        #expect(s.motion.isCovered(on: s.monitors.focused))
+        let scoped = Set(s.transition?.windows ?? [])
 
         // A scroll mid-edit aims somewhere the session was not scoped for, pulling in a newcomer.
         var fx: [Effect] = []
@@ -406,7 +406,7 @@ import EmiraMotion
 
         let extendIndex = try! #require(extendFx.firstIndex { if case .extendCover = $0 { return true }
                                                               return false })
-        let mover = try! #require(s.motion.layerId(for: WindowId(5)))
+        let mover = try! #require(s.motion.layerIds(for: WindowId(5)).first)
         let elevateIndex = try! #require(extendFx.firstIndex(of: .elevateLayer(mover)))
         #expect(elevateIndex > extendIndex)     // after the addition, or it would be buried again
     }
@@ -424,7 +424,7 @@ import EmiraMotion
         #expect(s.motion.displacement(of: WindowId(1)).minX == -500)
 
         let (done, dfx) = EngineFix.drive(s)
-        #expect(dfx.contains(.endTransition))
+        #expect(dfx.contains(.endTransition(MonitorId(1))))
         #expect(done.motion.windowAnimators.isEmpty)
         #expect(!done.motion.isTransitioning)
     }
@@ -440,10 +440,10 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
         #expect(s.motion.displacement(of: WindowId(1)).height == 400)   // 800 was, 400 belongs
 
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
         let (mid, midFx) = Engine.reduce(s, .tick(dt: 0.08))
-        let layer = try! #require(mid.motion.layerId(for: WindowId(1)))
+        let layer = try! #require(mid.motion.layerIds(for: WindowId(1)).first)
         let frame = try! #require(EngineFix.layerFrame(of: layer, in: midFx))
         #expect(frame.height < 800 && frame.height > 400)               // genuinely mid-contraction
     }
@@ -458,21 +458,21 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(3)),
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
         (s, _) = Engine.reduce(s, .tick(dt: 0.05))
-        let travelling = s.motion.viewportOffset.current
+        let travelling = s.viewport.offset.current
         #expect(!s.motion.isSettled)
 
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
-        #expect(s.motion.isCovered)                       // one session, never a second
+        #expect(s.motion.isCovered(on: s.monitors.focused))                       // one session, never a second
         #expect(!s.motion.windowAnimators.isEmpty)
         // The scroll was not disturbed by the edit — position and velocity are exactly where the
         // spring left them.
-        #expect(s.motion.viewportOffset.current == travelling)
+        #expect(s.viewport.offset.current == travelling)
 
         let (done, dfx) = EngineFix.drive(s)
-        #expect(dfx.contains(.endTransition))
+        #expect(dfx.contains(.endTransition(MonitorId(1))))
         #expect(done.motion.windowAnimators.isEmpty)
     }
 
@@ -487,12 +487,12 @@ import EmiraMotion
         ])
         (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
         (s, _) = Engine.reduce(s, .command(.moveWindow(.left)))
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
         var tickFx: [Effect] = []
         (s, tickFx) = Engine.reduce(s, .tick(dt: 0.05))
 
-        let layer = try! #require(s.motion.layerId(for: WindowId(3)))
+        let layer = try! #require(s.motion.layerIds(for: WindowId(3)).first)
         let before = try! #require(EngineFix.layerFrame(of: layer, in: tickFx))
         #expect(s.motion.windowAnimator(WindowId(3))?.x.velocity != 0)   // genuinely mid-flight
 
@@ -580,8 +580,8 @@ import EmiraMotion
         ])
         let doomed = s.layout.columns[1].id
         (s, _) = Engine.reduce(s, .command(.cycleWidth))
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
         #expect(s.motion.columnWidth(doomed) != nil)   // in flight, cover up
 
         (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
@@ -591,7 +591,7 @@ import EmiraMotion
 
         let (done, dfx) = EngineFix.drive(s)
         #expect(!done.motion.isTransitioning)
-        #expect(dfx.contains(.endTransition))
+        #expect(dfx.contains(.endTransition(MonitorId(1))))
         #expect(done.layout.columns.count == 1)
     }
 
@@ -608,21 +608,21 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(3)),
         ])
         (s, _) = Engine.reduce(s, .command(.focus(.left)))     // → w2, an animated scroll
-        for w in s.motion.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
-        (s, _) = Engine.reduce(s, .coverOnScreen)               // …and the display shows it
-        #expect(s.motion.isCovered)
+        for w in s.transition?.windows ?? [] { (s, _) = Engine.reduce(s, .captureReady(w)) }
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))               // …and the display shows it
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
         let (n, fx) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
         #expect(n.layout.columns.map(\.windowIds) == [[WindowId(1), WindowId(2)], [WindowId(3)]])
-        #expect(n.motion.isCovered)                    // one session throughout, never a second
+        #expect(n.motion.isCovered(on: n.monitors.focused))                    // one session throughout, never a second
         #expect(!EngineFix.hasEffect(fx) { if case .beginTransition = $0 { return true }; return false })
         // …and the invariant that matters holds: every window the edit puts on screen is in the cover's
         // scope. `w1` moves from its park sliver into a column now on screen, and a window sliding into
         // view with no captured layer is a wallpaper hole.
-        let scoped = Set(n.motion.transition?.windows ?? [])
+        let scoped = Set(n.transition?.windows ?? [])
         #expect(scoped.contains(WindowId(1)))
         #expect(scoped.isSuperset(of: n.layout.visibleWindowIds(
-            scrollOffset: n.motion.viewportOffset.target, metrics: n.metrics()!)))
+            scrollOffset: n.viewport.offset.target, metrics: n.metrics()!)))
         // The reals teleported into the *new* structure behind the still-raised cover.
         #expect(EngineFix.approx(EngineFix.placement(of: WindowId(1), in: fx) ?? .zero,
                                  Rect(x: 0, y: 0, width: 1000, height: 400)))
@@ -631,7 +631,7 @@ import EmiraMotion
 
         let (done, dfx) = EngineFix.drive(n)
         #expect(!done.motion.isTransitioning)
-        #expect(dfx.contains(.endTransition))
+        #expect(dfx.contains(.endTransition(MonitorId(1))))
     }
 
 }

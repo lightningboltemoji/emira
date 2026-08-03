@@ -91,36 +91,39 @@ import EmiraMotion
     @Test func aTravellingRingDoesNotHoldTheCoverUp() {
         // The ring is a guide decoration; `isReadyToClose` is the cross-fade. A session with every
         // animator arrived and every set landed is ready to close *however far the ring still has to go*.
+        let display = MonitorId(1)
         var motion = Motion()
-        motion.openTransition(scope: [WindowId(1)])
+        motion.openTransition(scope: [WindowId(1)], on: display)
         motion.markCaptured(WindowId(1))
-        motion.raiseCover()
-        motion.confirmCover()
+        motion.raiseCover(on: display)
+        motion.confirmCover(on: display)
         motion.markLanded(WindowId(1))
         motion.nudgeFocusRing(by: Rect(x: 900, y: 0, width: 0, height: 0), params: .smooth)
 
+        let contents = MonitorContents(windows: [WindowId(1)])
         #expect(!motion.isFocusRingSettled)                 // a long way from home…
         #expect(motion.isSettled)                           // …and `isSettled` never saw it
-        #expect(motion.isReadyToClose)                      // …so the cross-fade is not blocked
+        #expect(motion.isReadyToClose(on: display, holding: contents))   // …so nothing blocks the fade
     }
 
     @Test func aRingNudgeDoesNotRearmTheHoldDeadline() {
         // `retargetGeneration` drives `Runtime.syncHold`. A focus change that only moves the ring must
         // not be able to extend a hung transition's deadline.
         var motion = Motion()
-        let before = motion.retargetGeneration
+        let before = motion.retargetGeneration(of: MonitorId(1))
         motion.nudgeFocusRing(by: Rect(x: 400, y: 0, width: 0, height: 0), params: .smooth)
         motion.advanceFocusRing(by: 1.0 / 120)
         motion.clearFocusRing()
-        #expect(motion.retargetGeneration == before)
+        #expect(motion.retargetGeneration(of: MonitorId(1)) == before)
     }
 
     @Test func theRingSurvivesClosingTheTransition() {
+        let display = MonitorId(1)
         var motion = Motion()
-        motion.openTransition(scope: [WindowId(1)])
+        motion.openTransition(scope: [WindowId(1)], on: display)
         motion.nudgeFocusRing(by: Rect(x: 400, y: 0, width: 0, height: 0), params: .smooth)
-        motion.displaceWindow(WindowId(1), by: Rect(x: 400, y: 0, width: 0, height: 0))
-        motion.closeTransition()
+        motion.displaceWindow(WindowId(1), by: Rect(x: 400, y: 0, width: 0, height: 0), on: display)
+        motion.closeTransition(on: display)
         // Widths and displacements are dropped with the session; the ring belongs to the guide.
         #expect(motion.windowAnimators.isEmpty)
         #expect(motion.focusRing != nil)
@@ -145,7 +148,7 @@ import EmiraMotion
                             guide: GuideSettings(style: .placeholder))
         let s = Self.settleRing(EngineFix.world(2, config: config))
         let (moved, _) = Engine.reduce(s, .command(.focus(.left)))
-        #expect(!moved.motion.isCovered)
+        #expect(!moved.motion.isCovered(on: moved.monitors.focused))
         let started = moved.motion.focusRingDisplacement.minX
         let (ticked, effects) = Engine.reduce(moved, .tick(dt: 1.0 / 60))
         #expect(effects.isEmpty)                            // no cover ⇒ no layer frames

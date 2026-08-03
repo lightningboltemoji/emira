@@ -125,7 +125,15 @@ import Testing
         }
 
         func targetFrames(_ metrics: LayoutMetrics) -> [WindowId: Rect] {
-            workspaces.targetFrames(shown: [shown], scrollOffset: 0, metrics: metrics)
+            workspaces.targetFrames(placements(metrics))
+        }
+
+        /// The supply `State.placements()` builds for one display: the address it shows tiles at its
+        /// viewport, everything else parks against that same screen.
+        func placements(_ metrics: LayoutMetrics) -> [StripPlacement] {
+            workspaces.placementOrder(shown: [shown]).map {
+                StripPlacement(name: $0, metrics: metrics, scrollOffset: $0 == shown ? 0 : nil)
+            }
         }
 
         var strip: Layout {
@@ -189,11 +197,10 @@ import Testing
         #expect(ws.placementOrder(shown: [c, a]) == [c, a, b])
     }
 
-    /// **The park run takes the same list the placement walk does**, so an address a second display is
-    /// showing keeps its low ordinal on both. Two answers to "what is on screen" would show up only as
-    /// a nub that renumbers when the *other* screen switches, which is precisely the silent failure the
-    /// single cursor exists to rule out.
-    @Test func theParkRunFollowsEveryAddressOnScreenAndNotJustTheTiledOne() {
+    /// **Every address on screen tiles, each against its own display**, and only the remainder parks.
+    /// Handed the supply the placement walk is handed, so there is one answer to what is on screen
+    /// rather than two that agree by coincidence.
+    @Test func everyShownAddressTilesAgainstItsOwnDisplay() {
         var ws = Workspaces()
         var ids = ColumnAllocator()
         for (name, window) in [(a, w1), (b, w2), (c, w3)] {
@@ -202,16 +209,42 @@ import Testing
             ws[name] = strip
         }
 
-        // `a` tiles in both; the second display shows `b` in one and `c` in the other.
-        let showingB = ws.targetFrames(shown: [a, b], scrollOffset: 0, metrics: metrics)
-        let showingC = ws.targetFrames(shown: [a, c], scrollOffset: 0, metrics: metrics)
+        // A second display to the right of the first, showing `b`, scrolled 200 pt along its strip.
+        let second = LayoutMetrics(workingArea: Rect(x: 1000, y: 0, width: 800, height: 600))
+        let frames = ws.targetFrames([
+            StripPlacement(name: a, metrics: metrics, scrollOffset: 0),
+            StripPlacement(name: b, metrics: second, scrollOffset: 200),
+            StripPlacement(name: c, metrics: metrics, scrollOffset: nil),
+        ])
 
-        #expect(showingB[w1] == showingC[w1])          // the tiled strip is untouched either way
-        // Whichever address the second display shows takes the run's first nub, and the parked one
-        // takes the next: the two swap exactly, rather than following name order regardless.
-        #expect(showingB[w2] == showingC[w3])
-        #expect(showingB[w3] == showingC[w2])
-        #expect(showingB[w2] != showingB[w3])
+        // `a` tiles at the origin of the first screen's content area…
+        #expect(frames[w1]?.minX == metrics.contentArea.minX)
+        // …and `b` at the second screen's, scrolled by its *own* viewport, not the first's.
+        #expect(frames[w2]?.minX == second.contentArea.minX - 200)
+        // Only `c` parks, and it parks in the lot of the display that holds it.
+        #expect(frames[w3]?.minX ?? 0 > metrics.workingArea.maxX - 10)
+    }
+
+    /// **One park-ordinal run across every lot** (D5). Mirrored displays report the *same* frame, so
+    /// per-lot cursors would hand two parked windows one nub — breaking both the ±2 pt first-sight
+    /// identity join a daemon restart depends on and the no-overlap invariant, silently.
+    @Test func theParkRunIsOneCursorAcrossEveryDisplaysLot() {
+        var ws = Workspaces()
+        var ids = ColumnAllocator()
+        for (name, window) in [(a, w1), (b, w2), (c, w3)] {
+            var strip = ws[name]
+            strip.adopt([window], after: nil, like: nil, columnIds: &ids)
+            ws[name] = strip
+        }
+
+        // Two displays reporting one frame — what mirroring looks like from here — with `b` and `c`
+        // parked on different ones.
+        let frames = ws.targetFrames([
+            StripPlacement(name: a, metrics: metrics, scrollOffset: 0),
+            StripPlacement(name: b, metrics: metrics, scrollOffset: nil),
+            StripPlacement(name: c, metrics: metrics, scrollOffset: nil),
+        ])
+        #expect(frames[w2] != frames[w3])
     }
 
     // reconcile — the World→Workspaces bridge

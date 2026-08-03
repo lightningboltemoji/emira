@@ -80,7 +80,8 @@ Four consequences, and they are the whole design:
   be is worse than no animation at all, which is why there is no placeholder fallback anywhere in emira.
 - **Behind a cover, teleporting is free** — no per-window flight problem, no ordering dance. But "hides
   everything" is a claim about the _display_, not about our own call stack, so nothing may move until the
-  display itself says the cover is up.
+  display itself says the cover is up. A cover is one display's, so the claim is quantified with it: a
+  window may move only once the cover is up on every display it is visible on before or after the move.
 - **Covering and animating are separate goods.** The cover answers the AX API's _unreliability_; the springs
   answer its _feel_. A user can want the first without the second, which is why the ladder is `off`, `snap`,
   `smooth`: `snap` buys atomicity — the strip is never seen half-arranged — while animating nothing.

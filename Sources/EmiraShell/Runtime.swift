@@ -49,10 +49,10 @@ public final class Runtime {
     /// transition rather than on every event.
     private var clockRunning = false
 
-    /// The core's retarget generation the pending hold deadline was armed against, `nil` when none is.
-    /// Answers both questions at once: whether a deadline is outstanding, and whether it still bounds the
-    /// wait the user is in.
-    private var holdArmedFor: UInt64?
+    /// Per display, the core's retarget generation that display's pending hold deadline was armed
+    /// against; absent when none is. Answers both questions at once: whether a deadline is outstanding
+    /// for that cover, and whether it still bounds the wait the user is in.
+    private var holdArmedFor: [MonitorId: UInt64] = [:]
 
     /// Create a pump around a fresh (or restored) state.
     ///
@@ -142,26 +142,31 @@ public final class Runtime {
         if wanted { clock.start(sink: sink) } else { clock.stop() }
     }
 
-    /// Arm or cancel the transition deadline: armed when the session opens, re-armed whenever it is
-    /// redirected. Arming only on the `false → true` edge would cut a live transition off, since an
-    /// interrupt (a second `focus` mid-scroll) extends the motion without opening a new session; a
-    /// genuinely stuck transition receives no commands, so re-arming weakens nothing.
+    /// Arm or cancel each display's transition deadline: armed when that session opens, re-armed
+    /// whenever it is redirected. Arming only on the `false → true` edge would cut a live transition
+    /// off, since an interrupt (a second `focus` mid-scroll) extends the motion without opening a new
+    /// session; a genuinely stuck transition receives no commands, so re-arming weakens nothing.
     ///
-    /// A redirect is `Motion.retargetGeneration`, not the scroll's destination — a resize or a structural
-    /// edit re-aims a live transition without moving the offset by a point. Deliberately still
-    /// `isTransitioning` where the clock reads `needsFrames`: a focus ring must not be able to arm a
-    /// deadline, or a focus change would extend a hung transition's hold.
+    /// A redirect is that display's `retargetGeneration`, not the scroll's destination — a resize or a
+    /// structural edit re-aims a live transition without moving the offset by a point. Deliberately
+    /// still `isTransitioning` where the clock reads `needsFrames`: a focus ring must not be able to arm
+    /// a deadline, or a focus change would extend a hung transition's hold.
+    ///
+    /// **One deadline per cover** (D7), so an app hanging under one screen's cover bounds that screen's
+    /// wait and no other. A cover that came down is cancelled by absence: the loop walks what the core
+    /// says is in flight, and everything armed that is not in it is dropped.
     private func syncHold() {
         guard let hold else { return }
-        guard state.motion.isTransitioning else {
-            guard holdArmedFor != nil else { return }
-            holdArmedFor = nil
-            hold.cancel()
-            return
+        let inFlight = state.motion.transitioningMonitors
+        for monitor in Array(holdArmedFor.keys) where !inFlight.contains(monitor) {
+            holdArmedFor[monitor] = nil
+            hold.cancel(on: monitor)
         }
-        let generation = state.motion.retargetGeneration
-        guard holdArmedFor != generation else { return }
-        holdArmedFor = generation
-        hold.arm(after: state.config.holdTimeout, sink: sink)
+        for monitor in inFlight {
+            let generation = state.motion.retargetGeneration(of: monitor)
+            guard holdArmedFor[monitor] != generation else { continue }
+            holdArmedFor[monitor] = generation
+            hold.arm(after: state.config.holdTimeout, on: monitor, sink: sink)
+        }
     }
 }

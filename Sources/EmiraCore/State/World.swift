@@ -283,6 +283,16 @@ public struct World: Sendable, Equatable, Codable {
         monitors.first { $0.id == id }
     }
 
+    /// The display `point` is on, or `nil` — off every screen, or none attached. Asked of the **full**
+    /// frame rather than the working area, since a pointer in the menu bar is still on that display.
+    ///
+    /// Its one caller is the hover filter, which needs to know whether the screen under the hand is the
+    /// one with a cover over it: a question about where the pointer *is*, which no window it happens to
+    /// be over can answer.
+    public func monitor(at point: Point) -> MonitorId? {
+        monitors.first { $0.frame.contains(point) }?.id
+    }
+
     // Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)
 
     /// Whether a window is currently on the tiled strip: it exists, its own state permits tiling, and its

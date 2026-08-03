@@ -122,7 +122,7 @@ import Testing
     /// Distinct from `tiled(in:)` on purpose: the effect stream is a *diff*, so a window already at the
     /// frame it belongs at emits nothing. "What moved" and "where things are" are different questions.
     private func onScreen(_ s: State) -> Set<WindowId> {
-        Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
+        Set(s.layout.visibleWindowIds(scrollOffset: s.viewport.offset.current,
                                       metrics: s.metrics()!))
     }
 
@@ -169,17 +169,17 @@ import Testing
         s = EngineFix.settle(s, [])
         let (scrolled, fx) = run(s, [.command(.focus(.right))])
         s = EngineFix.settle(scrolled, fx)
-        let offset = s.motion.viewportOffset.current
+        let offset = s.viewport.offset.current
         #expect(offset > 0, "the fixture did not actually scroll")
 
         s = run(s, [focusWorkspace(other)]).0
-        #expect(s.motion.viewportOffset.current == 0)          // a fresh workspace starts at its origin
+        #expect(s.viewport.offset.current == 0)          // a fresh workspace starts at its origin
         #expect(s.workspaces[scrollOffsetOf: .first] == offset)
 
         s = run(s, [focusWorkspace(home)]).0
-        #expect(EngineFix.approxScalar(s.motion.viewportOffset.current, offset))
+        #expect(EngineFix.approxScalar(s.viewport.offset.current, offset))
         // A snap, not a spring: nothing is left travelling.
-        #expect(s.motion.viewportOffset.target == s.motion.viewportOffset.current)
+        #expect(s.viewport.offset.target == s.viewport.offset.current)
         #expect(!s.motion.isTransitioning)
     }
 
@@ -235,7 +235,7 @@ import Testing
         let (switched, fx) = run(s, [focusWorkspace(name("4"))])
         #expect(switched.world.focusedWindow == WindowId(2))
         #expect(focused(in: fx) == [WindowId(2)])
-        #expect(switched.motion.viewportOffset.current == 0)
+        #expect(switched.viewport.offset.current == 0)
     }
 
     /// A remembered focus that has since closed names nothing, and the switch must not land on it.
@@ -397,7 +397,7 @@ import Testing
         #expect(echoFx.isEmpty, "the echo re-emitted \(echoFx)")
         #expect(echoed.workspaces == s.workspaces)
         #expect(echoed.world == s.world)
-        #expect(echoed.motion.viewportOffset.current == s.motion.viewportOffset.current)
+        #expect(echoed.viewport.offset.current == s.viewport.offset.current)
     }
 
     /// Switching away and being Cmd-Tabbed back must not lose the outgoing workspace's own memory. The
@@ -441,11 +441,9 @@ import Testing
         #expect(s.workspaces.materialized.count == 3)
 
         let metrics = s.metrics()!
-        let frames = s.workspaces.targetFrames(shown: s.monitors.shownWorkspaces,
-                                               scrollOffset: s.motion.viewportOffset.current,
-                                               metrics: metrics)
+        let frames = s.workspaces.targetFrames(s.placements())
         #expect(frames.count == 6)
-        let visible = Set(s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
+        let visible = Set(s.layout.visibleWindowIds(scrollOffset: s.viewport.offset.current,
                                                     metrics: metrics))
         let parkedFrames = s.workspaces.allWindowIds.filter { !visible.contains($0) }
             .compactMap { frames[$0] }
@@ -541,11 +539,11 @@ import Testing
             next = after
             raiseFx += out
         }
-        let (onScreen, teleports) = Engine.reduce(next, .coverOnScreen)
+        let (onScreen, teleports) = Engine.reduce(next, .coverOnScreen(MonitorId(1)))
         next = onScreen
         raiseFx += teleports
         fx += raiseFx
-        #expect(next.motion.isCovered, "\(command) never raised a cover")
+        #expect(next.motion.isCovered(on: next.monitors.focused), "\(command) never raised a cover")
         return (next, fx)
     }
 
@@ -606,7 +604,8 @@ import Testing
                 == -metrics.workingArea.height)
 
         // …and a window on the strip above really does clear the screen rather than stopping in the gap.
-        let frames = s.workspaces.naturalFrames(shown: other, scrollOffset: 0, metrics: metrics)
+        let frames = s.workspaces.naturalFrames(shown: other, among: s.monitors.owned,
+                                                scrollOffset: 0, metrics: metrics)
         #expect(frames[WindowId(1)]!.maxY <= metrics.workingArea.minY)
     }
 
@@ -620,7 +619,7 @@ import Testing
 
         #expect(after.monitors.shown == other)
         // Two windows leaving, two arriving — and nothing else in the world to be in scope.
-        #expect(Set(after.motion.transition!.windows) == Set(after.workspaces.allWindowIds))
+        #expect(Set(after.transition!.windows) == Set(after.workspaces.allWindowIds))
 
         // `other` sorts after `home`, so the incoming strip comes up from below and both strips rise.
         for id in after.workspaces.allWindowIds {
@@ -650,7 +649,7 @@ import Testing
     @Test func theSeedIsPurelyVerticalAcrossTwoDifferentScrollOffsets() {
         // Scroll `home` to its right-hand column; `other` is left resting at 0.
         let s = Self.settled(twoPopulatedWorkspaces(Self.oneColumn), .focus(.right))
-        let homeOffset = s.motion.viewportOffset.current
+        let homeOffset = s.viewport.offset.current
         #expect(homeOffset > 0, "the fixture did not scroll")
 
         let (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
@@ -670,16 +669,16 @@ import Testing
         var (after, _) = raiseCover(s, .focusWorkspace(.name(other)))
         // Only the windows that were *on screen* when we left are in scope — with one column to a
         // viewport that is one of the two, and the off-viewport one never had a layer to slide.
-        let leaving = after.workspaces[home].allWindowIds.filter { after.motion.layerId(for: $0) != nil }
+        let leaving = after.workspaces[home].allWindowIds.filter { after.motion.layerIds(for: $0).first != nil }
         #expect(!leaving.isEmpty, "nothing from the outgoing strip made it into the cover")
 
         var seen: [WindowId: Set<Double>] = [:]
         for _ in 0..<40 {
-            guard after.motion.isCovered else { break }
+            guard after.motion.isCovered(on: after.monitors.focused) else { break }
             let (next, fx) = Engine.reduce(after, .tick(dt: 1.0 / 120))
             after = next
             for id in leaving {
-                guard let layer = after.motion.layerId(for: id),
+                guard let layer = after.motion.layerIds(for: id).first,
                       let frame = EngineFix.layerFrame(of: layer, in: fx) else { continue }
                 seen[id, default: []].insert((frame.minX * 100).rounded() / 100)
             }
@@ -700,14 +699,14 @@ import Testing
         for id in EngineFix.capturedIds(in: fx) {
             (scrolling, _) = Engine.reduce(scrolling, .captureReady(id))
         }
-        (scrolling, _) = Engine.reduce(scrolling, .coverOnScreen)
-        #expect(scrolling.motion.isCovered, "the fixture never raised a cover to interrupt")
-        let before = Set(scrolling.motion.transition!.windows)
+        (scrolling, _) = Engine.reduce(scrolling, .coverOnScreen(MonitorId(1)))
+        #expect(scrolling.motion.isCovered(on: scrolling.monitors.focused), "the fixture never raised a cover to interrupt")
+        let before = Set(scrolling.transition!.windows)
 
         let (after, switchFx) = Engine.reduce(scrolling, .command(.focusWorkspace(.name(other))))
-        #expect(!EngineFix.hasEffect(switchFx) { if case .endTransition = $0 { return true }; return false })
-        #expect(after.motion.isCovered, "the switch tore the cover down")
-        #expect(before.isSubset(of: Set(after.motion.transition!.windows)))
+        #expect(!EngineFix.hasEffect(switchFx) { if case .endTransition(MonitorId(1)) = $0 { return true }; return false })
+        #expect(after.motion.isCovered(on: after.monitors.focused), "the switch tore the cover down")
+        #expect(before.isSubset(of: Set(after.transition!.windows)))
         #expect(after.monitors.shown == other)
 
         // …and it settles onto the truth with nothing left in flight.
@@ -735,7 +734,7 @@ import Testing
 
         let (again, _) = Engine.reduce(after, .command(.focusWorkspace(.next)))
         #expect(again.monitors.shown == name("3"))
-        #expect(again.motion.isCovered, "the second press opened a second session")
+        #expect(again.motion.isCovered(on: again.monitors.focused), "the second press opened a second session")
         // `2` is the outgoing strip now: the nudge *adds* the new screen to what was still in flight,
         // so the layer never jumps — one continuous motion through two addresses.
         #expect(EngineFix.approxScalar(again.motion.windowAnimator(arriving)!.current.minY,
@@ -751,7 +750,7 @@ import Testing
         let s = Self.smoothWorld(2)
         let (after, _) = raiseCover(s, .focusWorkspace(.name(name("9"))))
         #expect(after.workspaces[name("9")].isEmpty)
-        #expect(after.motion.transition!.windows.count == 2)
+        #expect(after.transition!.windows.count == 2)
         for id in [WindowId(1), WindowId(2)] {
             #expect(EngineFix.approx(seed(after, id)!,
                                      Rect(x: 0, y: Self.screen, width: 0, height: 0)))
@@ -780,7 +779,7 @@ import Testing
         // The survivor closes ranks — horizontally, on the strip it is still on.
         let stayed = WindowId(1)
         #expect(EngineFix.approxScalar(seed(after, stayed)?.minY ?? 0, 0))
-        #expect(after.motion.elevatedLayer == after.motion.layerId(for: moved))
+        #expect(after.motion.elevatedLayer(on: after.monitors.focused) == after.motion.layerIds(for: moved).first)
         #expect(EngineFix.hasEffect(fx) { if case .elevateLayer = $0 { return true }; return false })
     }
 
@@ -815,10 +814,10 @@ import Testing
             next = after
             if !out.isEmpty { raise = out }
         }
-        #expect(next.motion.phase == .raising)
+        #expect(next.motion.phase(of: next.monitors.focused) == .raising)
 
         // Every binding is placed…
-        let bindings = next.motion.transition!.bindings
+        let bindings = next.transition!.bindings
         for binding in bindings {
             #expect(EngineFix.layerFrame(of: binding.layer, in: raise) != nil,
                     "\(binding.window) was raised without being placed")
@@ -829,8 +828,8 @@ import Testing
 
         // The teleports arrive with the report that it did.
         let teleports: [Effect]
-        (next, teleports) = Engine.reduce(next, .coverOnScreen)
-        #expect(next.motion.isCovered)
+        (next, teleports) = Engine.reduce(next, .coverOnScreen(MonitorId(1)))
+        #expect(next.motion.isCovered(on: next.monitors.focused))
         #expect(teleports.contains { switch $0 { case .setFrame, .park: true; default: false } })
 
         // And the placement is the *old* geometry exactly, so the raise cannot pop: the arriving strip

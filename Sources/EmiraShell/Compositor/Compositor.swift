@@ -1,53 +1,55 @@
 import QuartzCore
 import EmiraCore
 
-// The presentation plane when there is more than one of it. **A composite of surfaces is a surface**,
-// so `CompositingExecutor` is unchanged in shape; what moves here is the `CATransaction`, which now has
-// to wrap the whole fan-out rather than one surface's share of it. Two displays blitting inside two
-// transactions are two frames, and the strips on them shear apart by exactly one refresh.
+// The presentation plane when there is more than one of it. A `CoverSurface` is one display's layer
+// tree; this is all of them, plus the two things only the whole plane can own:
 //
-// Two calls have an answer to give back, and both are gated on **every** surface rather than the first:
+//  · **The frame boundary.** Two displays blitting inside two `CATransaction`s are two frames, and the
+//    strips on them shear apart by exactly one refresh. So the transaction wraps the whole run.
+//  · **The route.** A cover belongs to one display (D7), so `beginTransition` and `extendCover` name
+//    theirs and the layers they mint are recorded against it. That is what lets the per-frame
+//    `setLayerFrame` stay untagged (D11) — the hottest path in the reducer carries nothing extra, and
+//    the routing is one dictionary read.
 //
-//  · `raiseCover` reports `coverOnScreen`, which is what entitles the reducer to teleport a real
-//    window. A window may only move when the cover is up on every display it is visible on before *or*
-//    after the move, and until a session names its own monitor the conservative form of that is "every
-//    display". A fence that never fires leaves the report unmade and the hold deadline to rescue it,
-//    which is the degradation the timeout is there for.
-//  · `dismiss` reports `crossfadeDone`, and a cover half down is still a cover.
-//
-// Everything else fans out unconditionally and is filtered by the surfaces themselves: `setLayerFrame`,
-// `refreshLayer` and `elevate` are all total over a layer the surface does not hold, so a layer built on
-// one display costs the others a dictionary miss.
+// A raise now fences on **one** surface rather than all of them, which is the whole of what per-monitor
+// sessions buy the shell: a transition on one screen leaves the other's desktop alone, its pixels live,
+// its own cover free to come down on its own schedule.
 
-/// Every display's `CoverSurface`, driven as one.
+/// Every display's `CoverSurface`, with each cover routed to the one it belongs to.
 @MainActor
 public final class Compositor: CoverPlane {
 
-    /// The surfaces, in display enumeration order. The `MonitorId` is read only to ask whether that
-    /// screen is still there — one core session still covers every display — and it is carried because
-    /// the alternative is an array whose elements cannot say which screen they are.
-    private let surfaces: [(monitor: MonitorId, surface: any CoverSurface)]
+    /// The surfaces, keyed by the display each covers.
+    private let surfaces: [MonitorId: any CoverSurface]
+
+    /// Which display a `LayerId` was minted on — the route for every untagged layer call. Layers are
+    /// minted from one watermark for the whole desktop, so an id names one layer on one screen, and an
+    /// id whose cover has come down simply misses.
+    private var route: [LayerId: MonitorId] = [:]
 
     /// Whether a display this plane was built for is still attached. A departed display's overlay
-    /// fences its raise on a `CADisplayLink` for a screen that is gone, so gating `coverOnScreen` on it
-    /// would stall **every** transition until the hold deadline. Not consulted for a dismissal: taking
-    /// a cover down is always safe, and an overlay that was never raised completes at once.
+    /// fences its raise on a `CADisplayLink` for a screen that is gone, so waiting for it would stall
+    /// that transition until the hold deadline; the report is made at once instead, which is honest —
+    /// nothing is visible there to be covered. Not consulted for a dismissal: taking a cover down is
+    /// always safe, and an overlay that was never raised completes immediately.
     public var isAttached: @MainActor (MonitorId) -> Bool = { _ in true }
 
-    /// Bumped by every raise and every dismissal, so a report from a superseded one is dropped rather
-    /// than counted against the current one. The same generation idiom `Overlay.fadeOut` uses.
-    private var raiseGeneration = 0
-    private var dismissGeneration = 0
-    /// Surfaces that have yet to report, for the current raise and the current dismissal.
-    private var fencesOwed = 0
-    private var dismissalsOwed = 0
+    /// Bumped per display by every raise and every dismissal, so a report from a superseded one is
+    /// dropped rather than counted against the current one. The same generation idiom `Overlay.fadeOut`
+    /// uses.
+    private var raiseGeneration: [MonitorId: Int] = [:]
+    private var dismissGeneration: [MonitorId: Int] = [:]
+    /// Displays whose raise still owes its report. A presentation fence can fire more than once, and a
+    /// second `coverOnScreen` is a teleport the reducer has already made.
+    private var fenceOwed: Set<MonitorId> = []
 
     public init(surfaces: [(monitor: MonitorId, surface: any CoverSurface)]) {
-        self.surfaces = surfaces
+        self.surfaces = Dictionary(surfaces.map { ($0.monitor, $0.surface) },
+                                   uniquingKeysWith: { first, _ in first })
     }
 
     /// One display's plane — the ordinary case, and what every test that does not care about the
-    /// fan-out wants.
+    /// routing wants.
     public convenience init(monitor: MonitorId, surface: any CoverSurface) {
         self.init(surfaces: [(monitor, surface)])
     }
@@ -63,50 +65,59 @@ public final class Compositor: CoverPlane {
         CATransaction.commit()
     }
 
-    public func raiseCover(_ bindings: [LayerBinding], onScreen: @escaping @MainActor () -> Void) {
-        raiseGeneration &+= 1
-        let mine = raiseGeneration
-        let live = surfaces.filter { isAttached($0.monitor) }
-        fencesOwed = live.count
-        guard fencesOwed > 0 else { return onScreen() }   // no displays: nothing to wait for
-        for entry in live {
-            entry.surface.raiseCover(bindings) { [weak self] in
-                guard let self, self.raiseGeneration == mine, self.fencesOwed > 0 else { return }
-                self.fencesOwed -= 1
-                guard self.fencesOwed == 0 else { return }
-                onScreen()
-            }
+    public func raiseCover(on monitor: MonitorId, _ bindings: [LayerBinding],
+                           onScreen: @escaping @MainActor () -> Void) {
+        let mine = (raiseGeneration[monitor] ?? 0) &+ 1
+        raiseGeneration[monitor] = mine
+        // A raise replaces whatever this display was showing, so its old layers stop being routable.
+        route = route.filter { $0.value != monitor }
+        bind(bindings, to: monitor)
+        guard let surface = surfaces[monitor], isAttached(monitor) else {
+            fenceOwed.remove(monitor)
+            return onScreen()
+        }
+        fenceOwed.insert(monitor)
+        surface.raiseCover(bindings) { [weak self] in
+            guard let self, self.raiseGeneration[monitor] == mine,
+                  self.fenceOwed.remove(monitor) != nil else { return }
+            onScreen()
         }
     }
 
-    public func extendCover(_ bindings: [LayerBinding]) {
-        for entry in surfaces { entry.surface.extendCover(bindings) }
+    public func extendCover(on monitor: MonitorId, _ bindings: [LayerBinding]) {
+        bind(bindings, to: monitor)
+        surfaces[monitor]?.extendCover(bindings)
     }
 
     public func setLayerFrame(_ layer: LayerId, to rect: Rect) {
-        for entry in surfaces { entry.surface.setLayerFrame(layer, to: rect) }
+        surface(of: layer)?.setLayerFrame(layer, to: rect)
     }
 
     public func refreshLayer(_ layer: LayerId) {
-        for entry in surfaces { entry.surface.refreshLayer(layer) }
+        surface(of: layer)?.refreshLayer(layer)
     }
 
     public func elevate(_ layer: LayerId) {
-        for entry in surfaces { entry.surface.elevate(layer) }
+        surface(of: layer)?.elevate(layer)
     }
 
-    public func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
-        dismissGeneration &+= 1
-        let mine = dismissGeneration
-        dismissalsOwed = surfaces.count
-        guard dismissalsOwed > 0 else { return completion() }
-        for entry in surfaces {
-            entry.surface.dismiss(over: duration) { [weak self] in
-                guard let self, self.dismissGeneration == mine, self.dismissalsOwed > 0 else { return }
-                self.dismissalsOwed -= 1
-                guard self.dismissalsOwed == 0 else { return }
-                completion()
-            }
+    public func dismiss(on monitor: MonitorId, over duration: TimeInterval,
+                        completion: @escaping @MainActor () -> Void) {
+        let mine = (dismissGeneration[monitor] ?? 0) &+ 1
+        dismissGeneration[monitor] = mine
+        route = route.filter { $0.value != monitor }
+        guard let surface = surfaces[monitor] else { return completion() }
+        surface.dismiss(over: duration) { [weak self] in
+            guard let self, self.dismissGeneration[monitor] == mine else { return }
+            completion()
         }
+    }
+
+    private func bind(_ bindings: [LayerBinding], to monitor: MonitorId) {
+        for binding in bindings { route[binding.layer] = monitor }
+    }
+
+    private func surface(of layer: LayerId) -> (any CoverSurface)? {
+        route[layer].flatMap { surfaces[$0] }
     }
 }

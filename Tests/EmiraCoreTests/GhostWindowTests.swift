@@ -36,8 +36,8 @@ import EmiraMotion
             var feedback: [Event] = []
             for effect in queue {
                 switch effect {
-                case .capture(let w, _): feedback.append(.captureReady(w))
-                case .beginTransition: feedback.append(.coverOnScreen)
+                case .capture(_, let w, _): feedback.append(.captureReady(w))
+                case .beginTransition: feedback.append(.coverOnScreen(MonitorId(1)))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
                 default: continue
                 }
@@ -189,13 +189,13 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .windowCreated(Self.snap(3, frame: opened)))
 
         #expect(s.motion.isTransitioning, "the strip opens for it under the cover")
-        #expect(fx.contains { if case .capture(WindowId(3), _) = $0 { return true }; return false },
+        #expect(fx.contains { if case .capture(_, WindowId(3), _) = $0 { return true }; return false },
                 "so it needs a still of its own")
 
         // The seeded displacement is what makes the raise seamless: the newcomer's first animated
         // frame reproduces the frame its layer was captured at, rather than jumping to its column.
         let metrics = s.metrics()!
-        let natural = s.layout.naturalFrames(scrollOffset: s.motion.viewportOffset.current,
+        let natural = s.layout.naturalFrames(scrollOffset: s.viewport.offset.current,
                                              metrics: metrics)[WindowId(3)]
         #expect(natural != nil)
         let first = natural!.displaced(by: s.motion.displacement(of: WindowId(3)))
@@ -233,12 +233,12 @@ import EmiraMotion
         let metrics = s.metrics()!
         let maxOffset = s.layout.strip(metrics: metrics)
             .maxOffset(viewportWidth: metrics.workingArea.width)
-        #expect(s.motion.viewportOffset.current <= maxOffset + 0.5,
-                "rests at \(s.motion.viewportOffset.current), strip allows at most \(maxOffset)")
+        #expect(s.viewport.offset.current <= maxOffset + 0.5,
+                "rests at \(s.viewport.offset.current), strip allows at most \(maxOffset)")
 
         // The concrete symptom: with the viewport off the end, columns that would fit on screen are
         // parked at their 1 px slivers beside empty desktop instead.
-        let visible = s.layout.visibleWindowIds(scrollOffset: s.motion.viewportOffset.current,
+        let visible = s.layout.visibleWindowIds(scrollOffset: s.viewport.offset.current,
                                                 metrics: metrics)
         #expect(visible.count == 2, "both columns the viewport can hold are on screen, not parked")
     }
@@ -252,9 +252,9 @@ import EmiraMotion
         let metrics = s.metrics()!
         let maxOffset = s.layout.strip(metrics: metrics)
             .maxOffset(viewportWidth: metrics.workingArea.width)
-        #expect(s.motion.viewportOffset.target <= maxOffset + 0.5,
+        #expect(s.viewport.offset.target <= maxOffset + 0.5,
                 "aims inside the strip even though it has not arrived yet")
-        #expect(s.motion.viewportOffset.current > s.motion.viewportOffset.target,
+        #expect(s.viewport.offset.current > s.viewport.offset.target,
                 "and it is still travelling — the collapse is motion, not a jump")
 
         // Every surviving column is lagging behind where the layout now puts it, which is the
@@ -290,7 +290,7 @@ import EmiraMotion
     @Test func aStripThatFitsEntirelyOnScreenRestsAtZero() {
         let s = Self.strandedViewport(windows: 5, closing: [1, 2, 3, 4])
         #expect(s.layout.columns.count == 1)
-        #expect(abs(s.motion.viewportOffset.current) <= 0.5,
+        #expect(abs(s.viewport.offset.current) <= 0.5,
                 "one column is narrower than the viewport, so there is nowhere to be but the start")
     }
 
@@ -305,22 +305,22 @@ import EmiraMotion
         (s, fx) = Self.run(s, (1..<6).map { _ in .command(.focus(.right)) })
         s = Self.settle(s, fx)
         #expect(!s.motion.isTransitioning, "resting at the far end of the strip")
-        let before = s.motion.viewportOffset.current
+        let before = s.viewport.offset.current
         #expect(before > 0.5, "with the strip genuinely scrolled")
 
         (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(6)))
         #expect(s.motion.isTransitioning, "closing the last column opens the signature transition")
-        #expect(s.motion.viewportOffset.target < before - 0.5,
+        #expect(s.viewport.offset.target < before - 0.5,
                 "aiming back inside the strip it just shortened")
-        #expect(abs(s.motion.viewportOffset.current - before) <= 0.5,
+        #expect(abs(s.viewport.offset.current - before) <= 0.5,
                 "and starting from where the viewport already was — the collapse is motion, not a jump")
 
         // It really does arrive, and exactly where the snapping configuration puts it at once.
         let settled = Self.settle(s, fx)
         let metrics = settled.metrics()!
-        #expect(abs(settled.motion.viewportOffset.current
+        #expect(abs(settled.viewport.offset.current
                     - settled.layout.clampScrollOffset(before, metrics: metrics)) <= 0.5)
-        #expect(settled.layout.visibleWindowIds(scrollOffset: settled.motion.viewportOffset.current,
+        #expect(settled.layout.visibleWindowIds(scrollOffset: settled.viewport.offset.current,
                                                 metrics: metrics).count == 2,
                 "both surviving columns the viewport can hold are on screen")
     }
@@ -337,18 +337,18 @@ import EmiraMotion
 
         // Raise the cover and put it on screen, so the session is past `.capturing` and `.raising` —
         // the state a real ⌘N lands in.
-        for id in fx.compactMap({ if case .capture(let w, _) = $0 { return w }; return nil }) {
+        for id in fx.compactMap({ if case .capture(_, let w, _) = $0 { return w }; return nil }) {
             (s, _) = Engine.reduce(s, .captureReady(id))
         }
-        (s, _) = Engine.reduce(s, .coverOnScreen)
-        #expect(s.motion.isCovered)
+        (s, _) = Engine.reduce(s, .coverOnScreen(MonitorId(1)))
+        #expect(s.motion.isCovered(on: s.monitors.focused))
 
         // A new window is adopted while it runs.
         (s, fx) = Engine.reduce(s, .windowCreated(Self.snap(3)))
         #expect(s.layout.columns.count == 3, "it joined the strip")
         #expect(Self.placement(of: WindowId(3), in: fx) != nil,
                 "and the real window was told where to go")
-        #expect(fx.contains { if case .capture(WindowId(3), _) = $0 { return true }; return false },
+        #expect(fx.contains { if case .capture(_, WindowId(3), _) = $0 { return true }; return false },
                 "and it is in the transition's scope, so the cover gets a layer for it")
     }
 }

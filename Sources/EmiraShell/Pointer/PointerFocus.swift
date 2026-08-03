@@ -47,8 +47,10 @@ public final class PointerFocus {
         let hit = state.world.window(at: point)
         // Tracked before either refusal below, so a suspended interval leaves the baseline current.
         defer { current = hit }
-        // Rule 2. The reals have teleported and the eye is on a photograph of where they were.
-        guard !state.motion.isCovered else { return }
+        // Rule 2. The reals have teleported and the eye is on a photograph of where they were — asked of
+        // the display the hand is over, because a cover on the *other* screen says nothing about this
+        // one. Off every screen there is nothing to suspend and nothing to hit either.
+        guard !state.motion.isCovered(on: state.world.monitor(at: point)) else { return }
         // A hidden pointer may be sitting over a window nobody chose — the strip can have scrolled under
         // it — so the motion that ends a hide only *wakes*. The wake comes off this same sample, a step
         // later (`PointerSamples`), which is why this reads the flag rather than counting samples.

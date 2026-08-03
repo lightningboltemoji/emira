@@ -130,14 +130,15 @@ public enum CapturePiece: Sendable {
 /// would bake the first batch's windows, by then already teleported, into the desktop behind their own
 /// sliding layers.
 ///
-/// **`requests` says what to cut out of the base; `filming` says whether to also photograph it.** The
-/// two are separate because a window's own surface is display-independent and one still serves every
-/// cover, while a base is a photograph of one screen and *every* base must have a hole where a covered
-/// window was. A capturer that filmed nothing but left the transition's windows in its base would show
-/// them twice — once frozen in the desktop, once sliding on a layer above it.
+/// **`requests` is both instructions at once**: photograph these windows, and cut them out of the base.
+/// The two can be one again now that a cover names its display — a batch goes to exactly one capturer,
+/// the one whose screen the cover is over, so the windows it films and the hole its base needs are the
+/// same list. (They had to be separate while one session covered every screen and only the first
+/// capturer filmed.) A window straddling two displays is the case this does not serve: it is covered on
+/// the display its workspace lives on, and its other half is left in the neighbouring desktop.
 @MainActor
 public protocol SurfaceCapturer: AnyObject {
-    func capture(_ requests: [CaptureRequest], filming: Bool, includeBase: Bool,
+    func capture(_ requests: [CaptureRequest], includeBase: Bool,
                  piece: @escaping @MainActor (CapturePiece) -> Void,
                  done: @escaping @MainActor () -> Void)
 }
@@ -154,12 +155,16 @@ public struct CaptureTarget: Sendable, Equatable {
     }
 }
 
-/// Names one cover's worth of stills, so a cross-fade finishing *after* a newer transition started
-/// capturing cannot free the newer one's pixels. A token rather than an `Int` because the only way to
-/// hold one is to have been handed it by `closeCover()`.
+/// Names one display's cover's worth of stills, so a cross-fade finishing *after* a newer transition
+/// started capturing cannot free the newer one's pixels. A token rather than an `Int` because the only
+/// way to hold one is to have been handed it by `closeCover(on:)`.
 public struct CoverToken: Sendable, Equatable {
+    let monitor: MonitorId
     let generation: Int
-    init(_ generation: Int) { self.generation = generation }
+    init(_ monitor: MonitorId, _ generation: Int) {
+        self.monitor = monitor
+        self.generation = generation
+    }
 }
 
 /// The reconstruction's source of pixels: ask for a batch, read what arrived, drop it when the cover
@@ -168,13 +173,14 @@ public struct CoverToken: Sendable, Equatable {
 /// (rule 3 above).
 @MainActor
 public protocol CaptureStore: AnyObject {
-    /// Capture these windows — and, if no cover session is open, the desktop behind them — then ack each
-    /// through `feedback` as `Event.captureReady`, exactly once and within a bounded time. A batch that
-    /// finds a session already open is *growing* a cover and takes no new base.
+    /// Capture these windows for `monitor`'s cover — and, if that display has no cover session open,
+    /// the desktop behind them — then ack each through `feedback` as `Event.captureReady`, exactly once
+    /// and within a bounded time. A batch that finds that display's session already open is *growing*
+    /// its cover and takes no new base.
     ///
     /// Under `CoverMode.immediate` a window a kept still fits is acked at once, its own capture arriving
     /// later as `Event.captureRefreshed` — still one `captureReady` per window.
-    func capture(_ targets: [CaptureTarget], feedback: EventSink)
+    func capture(_ targets: [CaptureTarget], on monitor: MonitorId, feedback: EventSink)
 
     /// This cover's still for `window`, if one arrived. Not keyed by display: a window is filmed once
     /// and one still serves every cover, `SCContentFilter(desktopIndependentWindow:)` being
@@ -185,11 +191,13 @@ public protocol CaptureStore: AnyObject {
     /// photograph of a screen — the one thing in the store that cannot be shared between covers.
     func base(of monitor: MonitorId) -> CGImage?
 
-    /// The cover session is over: the next `capture` starts a fresh one and takes a fresh base. The
-    /// stills stay alive — on screen for the whole cross-fade — until the token reaches `discard`.
-    func closeCover() -> CoverToken
+    /// `monitor`'s cover session is over: the next `capture` for it starts a fresh one and takes a
+    /// fresh base. The stills stay alive — on screen for the whole cross-fade — until the token reaches
+    /// `discard`.
+    func closeCover(on monitor: MonitorId) -> CoverToken
 
-    /// Release the stills of the cover `token` named. Ignored if a newer cover claimed the store.
+    /// Release the stills the cover `token` names, minus any another live cover is still showing.
+    /// Ignored if a newer cover on that display claimed them.
     func discard(_ token: CoverToken)
 }
 
@@ -217,6 +225,9 @@ public struct CaptureReport: Sendable {
     public let elapsed: TimeInterval
     /// Whether the deadline resolved it rather than the capturer.
     public let timedOut: Bool
+    /// The display whose cover this batch was for — two covers are two transitions, and a log line
+    /// that cannot say which screen it is about describes neither.
+    public let monitor: MonitorId
     /// Whether this batch opened the cover (and so took the base), or grew one already raised.
     public let isHead: Bool
 }
@@ -236,20 +247,16 @@ public final class CaptureService: CaptureStore {
     public static let defaultDeadline: TimeInterval = 0.25
 
     private let registry: WindowRegistry
-    /// One capturer per covered display, in enumeration order. **The first films the windows**, and the
-    /// rest supply nothing but their own base: a window's own surface is display-independent, so filming
-    /// it once serves every cover, and the scale it is filmed at is the first display's — which is the
-    /// display the core lays its strip out on. A still filmed at 2× shown on a 1× overlay pops on the
-    /// cross-fade, so this is the seam a cross-display move has to move.
-    ///
-    /// Every one of them is still *told* the transition's windows, because each has to cut them out of
-    /// its own base — see `SurfaceCapturer`.
-    private let capturers: [(monitor: MonitorId, capturer: any SurfaceCapturer)]
+    /// One capturer per display, keyed by it. **A batch goes to exactly one of them** — the display
+    /// whose cover it is for — which is what makes the still's scale the destination overlay's, the one
+    /// thing §8 says a cross-display move must get right. A window's own surface is display-independent,
+    /// so a window owed by two covers is filmed once per cover and the second film is what carries the
+    /// second display's scale.
+    private let capturers: [MonitorId: any SurfaceCapturer]
     /// Whether a display this was built for is still attached. **A departed display's capturer can
-    /// produce no base at all**, and a head batch owing one abandons the whole cover — so without this
-    /// an unplug would put every transition for the rest of the session on the `snap` path rather than
-    /// costing its own screen. The shell's set of capturers is fixed at launch; which of them still
-    /// name a display is not.
+    /// produce no base at all**, and a head batch owing one abandons that cover — so without this an
+    /// unplug would put every transition for the rest of the session on the `snap` path. The shell's
+    /// set of capturers is fixed at launch; which of them still name a display is not.
     public var isAttached: @MainActor (MonitorId) -> Bool = { _ in true }
     private let scheduler: any DelayScheduler
     private let deadline: TimeInterval
@@ -273,22 +280,25 @@ public final class CaptureService: CaptureStore {
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
 
-    /// This cover's stills. Written before the acks, cleared when a new cover claims the store or the old
-    /// one's cross-fade hands its token back.
+    /// The live covers' stills, keyed by window. Written before the acks, released when the cover that
+    /// owns them comes down — or, for a window two covers show, when the last of them does.
     private var surfaces: [WindowId: CapturedSurface] = [:]
+    /// Which cover each still belongs to. A window owed by two sessions is filmed for each, so the
+    /// answer is a set, and one cover's release must not free pixels the other is still showing.
+    private var owners: [WindowId: Set<MonitorId>] = [:]
     /// One base per covered display. Absent means that display's overlay would raise onto its own black
-    /// fill, which is why a head batch that ends with one missing abandons the cover instead.
+    /// fill, which is why a head batch that ends with one missing abandons that cover instead.
     private var baseImages: [MonitorId: CGImage] = [:]
-    /// Which of `surfaces` are this cover's *own* captures, as against stand-ins it inherited. Only these
-    /// are worth keeping: reducing an already-reduced still would degrade it once per transition it
-    /// survives, until a window that is never re-filmed fades to nothing.
+    /// Which of `surfaces` are a live cover's *own* captures, as against stand-ins it inherited. Only
+    /// these are worth keeping: reducing an already-reduced still would degrade it once per transition
+    /// it survives, until a window that is never re-filmed fades to nothing.
     private var freshlyCaptured: Set<WindowId> = []
 
-    /// Whether a cover session is open: whether the next batch *grows* a cover (merge, no new base) or
-    /// *opens* one (clear the store, take a base).
-    private var coverIsOpen = false
-    /// Names the current cover session, bumped by every head batch.
-    private var coverGeneration = 0
+    /// Which displays have a cover session open: whether the next batch for one *grows* its cover
+    /// (merge, no new base) or *opens* one (clear its stills, take its base).
+    private var openCovers: Set<MonitorId> = []
+    /// Names each display's current cover session, bumped by every head batch for it.
+    private var coverGeneration: [MonitorId: Int] = [:]
 
     /// A batch in flight: which windows still owe an ack, and where to send it.
     ///
@@ -304,8 +314,10 @@ public final class CaptureService: CaptureStore {
         let feedback: EventSink
         let startedAt: Date
         let isHead: Bool
-        /// The cover this batch was captured for. A batch that answers after its cover was abandoned
-        /// still owes its acks, but its images belong to nothing and must not reach the store.
+        /// The display this batch's cover is over, and which generation of it. A batch that answers
+        /// after its cover was abandoned still owes its acks, but its images belong to nothing and must
+        /// not reach the store.
+        let monitor: MonitorId
         let cover: Int
 
         /// Windows still owing their one `captureReady`.
@@ -341,7 +353,8 @@ public final class CaptureService: CaptureStore {
                 keepsStills: Bool = false,
                 deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.registry = registry
-        self.capturers = capturers
+        self.capturers = Dictionary(capturers.map { ($0.monitor, $0.capturer) },
+                                    uniquingKeysWith: { first, _ in first })
         self.scheduler = scheduler
         self.cache = cache
         self.mode = mode
@@ -349,7 +362,7 @@ public final class CaptureService: CaptureStore {
         self.deadline = deadline
     }
 
-    /// One display's worth — the ordinary case, and what every test that is not about the fan-out wants.
+    /// One display's worth — the ordinary case, and what every test that is not about the routing wants.
     public convenience init(registry: WindowRegistry,
                             monitor: MonitorId = MonitorId(1),
                             capturer: any SurfaceCapturer,
@@ -366,26 +379,28 @@ public final class CaptureService: CaptureStore {
 
     public func base(of monitor: MonitorId) -> CGImage? { baseImages[monitor] }
 
-    public func closeCover() -> CoverToken {
-        coverIsOpen = false
-        return CoverToken(coverGeneration)
+    public func closeCover(on monitor: MonitorId) -> CoverToken {
+        openCovers.remove(monitor)
+        return CoverToken(monitor, coverGeneration[monitor] ?? 0)
     }
 
     public func discard(_ token: CoverToken) {
-        // A cross-fade takes 0.22 s and a new transition can open inside it; by then the store may
-        // already belong to that transition, and freeing it would blank the cover it is about to raise.
-        guard token.generation == coverGeneration else { return }
-        clearStore()
+        // A cross-fade takes 0.22 s and a new transition can open inside it; by then that display's
+        // stills may already belong to the new one, and freeing them would blank the cover it is about
+        // to raise.
+        guard token.generation == coverGeneration[token.monitor] ?? 0 else { return }
+        clearStore(of: token.monitor)
     }
 
-    public func capture(_ targets: [CaptureTarget], feedback: EventSink) {
-        // A batch with no cover session open is *opening* one: it owns the base and starts the store
-        // clean. One with a session open grows a raised cover and merges into what is there.
-        let isHead = !coverIsOpen
+    public func capture(_ targets: [CaptureTarget], on monitor: MonitorId, feedback: EventSink) {
+        // A batch for a display with no cover session open is *opening* one: it owns that display's
+        // base and starts its stills clean. One with a session open grows a raised cover and merges
+        // into what is there.
+        let isHead = !openCovers.contains(monitor)
         if isHead {
-            coverGeneration &+= 1
-            coverIsOpen = true
-            clearStore()
+            coverGeneration[monitor, default: 0] &+= 1
+            openCovers.insert(monitor)
+            clearStore(of: monitor)
         }
 
         // Which windows a kept still can already answer for. Written into the store *before* any ack
@@ -395,7 +410,7 @@ public final class CaptureService: CaptureStore {
         if mode == .immediate {
             for target in targets {
                 guard let kept = cache.surface(for: target.id, at: target.size) else { continue }
-                surfaces[target.id] = kept
+                install(kept, for: target.id, on: monitor, fresh: false)
                 stoodIn.insert(target.id)
             }
         }
@@ -403,12 +418,16 @@ public final class CaptureService: CaptureStore {
         generation &+= 1
         let mine = generation
         let windows = targets.map(\.id)
-        let asked = capturers(forHead: isHead)
+        // Exactly one capturer: the display this cover is over, if it is still there to answer.
+        let asked = isAttached(monitor) ? capturers[monitor] : nil
         pending[mine] = Pending(windows: windows, stoodIn: stoodIn, feedback: feedback,
-                                startedAt: Date(), isHead: isHead, cover: coverGeneration,
+                                startedAt: Date(), isHead: isHead, monitor: monitor,
+                                cover: coverGeneration[monitor] ?? 0,
                                 owed: Set(windows),
-                                basesOwed: isHead ? Set(asked.map(\.monitor)) : [],
-                                repliesOwed: asked.count)
+                                // Owed whether or not anyone was asked: a head batch with no capturer
+                                // to answer it has no base, and a cover with no base is not a cover.
+                                basesOwed: isHead ? [monitor] : [],
+                                repliesOwed: asked == nil ? 0 : 1)
 
         // An id the registry doesn't know has no window number to ask about, but is still owed an ack —
         // dropped from the *request*, kept in the ack list. It reaches the cover as a missing layer,
@@ -424,37 +443,23 @@ public final class CaptureService: CaptureStore {
         // window's own still before the stand-in it replaces has been declared.
         for id in stoodIn { ready(generation: mine, id) }
 
-        // Only the first films; all of them get the requests, because each has to cut those windows out
-        // of its own base. The extra `SCShareableContent` fetches are what a second covered display
-        // costs at the head of a transition, and there is no way to share one — the type is not
-        // `Sendable`.
-        for (index, entry) in asked.enumerated() {
-            let monitor = entry.monitor
-            entry.capturer.capture(requests, filming: index == 0, includeBase: isHead,
-                                   piece: { [weak self] piece in
-                                       self?.receive(generation: mine, from: monitor, piece: piece)
-                                   },
-                                   done: { [weak self] in self?.replied(generation: mine) })
+        // One capturer, filming what its own base has to have a hole where: with a cover per display
+        // those are the same list, so a second screen costs a transition nothing unless it is also
+        // being covered.
+        if let asked {
+            asked.capture(requests, includeBase: isHead,
+                          piece: { [weak self] piece in
+                              self?.receive(generation: mine, from: monitor, piece: piece)
+                          },
+                          done: { [weak self] in self?.replied(generation: mine) })
+        } else {
+            // Nobody to ask — the display has left — is a batch that owes acks and can never be
+            // answered by anyone, so it is resolved here rather than left to the deadline.
+            finish(generation: mine, timedOut: false)
         }
-        // Nobody to ask — no display attached at all — is a batch that owes acks and can never be
-        // answered by anyone, so it is resolved here rather than left to the deadline.
-        if asked.isEmpty { finish(generation: mine, timedOut: false) }
         scheduler.schedule(after: deadline) { [weak self] in
             self?.finish(generation: mine, timedOut: true)
         }
-    }
-
-    /// Who a batch actually goes to, of the capturers this was built with.
-    ///
-    /// **Only a head batch needs more than the first.** Bases are a head batch's business, and a batch
-    /// *growing* a cover takes none — so asking the other displays would buy nothing and cost an
-    /// `SCShareableContent` fetch each, at the head of every retarget that pulls a window into scope.
-    ///
-    /// A display that has left is dropped rather than owed a base it cannot produce. If that is the
-    /// first one, the next attached display films instead, at its own backing scale.
-    private func capturers(forHead isHead: Bool) -> [(monitor: MonitorId, capturer: any SurfaceCapturer)] {
-        let live = capturers.filter { isAttached($0.monitor) }
-        return isHead ? live : Array(live.prefix(1))
     }
 
     /// One capturer has nothing further to deliver. The batch resolves when the last of them says so.
@@ -473,7 +478,7 @@ public final class CaptureService: CaptureStore {
         // Whether this batch's cover still exists: a session can be abandoned, or a whole further
         // transition can start, while a slow batch is out, and its pixels would then be somebody else's
         // desktop. The acks are still owed; the images stop here.
-        let isCurrent = batch.cover == coverGeneration
+        let isCurrent = batch.cover == coverGeneration[batch.monitor] ?? 0
 
         switch piece {
         case .base(let image):
@@ -481,17 +486,14 @@ public final class CaptureService: CaptureStore {
             // is waiting on, which re-enters the pump synchronously and comes back out as `raiseCover`.
             if isCurrent { baseImages[monitor] = image }
             pending[generation]?.basesOwed.remove(monitor)
-            // The *last* base is the one the gate waits on, so the time is recorded when the set empties.
+            // The base is the one the gate waits on, so the time is recorded when the set empties.
             if pending[generation]?.basesOwed.isEmpty == true {
                 pending[generation]?.baseAt = Date().timeIntervalSince(batch.startedAt)
             }
             release(generation: generation)
 
         case .window(let id, let surface):
-            if isCurrent {
-                surfaces[id] = surface
-                freshlyCaptured.insert(id)
-            }
+            if isCurrent { install(surface, for: id, on: batch.monitor, fresh: true) }
             guard batch.stoodIn.contains(id) else { return ready(generation: generation, id) }
             // A stand-in has spent its `captureReady`, so this asks for a repaint instead, which settles
             // no gate. Only once that ack has gone out — before it there is no layer, and the raise finds
@@ -544,7 +546,7 @@ public final class CaptureService: CaptureStore {
     /// which is what makes "exactly once" true when the deadline and the capturer both fire.
     private func finish(generation: Int, timedOut: Bool) {
         guard let batch = pending.removeValue(forKey: generation) else { return }
-        let isCurrent = batch.cover == coverGeneration
+        let isCurrent = batch.cover == coverGeneration[batch.monitor] ?? 0
 
         onBatchResolved?(CaptureReport(
             windows: batch.windows.count,
@@ -555,17 +557,17 @@ public final class CaptureService: CaptureStore {
             base: batch.baseAt,
             elapsed: Date().timeIntervalSince(batch.startedAt),
             timedOut: timedOut,
+            monitor: batch.monitor,
             isHead: batch.isHead))
 
-        // A head batch missing *any* base has nothing to build that display's cover from, and an
-        // overlay's own fill is black — acking here would black out a screen for the whole transition.
-        // The core abandons the session before anything has moved, and snaps instead. The held acks die
-        // with it. Conservative on purpose: one screen covered and one showing black is worse than an
-        // instant, correct placement on both.
+        // A head batch with no base has nothing to build that display's cover from, and an overlay's own
+        // fill is black — acking here would black out that screen for the whole transition. The core
+        // abandons that session before anything has moved there, and snaps instead. The held acks die
+        // with it, and the other display's cover is untouched.
         if batch.isHead, isCurrent, !batch.basesOwed.isEmpty {
-            coverIsOpen = false             // no cover will be raised; the next scroll starts fresh
-            clearStore()
-            batch.feedback(.coverUnavailable)
+            openCovers.remove(batch.monitor)    // no cover raised there; the next scroll starts fresh
+            clearStore(of: batch.monitor)
+            batch.feedback(.coverUnavailable(batch.monitor))
             return
         }
 
@@ -576,14 +578,35 @@ public final class CaptureService: CaptureStore {
         }
     }
 
-    /// Drop this cover's pixels — and, on the way out, hand its own captures to the cache. The single
-    /// point every still passes through on its way to being freed, which is why the hand-off is here and
-    /// not in `discard`: a cover can also lose its stills to the *next* transition claiming the store.
-    private func clearStore() {
-        keep(surfaces.filter { freshlyCaptured.contains($0.key) })
-        surfaces.removeAll()
-        freshlyCaptured.removeAll()
-        baseImages.removeAll()
+    /// Write one still into the store and record which cover it belongs to. A window two covers show is
+    /// owned by both, so neither release alone can free it.
+    private func install(_ surface: CapturedSurface, for id: WindowId, on monitor: MonitorId,
+                         fresh: Bool) {
+        surfaces[id] = surface
+        owners[id, default: []].insert(monitor)
+        if fresh { freshlyCaptured.insert(id) }
+    }
+
+    /// Drop one display's cover's pixels — and, on the way out, hand its own captures to the cache. The
+    /// single point every still passes through on its way to being freed, which is why the hand-off is
+    /// here and not in `discard`: a cover can also lose its stills to the *next* transition on that
+    /// display claiming them.
+    ///
+    /// **A still another live cover is showing stays**, which is what keeps two displays independent:
+    /// one screen's transition ending must not blank a layer on the other.
+    private func clearStore(of monitor: MonitorId) {
+        var released: [WindowId: CapturedSurface] = [:]
+        for (id, holders) in owners where holders.contains(monitor) {
+            var holders = holders
+            holders.remove(monitor)
+            guard holders.isEmpty else { owners[id] = holders; continue }
+            owners[id] = nil
+            if let surface = surfaces.removeValue(forKey: id) {
+                if freshlyCaptured.remove(id) != nil { released[id] = surface }
+            }
+        }
+        keep(released)
+        baseImages[monitor] = nil
     }
 
     /// Reduce these captures and keep them for a later `.immediate` cover to stand in with.
