@@ -24,6 +24,16 @@ public final class DisplayLinkDriver: NSObject, FrameClock {
     /// of a transition carries one frame, not the idle seconds since the last one.
     private var lastTimestamp: CFTimeInterval?
 
+    /// Run on the frame boundary, **ahead of that frame's tick** — for an input measured at some other
+    /// rate whose only consumer is the frame. The one caller is the gesture recognizer's `drain()`: the
+    /// trackpad samples at ~120 Hz and the screen may paint at 60, so dispatching per sample would write
+    /// the viewport twice between paints and throw the first one away, after draining `onStateChanged`
+    /// for a state nobody ever sees.
+    ///
+    /// A rule about ordering, written down beside the type it constrains rather than in a wiring
+    /// closure — `PointerSamples`' precedent.
+    public var onFrame: (@MainActor () -> Void)?
+
     public init(screen: NSScreen) {
         self.screen = screen
         super.init()
@@ -69,6 +79,7 @@ public final class DisplayLinkDriver: NSObject, FrameClock {
 
     @objc private func step(_ link: CADisplayLink) {
         guard let sink else { return }          // stopped between the link firing and this call
+        onFrame?()                              // ahead of the tick that will paint what it wrote
         let now = link.timestamp
         let dt = lastTimestamp.map { now - $0 } ?? link.duration
         lastTimestamp = now

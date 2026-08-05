@@ -224,12 +224,12 @@ import Testing
             m.raiseCover(on: monitor)
             m.confirmCover(on: monitor)
         }
-        #expect(!m.isReadyToClose(on: Self.left, holding: contents))
-        #expect(!m.isReadyToClose(on: Self.right, holding: contents))
+        #expect(!m.isReadyToClose(on: Self.left, holding: contents, hand: .idle))
+        #expect(!m.isReadyToClose(on: Self.right, holding: contents, hand: .idle))
 
         m.markLanded(WindowId(1))
-        #expect(m.isReadyToClose(on: Self.left, holding: contents))
-        #expect(m.isReadyToClose(on: Self.right, holding: contents))
+        #expect(m.isReadyToClose(on: Self.left, holding: contents, hand: .idle))
+        #expect(m.isReadyToClose(on: Self.right, holding: contents, hand: .idle))
     }
 
     // A window handed across the desktop
@@ -419,6 +419,48 @@ import Testing
         (state, _) = Engine.reduce(state, .screensChanged(same))
         #expect(state.motion.offset(of: Self.left).current == mid.current)
         #expect(state.motion.offset(of: Self.left).target == mid.target)
+    }
+
+    // The hand, with two covers on the desktop
+    //
+    // The trackpad machinery is per display throughout, so this "should be free" — which is exactly
+    // what this suite exists to stop being taken on trust.
+
+    /// One trackpad, one hand, one place: the latch names the display the user is **acting** on, not
+    /// whichever screen happens to have a cover up.
+    @Test func aDragLatchesTheActingDisplayWhileAnotherCoverIsUp() {
+        var s = Self.sendToRight(Self.desktop(3, config: Config(
+            widthPresets: PresetCycle([.proportion(1.0)]), trackpadScroll: .magnet)))
+        // A scroll on `left`, left mid-flight, then the user moves to `right` — which does not take
+        // that cover down, since the switch has geometry of its own to animate.
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(s.motion.isTransitioning(on: Self.left))
+        (s, _) = Engine.reduce(s, .command(.focusMonitor(.next)))
+        #expect(s.monitors.focused == Self.right)
+        #expect(s.motion.isTransitioning(on: Self.left))
+
+        // The fingers are not on a screen: the focused monitor is the only thing that can answer.
+        let (began, _) = Engine.reduce(s, .trackpadScrollBegan)
+        #expect(began.trackpadScroll == .dragging(Self.right))
+        #expect(began.motion.isTransitioning(on: Self.right))
+        #expect(began.motion.isTransitioning(on: Self.left))     // …and the other cover is untouched
+    }
+
+    /// A latch on one screen holds that screen's cover and no other's — `isReadyToClose` is asked per
+    /// display, and the hand is one display's fact.
+    @Test func aHandOnOneScreenDoesNotHoldTheOtherScreensCover() {
+        let contents = MonitorContents(windows: [WindowId(1)])
+        var m = Motion()
+        for monitor in [Self.left, Self.right] {
+            m.openTransition(scope: [WindowId(1)], on: monitor)
+            m.markCaptured(WindowId(1))
+            m.raiseCover(on: monitor)
+            m.confirmCover(on: monitor)
+        }
+        m.markLanded(WindowId(1))
+
+        #expect(!m.isReadyToClose(on: Self.left, holding: contents, hand: .dragging(Self.left)))
+        #expect(m.isReadyToClose(on: Self.right, holding: contents, hand: .dragging(Self.left)))
     }
 
     /// A viewport is where one screen's scroll happens to be, so it goes with the display — but the

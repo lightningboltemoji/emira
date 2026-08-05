@@ -378,8 +378,10 @@ public struct Motion: Sendable, Equatable, Codable {
 
     /// Aim `id`'s scroll at a new offset without disturbing position or velocity — the interrupt path.
     public mutating func retargetViewport(to offset: Double, on id: MonitorId?) {
+        let spring = scrollSpring
         withViewport(id) {
             $0.retargetGeneration &+= 1
+            $0.offset.params = spring          // see `glideViewport`: the last aim names the spring
             $0.offset.retarget(to: offset)
         }
     }
@@ -387,9 +389,41 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Jump `id`'s scroll instantly to `offset`, killing motion — the no-animation reveal, and what
     /// `snap` mode does with every aim it is given.
     public mutating func snapViewport(to offset: Double, on id: MonitorId?) {
+        let spring = scrollSpring
         withViewport(id) {
             $0.retargetGeneration &+= 1
+            $0.offset.params = spring
             $0.offset.snap(to: offset)
+        }
+    }
+
+    /// Put `id`'s scroll exactly where the hand has taken it. Not `snapViewport`: this deliberately
+    /// does **not** bump `retargetGeneration`. A drag re-aims nothing — the destination is not
+    /// changing, the hand is — and bumping it would re-arm the shell's hold deadline 120 times a second.
+    ///
+    /// Writes `current` **and** `target` together, so `advance(by:)` on the next tick is a no-op and
+    /// `Motion.advance` needs no special case for a driven viewport. That is the whole trick: **a
+    /// dragged offset is an offset that has already arrived**, every frame.
+    public mutating func driveViewport(to offset: Double, on id: MonitorId?) {
+        withViewport(id) { $0.offset.snap(to: offset) }
+    }
+
+    /// Hand `id`'s scroll back to a spring at the lift: aimed at `offset`, seeded with the hand's
+    /// velocity, under `params`. The one place `Animator.velocity` is written from outside.
+    ///
+    /// `params` rather than one stored glide spring, because the two rest points want different feels:
+    /// `free` coasts under the spring its projection was measured with, while `magnet`'s destination is
+    /// a column exactly as `focus left`'s is and should arrive with the feel every other column arrival
+    /// has. **Which spring a viewport is under is then derived from the last aim rather than stored** —
+    /// `retargetViewport` and `snapViewport` put it back on the scroll spring before aiming, so a glide
+    /// cannot outlive the gesture that asked for it.
+    public mutating func glideViewport(to offset: Double, velocity: Double,
+                                       under params: SpringParams, on id: MonitorId?) {
+        withViewport(id) {
+            $0.retargetGeneration &+= 1        // the lift *is* a re-aim: the destination is changing
+            $0.offset.params = params
+            $0.offset.retarget(to: offset)
+            $0.offset.launch(velocity)
         }
     }
 
@@ -597,7 +631,9 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Abandon `id`'s session *before* its cover was ever raised — the answer to
     /// `Event.coverUnavailable` (no pixels ⇒ no cover). Refuses once the cover is up: that must be taken
     /// down by a cross-fade.
-    public mutating func abortTransition(on id: MonitorId?) {
+    ///
+    /// Internal for `closeTransition`'s reason: `State.abortTransition` is the way in.
+    mutating func abortTransition(on id: MonitorId?) {
         guard transition(of: id)?.phase == .capturing else { return }
         closeTransition(on: id)
     }
@@ -646,7 +682,11 @@ public struct Motion: Sendable, Equatable, Codable {
     /// derived positions in one frame. What is left behind meanwhile is a settled animator — resolving
     /// to the number `Layout` derives anyway — or, after a `holdTimeout`, one that resumes decaying the
     /// next time its own display is covered.
-    public mutating func closeTransition(on id: MonitorId?) {
+    ///
+    /// **Internal, so `State.closeTransition` is the only way in.** The trackpad latch rides on a
+    /// session and has to die with it, and a container that cannot know about the latch must not be the
+    /// route that strands one — `Workspaces.move`'s argument exactly.
+    mutating func closeTransition(on id: MonitorId?) {
         guard transition(of: id) != nil else { return }
         withViewport(id) {
             $0.offset.snap(to: $0.offset.target)
@@ -672,8 +712,17 @@ public struct Motion: Sendable, Equatable, Codable {
         return t.hasLayers && !t.unboundWindows.isEmpty
     }
 
-    public func isReadyToClose(on id: MonitorId, holding contents: MonitorContents) -> Bool {
-        guard let t = transition(of: id) else { return false }
+    /// Whether `id`'s cover may cross-fade out.
+    ///
+    /// **A cover a hand is still on never closes**, whatever its animators say. A driven viewport is
+    /// settled by construction (`driveViewport` writes `current` and `target` together) and the lift's
+    /// teleport completes the landing, so without the latch the cover would cross-fade the instant the
+    /// fingers paused — a paused finger is a settled offset, and settled is exactly the wrong reading
+    /// of it. The latch is not `Motion`'s, so this is one more question `Motion` cannot answer for
+    /// itself: it takes it alongside `MonitorContents`, which is already here for the same reason.
+    public func isReadyToClose(on id: MonitorId, holding contents: MonitorContents,
+                               hand: TrackpadScroll) -> Bool {
+        guard let t = transition(of: id), !hand.holds(id) else { return false }
         return t.phase == .covered && t.landingComplete && isSettled(on: id, holding: contents)
     }
 

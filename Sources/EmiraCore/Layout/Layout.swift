@@ -716,6 +716,17 @@ public struct Layout: Sendable, Equatable, Codable {
         strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.contentArea.width)
     }
 
+    /// The nearest offset at which a column edge lies flush with a viewport edge — where a magnetized
+    /// trackpad scroll comes to rest. Under `centered` the candidates are the column centres instead,
+    /// which is `scrollOffsetToCenter`'s rule: centering is a statement about where the strip rests, and
+    /// a magnet ignoring it would fight the next focus command.
+    public func magnetScrollOffset(nearest offset: Double, metrics: LayoutMetrics,
+                                   centered: Bool) -> Double {
+        strip(metrics: metrics).magnetOffset(nearest: offset,
+                                             viewportWidth: metrics.contentArea.width,
+                                             centered: centered)
+    }
+
     /// The scroll offset that centers the window's column. `nil` if the window isn't on the strip.
     /// The reducer picks reveal vs. center from config.
     public func scrollOffsetToCenter(window id: WindowId, metrics: LayoutMetrics) -> Double? {

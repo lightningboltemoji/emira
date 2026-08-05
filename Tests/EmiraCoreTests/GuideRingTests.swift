@@ -103,7 +103,8 @@ import EmiraMotion
         let contents = MonitorContents(windows: [WindowId(1)])
         #expect(!motion.isFocusRingSettled)                 // a long way from home…
         #expect(motion.isSettled)                           // …and `isSettled` never saw it
-        #expect(motion.isReadyToClose(on: display, holding: contents))   // …so nothing blocks the fade
+        // …so nothing blocks the fade — no hand on it either.
+        #expect(motion.isReadyToClose(on: display, holding: contents, hand: .idle))
     }
 
     @Test func aRingNudgeDoesNotRearmTheHoldDeadline() {

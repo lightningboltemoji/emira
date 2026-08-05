@@ -403,6 +403,16 @@ public enum ConfigSchema {
                 help: "Send the pointer after focus; except-hover skips a hover, lazy skips already "
                     + "inside.",
                 section: .mouse),
+
+        Setting("mouse.trackpad-scroll", \.trackpadScroll, .word,
+                label: "Trackpad scroll",
+                help: "Scroll the strip with a three-finger swipe; magnet settles on a column edge.",
+                section: .mouse),
+
+        Setting("mouse.trackpad-scroll-direction", \.trackpadScrollDirection, .word,
+                label: "Trackpad scroll direction",
+                help: "Which way a swipe carries the strip; natural moves the columns with your fingers.",
+                section: .mouse),
     ]
 
     private static let animation: [Setting] = [
@@ -461,12 +471,13 @@ public enum ConfigSchema {
                 help: "Seconds the guide stays up after the last thing that moved.", section: .guide),
     ]
 
-    /// The three spring tables, one sub-schema: they differ in which motion they drive and in nothing
-    /// else, so three special cases would be three chances to fix a bug twice.
+    /// The four spring tables, one sub-schema: they differ in which motion they drive and in nothing
+    /// else, so four special cases would be four chances to fix a bug twice.
     private static let springs: [Setting] =
         spring("scroll", \.scrollSpring, "Scroll", "the viewport scroll")
         + spring("resize", \.resizeSpring, "Resize", "a column's width")
         + spring("movement", \.moveSpring, "Movement", "a window the strip rearranged")
+        + spring("glide", \.glideSpring, "Glide", "a trackpad scroll after the lift")
 
     /// The two keys an `[animation.<motion>]` table carries.
     ///

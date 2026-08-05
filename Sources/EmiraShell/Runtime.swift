@@ -155,9 +155,17 @@ public final class Runtime {
     /// **One deadline per cover** (D7), so an app hanging under one screen's cover bounds that screen's
     /// wait and no other. A cover that came down is cancelled by absence: the loop walks what the core
     /// says is in flight, and everything armed that is not in it is dropped.
+    ///
+    /// **A display under a hand is not in flight for this purpose**, which is the same absence doing
+    /// the work: `hold-timeout` exists to bound a wait on an app that never answered, and during a
+    /// trackpad drag there is no AX set outstanding to wait on — the reals are not written until the
+    /// lift. That is the timeout's own definition rather than an exemption from it, and the lift's aim
+    /// bumps `retargetGeneration`, so the deadline arms fresh from the moment the placement pass is
+    /// actually issued: exactly the interval it was written to bound.
     private func syncHold() {
         guard let hold else { return }
         let inFlight = state.motion.transitioningMonitors
+            .filter { !state.trackpadScroll.holds($0) }
         for monitor in Array(holdArmedFor.keys) where !inFlight.contains(monitor) {
             holdArmedFor[monitor] = nil
             hold.cancel(on: monitor)

@@ -453,11 +453,11 @@ import EmiraMotion
         m.retargetViewport(to: 400, on: Self.one)               // the strip is scrolling under the cover
         advance(&m, frames: 5)
 
-        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))                // animating and nothing landed
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything, hand: .idle))                // animating and nothing landed
         for w in Self.scope { m.markLanded(w) }
-        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))                // landed, but still animating
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything, hand: .idle))                // landed, but still animating
         m.snapViewport(to: 400, on: Self.one)                   // motion arrives
-        #expect(m.isReadyToClose(on: Self.one, holding: Self.everything))                 // covered + landed + settled
+        #expect(m.isReadyToClose(on: Self.one, holding: Self.everything, hand: .idle))                 // covered + landed + settled
     }
 
     @Test func closeTransitionTearsDownAndSnapsToTruth() {
@@ -484,7 +484,7 @@ import EmiraMotion
         m.closeTransition(on: Self.one)
         #expect(!m.isTransitioning)
         #expect(!m.isReadyToRaise(on: Self.one))
-        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything))
+        #expect(!m.isReadyToClose(on: Self.one, holding: Self.everything, hand: .idle))
     }
 
     @Test func layerIdsStayUniqueAcrossSuccessiveTransitions() {

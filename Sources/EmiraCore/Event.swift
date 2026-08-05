@@ -67,6 +67,25 @@ public enum Event: Sendable, Equatable, Codable {
     /// a filter, and every filter of that kind is `WorldWatcher`'s.
     case pointerWoke
 
+    /// Three fingers committed to a horizontal swipe. Opens the session; nothing has moved yet, and
+    /// opening the session is what starts the clock the drain below rides on.
+    case trackpadScrollBegan
+
+    /// Travel since the last drain, in normalized trackpad units, `+x` toward the right of the pad.
+    /// Normalized rather than points: what the pad reports is a fraction of itself, and what a fraction
+    /// of the pad *means* is the core's.
+    ///
+    /// Deliberately not dispatched per sample, for `pointerEntered`'s reason and with a sharper edge:
+    /// the shell accumulates travel and drains it on the **frame boundary**, immediately ahead of the
+    /// tick that will paint it. One write per painted frame, so a 120 Hz pad over a 60 Hz screen does
+    /// not write the offset twice between paints and throw the first one away — after draining
+    /// `onStateChanged` for a state nobody ever sees.
+    case trackpadScrolled(by: Double)
+
+    /// The fingers lifted. `velocity` is normalized units per second at lift, already smoothed by the
+    /// shell — which is where the samples and their timestamps are, and the core has no wall clock.
+    case trackpadScrollEnded(velocity: Double)
+
     /// Some application came to the front. Carries no pid because nothing here is about *which* one:
     /// the fact reported is that the window server has handed the cursor to somebody else, and a hide
     /// issued from the background has been discarded. Distinct from `focusChanged`, which is the same

@@ -97,7 +97,10 @@ length; its movement is always smooth. Keep transitions short.
 viewport-worth is on screen and everything else is parked off it, and workspaces are further-off regions of
 that same space. This is how emira **never touches native macOS Spaces**, whose animations we could not
 control. Scroll is one number with every frame derived from it, which is also the handle a continuous trackpad
-gesture would take — the reconstruction is what makes that tractable, and it is the model's natural extension.
+gesture takes: a finger-driven scroll is not a new kind of motion but this machinery with the spring replaced
+by a hand — cover up, layers sliding every frame, reals teleported once. A window cannot be moved at 120 Hz,
+so the reconstruction is not merely what makes direct manipulation tractable; it is the only plane it can
+happen on.
 
 ---
 
@@ -120,6 +123,15 @@ gesture would take — the reconstruction is what makes that tractable, and it i
   scale, so an off-screen column, a workspace switch and an animated resize all appear in it without any of
   them being implemented twice. **Off by default**, because a window manager must not put a HUD on somebody's
   screen they did not ask for.
+- **The strip follows your hand, and where it stops is yours to choose.** A scrollable tiler's signature
+  interaction is the strip tracking your fingers rather than a swipe firing a keystroke, so a three-finger
+  scroll is direct manipulation: the offset is the reducer's own quantity and the hand writes it, frame by
+  frame. What a lift then means is a setting, because both answers are legitimate — settle on a column edge,
+  or coast to a stop wherever the momentum runs out — and only a scroll that can rest _anywhere_ proves the
+  fingers were driving position at all. Which way a swipe carries the strip is a setting for a plainer
+  reason: emira reads raw contacts rather than scroll events, so the system's own answer never reaches it and
+  guessing would be worse than asking. **Off by default**, for the reason there are no default keybindings:
+  the gesture belongs to macOS until the user hands it over.
 - **What emira takes, it must be able to hand back.** A registered chord is confiscated from every application
   on the machine, so **there are no default keybindings** — a default would be emira taking a keystroke nobody
   offered it. That is also why `exec` is in the vocabulary: launching a terminal is the keystroke a window

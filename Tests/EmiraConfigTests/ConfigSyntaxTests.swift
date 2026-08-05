@@ -131,6 +131,45 @@ import EmiraCore
         #expect(moved.resizeSpring == Config().resizeSpring)
     }
 
+    /// The trackpad's two keys. **`off` is the default**, for the reason there are no default
+    /// keybindings: a three-finger swipe is a gesture macOS already owns, and turning it on means the
+    /// user handing it over in System Settings.
+    @Test func theTrackpadKeysReadBackWhatTheyPrint() throws {
+        #expect(Config().trackpadScroll == .off)
+        for word in TrackpadScrollMode.allCases {
+            let config = try Self.parse("[mouse]\ntrackpad-scroll = \"\(word.rawValue)\"\n")
+            #expect(config.trackpadScroll == word)
+        }
+        // The type is the vocabulary, so a word outside it is refused by name rather than ignored —
+        // and the diagnostic lists `allCases` with nothing to keep in step.
+        #expect(Self.diagnostic("[mouse]\ntrackpad-scroll = \"sideways\"\n")
+                == .badValue(line: 2, key: "mouse.trackpad-scroll",
+                             message: "must be \"off\" or \"magnet\" or \"free\", not \"sideways\""))
+
+        // The direction is orthogonal to the mode: two keys rather than six words.
+        #expect(Config().trackpadScrollDirection == .standard)
+        for word in TrackpadScrollDirection.allCases {
+            let config = try Self.parse("[mouse]\ntrackpad-scroll-direction = \"\(word.rawValue)\"\n")
+            #expect(config.trackpadScrollDirection == word)
+            #expect(config.trackpadScroll == .off)               // …and neither touches the other
+        }
+    }
+
+    /// The glide spring is a fourth `[animation.<motion>]` table with nothing special about it — and
+    /// its default is a calculation rather than a taste: `ω = 10` is a 100 ms throw horizon, solved so
+    /// that a glide's `ln(throw/ε)/ω` settle fits inside the 1 s hold timeout at any flick speed.
+    @Test func theGlideSpringIsAnOrdinarySpringTableAtASolvedDefault() throws {
+        #expect(Config().glideSpring.stiffness == 100)
+        #expect(abs(Config().glideSpring.naturalFrequency - 10) < 1e-9)
+        #expect(abs(Config().glideSpring.dampingRatio - 1) < 1e-9)
+
+        let glided = try Self.parse("[animation.glide]\nstiffness = 225\ndamping-ratio = 1.0\n")
+        #expect(glided.glideSpring.stiffness == 225)
+        #expect(glided.scrollSpring == Config().scrollSpring)      // and the other three untouched
+        #expect(glided.resizeSpring == Config().resizeSpring)
+        #expect(glided.moveSpring == Config().moveSpring)
+    }
+
     /// A misspelled animation table is refused like any other unknown key: a window manager that ignores
     /// `[animation.movemnt]` is one the user believes is broken.
     @Test func aMisspelledAnimationTableIsRefused() {

@@ -25,9 +25,10 @@ Guiding bias, restated: **stay small.** emira is not a platform.
   · hotkey command  │                                                  │   · focus / raise         [AX]
   · AX observation  │   State = World (truth) + Workspaces + Monitors  │   · capture               [SCK]
   · display tick dt │           (structure) + Motion + Config          │   · begin/endTransition   [CA]
-  · config reload   │           + Pointer + Drag                       │   · setLayerFrame         [CA]
-                    └──────────────────────────────────────────────────┘   · setCursorHidden/warp  [CG]
-                             ▲                              │              · exec                  [sh]
+  · trackpad swipe  │           + Pointer + Drag + TrackpadScroll      │   · setLayerFrame         [CA]
+  · config reload   │                                                  │   · setCursorHidden/warp  [CG]
+                    └──────────────────────────────────────────────────┘   · exec                  [sh]
+                             ▲                              │
                              │ feedback events              │ executed by
                              │ (axLanded, captureReady,     ▼
                              │  coverOnScreen, axFailed)   EmiraShell  (AppKit / AX / SCK / CA / CG)
@@ -75,8 +76,15 @@ whose argument is a _shell_ line — declares `takesRawTail` and gets everything
 
 **`Event` is the replay log.** Every input to the reducer is a case of it, which is what makes
 `(State, Event) → (State, [Effect])` replayable in principle. Two consequences bind the shell: nothing may enter
-the pump at the refresh rate that isn't a tick (raw pointer samples are filtered into one `pointerEntered`
-crossing _outside_ the pump), and nothing that displays state may be an `Event`.
+the pump at the refresh rate that isn't a tick, and nothing that displays state may be an `Event`.
+
+The first has two instances, and the stated cost is the same in both — every dispatch drains
+`onStateChanged`, where the guide re-derives its whole projection. Raw pointer samples are filtered into one
+`pointerEntered` crossing _outside_ the pump. Trackpad travel is **accumulated in the shell and drained on the
+frame boundary**, immediately ahead of the tick that will paint it (`DisplayLinkDriver.onFrame`): the pad
+samples at ~120 Hz and the screen may paint at 60, so dispatching per sample would write the viewport twice
+between paints and throw the first one away. Riding the frame is what earns the exemption — gesture events
+then never exceed the tick rate the pump was already running at, over an interval bounded by a hand.
 
 **`Effect` is the output vocabulary**, grouped by the plane that executes it (§4). Adding one means assigning it
 a plane in `CompositingExecutor.plane(of:)`, which is exhaustive on purpose.
@@ -265,7 +273,11 @@ hanging under one screen's cover costs the other nothing. The landing wait is **
 - **Scoped** to every window the viewport _sweeps_ between its start and end offsets — departing windows count,
   because a failed park leaves a window squatting in view. Only park→park motion is invisible and skippable.
 - **Bounded** by `[animation] hold-timeout` (1 s), itself just an `Event`: reveal the truth, keep retrying the
-  AX set, reconcile when it lands. A frozen cover is worse than a visibly hung app.
+  AX set, reconcile when it lands. A frozen cover is worse than a visibly hung app. The one display it is not
+  armed for is one a hand is on (`TrackpadScroll`): a leisurely drag outruns a second, and there is no AX set
+  outstanding to wait on until the lift — which is the timeout's own definition rather than an exemption from
+  it. The lift's aim is the first `retargetGeneration` bump of the gesture, so the deadline arms fresh exactly
+  when the placement pass it bounds is issued.
 
 The wait **grows and never shrinks**: only the _initial_ teleport replaces it, since a later re-teleport that
 moves nothing would clear the wait for sets still in flight and cross-fade onto reals that have not arrived.
@@ -358,6 +370,7 @@ State = World         // truth: displays (frame + struts), apps, windows, focus,
       + Config        // the parsed values the reducer reads
       + Pointer       // intent the shell is owed: a pending warp, a wanted hide
       + Drag          // a button is down, and which window has moved under it
+      + TrackpadScroll // three fingers are down, and whose viewport they are driving
 ```
 
 `State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
@@ -393,14 +406,37 @@ assertion that is re-made rather than a latch that refuses.
 is reported by nothing. It is a latch, which is exactly the thing `Pointer`'s own paragraph exists to say a hide
 is not, so folding one into the other would blur the distinction both depend on.
 
+`TrackpadScroll` is the third on that argument, and not `Motion`'s either: a viewport offset is refreshed by
+the spring that owns it, but "a hand is on the trackpad" is reported by nothing and derivable from nothing. It
+is `.idle` or `.dragging(MonitorId)` — **one at a time and one display**, since there is one trackpad and the
+hand is in one place, latched from `State.acting()` because the fingers are not on a screen and the focused
+monitor is the only thing that can answer. There is deliberately **no `gliding` case**: the lift hands the
+offset back to a spring aimed at a target, and from that instant every question about it has the answer it has
+for a keyboard scroll, so a case that changed no answer would be a second authority on "is a transition in
+flight". The latch buys exactly three things, each a question `Motion` cannot answer for itself: **a cover a
+hand is still on never closes** (`isReadyToClose(…, hand:)` — a driven offset is settled by construction, so a
+paused finger would otherwise cross-fade), the **hold deadline is not armed** for that display (there is no AX
+set outstanding to wait on, which is the timeout's own definition rather than an exemption), and the tick
+**blits its frame anyway** despite `isSettled` calling it done. **The latch dies with its session**, stated
+once as a join over `State` (`closeTransition` / `abortTransition`) rather than repeated at four teardown
+sites — a latch outliving its cover would drive a viewport with nothing to hide it and no clock to paint it.
+
 ### The four animated quantities
 
 Never two authorities on one number.
 
 1. **Scroll** — one viewport offset **per display**, with every layer frame on that screen derived from it.
-   Lockstep is structural rather than maintained; a retarget is one number. Also the natural handle for
-   trackpad gestures. The per-workspace scroll `Workspaces` remembers is the other half: the live animator is
-   the display's, the memory a switch writes out and reads back in is the strip's.
+   Lockstep is structural rather than maintained; a retarget is one number. The per-workspace scroll
+   `Workspaces` remembers is the other half: the live animator is the display's, the memory a switch writes
+   out and reads back in is the strip's.
+
+   **It is the one quantity with a second author.** A trackpad drag writes it outright — `driveViewport` is an
+   `Animator.snap` minus the `retargetGeneration` bump, so a dragged offset is one that has _already arrived_
+   every frame, `advance` is a no-op for it and nothing needs a special case. The two never overlap: a command
+   arriving mid-gesture drops the latch and takes the viewport back. At the lift `glideViewport` hands it to a
+   spring seeded with the hand's velocity — the one place `Animator.velocity` is written from outside — and
+   **which spring a viewport is under is derived from the last aim rather than stored**, since
+   `retargetViewport` and `snapViewport` both put it back on the scroll spring before aiming.
 2. **Resize** — a column's resolved width (`Motion.columnWidths`), for the same reason: every frame derives from
    it, so the growing column and everything it pushes move together. Retargeted in flight, never restarted.
 3. **Structural edit** — the odd one, because an edit that inserts or removes a column makes before and after
@@ -676,7 +712,7 @@ close, position remembered.
 | `Guide/`                  | one transient minimap per display; `GuideModel` is the arithmetic, `GuidePanel` the AppKit               | `GuideModel` is pure                                |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
 | `Display/`                | `CADisplayLink` → `tick(dt)`, a hold deadline per cover, and the display set as a source                 | `FrameClock`, `HoldTimer`                           |
-| `Input/`                  | Carbon `RegisterEventHotKey`; a press produces `Event.command`                                           | `HotkeyBinder`                                      |
+| `Input/`                  | the two intent sources: Carbon `RegisterEventHotKey` → `Event.command`, and a gesture `CGEventTap` → the three trackpad events | `HotkeyBinder`, `GestureTapper`   |
 | `Config/`                 | the half that needs a disk: read → watch → report                                                        | `FileWatcher`                                       |
 | `Ipc/`                    | unix socket, JSON-lines, `Request` → `Reply`                                                             | a real socket, in-test                              |
 | `MenuBar/`, `Onboarding/` | the two GUIs; the policy half of each is pure                                                            | `StatusModel`, `OnboardingModel`                    |
@@ -985,18 +1021,25 @@ the **parsed `Config`**, not a change to the file.
 
 **Two functions the daemon owns, and both matter for correctness:**
 
-- **`applyEnvironment`** — the values a file may not decide, all three of them capabilities rather than
+- **`applyEnvironment`** — the values a file may not decide, all four of them capabilities rather than
   preferences. `transitionMode` is a preference answerable to the Screen
   Recording _capability_ (no grant ⇒ `off`; `snap` is out of reach exactly as `smooth` is, both being made of
   captured pixels). `hidesCursor` needs two conjuncts — the private cursor property resolves _and_ the pointer
   motion monitor installed — because the only exit from a hidden pointer is seeing the mouse move, and emira
-  will not enter a state it has no exit from. A setting asked for and clamped away is logged once. **The
+  will not enter a state it has no exit from. `focusFollowsMouse` shares that second conjunct. `trackpadScroll`
+  needs a cover to run under and a tap to listen through, and **its position in the function is load-bearing**:
+  it reads the _post-clamp_ `transitionMode`, or a machine with no grant would keep a live gesture with nowhere
+  for a 120 Hz scroll to happen. One clamp feeding another is why that line goes last rather than beside the
+  grant check it depends on. A setting asked for and clamped away is logged once. **The
   struts are not here**: they are per display and they move under a running daemon (the Dock changes edge),
   so they ride on `Event.screensChanged` beside the frame they inset rather than through `Config`.
 - **`applyShellConfig`** — the values that reach the shell rather than the reducer (`windowAnimation`,
-  `coverMode`, `transitionMode`, the kept stills, the pointer rung and its monitor). One function, called at
-  launch and again from `ConfigLoader.onLoad`. Two call sites assigning a property each is where "the reducer
-  and the shell read the same post-`applyEnvironment` value" goes quietly false.
+  `coverMode`, `transitionMode`, the kept stills, the pointer rung and its monitor, the gesture tap). One
+  function, called at launch and again from `ConfigLoader.onLoad`. Two call sites assigning a property each is
+  where "the reducer and the shell read the same post-`applyEnvironment` value" goes quietly false. Two
+  observations are gated here rather than left standing, and for one reason: each fires at its device's own
+  rate for as long as it is installed, so neither the pointer's motion monitor nor the trackpad's tap is
+  installed for a setting nobody turned on.
 
 `main.swift` defines `applyShellConfig` _below_ everything it writes to, and that is a language fact rather than
 a style: top-level `let`s are initialized in execution order and are **not** lazy, so a function declared above a
@@ -1018,7 +1061,7 @@ emira/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
     │                    Event · Effect · Config · Rules · Engine
-    │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag
+    │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
     │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
@@ -1033,7 +1076,7 @@ emira/
     │   ├── Guide/       GuideModel (pure) · GuidePanel · RoundedLayer · GuideIcons · Guide
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
     │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer · ScreenWatcher
-    │   ├── Input/       Hotkeys (policy) · CarbonHotkeys
+    │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · Gestures (policy) · GestureTap
     │   ├── Config/      ConfigLoader · ConfigFile
     │   ├── Ipc/         SocketServer · RequestRouter
     │   ├── MenuBar/     StatusItem — StatusModel (pure) + LoginItem + MenuBarItem

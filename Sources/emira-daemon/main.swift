@@ -192,6 +192,15 @@ let observesPointerMotion = observation.observePointerMotion(true)
 observation.observePointerMotion(false)
 let pointer = PointerExecutor(surface: SystemCursor())
 
+/// The trackpad's tap, and the same probe on the other input: install it, keep the answer, take it
+/// straight back down. Accessibility already covers the tap and boot gates on it
+/// (`OnboardingWindow.gate`), so this should always succeed — a defensive branch of exactly the kind
+/// `observesPointerMotion` documents itself as, and the capability `mouse.trackpad-scroll` is clamped
+/// against. The standing idle cost the probe avoids is real: the tap fires for every finger on the pad.
+let gestureTap = CGGestureTap()
+let canTapGestures = gestureTap.install { _ in }
+gestureTap.remove()
+
 // One `FocusIntent` too, for the same reason and on the other axis: the writer records the focus it
 // asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
 let focusIntent = FocusIntent(scheduler: DispatchScheduler())
@@ -249,6 +258,13 @@ func applyEnvironment(to config: Config) -> Config {
     // simply never arrives — which is exactly why it is clamped rather than left: a setting that
     // silently does nothing is the failure this philosophy refuses everywhere else.
     if !observesPointerMotion { config.focusFollowsMouse = false }
+    // **Last, and that position is load-bearing**: this reads the *post-clamp* transition mode, so a
+    // machine with no Screen Recording grant cannot keep a live gesture with no cover to run it under.
+    // The strip follows the hand on the presentation plane — a window cannot be moved at 120 Hz — so
+    // without captured pixels there is nowhere for the scroll to happen. One clamp feeding another is
+    // new in this function, and it is why the trackpad line is here rather than beside the grant check
+    // it depends on.
+    if !config.transitionMode.covers || !canTapGestures { config.trackpadScroll = .off }
     return config
 }
 
@@ -258,7 +274,9 @@ var config = applyEnvironment(to: parsedConfig)
 // rather than one per setting: they have one cause between them and a list reads as one fact.
 let clamped = [("mouse: hide", parsedConfig.hidesCursor && !config.hidesCursor),
                ("focus: follows-mouse",
-                parsedConfig.focusFollowsMouse && !config.focusFollowsMouse)]
+                parsedConfig.focusFollowsMouse && !config.focusFollowsMouse),
+               ("mouse: trackpad-scroll",
+                parsedConfig.trackpadScroll.isLive && !config.trackpadScroll.isLive)]
     .filter(\.1).map(\.0)
 if !clamped.isEmpty {
     log("\(clamped.joined(separator: ", ")) — not available on this system, and off for this run")
@@ -358,6 +376,27 @@ let hotkeys = HotkeyManager(binder: CarbonHotkeyBinder(), sink: EventSink { even
     runtime.sink(event)
 })
 
+// The other intent source, and the same wrapping for the same reason: a gesture that correctly changes
+// nothing looks exactly like one that never registered, and the trackpad leaves no other trace. The
+// edges only — the stream between them is one event per painted frame, and logging that is a log nobody
+// can read.
+let gestures = GestureRecognizer(tapper: gestureTap, scheduler: DispatchScheduler(),
+                                 sink: EventSink { event in
+    switch event {
+    case .trackpadScrollBegan:
+        log("trackpad: scroll began")
+    case .trackpadScrollEnded(let velocity):
+        log(String(format: "trackpad: scroll ended at %+.2f pads/s", velocity))
+    default:
+        break
+    }
+    runtime.sink(event)
+})
+
+// The frame boundary, ahead of that frame's tick. Two lines and no coupling inside either type: the
+// trackpad is not phase-locked to the display, and what the core wants is one write per painted frame.
+clock.onFrame = { [gestures] in gestures.drain() }
+
 /// Register a config's bindings and say what happened. Zero bindings is reported with the path, so
 /// "the keyboard does nothing" comes with what to do about it.
 @MainActor func applyKeys(_ config: Config) {
@@ -443,6 +482,10 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     // …and the second reader still asks per sample whether it is wanted, because the first setting can
     // keep the samples flowing on its own.
     pointerFocus.isEnabled = config.focusFollowsMouse
+    // The desk's other standing idle cost, gated the same way and for the same stated reason: the tap
+    // fires for every finger on the pad, including one moving the cursor, so it is not installed for a
+    // setting nobody turned on. `applyEnvironment` has already clamped this against the cover.
+    gestures.observe(config.trackpadScroll.isLive)
 }
 
 applyShellConfig(config)
@@ -627,6 +670,7 @@ var isShuttingDown = false
     // `setFrame`/`raise`/`focus`, and quitting is the one moment there is no next command to unhide on.
     pointer.restoreCursor()
     hotkeys.stop()
+    gestures.stop()         // a live tap outliving the daemon is a leak nothing else surfaces
     loader.stop()
     server.stop()
 

@@ -114,6 +114,54 @@ public enum MouseFollowsFocus: String, Sendable, Equatable, Codable, CaseIterabl
     public var recentres: Bool { self == .force || self == .exceptHover }
 }
 
+/// Whether a three-finger trackpad swipe scrolls the strip, and where it comes to rest.
+///
+/// **Both live modes track the fingers continuously; they differ in one line — where the lift's
+/// projection lands.** A scroll that rests anywhere is only meaningful if the fingers were driving
+/// position, which is what makes this direct manipulation rather than a recognized swipe firing a
+/// `focus right`.
+///
+/// **`off` is the default, for the reason there are no default keybindings**: a three-finger swipe is a
+/// gesture macOS already owns, and turning this on means the user handing it over in System Settings →
+/// Trackpad. Taking it uninvited would break the system's own desktop switching on first launch.
+///
+/// Also a capability bit, the shape `transitionMode` has: the strip follows the hand under a cover made
+/// of captured pixels, so the shell clamps this to `off` when there is no cover to run it under.
+public enum TrackpadScrollMode: String, Sendable, Equatable, Codable, CaseIterable {
+    /// The tap is never installed and emira observes nothing.
+    case off
+    /// The strip follows the fingers, and on lift settles so that a column edge lies flush with a
+    /// viewport edge — the nearest such rest to where the momentum was going.
+    case magnet
+    /// The strip follows the fingers, and on lift coasts to a stop wherever the momentum runs out.
+    case free
+
+    /// Whether the gesture is listened for at all — the shell's install gate, and the reducer's.
+    public var isLive: Bool { self != .off }
+}
+
+/// Which way a three-finger swipe carries the strip.
+///
+/// The two conventions macOS itself offers under *Natural scrolling*, on the axis emira keeps. Neither
+/// is obviously right and the machine cannot answer it: emira reads raw contacts rather than scroll
+/// events, so the system's own inversion is never applied on the way in — which is exactly why this is
+/// a setting rather than something derived.
+///
+/// `standard` is the default because it is what a scrollbar does, and because a user who has not
+/// thought about it has not asked emira to invert anything. Anyone whose macOS scrolling is natural —
+/// which is macOS's own default, and what its three-finger Space swipe follows — wants the other one.
+public enum TrackpadScrollDirection: String, Sendable, Equatable, Codable, CaseIterable {
+    /// The viewport follows your fingers: swipe right and the strip travels right, so its content
+    /// slides left. What dragging a scrollbar does.
+    case standard
+    /// The *content* follows your fingers: swipe right and the columns come with you.
+    case natural
+
+    /// The sign a swipe's travel takes on its way to points of strip. The whole of the setting —
+    /// applied inside the one conversion, so the lift's velocity and its projection flip with it.
+    public var sign: Double { self == .natural ? -1 : 1 }
+}
+
 /// What the guide draws for each window on the strip, or nothing at all. A ladder like
 /// `TransitionMode`'s: each rung asks the machine for strictly more, and the top one asks for the same
 /// thing a cover does — captured pixels — at a cost of zero extra captures, since it only keeps what a
@@ -221,6 +269,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// `scrollSpring` it is never copied into a live animator, so a reload takes effect on the next
     /// edit rather than reshaping one in flight.
     public var moveSpring: SpringParams
+    /// The spring a trackpad scroll coasts under after the fingers lift. Its `1/ω` **is** the throw
+    /// horizon, since a lift aims at `current + v/ω`. It shapes `free` alone: `magnet` uses the
+    /// projection only to choose a column edge, and travels under `scrollSpring`.
+    public var glideSpring: SpringParams
     /// Whether a focus change centers the focused column or does the minimal scroll that reveals it.
     public var centerFocusedColumn: Bool
     /// Whether `grow` and `shrink` catch where the columns on screen sit flush with the viewport, a
@@ -265,6 +317,13 @@ public struct Config: Sendable, Equatable, Codable {
     /// Whether focus moving takes the pointer with it, and how insistently. Not a capability — warping
     /// is public API and works from a background process — so nothing clamps this.
     public var mouseFollowsFocus: MouseFollowsFocus
+    /// Whether a three-finger swipe scrolls the strip, and where it comes to rest. A capability bit
+    /// like `transitionMode`: the strip follows the hand under a cover, so the shell clamps this to
+    /// `off` with no cover to make and with no tap to listen through.
+    public var trackpadScroll: TrackpadScrollMode
+    /// Which way that swipe carries the strip. Not a capability — nothing can clamp a sign — and read
+    /// only where normalized travel becomes points, which is the one conversion the gesture has.
+    public var trackpadScrollDirection: TrackpadScrollDirection
     /// The transient minimap of the strip. The reducer reads `style != .off` and nothing else: that one
     /// bit decides whether a focus change seeds `Motion.focusRing`, and the rest is the shell's.
     public var guide: GuideSettings
@@ -286,6 +345,10 @@ public struct Config: Sendable, Equatable, Codable {
         scrollSpring: SpringParams = .smooth,
         resizeSpring: SpringParams = .smooth,
         moveSpring: SpringParams = .smooth,
+        // ω = 10, a 100 ms throw horizon: solved so that a glide settles inside `holdTimeout` at any
+        // flick speed, since a deadline firing under one still travelling reveals a truth plane the
+        // layers have not reached. Spelled as stiffness for `.smooth`'s reason.
+        glideSpring: SpringParams = SpringParams(stiffness: 100, dampingRatio: 1),
         centerFocusedColumn: Bool = false,
         resizeDetent: Bool = false,
         interactiveResize: Bool = true,
@@ -297,6 +360,8 @@ public struct Config: Sendable, Equatable, Codable {
         holdTimeout: Double = 1.0,
         hidesCursor: Bool = false,
         mouseFollowsFocus: MouseFollowsFocus = .off,
+        trackpadScroll: TrackpadScrollMode = .off,
+        trackpadScrollDirection: TrackpadScrollDirection = .standard,
         guide: GuideSettings = GuideSettings(),
         keys: [KeyBinding] = [],
         windowRules: [WindowRule] = []
@@ -309,6 +374,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.scrollSpring = scrollSpring
         self.resizeSpring = resizeSpring
         self.moveSpring = moveSpring
+        self.glideSpring = glideSpring
         self.centerFocusedColumn = centerFocusedColumn
         self.resizeDetent = resizeDetent
         self.interactiveResize = interactiveResize
@@ -320,6 +386,8 @@ public struct Config: Sendable, Equatable, Codable {
         self.holdTimeout = holdTimeout
         self.hidesCursor = hidesCursor
         self.mouseFollowsFocus = mouseFollowsFocus
+        self.trackpadScroll = trackpadScroll
+        self.trackpadScrollDirection = trackpadScrollDirection
         self.guide = guide
         self.keys = keys
         self.windowRules = windowRules

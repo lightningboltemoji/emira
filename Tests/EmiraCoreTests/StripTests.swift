@@ -31,6 +31,54 @@ import Testing
         #expect(shifted.leftEdge(of: 2) == 370)
     }
 
+    // Magnets — the rests a driven scroll settles on
+
+    @Test func magnetOffsetsAreBothEdgesOfEveryColumn() {
+        // Viewport 400 over col0 [0,100) col1 [110,310) col2 [320,620). Left flushes are 0/110/320;
+        // right flushes are 100−400, 310−400, 620−400 → clamped to 0, 0, 220. maxOffset = 620−400.
+        #expect(strip.magnetOffsets(viewportWidth: 400, centered: false) == [0, 110, 220])
+    }
+
+    @Test func aColumnWiderThanTheViewportKeepsBothOfItsRests() {
+        // One 900-wide column against a 400 viewport: left-flush at 0 and right-flush at 500, and the
+        // right half is unreachable without the second one.
+        let wide = Strip(columnWidths: [900], gap: 10)
+        #expect(wide.magnetOffsets(viewportWidth: 400, centered: false) == [0, 500])
+    }
+
+    @Test func aStripShorterThanTheViewportHasOneRest() {
+        // Every candidate clamps onto `origin`, and the dedupe collapses them to the one rest there is.
+        let short = Strip(columnWidths: [100, 100], gap: 10)
+        #expect(short.magnetOffsets(viewportWidth: 400, centered: false) == [0])
+    }
+
+    @Test func anEmptyStripHasNoMagnetsAndClampsInstead() {
+        let empty = Strip(columnWidths: [], gap: 10)
+        #expect(empty.magnetOffsets(viewportWidth: 400, centered: false).isEmpty)
+        #expect(empty.magnetOffset(nearest: 900, viewportWidth: 400, centered: false) == 0)
+    }
+
+    @Test func centeringTakesTheColumnCentresUnclamped() {
+        // Centering means putting a column in the middle, which at the strip's ends *means* showing
+        // space past it — so these are deliberately outside [origin, maxOffset].
+        let centres = strip.magnetOffsets(viewportWidth: 400, centered: true)
+        #expect(centres == [-150, 10, 270])         // 50−200, 210−200, 470−200
+    }
+
+    @Test func nearestMagnetTakesTheHigherOfATie() {
+        let rests = strip.magnetOffsets(viewportWidth: 400, centered: false)   // [0, 110, 220]
+        #expect(rests.contains(110))
+        #expect(strip.magnetOffset(nearest: 104, viewportWidth: 400, centered: false) == 110)
+        #expect(strip.magnetOffset(nearest: 40, viewportWidth: 400, centered: false) == 0)
+        // Exactly between 0 and 110: forward wins, the rule `Monitors` breaks a name-distance tie with.
+        #expect(strip.magnetOffset(nearest: 55, viewportWidth: 400, centered: false) == 110)
+    }
+
+    @Test func nearestMagnetIsTotalPastEitherEnd() {
+        #expect(strip.magnetOffset(nearest: -9000, viewportWidth: 400, centered: false) == 0)
+        #expect(strip.magnetOffset(nearest: 9000, viewportWidth: 400, centered: false) == 220)
+    }
+
     @Test func spanReturnsOriginAndWidth() {
         let (x, w) = strip.span(of: 1)
         #expect(x == 110)

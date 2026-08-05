@@ -40,6 +40,13 @@ public struct Animator: Sendable, Equatable, Codable {
         current += delta
     }
 
+    /// Set the rate of change without moving `current` or `target` — the only thing a quantity driven
+    /// from outside owes when it is handed back to the spring. A hand's velocity is measured where the
+    /// samples and their timestamps are, and this is where it lands.
+    public mutating func launch(_ velocity: Double) {
+        self.velocity = velocity
+    }
+
     /// Jump instantly to `value`, killing motion — for snap paths that owe no animation.
     public mutating func snap(to value: Double) {
         current = value

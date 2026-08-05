@@ -30,6 +30,9 @@ public struct State: Sendable, Equatable, Codable {
     /// Whether a mouse button is down, and which window has moved under it. Beside `pointer` and not
     /// inside `world` for the same reason: nothing observes it — see `Drag`.
     public var drag: Drag
+    /// Whether three fingers are on the trackpad, and whose viewport they are driving. Beside `drag`,
+    /// and for its reason — see `TrackpadScroll`.
+    public var trackpadScroll: TrackpadScroll
 
     /// The strip the acting monitor is showing — a projection of `workspaces` at `monitors.shown`, not
     /// a second authority. Only the cross-workspace queries bypass it: reconcile, `targetFrames`, the
@@ -48,13 +51,16 @@ public struct State: Sendable, Equatable, Codable {
         self.config = config
         self.pointer = Pointer()
         self.drag = .idle
+        self.trackpadScroll = .idle
     }
 
     /// Full memberwise init — for the reducer building a specific state, for replay, and for tests.
-    /// `monitors`, `pointer` and `drag` default to the launch state, which is what every caller but a
-    /// replay wants; they are parameters rather than hard-coded so that "full" stays true.
+    /// `monitors`, `pointer`, `drag` and `trackpadScroll` default to the launch state, which is what
+    /// every caller but a replay wants; they are parameters rather than hard-coded so that "full"
+    /// stays true.
     public init(world: World, workspaces: Workspaces, motion: Motion, config: Config,
-                monitors: Monitors = Monitors(), pointer: Pointer = Pointer(), drag: Drag = .idle) {
+                monitors: Monitors = Monitors(), pointer: Pointer = Pointer(), drag: Drag = .idle,
+                trackpadScroll: TrackpadScroll = .idle) {
         self.world = world
         self.workspaces = workspaces
         self.monitors = monitors
@@ -62,14 +68,17 @@ public struct State: Sendable, Equatable, Codable {
         self.config = config
         self.pointer = pointer
         self.drag = drag
+        self.trackpadScroll = trackpadScroll
     }
 
     /// The single-strip init: `layout` becomes the launch address's strip, nothing else materialized.
     public init(world: World, layout: Layout, motion: Motion, config: Config,
-                pointer: Pointer = Pointer(), drag: Drag = .idle) {
+                pointer: Pointer = Pointer(), drag: Drag = .idle,
+                trackpadScroll: TrackpadScroll = .idle) {
         self.init(world: world,
                   workspaces: Workspaces(showing: .first, strips: [.first: layout]),
-                  motion: motion, config: config, pointer: pointer, drag: drag)
+                  motion: motion, config: config, pointer: pointer, drag: drag,
+                  trackpadScroll: trackpadScroll)
     }
 
     /// Layout metrics for one display — its working area (bounds minus its own struts) under the current
@@ -227,6 +236,9 @@ public struct State: Sendable, Equatable, Codable {
     ///   overlays they were drawing on have to be told.
     @discardableResult
     public mutating func setMonitors(_ infos: [MonitorInfo]) -> [MonitorId] {
+        // Both paths below can take a session down — a display that left carries its own away, and a
+        // reconfiguration closes every cover on the desktop — so the join runs on either.
+        defer { dropStrandedLatch() }
         let moved = !describesSameDisplays(as: infos)
         if moved { bankViewports() }
         world.setMonitors(infos)
@@ -239,6 +251,34 @@ public struct State: Sendable, Equatable, Codable {
         for monitor in surviving { motion.closeTransition(on: monitor) }
         resumeViewports()
         return departed + surviving
+    }
+
+    // Tearing a session down (where the cover and the hand on it come apart)
+
+    /// Close `id`'s transition and snap its viewport to its target. **One method, for the same reason
+    /// `setMonitors` is one:** the trackpad latch rides on a session, and where a step touches two
+    /// containers the pair is not something a caller may be trusted to remember.
+    public mutating func closeTransition(on id: MonitorId?) {
+        motion.closeTransition(on: id)
+        dropStrandedLatch()
+    }
+
+    /// Abandon `id`'s session before its cover was ever raised — `Event.coverUnavailable`'s answer —
+    /// with the same join. Refuses once the cover is up, and the latch then correctly stays.
+    public mutating func abortTransition(on id: MonitorId?) {
+        motion.abortTransition(on: id)
+        dropStrandedLatch()
+    }
+
+    /// **The latch dies with its session.** A latch outliving the cover it rode on is the broken state
+    /// — the next drained sample would drive a viewport with no cover to hide it and no clock to paint
+    /// it — so this is stated once as a join over `State` rather than repeated at four teardown sites.
+    /// It reads the display the *latch* names rather than the one that was closed, which is what makes
+    /// it total over exits nobody has written yet.
+    private mutating func dropStrandedLatch() {
+        guard case .dragging(let held) = trackpadScroll,
+              !motion.isTransitioning(on: held) else { return }
+        trackpadScroll = .idle
     }
 
     /// Store every display's live scroll against the address it is showing — the write half of a
@@ -381,8 +421,14 @@ public enum Engine {
         // standing rather than only stopping the next — the same shape the hide's payout above has,
         // and the same reason: a reload is the one way a rung can change under an owed visit.
         guard s.config.mouseFollowsFocus != .off else { return s.pointer.pendingWarp = nil }
+        // `exceptHover` exists to remove "the focus the hand was already on", and a hand on the
+        // trackpad is the clearest case of that there is — so a lift's focus change is the pointer's
+        // own as much as a hover is. `force` still forces, which is what it is for.
         var pointerCaused = false
-        if case .pointerEntered = event { pointerCaused = true }
+        switch event {
+        case .pointerEntered, .trackpadScrollEnded: pointerCaused = true
+        default: break
+        }
         if before.world.focusedWindow != s.world.focusedWindow {
             s.pointer.pendingWarp = s.config.mouseFollowsFocus.warps(pointerCaused: pointerCaused)
                 ? s.world.focusedWindow : nil
@@ -431,6 +477,10 @@ public enum Engine {
         switch event {
 
         case .command(let command):
+            // A hotkey firing while three fingers are down is explicit intent, and it wins: the
+            // viewport may have only one author. The samples behind it reduce to nothing, and the
+            // `Ended` behind *them* finds `.idle` and returns `[]` — total in both orders.
+            s.trackpadScroll = .idle
             // NB: bind effects to a local before returning. `(s, reduceCommand(&s, …))` would read
             // `s` (tuple element 0) *before* the `&s` call mutates it, returning stale state.
             let effects = reduceCommand(&s, command)
@@ -453,7 +503,15 @@ public enum Engine {
             // every tick of a `snap` transition, which has no animator to advance, and the tail of a
             // `smooth` one still waiting on an AX set after its motion is over. Asked per display, so a
             // scroll on one screen does not re-blit a finished cover on the other.
-            let moving = covered.filter { !s.motion.isSettled(on: $0.monitor, holding: $0.contents) }
+            //
+            // A display under the hand is never settled *for this purpose*, whatever its animators say:
+            // the drain wrote its offset outright a moment ago and `driveViewport` leaves it at its own
+            // target, so this is the one frame with something new to paint that `isSettled` calls done.
+            // Advancing it is still a no-op — what the hand buys is the blit.
+            let moving = covered.filter {
+                !s.motion.isSettled(on: $0.monitor, holding: $0.contents)
+                    || s.trackpadScroll.holds($0.monitor)
+            }
             var effects: [Effect] = []
             if !moving.isEmpty {
                 s.motion.advance(by: dt, on: moving.map(\.monitor),
@@ -521,6 +579,18 @@ public enum Engine {
 
         case .pointerEntered(let id):
             let effects = handlePointerEntered(&s, id)   // local first — the `.command` trap above
+            return (s, effects)
+
+        case .trackpadScrollBegan:
+            let effects = beginTrackpadScroll(&s)   // local first — the `.command` trap above
+            return (s, effects)
+
+        case .trackpadScrolled(let travel):
+            let effects = driveTrackpadScroll(&s, by: travel)
+            return (s, effects)
+
+        case .trackpadScrollEnded(let velocity):
+            let effects = endTrackpadScroll(&s, velocity: velocity)
             return (s, effects)
 
         case .pointerWoke:
@@ -648,7 +718,7 @@ public enum Engine {
             // No pixels from the capture plane; raising anyway would black out that display. Nothing has
             // moved there yet, so abandon and snap — on that screen alone.
             guard s.motion.phase(of: monitor) == .capturing else { return (s, []) }
-            s.motion.abortTransition(on: monitor)   // snaps its viewport to its target
+            s.abortTransition(on: monitor)          // snaps its viewport to its target
             let effects = reassertTruthPlane(&s)
             return (s, effects)
 
@@ -679,7 +749,7 @@ public enum Engine {
             // Bound the wait: close that cover regardless, letting unlanded AX sets finish in the open.
             // One deadline per display, so a hung app under one cover costs the other screen nothing.
             guard s.motion.isTransitioning(on: monitor) else { return (s, []) }
-            s.motion.closeTransition(on: monitor)
+            s.closeTransition(on: monitor)
             // A session that timed out *before* its cover reached the glass never moved a window, and
             // closing it snapped the viewport to a destination nothing has travelled to. Free for a
             // covered session, which teleported at `coverOnScreen` and is already there.
@@ -1465,7 +1535,7 @@ public enum Engine {
     /// would have come to rest, which is what the outgoing workspace then remembers.
     private static func abandonTransition(_ s: inout State) -> [Effect] {
         guard let monitor = s.monitors.focused, s.motion.isTransitioning(on: monitor) else { return [] }
-        s.motion.closeTransition(on: monitor)
+        s.closeTransition(on: monitor)
         return [.endTransition(monitor)]
     }
 
@@ -1542,15 +1612,24 @@ public enum Engine {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
         guard let (monitor, metrics) = s.acting() else { return [] }
         let start = s.viewport.offset.current
-        let end = center
-            ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
-            : s.layout.scrollOffsetToReveal(window: id, from: start, metrics: metrics)
-        guard let end else { return [] }
 
         if s.motion.isTransitioning(on: monitor) {
-            return driveTransition(&s, on: monitor, to: end,
-                                   scope: s.layout.sweptWindowIds(from: start, to: end, metrics: metrics))
+            // **Asked at the destination**, not at a position the strip is only passing through — and a
+            // column already framed there re-aims nothing. Every other aim in emira is itself a minimal
+            // reveal, so re-deriving one from the live offset is idempotent; a magnetized rest is the
+            // first that is not, and left alone each one would be undone a few milliseconds later by
+            // the echo of the very focus its settle emitted.
+            let destination = s.viewport.offset.target
+            guard let framed = revealedOffset(s, of: id, from: destination, metrics: metrics,
+                                              center: center),
+                  !approximatelyEqualScalar(framed, destination) else { return [] }
+            return driveTransition(&s, on: monitor, to: framed,
+                                   scope: s.layout.sweptWindowIds(from: start, to: framed,
+                                                                  metrics: metrics))
         }
+
+        guard let end = revealedOffset(s, of: id, from: start, metrics: metrics,
+                                       center: center) else { return [] }
 
         if approximatelyEqualScalar(end, start) {
             return reassertTruthPlane(&s)               // already in view → snap, no cover
@@ -1582,6 +1661,15 @@ public enum Engine {
             return captures(s, scope, on: monitor)
         }
         aimViewport(&s, at: end, on: monitor)
+        return growTransition(&s, on: monitor, scope: scope)
+    }
+
+    /// Widen `monitor`'s open session to `scope`, ask for the stills the newcomers owe, and — behind a
+    /// cover that is already up — re-teleport the reals at the destination. The tail every re-aim of a
+    /// running session shares; the aim itself is the caller's, because a lift aims a viewport
+    /// differently than a command does and a drained sample does not aim it at all.
+    private static func growTransition(_ s: inout State, on monitor: MonitorId,
+                                       scope: [WindowId]) -> [Effect] {
         let newcomers = s.motion.extendTransition(scope: scope, on: monitor)
         var effects: [Effect] = captures(s, newcomers, on: monitor)
         if s.motion.isCovered(on: monitor) { effects += teleportBehindCover(&s, on: monitor) }
@@ -1605,6 +1693,191 @@ public enum Engine {
     /// fresh capture (`Effect.capture`).
     private static func captures(_ s: State, _ ids: [WindowId], on monitor: MonitorId) -> [Effect] {
         ids.map { .capture(monitor, $0, size: s.world.windows[$0]?.frame.size ?? .zero) }
+    }
+
+    /// The offset that frames `id`'s column, from `offset` — centred, or the minimal reveal. `nil` for a
+    /// window with no column. In one place so that "where would this come to rest" and "is it already
+    /// there" cannot answer differently.
+    private static func revealedOffset(_ s: State, of id: WindowId, from offset: Double,
+                                       metrics: LayoutMetrics, center: Bool) -> Double? {
+        center ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
+               : s.layout.scrollOffsetToReveal(window: id, from: offset, metrics: metrics)
+    }
+
+    // The trackpad scroll (the strip under the hand)
+    //
+    // **A window cannot be moved at 120 Hz**, so a finger-driven scroll is not a new kind of motion —
+    // it is the transition machinery with the spring replaced by a hand: cover up, layers slide every
+    // frame, reals teleported once. The offset was already "one number with every frame derived from
+    // it", and this takes it.
+    //
+    // The three events split the way the machinery does. The two edges are real events because they
+    // open and close a session, and opening one is what starts the clock. Between them nothing is
+    // dispatched per sample: the shell accumulates travel and drains it on the frame boundary, so the
+    // stream writes one number per painted frame and emits no effect but a capture.
+
+    /// How far a full sweep of the pad carries the strip, in screens — roughly the ratio macOS's own
+    /// three-finger swipe uses. A constant rather than a key: it wants a hand on a trackpad before it
+    /// earns config.
+    static let trackpadGain: Double = 3
+
+    /// `travel` normalized pad units as points of strip on `metrics`' display. Scaling by the **content
+    /// area** rather than by a fixed points-per-unit gain is the same choice the width presets make: a
+    /// full pad sweep moves the same amount of *strip you can see* on a laptop and on a 6K panel, so the
+    /// gesture stays proportional to the thing it manipulates.
+    ///
+    /// **The one conversion the gesture has**, and the reason there is nowhere else for the direction
+    /// to be applied: a distance and a velocity that disagreed about which way is forward would send a
+    /// lift's projection off the wrong end of the strip. The event itself stays what the pad said —
+    /// `+x` toward the right of the pad — because that is a fact about the hardware, and what a
+    /// fraction of the pad *means* is the core's.
+    private static func trackpadPoints(_ travel: Double, _ metrics: LayoutMetrics,
+                                       _ direction: TrackpadScrollDirection) -> Double {
+        travel * direction.sign * metrics.contentArea.width * trackpadGain
+    }
+
+    /// Three fingers committed to a horizontal swipe: latch the display and open the cover the drag runs
+    /// under. Nothing has moved yet, so the scope is the sweep from the current offset to itself — one
+    /// viewport plus a shoulder each side. The capture head overlaps the first ~100 ms of finger travel
+    /// and nothing is lost by that: when the cover reaches the glass its first blit is wherever the
+    /// fingers have got to, which is precisely what `snap` mode does today.
+    private static func beginTrackpadScroll(_ s: inout State) -> [Effect] {
+        // Off, or a hand already on it. Total in both orders, and the whole cost is one guard.
+        guard s.config.trackpadScroll.isLive, case .idle = s.trackpadScroll else { return [] }
+        // The cover is the presentation plane a 120 Hz scroll happens on. `applyEnvironment` clamps the
+        // setting off without one, so this is the reducer declining to be a second opinion about it.
+        guard s.config.transitionMode.covers else { return [] }
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        // The strip the user is working on, not the one the cursor happens to sit over: the fingers are
+        // not on a screen, and the focused monitor is the only thing that can answer.
+        guard let (monitor, metrics) = s.acting() else { return [] }
+        let start = s.motion.offset(of: monitor).current
+        let scope = s.layout.sweptWindowIds(from: start, to: start, metrics: metrics)
+        // Nothing on screen to cover, so nothing to scroll — and a session with no capture to wait on
+        // would never raise, with the hold deadline suspended under the hand and nothing to end it.
+        guard !scope.isEmpty else { return [] }
+        s.trackpadScroll = .dragging(monitor)
+        return driveTransition(&s, on: monitor, to: start, scope: scope)
+    }
+
+    /// One drained sample: write the offset the hand has taken the strip to, and buy the stills for
+    /// whatever that brought into view.
+    ///
+    /// **No teleport, and no aim.** The reals stay where the opening pass put them for the whole drag,
+    /// hundreds of points from where the cover draws them — safe for the reason the phase machine
+    /// already gives, that every exit owes a placement, and the lift is what pays. So a sample emits
+    /// captures and nothing else; the tick behind it blits the number this wrote.
+    private static func driveTrackpadScroll(_ s: inout State, by travel: Double) -> [Effect] {
+        // A command mid-gesture already took the viewport and dropped the latch, so this is total.
+        guard case .dragging(let monitor) = s.trackpadScroll,
+              let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return [] }
+        let strip = s.workspaces[shown]
+        let start = s.motion.offset(of: monitor).current
+        // The clamp is the whole of the end-of-strip behaviour. The strip's ends are hard everywhere
+        // else in emira, and a rubber band would need an out-of-range regime plus a return spring for
+        // no fact anyone needs.
+        let points = trackpadPoints(travel, metrics, s.config.trackpadScrollDirection)
+        let end = strip.clampScrollOffset(start + points, metrics: metrics)
+        s.motion.driveViewport(to: end, on: monitor)
+        // A column entering scope owes a capture, which is what the shoulder is the lookahead for: a
+        // finger crossing a 600 pt column at even 3000 pt/s spends 200 ms in it against a ~10 ms
+        // capture.
+        let newcomers = s.motion.extendTransition(
+            scope: strip.sweptWindowIds(from: start, to: end, metrics: metrics), on: monitor)
+        return captures(s, newcomers, on: monitor)
+    }
+
+    /// The fingers lifted: project where the momentum was going, choose the rest, hand the offset back
+    /// to a spring seeded with the hand's velocity, and pay for the whole travel in one batch.
+    ///
+    /// **A glide is not a new solver — it is a spring aimed at the one place it would have coasted to
+    /// anyway.** A critically damped spring aimed exactly `v/ω` ahead decays as `e^(−ωt)` with no
+    /// overshoot, so the throw distance is not a second tunable: it *is* `1/ω` of the configured spring.
+    private static func endTrackpadScroll(_ s: inout State, velocity: Double) -> [Effect] {
+        guard case .dragging(let monitor) = s.trackpadScroll else { return [] }
+        // Dropped first, and it is what un-suspends this display's hold deadline: the aim below bumps
+        // `retargetGeneration` for the first time this gesture, so the deadline arms fresh from the
+        // moment the placement pass is actually issued — exactly the interval it was written to bound.
+        s.trackpadScroll = .idle
+        guard let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return [] }
+        let strip = s.workspaces[shown]
+        let start = s.motion.offset(of: monitor).current
+        let speed = trackpadPoints(velocity, metrics, s.config.trackpadScrollDirection)
+
+        // Under `snap` there is no motion to inherit the hand's momentum, so inventing a throw would be
+        // the one thing that mode exists to refuse. Direct manipulation is not animation.
+        let projected = s.config.transitionMode.animates
+            ? start + speed / s.config.glideSpring.naturalFrequency
+            : start
+
+        let rest: Double
+        let spring: SpringParams
+        switch s.config.trackpadScroll {
+        case .magnet:
+            // The projection is used only to *choose*. The destination is a column exactly as
+            // `focus left`'s is, so it travels under the scroll spring and arrives with the feel every
+            // other column arrival has.
+            rest = strip.magnetScrollOffset(nearest: projected, metrics: metrics,
+                                            centered: s.config.centerFocusedColumn)
+            spring = s.config.scrollSpring
+        case .free, .off:
+            rest = strip.clampScrollOffset(projected, metrics: metrics)
+            spring = s.config.glideSpring
+        }
+
+        if s.config.transitionMode.animates {
+            s.motion.glideViewport(to: rest, velocity: speed, under: spring, on: monitor)
+        } else {
+            s.motion.snapViewport(to: rest, on: monitor)
+        }
+
+        // The rest is known, so the whole remaining travel is extended and captured **in one batch** —
+        // a flick costs one round of captures issued together rather than a trickle chasing the glide,
+        // which is the property that makes inertia affordable. The teleport inside rides at
+        // `offset.target` and arms the landing wait the close gate reads.
+        var effects = growTransition(&s, on: monitor,
+                                       scope: strip.sweptWindowIds(from: start, to: rest,
+                                                                   metrics: metrics))
+        effects += focusAfterTrackpadScroll(&s, on: monitor, restingAt: rest)
+        return effects
+    }
+
+    /// Move focus to what the strip actually came to rest on, and only when it has to.
+    ///
+    /// The strip landing somewhere else with focus left behind breaks *"you are never focused on
+    /// something you cannot see"* by the user's own hand, and leaves the next `focus left` yanking the
+    /// strip back to a column they deliberately scrolled away from. So: **if the focused window's column
+    /// is still on screen at the rest offset, focus does not move at all**; otherwise it goes to the
+    /// topmost window of the column nearest the viewport's centre — topmost because that is what
+    /// `handleFocus` already picks when crossing columns, and most-central because the leading edge can
+    /// be a five-percent sliver of a column the user is not looking at.
+    ///
+    /// Read at the destination, never at the live offset the strip is only passing through.
+    private static func focusAfterTrackpadScroll(_ s: inout State, on monitor: MonitorId,
+                                                 restingAt rest: Double) -> [Effect] {
+        guard let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return [] }
+        let layout = s.workspaces[shown]
+        let strip = layout.strip(metrics: metrics)
+        let onScreen = strip.visibleColumnIndices(viewportWidth: metrics.contentArea.width,
+                                                  offset: rest)
+        if let focused = s.world.focusedWindow, let column = layout.columnIndex(ofWindow: focused),
+           onScreen.contains(column) { return [] }
+        let centre = rest + metrics.contentArea.width / 2
+        func distance(_ i: Int) -> Double {
+            let (x, width) = strip.span(of: i)
+            return abs(x + width / 2 - centre)
+        }
+        // Ascending indices, and `min(by:)` keeps the first minimum, so a tie takes the leading column.
+        guard let target = onScreen.min(by: { distance($0) < distance($1) }),
+              let window = layout.columns[target].windowIds.first,
+              window != s.world.focusedWindow else { return [] }
+        s.world.setFocus(window)
+        // No `.raise`: the horizontal branch of `handleFocus` does not emit one either, and the reveal
+        // that follows does the stacking.
+        return [.focus(window)]
     }
 
     // The animated resize (the strip's own geometry in motion)
@@ -1898,8 +2171,9 @@ public enum Engine {
     /// resting state matches the reveal.
     private static func maybeCloseTransition(_ s: inout State, on monitor: MonitorId,
                                              holding contents: MonitorContents) -> [Effect] {
-        guard s.motion.isReadyToClose(on: monitor, holding: contents) else { return [] }
-        s.motion.closeTransition(on: monitor)
+        guard s.motion.isReadyToClose(on: monitor, holding: contents,
+                                      hand: s.trackpadScroll) else { return [] }
+        s.closeTransition(on: monitor)
         return [.endTransition(monitor)]
     }
 

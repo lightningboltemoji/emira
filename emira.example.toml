@@ -61,6 +61,14 @@ hide = false
 # One of "off", "lazy", "except-hover", "force".
 follows-focus = "off"
 
+# Scroll the strip with a three-finger swipe; magnet settles on a column edge.
+# One of "off", "magnet", "free".
+trackpad-scroll = "off"
+
+# Which way a swipe carries the strip; natural moves the columns with your fingers.
+# One of "standard", "natural".
+trackpad-scroll-direction = "standard"
+
 [animation]
 
 # smooth for spring animations, snap for no motion, off to disable.
@@ -106,6 +114,16 @@ damping-ratio = 1
 stiffness = 800
 
 # ζ for a window the strip rearranged — 1 settles without overshoot, less overshoots.
+# Must be at least 0.
+damping-ratio = 1
+
+[animation.glide]
+
+# Spring constant k for a trackpad scroll after the lift — larger is stiffer, and faster.
+# Must be greater than 0.
+stiffness = 100
+
+# ζ for a trackpad scroll after the lift — 1 settles without overshoot, less overshoots.
 # Must be at least 0.
 damping-ratio = 1
 

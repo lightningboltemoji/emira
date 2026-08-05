@@ -129,6 +129,54 @@ public struct Strip: Sendable, Equatable {
         return result
     }
 
+    // Magnets — the rests a driven scroll settles on
+
+    /// The offsets at which a column edge lies flush with a viewport edge — every rest a magnetized
+    /// scroll may stop at. For column `i`: `leftEdge(i)` puts its left edge against the viewport's
+    /// left, and `leftEdge(i) + width(i) − viewportWidth` puts its right against the viewport's right.
+    /// Clamped into `[origin, maxOffset]`, deduplicated, ascending.
+    ///
+    /// Both edges, not just left: a column wider than the viewport has two legitimate rest points and a
+    /// left-only answer makes its right half unreachable. `origin` and `maxOffset` fall out of the set
+    /// for free — they *are* the first column's left flush and the last column's right flush.
+    ///
+    /// `centered` takes the column **centres** instead, unclamped for the reason `offsetToCenter` is
+    /// never clamped: at the strip's ends, honouring a centre means showing space past the last column.
+    public func magnetOffsets(viewportWidth: Double, centered: Bool) -> [Double] {
+        guard count > 0 else { return [] }
+        var candidates: [Double] = []
+        for i in 0..<count {
+            guard !centered else {
+                candidates.append(offsetToCenter(i, viewportWidth: viewportWidth))
+                continue
+            }
+            let (x, width) = span(of: i)
+            candidates.append(clampOffset(x, viewportWidth: viewportWidth))
+            candidates.append(clampOffset(x + width - viewportWidth, viewportWidth: viewportWidth))
+        }
+        // Deduplicated at the tolerance a placement is diffed at — a strip shorter than the viewport
+        // clamps every candidate onto `origin`, and two rests half a point apart are one rest.
+        return candidates.sorted().reduce(into: []) { kept, candidate in
+            guard let last = kept.last else { return kept.append(candidate) }
+            if candidate - last > Self.visibilityTolerance { kept.append(candidate) }
+        }
+    }
+
+    /// The nearest of those to `offset`; an exact tie takes the higher one — `Monitors`' forward-wins
+    /// rule for a `WorkspaceName` distance, so the two places in emira that break a tie between
+    /// neighbours break it the same way. An empty strip has no edge to catch on and nowhere to be but
+    /// its origin.
+    public func magnetOffset(nearest offset: Double, viewportWidth: Double, centered: Bool) -> Double {
+        let candidates = magnetOffsets(viewportWidth: viewportWidth, centered: centered)
+        guard var best = candidates.first else {
+            return clampOffset(offset, viewportWidth: viewportWidth)
+        }
+        // Ascending, and `<=` keeps the later one, which is the forward-wins tie-break.
+        for candidate in candidates.dropFirst()
+        where abs(candidate - offset) <= abs(best - offset) { best = candidate }
+        return best
+    }
+
     // Detents — the edge a resize catches on
 
     /// How far column `i`'s width may travel before a viewport edge crosses a column edge, or `nil` where
