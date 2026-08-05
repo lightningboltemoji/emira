@@ -1110,12 +1110,205 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.start()
         let scansAfterBoot = world.windows.scanCounts
         let readsAfterBoot = world.windows.windowListCalls
+        let watchesAfterBoot = world.source.watchedApps.count
 
         world.heartbeat.beat()
         world.heartbeat.beat()
 
         #expect(world.windows.scanCounts == scansAfterBoot)
         #expect(world.windows.windowListCalls == readsAfterBoot + 2)
+        #expect(world.source.watchedApps.count == watchesAfterBoot, "an observed app is not re-asked")
+    }
+
+    // Removal — the half of the standing check the notification stream cannot be trusted for.
+    //
+    // A destroy notification is the only thing that ever took a window off the strip, and it comes from
+    // the app. An app that is wedged, or that we never managed to observe, sends nothing — and an
+    // edge-triggered discovery never reissues, so the column stays on the strip for the life of the
+    // daemon. The window server is the authority that cannot be starved this way: it owns the window
+    // rather than the app does.
+
+    @Test func aWindowThatClosedUnheardIsTakenOffTheStrip() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+
+        // It closed, and no `AXUIElementDestroyed` ever arrived — the app is wedged, or was never
+        // observed. Both authorities have stopped mentioning it.
+        world.windows.entries.removeAll { $0.number == 3 }
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "two" }
+
+        world.heartbeat.beat()
+
+        #expect(world.recorder.events.contains(.windowDestroyed(id)))
+        #expect(world.registry.record(id) == nil)
+    }
+
+    @Test func aWindowClosedUnheardStillGetsTheSuccessionItsNotificationWouldHaveBought() {
+        // Through `vanish`, not straight to `retire`: closing a tab group's selected tab is exactly the
+        // case where the number leaves the list and the column must not. The wedged app is why we are
+        // here at all, so the succession may only be *offered* — never waited on indefinitely.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+        let before = world.recorder.events.count
+
+        world.windows.windowsByPid[100] = [scanned(pid: 100, seed: 11,
+                                                   bundle: "com.mitchellh.ghostty",
+                                                   title: "next tab", frame: rect(0))]
+        world.windows.entries = [WindowListEntry(number: 11, pid: 100, frame: rect(0)),
+                                 WindowListEntry(number: 2, pid: 200, frame: rect(700)),
+                                 WindowListEntry(number: 3, pid: 200, frame: rect(1400))]
+
+        world.heartbeat.beat()
+
+        #expect(world.recorder.events.count == before, "the core hears nothing at all")
+        #expect(world.registry.record(id)?.number == 11, "the id moved onto the tab that took over")
+    }
+
+    @Test func anEmptyWindowListIsAFailedReadRatherThanAnEmptyDesktop() {
+        // `WindowListEntry.current()` answers `[]` when `CGWindowListCopyWindowInfo` fails, which is
+        // indistinguishable from a desktop with nothing on it — and the two cost very different things.
+        // The apps are healthy and still describe every window — only the window server's answer is
+        // missing. The grace deadline is fired alongside each tick because that is what would do the
+        // damage: a scan that still lists the window settles nothing, so the wait ends on the deadline.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.entries = []
+
+        for _ in 0..<10 { world.heartbeat.beat(); world.scheduler.fire() }
+
+        #expect(world.registry.count == 3, "the whole strip survives an answer we cannot trust")
+        #expect(!world.recorder.events.contains { if case .windowDestroyed = $0 { true } else { false } })
+    }
+
+    @Test func aWindowThatIsMerelyOffScreenIsStillAWindow() {
+        // The distinction the removal half turns on. A background tab, a window on another Space and a
+        // minimized one are all off screen and all alive — an ordinary desktop has more of them than it
+        // has visible windows. Only absence from the list *entirely* is a death.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3 ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false)
+                           : $0
+        }
+
+        for _ in 0..<10 { world.heartbeat.beat(); world.scheduler.fire() }
+
+        #expect(world.registry.record(id) != nil)
+        #expect(!world.recorder.events.contains(.windowDestroyed(id)))
+    }
+
+    // Observer repair — a registration that failed is a state, not a race.
+
+    @Test func anAppThatOutlastedItsWatchBudgetIsAskedAgainForever() {
+        // The retry budget is a hurry, not a repair: an app too busy to be observed when it launched
+        // would otherwise be deaf to us for the life of the daemon — no window creation, no destroy, no
+        // move — while a fully bound desktop leaves the standing check with nothing to complain about.
+        let world = LiveWorld()
+        world.source.watchSucceeds = false
+        world.watcher.start()
+        for _ in 0..<10 { world.scheduler.fire() }          // burn the budget
+        let exhausted = world.source.watchedApps.count
+        #expect(world.scheduler.pending == 0, "the edge plane has given up, as it must")
+
+        world.heartbeat.beat()
+        #expect(world.source.watchedApps.count == exhausted + 2, "both apps asked again")
+
+        world.source.watchSucceeds = true
+        world.heartbeat.beat()
+        let repaired = world.source.watchedApps.count
+        world.heartbeat.beat()
+
+        #expect(world.source.watchedApps.count == repaired, "and not once more, now it has taken")
+    }
+
+    @Test func aRefusalDuringTheStandingCheckDoesNotSpendAScan() {
+        // `reconcile` asks for the registration alone. Routing it through the retry chain would answer a
+        // permanently unobservable app with three full scans of it every interval, forever — the cost
+        // `maxReconcileRounds` exists to keep off the lanes in the first place.
+        let world = LiveWorld()
+        world.source.watchSucceeds = false
+        world.watcher.start()
+        for _ in 0..<10 { world.scheduler.fire() }
+        let scans = world.windows.scanCounts
+
+        for _ in 0..<10 { world.heartbeat.beat() }
+
+        #expect(world.windows.scanCounts == scans)
+        #expect(world.scheduler.pending == 0, "and schedules nothing that would")
+    }
+
+    // `alreadyOpen` — the flag that says whether emira watched a window open, and the one thing a scan
+    // provoked by reconciliation carries that a scan provoked by a notification does not.
+
+    @Test func aWindowFoundBesideAnUnheardCloseIsOneWeMetAlreadyOpen() {
+        // The deaf app's whole profile: it missed a destroy *and* a creation, so the same tick has a
+        // window to remove and a window to find. Which half adopts the newcomer depends on whether the
+        // removal's scan has answered, so both ask the same question — announcing it as a window born
+        // now snaps one the user has already sized onto the first preset, and under a workspace rule
+        // switches the desktop out from under them to follow it.
+        let world = LiveWorld()
+        world.watcher.start()
+
+        // Both halves of what the app went deaf through: "two" closed, "three" opened, no notifications.
+        world.windows.entries.removeAll { $0.number == 3 }
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "two" }
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.heartbeat.beat()
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == true, "met mid-life, not watched open")
+    }
+
+    @Test func aCoalescedStandingCheckIsReplayedAsTheRequestItWas() {
+        // The second way the flag is dropped. Reconciliation's request arrives while a scan of that app
+        // is already out, so it is coalesced — and the replay must ask the question reconciliation
+        // asked, not the one the scan in flight was answering.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.holdsAnswers = true
+
+        world.watcher.handle(.windowAppeared(200))                  // scan #1, parked on the lane
+        // The window server sees the newcomer; AX does not describe it yet, so scan #1 cannot bind it.
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.heartbeat.beat()                                      // coalesced into scan #1
+        #expect(world.windows.pending.count == 1, "no second scan went onto the lane")
+
+        world.windows.answerScan()                                  // scan #1 answers; the replay parks
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
+        world.windows.answerScan()                                  // the replay answers
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == true, "the replay kept reconciliation's question")
+    }
+
+    @Test func aReplayInheritsTheQuestionTheScanItCoalescedIntoWasAsking() {
+        // The same drop from the other side: reconciliation asks first and parks, a `windowAppeared`
+        // coalesces behind it. The replay is the notification's request, but what it is left to
+        // announce is whatever reconciliation's scan missed — which is the stray it went looking for.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.holdsAnswers = true
+
+        // A window emira never heard open: the window server lists it, AX cannot describe it yet.
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.heartbeat.beat()                                      // scan #1, parked on the lane
+        #expect(world.windows.pending.count == 1)
+
+        world.watcher.handle(.windowAppeared(200))                  // coalesced into scan #1, as a birth
+        world.windows.answerScan()                                  // scan #1 binds nothing; replay parks
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "stray", frame: rect(2100)))
+        world.windows.answerScan()                                  // the replay answers
+
+        #expect(world.created.last?.title == "stray")
+        #expect(world.created.last?.wasAlreadyOpen == true, "the scan in flight was asking about a stray")
     }
 
     @Test func aWindowThatWillNeverBindIsAskedAboutABoundedNumberOfTimes() {

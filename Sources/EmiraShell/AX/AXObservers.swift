@@ -166,7 +166,8 @@ public final class AXObservationSource: ObservationSource {
             }
             return ok
         } then: { [weak self] ok in
-            if !ok { self?.unwatch(app: target.pid) }
+            // The observer alone. A refusal is not the app quitting, and only that takes the lane.
+            if !ok { self?.dropObserver(of: target.pid) }
             completion(ok)
         }
     }
@@ -219,14 +220,21 @@ public final class AXObservationSource: ObservationSource {
     }
 
     public func unwatch(app pid: pid_t) {
+        dropObserver(of: pid)
+        // The one place a lane is dropped: the process is gone, so its application element holds a Mach
+        // port to nothing. Dropped for any lesser reason it is worse than kept — work already queued
+        // runs on, and the next call mints a second serial queue beside it.
+        client.forget(app: pid)
+    }
+
+    /// Release an app's observer and everything registered through it, leaving its lane alone.
+    private func dropObserver(of pid: pid_t) {
         watchedWindows[pid] = nil
         if let observer = observers.removeValue(forKey: pid) {
             // Releasing the observer invalidates every registration it holds, so window elements need
             // no individual removal — unlike `unwatch(window:of:)`, where the observer lives on.
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         }
-        // The lane's application element holds a Mach port to what is now a dead process.
-        client.forget(app: pid)
     }
 
     public func readFrame(of id: WindowId, then completion: @escaping @MainActor (Rect?) -> Void) {

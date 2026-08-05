@@ -85,12 +85,14 @@ public final class WorldWatcher {
     /// Windows that moved again while their read was out. Re-read exactly once when it returns.
     private var moved: Set<WindowId> = []
 
-    /// Apps with a scan out on a lane right now. The gate on the *scan* coalescer.
-    private var scanning: Set<pid_t> = []
+    /// Apps with a scan out on a lane right now, and whether that scan is asking about windows emira met
+    /// already open. The gate on the *scan* coalescer, and the provenance a replay of it inherits.
+    private var scanning: [pid_t: Bool] = [:]
 
-    /// Apps that produced another `windowAppeared` while their scan was out. Re-scanned exactly once
-    /// when it returns.
-    private var rescan: Set<pid_t> = []
+    /// Apps whose scan was asked for again while one was out, and whether that request was for windows
+    /// emira met already open. Re-scanned exactly once when the scan in flight returns; the flag merges
+    /// with `||`, since a window wrongly announced as born now is resized and can take the desktop with it.
+    private var rescan: [pid_t: Bool] = [:]
 
     /// Windows whose element is destroyed and whose *id* has not been retired yet, because a scan may
     /// still hand it to a successor (`vanish`). Dead for every other purpose — see `isLive`.
@@ -172,8 +174,8 @@ public final class WorldWatcher {
         case .appTerminated(let pid):
             apps[pid] = nil
             observing.remove(pid)
-            scanning.remove(pid)
-            rescan.remove(pid)
+            scanning[pid] = nil
+            rescan[pid] = nil
             source.unwatch(app: pid)
             // Window by window: `World` has no notion of an app dying, only of windows going away.
             // Nothing here waits on a successor — the process that would have produced one is gone.
@@ -256,7 +258,10 @@ public final class WorldWatcher {
             return
         }
         vanishing.insert(id)
-        scan([target], attempt: 0)
+        // `alreadyOpen`, like the boot scan and reconciliation: what provoked this is a window *leaving*,
+        // so anything else the scan finds is a window nothing announced — one emira met mid-life, and
+        // the successor this is actually asking about is `succeeded` rather than an arrival at all.
+        scan([target], attempt: 0, alreadyOpen: true)
         scheduler.schedule(after: Self.successionGrace) { [weak self] in
             guard let self, vanishing.contains(id) else { return }
             retire(id)
@@ -277,20 +282,51 @@ public final class WorldWatcher {
 
     // Reconciliation (the standing question the notification stream cannot answer)
 
-    /// Ask the window server what is on screen, and scan any app holding a window emira does not manage.
+    /// Make the standing invariants true again: every app we know observed, every managed window still
+    /// real, every on-screen window managed.
     ///
     /// The standing check behind an otherwise entirely edge-triggered design, where every discovery path
     /// is one notification at one moment and a missed one is never reissued. Level-triggered and cheap:
     /// the list is a window-server query, and AX is reached only when the two disagree.
+    ///
+    /// Each of the three is a state rather than a race, which is what separates them from the retry
+    /// chain: a race resolves itself and is waited out under a budget, a state stays wrong until
+    /// something asks again.
     private func reconcile() {
         guard !isStopped else { return }
+
+        // The notification plane first, since every gap below is downstream of a gap in it. An app too
+        // busy to answer when we asked is deaf to us from then on — no creation, no destroy, no move —
+        // and nothing in the edge plane can fix that, because a budget must terminate and this must not.
+        // `register` skips the apps already covered, so a healthy desktop pays one set lookup each.
+        for (_, target) in apps.sorted(by: { $0.key < $1.key }) { register(target) }
+
+        let list = enumerator.windowList()
+        // An empty list is a failed read, not an empty desktop — `WindowListEntry.current()` answers `[]`
+        // when `CGWindowListCopyWindowInfo` does — and believing it would retire the whole strip at once.
+        guard !list.isEmpty else { return }
+        let listed = Set(list.map(\.number))
+
+        // Managed windows the window server no longer lists *at all*. Deliberately not `isOnScreen`,
+        // which the discovery half below does consult: an ordinary desktop carries far more off-screen
+        // layer-0 entries than on-screen ones — background tabs, other Spaces, the Dock — and every one
+        // of them is a live window. Absence from the entire list is a different fact, and the strongest
+        // evidence of death anything here holds: the window server owns the window rather than the app
+        // does, so it is the one authority a beachballed app cannot keep quiet. Through `vanish`, so a
+        // window that closed unheard still gets the succession its notification would have bought it.
+        //
+        // Nothing rests on this running first: `vanish` defers, and its scan is still out when the
+        // strays below are gathered, so a removal lands a lane round trip later and races the arrivals
+        // either way — bounded by `successionGrace`.
+        for id in registry.ids {
+            guard let record = registry.record(id), !listed.contains(record.number) else { continue }
+            vanish(id)
+        }
 
         // On-screen only, for the same reason `Report.unclaimed` is: an app's off-screen layer-0
         // oddments are not windows and never will be. A window on another Space or in the Dock is off
         // screen too — those are adopted by the notification that brings them back.
-        let strays = enumerator.windowList().filter {
-            $0.isOnScreen && registry.id(forNumber: $0.number) == nil
-        }
+        let strays = list.filter { $0.isOnScreen && registry.id(forNumber: $0.number) == nil }
         // A number that bound, or whose window closed, forfeits its history.
         unaccounted = unaccounted.filter { number, _ in strays.contains { $0.number == number } }
 
@@ -328,12 +364,14 @@ public final class WorldWatcher {
     /// its identity.
     private func scan(_ targets: [ScanTarget], attempt: Int, alreadyOpen: Bool = false) {
         let admitted = targets.filter { target in
-            guard scanning.contains(target.pid) else { return true }
-            rescan.insert(target.pid)
+            guard let inFlight = scanning[target.pid] else { return true }
+            // The scan in flight is one of the requests that answer stands for, so its question merges
+            // too: what the replay is left to announce is whatever that scan missed.
+            rescan[target.pid] = (rescan[target.pid] ?? false) || alreadyOpen || inFlight
             return false
         }
         guard !admitted.isEmpty else { return }
-        for target in admitted { scanning.insert(target.pid) }
+        for target in admitted { scanning[target.pid] = alreadyOpen }
         enumerator.enumerate(apps: admitted) { [weak self] report in
             self?.absorb(report, attempt: attempt, alreadyOpen: alreadyOpen)
         }
@@ -346,7 +384,7 @@ public final class WorldWatcher {
     /// retry chain too: a boot window that needed a second attempt is no less already open.
     private func absorb(_ report: AXEnumerator.Report, attempt: Int, alreadyOpen: Bool = false) {
         for target in report.apps {
-            scanning.remove(target.pid)
+            scanning[target.pid] = nil
             ensureWatching(target, attempt: attempt, alreadyOpen: alreadyOpen)
         }
 
@@ -400,10 +438,17 @@ public final class WorldWatcher {
             emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
         }
 
-        // Something appeared while the scan was out: ask again now rather than through the retry budget,
-        // since this is a request we coalesced, not a race we are waiting out.
-        let pending = report.apps.filter { rescan.remove($0.pid) != nil }
-        if !pending.isEmpty { scan(pending, attempt: 0) }
+        // Something was asked for while the scan was out: ask again now rather than through the retry
+        // budget, since this is a request we coalesced, not a race we are waiting out. Split by the
+        // question that was asked, so the replay is the request rather than a default.
+        var born: [ScanTarget] = []
+        var met: [ScanTarget] = []
+        for target in report.apps {
+            guard let wasAlreadyOpen = rescan.removeValue(forKey: target.pid) else { continue }
+            if wasAlreadyOpen { met.append(target) } else { born.append(target) }
+        }
+        if !born.isEmpty { scan(born, attempt: 0) }
+        if !met.isEmpty { scan(met, attempt: 0, alreadyOpen: true) }
 
         // A window one side of the join described and the other didn't is the "asked too early" race.
         // Retry the apps that failed: not `source.applications()`, which may answer differently and turn
@@ -421,10 +466,26 @@ public final class WorldWatcher {
         }
     }
 
-    /// Register an app's observer if it isn't already, retrying a failure inside the same budget as a
-    /// failed bind — both are the same "asked too early" race.
+    /// Note an app and register its observer, retrying a failure inside the same budget as a failed bind
+    /// — an app that is merely *starting* is the same "asked too early" race, and answering it in
+    /// milliseconds rather than at the next tick is what keeps a launch from tiling late.
+    ///
+    /// The budget bounds the hurry, not the repair: an app still refusing when it runs out is left to
+    /// `reconcile`, which asks again every interval for as long as the app lives.
     private func ensureWatching(_ target: ScanTarget, attempt: Int, alreadyOpen: Bool = false) {
         apps[target.pid] = target
+        register(target) { [weak self] in
+            guard let self, attempt + 1 < Self.maxScanAttempts, apps[target.pid] != nil else { return }
+            scheduler.schedule(after: Self.rescanDelay) { [weak self] in
+                self?.scan([target], attempt: attempt + 1, alreadyOpen: alreadyOpen)
+            }
+        }
+    }
+
+    /// Ask for an app's observer unless one is already registered or in flight, and say so when the app
+    /// refuses. Whether a refusal is worth hurrying is the caller's: `ensureWatching` spends a retry on
+    /// it, `reconcile` simply asks again next interval.
+    private func register(_ target: ScanTarget, onFailure: @MainActor @escaping () -> Void = {}) {
         guard !observing.contains(target.pid) else { return }
         // Optimistic, cleared below on failure: registration crosses onto the app's lane, so without this
         // a second scan arriving mid-flight would register the same app twice.
@@ -432,10 +493,7 @@ public final class WorldWatcher {
         source.watch(app: target) { [weak self] ok in
             guard let self, !ok else { return }
             observing.remove(target.pid)
-            guard attempt + 1 < Self.maxScanAttempts, apps[target.pid] != nil else { return }
-            scheduler.schedule(after: Self.rescanDelay) { [weak self] in
-                self?.scan([target], attempt: attempt + 1, alreadyOpen: alreadyOpen)
-            }
+            onFailure()
         }
     }
 

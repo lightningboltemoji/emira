@@ -686,6 +686,42 @@ silently. The list is a window-server query rather than IPC, so being level-trig
 until the two disagree. `Heartbeat` is its own seam beside `DelayScheduler`: a retry terminates and a heartbeat
 does not, and one drained by a test's "run everything pending" loop never would.
 
+**It holds three invariants, not one, and the division is race versus state.** A race resolves itself, so it is
+waited out under a budget in the edge plane; a state stays wrong until something asks again, and only the
+heartbeat can ask forever. Every app we know is observed — a registration that failed leaves an app deaf to us,
+which no edge can repair because a budget must terminate. Every managed window still exists — the destroy
+notification comes from the app, and a wedged app sends nothing. Every on-screen window is managed. The retry
+chain is kept in front of the first two as a hurry rather than a repair: it answers a launch race in
+milliseconds instead of at the next tick, and running out no longer means giving up.
+
+**The window server is the authority the removal direction rests on**, because it owns the window rather than
+the app does — the one witness a beachballed app cannot keep quiet. Absence from `CGWindowListCopyWindowInfo`
+is therefore a death certificate, and a stronger one than any evidence the AX paths hold, where silence has a
+second reading. Two edges make it safe. It is absence from the list *entirely*, never `isOnScreen`: an ordinary
+desktop carries far more off-screen layer-0 entries than on-screen ones — background tabs, other Spaces, the
+Dock — and each is a live window, which is exactly why the *discovery* direction filters on the opposite sense.
+And an empty list is a failed read rather than an empty desktop, so it is refused before it can retire the
+strip. Removal goes through `vanish`, so a window that closed unheard still gets the succession its
+notification would have bought it. A window number outlives everything a window does short of closing,
+**native full screen included**: the window goes off screen and changes frame across that transition and
+keeps its number, while the full-screen-sized and menu-bar-height windows the transition mints and
+destroys around it are the ones that come and go. The set is layer-0 only, so a level change would read as a
+death as surely as a close does — and nothing a managed window goes through changes its layer, **Mission
+Control, App Exposé and a Space switch included**, which matter more than full screen because they last as
+long as the user holds them.
+
+**`alreadyOpen` is provenance, and every seam a scan request crosses has to carry it.** A window emira
+watched open is snapped onto the first preset and followed to the workspace a rule sends it to; one it met
+mid-life keeps the width it already has and moves nobody's desktop. Only a birth notification says the
+former, so `appLaunched` and `windowAppeared` are the only two scans that mean it — boot, reconciliation
+and the destroy scan all mean the latter, since what provoked each of them names no arrival. It therefore
+travels with the scan *request* rather than being decided where the report is absorbed, and that includes
+the scan coalescer: several requests for one app merge into one answer whose windows nothing can tell apart,
+and they merge toward "met already open", the only one of the two mistakes that leaves a window the user
+was already using where they put it. The scan already in flight is one of those requests — what its replay is
+left to announce is precisely what that scan missed — so the merge runs over it as well as over the ones
+coalesced behind it.
+
 **Observers speak `WorldObservation`, not `Event`.** Two cases decide the type: "a window appeared" is not a
 window we can name (the notification carries an element with no window number, so the response is a re-scan),
 and "a window moved" is not a frame (AX never says where to). Both responses are policy.
@@ -823,7 +859,10 @@ only half a grant, so onboarding ends in a deliberate restart rather than procee
   lanes, marshaled back) and capture (its own queue). Nothing in the effect path is `async`, so nothing can
   suspend the pump.
 - **One `AXClient` for the whole daemon.** The per-app lanes are only serial if the enumerator, the writer and
-  the observers all queue onto the same ones.
+  the observers all queue onto the same ones. A lane is dropped for exactly one reason — the app quit, so its
+  application element holds a port to a dead process. Dropping one for any lesser reason is worse than keeping
+  it: work already queued runs on, and the next call mints a second queue beside it. So a failed observer
+  registration releases the observer alone, which matters because the standing check retries one forever.
 - **Platform floor: macOS 26.** Greenfield with no users, so take the newest floor and use the current API
   surface everywhere — `CADisplayLink` via `NSScreen.displayLink` unconditionally, modern ScreenCaptureKit
   throughout, no `@available` checks and no legacy paths. Revisit for a concrete tester need, never
