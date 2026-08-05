@@ -134,6 +134,14 @@ gesture would take — the reconstruction is what makes that tractable, and it i
   its own to go stale. A standing rule would be a second authority over a fact §1 says the strip already
   holds. The same asymmetry decides focus: emira sorting a desktop at boot places quietly, while a window
   opened _now_ is one you opened, and going there is already what a Dock click does.
+- **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the
+  temptation is to read a hand on the frame as a mistake to correct. It isn't: the handle is the most direct
+  thing the user can say about a size, and it says exactly what `grow` says by another route — so the size a
+  drag leaves behind becomes the layout's own intent rather than something snapped away on release. What
+  cannot be honoured is honoured as far as it goes, on the same terms every other resize gets: a column is as
+  wide as its windows will actually be. The asymmetry with a _move_ drag is deliberate and not an oversight —
+  a size is a number the strip already holds, while dragging a window somewhere would have to mean _insert
+  here_, and emira does not yet have an answer to where.
 - **No state without an exit.** emira will not enter a condition it has no way out of — it hides the pointer
   only while it can see the motion that would unhide it, rather than on a timeout that would also fire on
   somebody who is merely reading.

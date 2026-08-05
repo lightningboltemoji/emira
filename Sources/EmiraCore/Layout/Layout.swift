@@ -101,6 +101,11 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// beside `ColumnLayout.windowIds`, so the four structural editing primitives cannot desync it —
     /// a window carries its height through a move, an extract, a merge and a workspace switch alike.
     public var heightSelections: [WindowId: Int]
+    /// An explicit height per window that supersedes `heightSelections` — the height stack's middle
+    /// rung (`Workspaces.heightOverrides`), set by a resize of the window's own handle. Rides here for
+    /// the reason its neighbour above does, and must be read wherever that one is or the two rungs
+    /// disagree about how tall a window is.
+    public var heightOverrides: [WindowId: PresetSize]
     /// Gap between adjacent columns on the strip (inter-column only).
     public var columnGap: Double
     /// Gap between vertically-adjacent windows within a column (inter-window only).
@@ -126,6 +131,7 @@ public struct LayoutMetrics: Sendable, Equatable {
         widthPresets: PresetCycle = .defaultWidths,
         heightPresets: PresetCycle = .defaultHeights,
         heightSelections: [WindowId: Int] = [:],
+        heightOverrides: [WindowId: PresetSize] = [:],
         columnGap: Double = 0,
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
@@ -136,6 +142,7 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.widthPresets = widthPresets
         self.heightPresets = heightPresets
         self.heightSelections = heightSelections
+        self.heightOverrides = heightOverrides
         self.columnGap = columnGap
         self.windowGap = windowGap
         self.outerGaps = outerGaps
@@ -160,6 +167,16 @@ public struct LayoutMetrics: Sendable, Equatable {
     public func physicalViewport(at offset: Double, widenedBy extra: Double = 0)
         -> (width: Double, offset: Double) {
         (workingArea.width + extra, offset - outerGaps.left)
+    }
+
+    /// One window's height intent, and the only place the height stack resolves — an explicit
+    /// `heightOverride` (a drag) shadows a `heightSelection` (the `cycleHeight` ladder), which shadows
+    /// sharing the column's leftover height. The vertical counterpart of `Layout.uncorrectedWidth`, and
+    /// stated once here so a caller cannot read one rung without the other.
+    public func heightIntent(of id: WindowId) -> WindowHeight {
+        if let override = heightOverrides[id] { return .preset(override) }
+        if let selection = heightSelections[id] { return .preset(heightPresets.size(at: selection)) }
+        return .auto
     }
 
     /// These metrics with every correction dropped — how "the question" a correction answers is
@@ -524,11 +541,9 @@ public struct Layout: Sendable, Equatable, Codable {
         columns.enumerated().map { (i, column) in
             let box = Rect(x: s.leftEdge(of: i), y: area.minY,
                            width: s.columnWidths[i], height: area.height)
-            // Each window's height intent: the preset it is pinned to (`cycleHeight`), else auto.
-            let intents = column.windowIds.map { id in
-                metrics.heightSelections[id].map { WindowHeight.preset(metrics.heightPresets.size(at: $0)) }
-                    ?? .auto
-            }
+            // Each window's height intent: a dragged override, else the preset it is pinned to
+            // (`cycleHeight`), else auto.
+            let intents = column.windowIds.map(metrics.heightIntent(of:))
             // The height each window would get with nobody answering back — the question its own
             // `SizeCorrection` is keyed against, which keeps a bound from re-deriving itself each pass.
             // Resolved against the *same* intents: the question has to be the height actually offered,

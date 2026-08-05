@@ -20,6 +20,9 @@ center-focused-column = false
 # Stop a grow or shrink where it meets the working area boundary; again to pass it.
 resize-detent = false
 
+# Keep the size a window is left at when resized by its own handle.
+interactive-resize = true
+
 # The widths cycle-width steps through.
 # A list of sizes — 1 or less is a fraction of the extent it is resolved against, anything
 # larger is a point count.

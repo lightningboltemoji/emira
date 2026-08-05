@@ -227,6 +227,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// second press pushing past. Nothing is remembered between presses: being *in* the notch is what
     /// the second press reads, so the geometry carries the intent the way a stored flag would.
     public var resizeDetent: Bool
+    /// Whether a window resized by its own handle keeps the size it was left at. Off, the layout is
+    /// inviolable and the window is taken back on release — which is also what a *move* drag gets
+    /// either way, since the strip has no way to read one as an instruction yet.
+    public var interactiveResize: Bool
     /// Which focus changes emira did not cause it honours. `respect` is every one of them, which is
     /// macOS's own behaviour and the only setting under which an app can move the viewport by itself.
     public var systemFocusEvents: SystemFocusEvents
@@ -284,6 +288,7 @@ public struct Config: Sendable, Equatable, Codable {
         moveSpring: SpringParams = .smooth,
         centerFocusedColumn: Bool = false,
         resizeDetent: Bool = false,
+        interactiveResize: Bool = true,
         systemFocusEvents: SystemFocusEvents = .respect,
         focusFollowsMouse: Bool = false,
         windowAnimation: WindowAnimation = .stretch,
@@ -306,6 +311,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.moveSpring = moveSpring
         self.centerFocusedColumn = centerFocusedColumn
         self.resizeDetent = resizeDetent
+        self.interactiveResize = interactiveResize
         self.systemFocusEvents = systemFocusEvents
         self.focusFollowsMouse = focusFollowsMouse
         self.windowAnimation = windowAnimation

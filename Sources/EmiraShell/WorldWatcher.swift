@@ -210,6 +210,9 @@ public final class WorldWatcher {
         case .focusMoved(let id):
             resolveFocus(id)
 
+        case .mouseDown:
+            emit(.dragBegan)
+
         case .mouseUp:
             emit(.dragEnded)
 

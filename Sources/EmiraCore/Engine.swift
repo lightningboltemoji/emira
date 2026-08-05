@@ -27,6 +27,9 @@ public struct State: Sendable, Equatable, Codable {
     public var config: Config
     /// What the pointer plane is owed. Two intents, neither a fact about the desktop — see `Pointer`.
     public var pointer: Pointer
+    /// Whether a mouse button is down, and which window has moved under it. Beside `pointer` and not
+    /// inside `world` for the same reason: nothing observes it — see `Drag`.
+    public var drag: Drag
 
     /// The strip the acting monitor is showing — a projection of `workspaces` at `monitors.shown`, not
     /// a second authority. Only the cross-workspace queries bypass it: reconcile, `targetFrames`, the
@@ -44,27 +47,29 @@ public struct State: Sendable, Equatable, Codable {
         self.motion = Motion(viewportOffset: 0, params: config.scrollSpring)
         self.config = config
         self.pointer = Pointer()
+        self.drag = .idle
     }
 
     /// Full memberwise init — for the reducer building a specific state, for replay, and for tests.
-    /// `monitors` and `pointer` default to the launch state, which is what every caller but a replay
-    /// wants; they are parameters rather than hard-coded so that "full" stays true.
+    /// `monitors`, `pointer` and `drag` default to the launch state, which is what every caller but a
+    /// replay wants; they are parameters rather than hard-coded so that "full" stays true.
     public init(world: World, workspaces: Workspaces, motion: Motion, config: Config,
-                monitors: Monitors = Monitors(), pointer: Pointer = Pointer()) {
+                monitors: Monitors = Monitors(), pointer: Pointer = Pointer(), drag: Drag = .idle) {
         self.world = world
         self.workspaces = workspaces
         self.monitors = monitors
         self.motion = motion
         self.config = config
         self.pointer = pointer
+        self.drag = drag
     }
 
     /// The single-strip init: `layout` becomes the launch address's strip, nothing else materialized.
     public init(world: World, layout: Layout, motion: Motion, config: Config,
-                pointer: Pointer = Pointer()) {
+                pointer: Pointer = Pointer(), drag: Drag = .idle) {
         self.init(world: world,
                   workspaces: Workspaces(showing: .first, strips: [.first: layout]),
-                  motion: motion, config: config, pointer: pointer)
+                  motion: motion, config: config, pointer: pointer, drag: drag)
     }
 
     /// Layout metrics for one display — its working area (bounds minus its own struts) under the current
@@ -81,6 +86,7 @@ public struct State: Sendable, Equatable, Codable {
             widthPresets: config.widthPresets,
             heightPresets: config.heightPresets,
             heightSelections: workspaces.heightSelections,
+            heightOverrides: workspaces.heightOverrides,
             columnGap: config.columnGap,
             windowGap: config.windowGap,
             outerGaps: config.outerGaps,
@@ -490,12 +496,26 @@ public enum Engine {
             let effects = departFromStrip(&s, id) { $0.world.remove(id) }
             return (s, effects)
 
+        case .dragBegan:
+            // Arms, and nothing more. Whether anything is being dragged is answered by something
+            // *moving* under the press, which no mouse-down can say — a fresh press restarts the
+            // question, so this is total over the previous state rather than guarded on it.
+            s.drag = .armed
+            return (s, [])
+
         case .windowFrameChanged(let id, let frame):
-            // External drift, usually a live drag. Don't fight it; `dragEnded` re-asserts the layout.
+            // External drift, usually a live drag. Don't fight it; `dragEnded` re-asserts the layout,
+            // or adopts the size the drag left behind.
+            let drifted = driftedUnderHand(s, id, frame)
             s.world.updateFrame(id, to: frame)
+            if drifted { s.drag = .subject(id) }
             return (s, [])
 
         case .dragEnded:
+            // The adoption writes the layout's own intent, so the re-place that follows lands the
+            // window where the user drew it instead of taking it back.
+            adoptDraggedSize(&s)
+            s.drag = .idle
             let effects = reassertTruthPlane(&s)   // a window dragged off its target snaps back
             return (s, effects)
 
@@ -2055,6 +2075,129 @@ public enum Engine {
         let edit = LayoutEdit(moved: true, destroyedColumn: destroyed)
         return finishStructuralEdit(&s, edit, focused: focused, mover: nil,
                                     animatingFrom: old) + refocus
+    }
+
+    // The window's own resize handle
+    //
+    // A drag is adopted rather than reverted, and knowing the user's hand was on the window is the
+    // whole of what makes that safe: AX reports a resize identically whoever asked for it, and our own
+    // placements provoke one every time. `Drag` is that knowledge; these two are what it is for.
+    //
+    // Adoption is on **release**, not live. The truth plane is the app's main thread, so a strip
+    // re-tiling under every intermediate frame would trade writes with the drag at whatever rate the
+    // slowest app in the column allows — and none of it can be masked, since a cover over the window
+    // the user is dragging would hide the one thing they are looking at.
+
+    /// The shortest a drag may leave a window — a backstop for apps that accept any size, exactly as
+    /// `minimumColumnWidth` is on the other axis, and not the real bound. That one is whatever the app
+    /// answers, which arrives as a `SizeCorrection` and is honoured by the column's water-fill.
+    public static let minimumWindowHeight: Double = 80
+
+    /// Whether a frame report is a window moving under the user's hand — the one interval in which it
+    /// is intent rather than an app answering back.
+    ///
+    /// Three conditions, each excluding a different impostor. **A button is down**, which excludes our
+    /// own writes echoing back and an app resizing itself. **Nothing has moved under this press yet**,
+    /// which excludes the stackmates a placement pass shifts mid-drag: a clamp reported by one of those
+    /// is the app answering, not a second drag. And the window **actually moved** — the reducer writes
+    /// its target into `World` optimistically, so a report matching what we already hold says nothing.
+    private static func driftedUnderHand(_ s: State, _ id: WindowId, _ frame: Rect) -> Bool {
+        guard s.config.interactiveResize, s.drag.isArmed,
+              s.world.participatesInStrip(id), s.world.isOnScreen(id),
+              let known = s.world.windows[id]?.frame else { return false }
+        return !approximatelyEqual(known, frame)
+    }
+
+    /// Adopt the size a drag left the subject at as the layout's own intent — the column's width, the
+    /// window's height, or both.
+    ///
+    /// **Silent for a drag that only moved the window.** Dragging a tiled window somewhere else is a
+    /// different feature (it would have to mean *insert here*, with a drop target and an ordering), and
+    /// until it exists, taking the window back is the honest answer.
+    ///
+    /// The observed size is taken as the intent directly rather than as a delta on the target: the user
+    /// drew a rectangle, and asking the layout for that rectangle is exactly what they asked. It also
+    /// makes the arithmetic total over a window that was already refusing its target size.
+    private static func adoptDraggedSize(_ s: inout State) {
+        guard let id = s.drag.subject,
+              let observed = s.world.windows[id]?.frame,
+              let (name, column) = s.workspaces.column(containing: id),
+              let monitor = s.monitors.monitor(of: name),
+              let metrics = s.metrics(of: monitor),
+              let target = s.workspaces.targetFrames(s.placements())[id] else { return }
+
+        let grewWide = !approximatelyEqualScalar(observed.width, target.width)
+        let grewTall = !approximatelyEqualScalar(observed.height, target.height)
+        guard grewWide || grewTall else { return }
+
+        let from = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
+        if grewWide { adoptWidth(&s, observed.width, of: column, on: name, metrics) }
+        if grewTall { adoptHeight(&s, observed, target, id, column, metrics, on: name) }
+
+        // The user asked again, so ask the apps again — a window's limits usually depend on what it is
+        // currently showing. The same cache invalidation every explicit resize verb performs.
+        s.world.forgetCorrections(of: column.windowIds)
+
+        // A drag of the **left** edge nails the column's right edge instead. The strip accumulates
+        // left-to-right, so a column grows rightward whichever edge you pull; letting the viewport take
+        // the difference is what puts the moving edge back under the pointer, and it costs nothing —
+        // the offset is already the one authority on where the strip is looked at.
+        guard grewWide, !approximatelyEqualScalar(observed.minX, target.minX),
+              let corrected = s.metrics(of: monitor),
+              let to = s.workspaces[name].resolvedWidth(ofColumn: column.id, metrics: corrected)
+        else { return }
+        s.motion.snapViewport(to: s.motion.offset(of: monitor).current + (to - from), on: monitor)
+    }
+
+    /// Pin the dragged column to the width its window was left at. A `widthOverride` exactly as
+    /// `grow`/`shrink` write, so the first `cycle-width` afterwards puts the column back on the ladder —
+    /// and clamped the same way, which can stop the adoption short but never reverse it.
+    ///
+    /// One width for the whole column, since that is what a column is. A stackmate that will not be
+    /// that wide needs nothing here: `Layout.resolvedWidth` already holds the column at the widest
+    /// width its windows can actually achieve.
+    private static func adoptWidth(_ s: inout State, _ width: Double, of column: ColumnLayout,
+                                   on name: WorkspaceName, _ metrics: LayoutMetrics) {
+        let from = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
+        let available = metrics.contentArea.width
+        let clamped = Swift.min(Swift.max(width, Swift.min(minimumColumnWidth, from)),
+                                Swift.max(available, from))
+        var strip = s.workspaces[name]
+        strip.setWidthOverride(.fixed(clamped), ofColumn: column.id)
+        s.workspaces[name] = strip
+    }
+
+    /// Pin the dragged window to the height it was left at, and give the column somebody to take the
+    /// difference from.
+    ///
+    /// **The neighbour on the dragged edge goes back to auto**, which is what makes this a divider drag
+    /// rather than a window that grows into its stackmates: an auto window shares the column's leftover
+    /// height, so pinning one window is already an instruction to the rest. Without it a column whose
+    /// windows are every one of them pinned has nothing to absorb the change and over-subscribes its own
+    /// height, and repeated drags walk the last window off the bottom of the screen.
+    ///
+    /// Losing the neighbour's stored height is the point rather than a cost: what the user just drew is
+    /// where that divider goes, and the height it displaces is the thing being replaced.
+    private static func adoptHeight(_ s: inout State, _ observed: Rect, _ target: Rect,
+                                    _ id: WindowId, _ column: ColumnLayout,
+                                    _ metrics: LayoutMetrics, on name: WorkspaceName) {
+        let stack = column.windowIds
+        // Which edge moved names the divider, and so the neighbour: a top-edge drag is the window
+        // above, a bottom-edge drag the one below. A window at either end of the stack has neither, and
+        // the clamp below is what keeps that from overflowing the column.
+        let above = !approximatelyEqualScalar(observed.minY, target.minY)
+        if let row = stack.firstIndex(of: id) {
+            let next = above ? row - 1 : row + 1
+            if stack.indices.contains(next) { s.workspaces.clearHeightIntent(of: stack[next]) }
+        }
+        // Every other window in the stack keeps at least the backstop, so no drag can subscribe the
+        // column past its own height. Their *real* floors are larger and unknown until asked; those
+        // come back as corrections and the water-fill honours them.
+        let others = Double(stack.count - 1)
+        let room = metrics.contentArea.height - others * (metrics.windowGap + minimumWindowHeight)
+        let height = Swift.min(Swift.max(observed.height, minimumWindowHeight),
+                               Swift.max(room, minimumWindowHeight))
+        s.workspaces.setHeightOverride(.fixed(height), of: id)
     }
 
     // Windows that refuse the size we ask for

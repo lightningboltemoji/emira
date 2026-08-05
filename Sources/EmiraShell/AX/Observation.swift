@@ -42,8 +42,15 @@ public enum WorldObservation: Sendable, Equatable {
     /// not an error).
     case focusMoved(WindowId?)
 
+    /// A mouse button went down somewhere on the system — the start of a possible drag, and the only
+    /// thing that distinguishes a window the *user* is resizing from one an app resized itself, or from
+    /// our own placement echoing back. Carries no window: the system does not say what is under the
+    /// pointer, and the answer that matters is which window moves.
+    case mouseDown
+
     /// A mouse button came up somewhere on the system — the end of a possible drag, and the moment a
-    /// tiled window the user dragged off its target re-asserts its layout.
+    /// tiled window the user dragged off its target re-asserts its layout, or one they resized has that
+    /// size adopted.
     case mouseUp
 
     /// The pointer is at `point` — top-left global coordinates, the core's own space. A raw sample and

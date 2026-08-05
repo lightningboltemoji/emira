@@ -11,8 +11,8 @@ import Foundation
 //    window element. Registering the window set on the app element silently delivers nothing.
 //  · `NSWorkspace` — the only thing that reports apps launching, terminating, activating. AX cannot
 //    speak for a process that has no observer yet, which is every process the moment it starts.
-//  · A global mouse monitor — the only thing that reports the end of a drag. AX says a window moved,
-//    never that the user let go.
+//  · A global mouse monitor — the only thing that reports the two ends of a drag. AX says a window
+//    moved, never that a hand was on it or that the user let go.
 //
 // Registration is IPC and goes on the app's lane: `AXObserverCreate` and `CFRunLoopAddSource` are local
 // and main-thread, but `AXObserverAdd/RemoveNotification` are round trips that answer `.cannotComplete`
@@ -113,7 +113,7 @@ public final class AXObservationSource: ObservationSource {
     private var workspaceTokens: [any NSObjectProtocol] = []
 
     /// The two global mouse monitors, and they are two because they are wanted on different terms.
-    /// Buttons are always: a mouse-up ends a possible drag, which is a fact about the desktop and
+    /// Buttons are always: they bracket a possible drag, which is a fact about the desktop and
     /// predates the pointer plane. Motion is a *setting*: it fires at the pointer's sample rate, and
     /// nothing wants it unless the pointer plane is switched on.
     private var buttonMonitor: Any?
@@ -338,12 +338,19 @@ public final class AXObservationSource: ObservationSource {
         ]
     }
 
-    /// A global mouse-up ends a possible drag. Being *global*, the monitor never sees events destined for
-    /// our own overlay, and the Accessibility grant already covers it — no new permission.
+    /// A global mouse-down opens a possible drag and a mouse-up closes it. Being *global*, the monitor
+    /// never sees events destined for our own overlay, and the Accessibility grant already covers it —
+    /// no new permission.
+    ///
+    /// One monitor for both ends, since they are one bracket: a down that opens without the up that
+    /// closes it would leave the core reading every frame change as a hand movement, so the two must
+    /// not be separately forgettable.
     private func observeMouse() {
-        buttonMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp, .rightMouseUp]) {
-            [weak self] _ in
-            MainActor.assumeIsolated { self?.deliver?(.mouseUp) }
+        let masks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown,
+                                            .leftMouseUp, .rightMouseUp]
+        buttonMonitor = NSEvent.addGlobalMonitorForEvents(matching: masks) { [weak self] event in
+            let down = event.type == .leftMouseDown || event.type == .rightMouseDown
+            MainActor.assumeIsolated { self?.deliver?(down ? .mouseDown : .mouseUp) }
         }
     }
 

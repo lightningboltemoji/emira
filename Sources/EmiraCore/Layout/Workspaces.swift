@@ -61,6 +61,14 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// Reconciled against the live strip set, so a closed window's selection does not outlive it.
     public private(set) var heightSelections: [WindowId: Int] = [:]
 
+    /// An explicit height that supersedes `heightSelections` until the next `cycleHeight` clears it —
+    /// what a window resized by its own handle is pinned to. The height stack's middle rung, and the
+    /// exact counterpart of `ColumnLayout.widthOverride`: it *shadows* the ladder rather than replacing
+    /// it, so the selection underneath needs no memory and no restore policy.
+    ///
+    /// Keyed and reconciled beside `heightSelections` for the same reasons, and against the same set.
+    public private(set) var heightOverrides: [WindowId: PresetSize] = [:]
+
     /// A fresh set: one materialized, empty address, nothing else. The launch state, and the address
     /// `Monitors` starts out showing.
     public init(materializing name: WorkspaceName = .first) {
@@ -228,19 +236,42 @@ public struct Workspaces: Sendable, Equatable, Codable {
         // with it. Asked of `keep` rather than of the strips, so a window in flight between two of
         // them keeps its height.
         heightSelections = heightSelections.filter { keep.contains($0.key) }
+        heightOverrides = heightOverrides.filter { keep.contains($0.key) }
     }
 
     /// Step `window` to the next height preset, wrapping through **auto**: absent → 0 → … → last →
     /// absent. Auto is a rung of the ladder rather than a state you can only leave, so one verb reaches
     /// every selection *and* gets back home — the alternative is a second verb whose only job is
     /// "un-pin". Total: an empty cycle, or an index drifted past a shortened one, resolves to auto.
+    ///
+    /// Clears any explicit override, exactly as `Layout.setWidthPreset` clears `widthOverride`: a cycle
+    /// resumes the ladder where it was last left rather than guessing which rung a dragged height was
+    /// nearest.
     public mutating func cycleHeight(of window: WindowId, through cycle: PresetCycle) {
+        heightOverrides[window] = nil
         guard cycle.count > 0, let current = heightSelections[window] else {
             heightSelections[window] = cycle.count > 0 ? 0 : nil
             return
         }
         let next = current + 1
         heightSelections[window] = next < cycle.count ? next : nil
+    }
+
+    /// Pin `window` to an explicit height until the next `cycleHeight` — how a resize by the window's
+    /// own handle records its answer, and the height counterpart of `Layout.setWidthOverride`.
+    /// Deliberately **not** bounds-checked, for the same reason that one isn't: the bound depends on
+    /// the column's height and on what its other windows have already been promised, neither of which
+    /// is this container's to know.
+    public mutating func setHeightOverride(_ size: PresetSize, of window: WindowId) {
+        heightOverrides[window] = size
+    }
+
+    /// Send `window` back to sharing its column's leftover height — both rungs of its height intent
+    /// dropped at once. What the neighbour on a dragged divider takes, so the water-fill has somebody
+    /// to hand the difference to; total, and a no-op for a window already auto.
+    public mutating func clearHeightIntent(of window: WindowId) {
+        heightOverrides[window] = nil
+        heightSelections[window] = nil
     }
 
     /// Move `window` out into a freshly-minted single-window column on **its own** workspace

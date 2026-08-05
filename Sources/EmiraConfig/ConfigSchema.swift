@@ -361,6 +361,11 @@ public enum ConfigSchema {
                 help: "Stop a grow or shrink where it meets the working area boundary; again to pass it.",
                 section: .layout),
 
+        Setting("layout.interactive-resize", \.interactiveResize, .toggle,
+                label: "Adopt a hand resize",
+                help: "Keep the size a window is left at when resized by its own handle.",
+                section: .layout),
+
         Setting("layout.width-presets", \.widthPresets, .sizeList,
                 label: "Column widths", help: "The widths cycle-width steps through.",
                 section: .layout),

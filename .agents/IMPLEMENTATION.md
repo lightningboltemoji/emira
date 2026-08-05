@@ -24,8 +24,8 @@ Guiding bias, restated: **stay small.** emira is not a platform.
   · CLI command     │   reduce(State, Event) -> (State, [Effect])      │   · setFrame / park       [AX]
   · hotkey command  │                                                  │   · focus / raise         [AX]
   · AX observation  │   State = World (truth) + Workspaces + Monitors  │   · capture               [SCK]
-  · display tick dt │           (structure) + Motion + Config + Pointer│   · begin/endTransition   [CA]
-  · config reload   │                                                  │   · setLayerFrame         [CA]
+  · display tick dt │           (structure) + Motion + Config          │   · begin/endTransition   [CA]
+  · config reload   │           + Pointer + Drag                       │   · setLayerFrame         [CA]
                     └──────────────────────────────────────────────────┘   · setCursorHidden/warp  [CG]
                              ▲                              │              · exec                  [sh]
                              │ feedback events              │ executed by
@@ -357,6 +357,7 @@ State = World         // truth: displays (frame + struts), apps, windows, focus,
       + Motion        // animation: a viewport per display (offset + session), column widths, displacements
       + Config        // the parsed values the reducer reads
       + Pointer       // intent the shell is owed: a pending warp, a wanted hide
+      + Drag          // a button is down, and which window has moved under it
 ```
 
 `State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
@@ -387,6 +388,10 @@ it with no strip is a hole in the placement walk and a park ordinal handed out a
 be: no public API reports cursor visibility, and the window server discards a background hide on activation
 without saying so. A record nothing can refresh is a wish, and holding it as one is what makes a hide an
 assertion that is re-made rather than a latch that refuses.
+
+`Drag` is beside it on the same argument rather than inside it: a window's frame is observed, but _who moved it_
+is reported by nothing. It is a latch, which is exactly the thing `Pointer`'s own paragraph exists to say a hide
+is not, so folding one into the other would blur the distinction both depend on.
 
 ### The four animated quantities
 
@@ -456,10 +461,16 @@ pops the cross-fade because the presentation plane draws that column from geomet
 gap is **empty at rest and crossed in motion**, and the cover clips, so a strut-shaped outer gap would cut every
 layer off at the margin and a window would pop into being instead of sliding through.
 
-**Width resolution is a stack**: `fullscreen` shadows an explicit `widthOverride` (from `grow`/`shrink`) shadows
-a preset index (from `cycle-width`). Because it shadows rather than replaces, the width underneath needs no
-memory and no restore policy. Percentages are of the **working area**, not of the column's own width, so
-`grow`/`shrink` are exact inverses.
+**Width resolution is a stack**: `fullscreen` shadows an explicit `widthOverride` (from `grow`/`shrink`, or from
+a hand resize) shadows a preset index (from `cycle-width`). Because it shadows rather than replaces, the width
+underneath needs no memory and no restore policy. Percentages are of the **working area**, not of the column's
+own width, so `grow`/`shrink` are exact inverses.
+
+**Height resolves the same way, one container over**: a `heightOverride` (a hand resize) shadows a preset index
+(`cycle-height`) shadows **auto**, which shares the column's leftover height with the other autos. Both rungs
+are `Workspaces`' rather than the column's, keyed by `WindowId`, so a window carries its height through the four
+structural edits and across a workspace. `LayoutMetrics.heightIntent(of:)` is the one place the stack resolves,
+for the reason `Layout.resolvedWidth` is on the other axis.
 
 **What an app answered is a fact the geometry consults** — `World.corrections`, one `SizeCorrection
 { wanted, actual }` per window, keyed on the _question_ rather than stored as a `minWidth`, so a refusal at one
@@ -469,6 +480,32 @@ reach all of them, or `targetFrames` and the visibility/sweep/scroll queries acc
 
 `World.parkFloors` is the same shape on the park path, and deliberately separate: a park answer says nothing
 about _size_ (a window refuses at a sliver what it accepts in view) and one thing about the window's _chrome_.
+
+**A window resized by its own handle keeps that size, and `Drag` is the whole of what makes that safe.** AX
+reports a resize identically whoever asked for it and our own placements provoke one every time, so a frame
+change is evidence only inside the mouse-down/up bracket — and only for the **first** window to move inside it,
+since a placement pass mid-drag writes the stackmates and an app clamping one of those reports a frame change
+with the button still down. The observed size is taken as the intent directly rather than as a delta, which is
+also what makes it total over a window that was already refusing its target. Three consequences:
+
+- **Adoption is on release, not live.** The truth plane is the app's main thread, so re-tiling under every
+  intermediate frame would trade writes with the drag at the rate of the slowest app in the column — and none of
+  it is maskable, since a cover over the window being dragged hides the one thing the user is looking at. This is
+  the one motion deliberately outside the transition machinery.
+- **A drag of the _left_ edge moves the viewport by the width delta.** The strip accumulates left to right, so a
+  column grows rightward whichever edge is pulled; letting the offset take the difference is what puts the moving
+  edge back under the pointer, and it costs nothing — the offset is already the one authority on where the strip
+  is looked at.
+- **A height drag sends the neighbour on that edge back to auto**, which is what makes it a divider rather than a
+  window growing into its stackmates. Without it a column whose windows are every one of them pinned has nobody
+  to hand the difference to, and repeated drags walk the last window off the bottom of the screen.
+
+"They cannot comply" needs almost nothing new: a stackmate that will not be that narrow is `resolvedWidth`'s
+`max`, a stackmate that will not be that short is the water-fill's floor, and both learn through the same
+`SizeCorrection` round trip an explicit `grow` uses. `Engine.minimumWindowHeight` is the backstop beside
+`minimumColumnWidth` — not the real bound, just what keeps a drag from subscribing a column past its own height
+before any app has been asked. A drag that only _moved_ the window is still reverted: reading one as _insert
+here_ is a different feature, and until it exists taking the window back is the honest answer.
 
 **Ids are never reused.** `WindowId`, `ColumnId`, `LayerId` are minted once and retired; a dead window's cache
 entry is unreachable rather than wrong, and a `Fullscreen` record naming a vanished `ColumnId` is simply not
@@ -981,7 +1018,7 @@ emira/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
     │                    Event · Effect · Config · Rules · Engine
-    │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer
+    │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag
     │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
@@ -1035,7 +1072,8 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   screen's addresses — is a **silent** failure while there is one display, so this is the only place any of
   it can be proved at all.
 - **`EmiraCoreTests` / the reducer** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`,
-  `EngineTransitionTests`, `EngineResizeTests`, `EngineFullscreenTests`, `EngineRefusalTests`,
+  `EngineTransitionTests`, `EngineResizeTests`, `EngineHandResizeTests`, `EngineFullscreenTests`,
+  `EngineRefusalTests`,
   `EngineStructuralEditTests`, `EnginePointerTests`, `EngineWarpTests`, `EngineConfigReplayTests`,
   `MonitorSessionTests`, `GuideRingTests`, `SystemFocusEventTests`, `TransitionModeTests`,
   `WorkspaceCommandTests`, `RulesTests`,

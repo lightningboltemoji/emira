@@ -23,9 +23,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// A window went away (closed, or its app quit). The core removes it from the strip and re-tiles.
     case windowDestroyed(WindowId)
 
-    /// A window's frame changed externally — most often a user drag or resize; a tiled window re-asserts
-    /// its layout on `dragEnded`. A drifted landing of our own is not this: it is `placementCorrected`
-    /// when tiled and `parkCorrected` when parked, both of which know what was asked for.
+    /// A window's frame changed externally — most often a user drag or resize. A tiled window re-asserts
+    /// its layout on `dragEnded`, unless the drag *resized* it, in which case the size it was left at is
+    /// adopted as the layout's own intent. A drifted landing of our own is not this: it is
+    /// `placementCorrected` when tiled and `parkCorrected` when parked, both of which know what was
+    /// asked for.
     case windowFrameChanged(WindowId, Rect)
 
     /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
@@ -40,7 +42,14 @@ public enum Event: Sendable, Equatable, Codable {
     /// A minimized window was restored — re-inserted at its remembered strip position.
     case windowDeminimized(WindowId)
 
-    /// A global mouse-up: the end of a possible drag, on which a drifted tiled window re-tiles.
+    /// A global mouse-down: the start of a possible drag. Carries no window because the system does not
+    /// say which one is under the pointer, and the answer that matters is which one *moves* — the core
+    /// latches that itself (`Drag`). What this arms is the only interval in which a frame change is read
+    /// as the user's intent rather than as an app answering back.
+    case dragBegan
+
+    /// A global mouse-up: the end of a possible drag. A tiled window the user dragged *off* its target
+    /// re-tiles; one the user *resized* has the size it was left at adopted into the layout.
     case dragEnded
 
     /// The pointer crossed into a window. A *fact* the shell reports, not an instruction: whether it

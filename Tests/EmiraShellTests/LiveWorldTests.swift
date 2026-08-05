@@ -796,7 +796,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
 @Suite @MainActor struct WorldWatcherEventTests {
 
-    @Test func minimizeDeminimizeFocusAndMouseUpBecomeTheirEvents() {
+    @Test func minimizeDeminimizeFocusAndTheMouseButtonsBecomeTheirEvents() {
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "one"))
@@ -805,13 +805,31 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.windowMinimized(id))
         world.watcher.handle(.windowDeminimized(id))
         world.watcher.handle(.focusMoved(id))
+        world.watcher.handle(.mouseDown)
         world.watcher.handle(.mouseUp)
         world.watcher.handle(.appActivated)
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
-            .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system), .dragEnded,
-            .appActivated,
+            .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system),
+            .dragBegan, .dragEnded, .appActivated,
         ])
+    }
+
+    /// The bracket is delivered whole and unfiltered, both ends of it. A press that moves nothing costs
+    /// the core one state assignment, which is why the watcher does not try to guess which presses
+    /// matter — only a window *moving* can answer that, and the reducer is what sees it.
+    @Test func aPressThatMovesNothingIsStillBothHalvesOfABracket() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        for _ in 0..<3 {
+            world.watcher.handle(.mouseDown)
+            world.watcher.handle(.mouseUp)
+        }
+
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.dragBegan, .dragEnded, .dragBegan, .dragEnded, .dragBegan, .dragEnded])
     }
 
     /// Straight through, with no threshold and no filtering of its own: unlike `pointerMoved`, an
