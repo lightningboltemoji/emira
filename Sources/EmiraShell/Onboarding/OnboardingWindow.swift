@@ -62,7 +62,7 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
 
     /// Hidden until every grant is in. It is the only way out that leaves emira ready to be launched, so
     /// it appears exactly when it becomes the thing to do — and looks like it (`PulseButton`).
-    private lazy var quitButton = PulseButton(title: "quit emira", target: self, action: #selector(quit))
+    private lazy var quitButton = PulseButton(title: "Quit emira", target: self, action: #selector(quit))
 
     private init(model: OnboardingModel, screen: NSScreen?) {
         self.model = model
@@ -240,7 +240,7 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
             described.alignment = .leading
             described.spacing = 1
 
-            let button = NSButton(title: "open settings", target: self, action: #selector(openSettings))
+            let button = NSButton(title: "Open Settings", target: self, action: #selector(openSettings))
             button.bezelStyle = .rounded
             button.tag = index
             button.toolTip = "System Settings › \(row.pane)"

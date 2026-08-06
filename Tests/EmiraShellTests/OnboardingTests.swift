@@ -51,8 +51,8 @@ import Testing
 
     @Test func theStatusLineReadsAsASentenceAtEveryCount() {
         #expect(Self.model([.accessibility(.denied), .screenRecording(.denied)]).status
-                == "waiting for Accessibility and Screen Recording…")
-        #expect(Self.model([.accessibility(.denied)]).status == "waiting for Accessibility…")
+                == "Waiting for Accessibility and Screen Recording…")
+        #expect(Self.model([.accessibility(.denied)]).status == "Waiting for Accessibility…")
     }
 
     @Test func aSatisfiedModelAsksForTheRestart() {
@@ -60,8 +60,8 @@ import Testing
         // explanation under the only button left.
         let status = Self.model([.accessibility(.granted), .screenRecording(.granted)]).status
         #expect(status.contains("restarted"))
-        #expect(status.contains("quit"))
-        #expect(!status.contains("waiting"))
+        #expect(status.contains("Quit"))
+        #expect(!status.contains("Waiting"))
     }
 
     @Test func listGrowsWithoutLosingItsGrammar() {

@@ -222,7 +222,7 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         menu.removeAllItems()
 
         if let consequence = model.consequence {
-            menu.addItem(disabled("config failed to parse"))
+            menu.addItem(disabled("Config failed to parse"))
             let small = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize,
                                                     weight: .regular)
             for line in model.diagnosticLines() {
@@ -232,7 +232,7 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
         }
 
-        let login = NSMenuItem(title: "open at login",
+        let login = NSMenuItem(title: "Open at login",
                                action: #selector(toggleLoginItem), keyEquivalent: "")
         login.target = self
         switch LoginItem.current {
@@ -250,7 +250,7 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         }
         menu.addItem(login)
 
-        let config = NSMenuItem(title: "open config file",
+        let config = NSMenuItem(title: "Open config file",
                                 action: #selector(openConfigFile), keyEquivalent: ",")
         config.target = self
         config.toolTip = configPath
@@ -258,7 +258,7 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "quit emira", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit emira", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
     }

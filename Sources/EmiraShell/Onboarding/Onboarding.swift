@@ -21,7 +21,7 @@ public struct GrantRow: Equatable, Sendable {
     /// As System Settings spells it — the row's label, and the noun the status line waits on.
     public let name: String
 
-    /// Completes "emira needs Accessibility …", and stands alone as the row's caption.
+    /// Why emira wants this grant, standing alone as the row's caption.
     public let purpose: String
 
     /// The pane, spelled out for the row's tooltip.
@@ -40,7 +40,7 @@ public struct GrantRow: Equatable, Sendable {
     public static func accessibility(_ grant: Permissions.Grant) -> GrantRow {
         GrantRow(service: .accessibility,
                  name: "Accessibility",
-                 purpose: "to move and modify windows",
+                 purpose: "To move and modify windows",
                  pane: "Privacy & Security › Accessibility",
                  url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
                  grant: grant)
@@ -49,7 +49,7 @@ public struct GrantRow: Equatable, Sendable {
     public static func screenRecording(_ grant: Permissions.Grant) -> GrantRow {
         GrantRow(service: .screenRecording,
                  name: "Screen Recording",
-                 purpose: "to animate transitions",
+                 purpose: "To animate transitions",
                  pane: "Privacy & Security › Screen & System Audio Recording",
                  url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
                  grant: grant)
@@ -136,8 +136,8 @@ public struct OnboardingModel: Equatable, Sendable {
     /// end of onboarding is a restart, said next to the button that starts it.
     public var status: String {
         isSatisfied
-            ? "emira must be restarted. quit and reopen."
-            : "waiting for \(Self.list(missing))…"
+            ? "emira must be restarted. Quit and reopen."
+            : "Waiting for \(Self.list(missing))…"
     }
 
     /// "A", "A and B", "A, B and C".

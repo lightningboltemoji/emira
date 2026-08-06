@@ -7,16 +7,22 @@
 #
 #   ./demo.sh                 record out/emira-demo.mov
 #   ./demo.sh --no-record     rehearse the choreography without recording
-#   ./demo.sh --force         run even though the browser is already open
+#   ./demo.sh --force         run even though a guest app is already open
 #
-# Preconditions. Checked: the daemon is running, and the browser is quit. Not checked, and yours to
-# arrange: the terminal you run this from has Screen Recording (`screencapture -v` needs it), and
-# workspaces 1 and 2 are both empty.
+# Three apps, because a tiler shown one app at a time looks like a feature of that app: a terminal and
+# a browser share workspace 1, a calendar has workspace 2 to itself. Nothing in the choreography knows
+# which apps they are — `TERMINAL_APP`, `BROWSER_APP` and `CALENDAR_APP` are just names to launch.
 #
-# The terminal is the app the demo fills the strip with, which means the window you launch this from
-# is one of its windows. So there is a preroll (`PREROLL`, 5 s) before the camera rolls: minimize
-# this window during it. A minimized window leaves the strip like a close, so the four the script
-# then asks for are the only four in the film.
+# Preconditions. Checked: the daemon is running, and the guest apps are quit. Not checked, and yours
+# to arrange: the terminal you run this from has Screen Recording (`screencapture -v` needs it),
+# workspaces 1 and 2 are both empty, and the guest apps were last used on *this* Space — macOS reopens
+# an app where it last was, and emira does not manage the Spaces it isn't on, so an app that opens over
+# there never reaches the strip. The wait says so when it happens.
+#
+# The terminal is one of the apps in the film, which means the window you launch this from is one of
+# its windows. So there is a preroll (`PREROLL`, 5 s) before the camera rolls: minimize this window
+# during it. A minimized window leaves the strip like a close, so the windows the script then asks for
+# are the only ones in the film.
 #
 # Every pause is a variable at the top. `screencapture` is stopped with SIGINT rather than given a
 # `-V` duration, so the film is exactly as long as the choreography and nobody has to keep a total in
@@ -30,20 +36,24 @@ REPO_ROOT="$(cd "$DEMO_DIR/../.." && pwd)"
 # --- Knobs ---------------------------------------------------------------------------------------
 
 TERMINAL_APP="${TERMINAL_APP:-Ghostty}"
-BROWSER_APP="${BROWSER_APP:-Safari}"
+BROWSER_APP="${BROWSER_APP:-Google Chrome}"
+CALENDAR_APP="${CALENDAR_APP:-Calendar}"
 OUT="${OUT:-$DEMO_DIR/out/emira-demo.mov}"
 DISPLAY_INDEX="${DISPLAY_INDEX:-1}"
 
-# How long a caption sits on screen before the action it announces. Long enough to read a short line.
-LEAD="${LEAD:-1.1}"
+# How long a caption sits on screen before the action it announces. Long enough to read a short line,
+# and no longer: the film is a sequence of 300 ms transitions and reads as slow the moment the
+# captions outstay them.
+LEAD="${LEAD:-0.65}"
 # After an `emira` command: the transition is ~0.3 s, the rest is so the eye can land on the result.
-SETTLE="${SETTLE:-1.0}"
-# Between the repeats of a repeated command — deliberately tight, so four `grow`s read as one gesture.
-REPEAT_GAP="${REPEAT_GAP:-0.45}"
-# After launching an app, which is the one thing here that waits on somebody else's cold start.
-LAUNCH="${LAUNCH:-2.6}"
-# After asking a running app for another window.
-NEW_WINDOW="${NEW_WINDOW:-0.7}"
+SETTLE="${SETTLE:-0.9}"
+# Between the repeats of a repeated command — deliberately tight, so three `grow`s read as one gesture.
+REPEAT_GAP="${REPEAT_GAP:-0.6}"
+# After a window arrives, which is the same beat as SETTLE — a window landing is a transition like any
+# other. Named separately because it is the one that also absorbs the app drawing its first frame.
+ARRIVE="${ARRIVE:-0.7}"
+# A ceiling, not a pace: how long a launch may take before the demo gives up on it and says so.
+LAUNCH_TIMEOUT="${LAUNCH_TIMEOUT:-15}"
 # Your window on the clock: minimize the terminal you launched this from before the camera rolls.
 PREROLL="${PREROLL:-5}"
 
@@ -92,20 +102,39 @@ if ! "$EMIRA" debug >/dev/null 2>&1; then
     exit 1
 fi
 
-command -v swiftc >/dev/null || { echo "demo: swiftc not found (install Command Line Tools)" >&2; exit 1; }
+command -v swiftc  >/dev/null || { echo "demo: swiftc not found (install Command Line Tools)" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "demo: python3 not found (install Command Line Tools)" >&2; exit 1; }
+
+# The bundle id is how the choreography waits for a window, and asking Launch Services for it also
+# answers whether the app is there at all — worth knowing before the camera rolls rather than eight
+# seconds into a take.
+bundle_id() {
+    local id
+    id="$(osascript -e "id of app \"$1\"" 2>/dev/null || true)"
+    [[ -n "$id" ]] || { echo "demo: no app named '$1' — set TERMINAL_APP/BROWSER_APP/CALENDAR_APP" >&2; exit 1; }
+    echo "$id"
+}
+
+TERMINAL_ID="$(bundle_id "$TERMINAL_APP")"
+BROWSER_ID="$(bundle_id "$BROWSER_APP")"
+CALENDAR_ID="$(bundle_id "$CALENDAR_APP")"
 
 is_running() {
     [[ "$(osascript -e "application \"$1\" is running" 2>/dev/null)" == "true" ]]
 }
 
-# Only the browser: the terminal is necessarily running, because this script is being typed into one
-# of its windows. That window is handled by the preroll instead (minimize it), which is a thing the
+# Only the guests: the terminal is necessarily running, because this script is being typed into one of
+# its windows. That window is handled by the preroll instead (minimize it), which is a thing the
 # script can ask for but cannot check.
-if [[ $FORCE -eq 0 ]] && is_running "$BROWSER_APP"; then
-    echo "demo: $BROWSER_APP is already running — its existing windows would be in the film, and" >&2
-    echo "      the fullscreen step assumes the one window this script opens." >&2
-    echo "      Quit it, or pass --force." >&2
-    exit 1
+if [[ $FORCE -eq 0 ]]; then
+    for guest in "$BROWSER_APP" "$CALENDAR_APP"; do
+        if is_running "$guest"; then
+            echo "demo: $guest is already running — its existing windows would be in the film, and" >&2
+            echo "      the fullscreen step assumes the one window this script opens." >&2
+            echo "      Quit it, or pass --force." >&2
+            exit 1
+        fi
+    done
 fi
 
 # --- The caption overlay -------------------------------------------------------------------------
@@ -174,6 +203,46 @@ emira_repeat() {
     done
 }
 
+# How many windows the daemon currently has for a bundle id. `world.windows` is the flat
+# [id, record, id, record…] array Swift encodes an integer-keyed dictionary as, so the records are
+# every second element.
+tracked_windows() {
+    "$EMIRA" debug | python3 -c '
+import json, sys
+flat = json.load(sys.stdin)["world"]["windows"]
+print(sum(1 for record in flat[1::2] if record.get("bundleId") == sys.argv[1]))
+' "$1"
+}
+
+# Wait until the strip has one more window of $1 than it had at $2, then let the arrival land.
+#
+# The thing being waited on is emira placing the window, not the app calling itself launched — that is
+# what the next frame depends on, and it is the only version of "ready" the film can see. A fixed
+# sleep would have to cover a cold Chrome and would then pay that on every take, including the ones
+# where the app was already warm.
+#
+# The timeout is nearly always the Space: macOS reopens an app on the Space it was last used on, and a
+# window over there is off screen, so emira leaves it alone and the strip never gains it.
+await_window() {
+    local bundle="$1" was="$2" deadline=$((SECONDS + LAUNCH_TIMEOUT))
+    while [[ "$(tracked_windows "$bundle")" -le "$was" ]]; do
+        if (( SECONDS >= deadline )); then
+            echo "demo: no window from $bundle within ${LAUNCH_TIMEOUT}s — the film will be a window short." >&2
+            echo "      It most likely opened on another Space; drag it back to this one and rerun." >&2
+            return
+        fi
+        sleep 0.1
+    done
+    sleep "$ARRIVE"
+}
+
+# Launch an app that isn't running.
+open_app() {
+    local was; was="$(tracked_windows "$2")"
+    open -a "$1"
+    await_window "$2" "$was"
+}
+
 # Another window from an app that is already running.
 #
 # `new window`, and deliberately **not** the standard suite's `make new window` with this as a
@@ -181,12 +250,13 @@ emira_repeat() {
 # (`Can't make class window id tab-group-…`, -2710), so a fallback chained behind it opens a second
 # one every time. A command whose failure still has an effect can't carry a fallback.
 #
-# A refusal is reported rather than swallowed: a missing window doesn't fail anything, it just
-# quietly makes the film wrong (the focus walk counts on four).
+# A refusal is reported rather than swallowed: a missing window doesn't fail anything, it just quietly
+# makes the film wrong.
 new_window() {
+    local was; was="$(tracked_windows "$2")"
     osascript -e "tell application \"$1\" to new window" >/dev/null 2>&1 \
         || echo "demo: $1 refused 'new window' over AppleScript — the film will be a window short" >&2
-    sleep "$NEW_WINDOW"
+    await_window "$2" "$was"
 }
 
 # --- Setup, before the camera rolls ---------------------------------------------------------------
@@ -213,50 +283,41 @@ fi
 
 caption "" ""                          # open on a clean desktop
 
-caption "new window" "a window arrives and takes the strip"
-new_window "$TERMINAL_APP"
-sleep "$SETTLE"
+caption "new window" "a terminal arrives on the strip"
+new_window "$TERMINAL_APP" "$TERMINAL_ID"
 
-caption "new window ×3" "each one opens its own column, right of the focused one"
-new_window "$TERMINAL_APP"
-new_window "$TERMINAL_APP"
-new_window "$TERMINAL_APP"
-sleep "$SETTLE"
+caption "emira grow 10%" "widen its column"
+emira_repeat 3 grow 10%
 
-caption "emira focus left" "walk back down the strip to the first window"
-emira_repeat 3 focus left
+caption "open -a $BROWSER_APP" "a second app opens its own column"
+open_app "$BROWSER_APP" "$BROWSER_ID"
 
-caption "emira grow 10%" "widen the column — a percentage of the working area, so the steps are even"
-emira_repeat 4 grow 10%
+caption "emira cycle-width" "rotate through width presets — a third, a half, two thirds"
+emira_repeat 2 cycle-width
 
-caption "emira shrink 10%" "and back one step; grow and shrink are exact inverses"
-emira_do shrink 10%
+caption "emira focus left / right" "the strip scrolls to the focused window"
+"$EMIRA" focus left;  sleep "$REPEAT_GAP"
+"$EMIRA" focus right; sleep "$REPEAT_GAP"
+"$EMIRA" focus left;  sleep "$SETTLE"
 
-caption "emira consume-or-expel down" "swallow the next column into this one — now it's a stack"
-emira_do consume-or-expel down
+caption "emira move-window right" "swap the two columns"
+emira_do move-window right
 
-caption "emira move-window down" "reorder the stack"
-emira_do move-window down
-
-caption "emira consume-or-expel up" "expel it back out into a column of its own"
-emira_do consume-or-expel up
-
-caption "emira focus-workspace 2" "36 workspaces, each its own infinite strip"
+caption "emira focus-workspace 2" "switch to another workspace"
 emira_do focus-workspace 2
 
-caption "open -a $BROWSER_APP" "opening onto an empty strip"
-open -a "$BROWSER_APP"
-sleep "$LAUNCH"
+caption "open -a $CALENDAR_APP" "calendar arrives on the the strip"
+open_app "$CALENDAR_APP" "$CALENDAR_ID"
 
-caption "emira fullscreen" "the strip's fullscreen: no Space, the neighbours just park"
+caption "emira fullscreen" "stretch to fill the viewport"
 emira_do fullscreen
 
-caption "emira focus-workspace 1" "back where we were, scroll offset and focus remembered"
+caption "emira focus-workspace 1" "pick up where we left off on the other workspace"
 emira_do focus-workspace 1
-sleep 1.2
+sleep 0.8
 
 caption "" ""
-sleep 0.8
+sleep 0.6
 
 # --- Done ------------------------------------------------------------------------------------------
 

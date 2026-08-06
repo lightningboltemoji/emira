@@ -1,31 +1,42 @@
 # the demo
 
 `demo.sh` is the film in the README, written down. It choreographs one pass over the vocabulary —
-open some windows, walk the strip, resize a column, stack and unstack it, cross to another workspace
-and back — captions each step in an overlay in the bottom-right corner, and records the lot with
+a terminal takes the strip and widens, a browser opens its own column and snaps through the width
+presets, focus walks between them, they swap, and a calendar gets workspace 2 to itself and goes
+fullscreen — captions each step in an overlay in the bottom-right corner, and records the lot with
 `screencapture`. Run twice, same film.
+
+Three apps rather than one, because a tiler shown a single app looks like a feature of that app.
+Which three is a variable; the choreography only ever calls them terminal, browser and calendar.
 
 ```sh
 .github/demo/demo.sh                # records .github/demo/out/emira-demo.mov
 .github/demo/demo.sh --no-record    # rehearse the choreography, record nothing
-.github/demo/demo.sh --force        # run with the demo apps already open (see below)
+.github/demo/demo.sh --force        # run with the guest apps already open (see below)
 ```
 
 ## Before you run it
 
 - **The daemon is running** and has Accessibility. `demo.sh` checks by asking it for `debug`.
+- **Command Line Tools are installed.** `swiftc` builds the caption overlay, `python3` reads the
+  daemon's state while waiting for a window. Both are checked.
 - **The terminal you run this from has Screen Recording.** `screencapture -v` is what needs it, and
   it inherits the grant from whatever launched it — so the terminal appears in
   System Settings → Privacy & Security → Screen & System Audio Recording, not emira.
 - **Workspace 1 is focused and empty, and so is workspace 2.** The script switches to 1 before
   recording, but it can't empty a strip for you.
-- **Safari is quit.** Its existing windows would be in the film, and the fullscreen step assumes the
-  one window the script opens. `--force` skips the check.
+- **Chrome and Calendar are quit.** Their existing windows would be in the film, and the fullscreen
+  step assumes the one window the script opens. `--force` skips the check.
+- **They were last used on this Space.** macOS reopens an app on the Space it was last on, and emira
+  doesn't manage the Spaces it isn't on — a window that opens over there is off screen, so it never
+  reaches the strip and the film is a window short. Nothing can check this in advance, but it is the
+  one failure the script diagnoses out loud: *no window from com.google.Chrome within 15s*. Drag the
+  app back to this Space once and macOS remembers.
 - **Minimize the terminal during the preroll.** Ghostty is necessarily running — you're typing this
   into one of its windows — so instead of refusing, the script prints a line and waits `PREROLL`
   seconds (5) before the camera rolls. Minimize that window in the gap: a minimized window leaves the
-  strip like a close, so the four the script then asks for are the only four in the film. This is the
-  one precondition nothing checks.
+  strip like a close, so the windows the script then asks for are the only ones in the film. This is
+  the one precondition nothing checks.
 
 ## Knobs
 
@@ -33,18 +44,25 @@ Everything is an environment variable, so a slower or faster cut needs no edit:
 
 | Variable | Default | What it paces |
 | --- | --- | --- |
-| `LEAD` | `1.1` | a caption on screen before the action it announces |
-| `SETTLE` | `1.0` | after an `emira` command |
-| `REPEAT_GAP` | `0.45` | between repeats of one command (the four `grow`s) |
-| `LAUNCH` | `2.6` | after launching an app |
-| `NEW_WINDOW` | `0.9` | after asking a running app for another window |
+| `LEAD` | `0.65` | a caption on screen before the action it announces |
+| `SETTLE` | `0.5` | after an `emira` command |
+| `REPEAT_GAP` | `0.28` | between repeats of one command (the three `grow`s) |
+| `ARRIVE` | `0.55` | after a window lands on the strip |
+| `LAUNCH_TIMEOUT` | `15` | a ceiling, not a pace — how long a launch may take before the wait gives up and says so |
 | `PREROLL` | `5` | your gap to minimize the terminal, before recording starts |
 | `CAPTION_SCALE` | `3` | the whole overlay, multiplied — fonts, padding, corner, inset |
-| `TERMINAL_APP` | `Ghostty` | the app that fills the strip |
-| `BROWSER_APP` | `Safari` | the app on workspace 2 |
+| `TERMINAL_APP` | `Ghostty` | opens first, on workspace 1 |
+| `BROWSER_APP` | `Google Chrome` | joins it on workspace 1 |
+| `CALENDAR_APP` | `Calendar` | has workspace 2 to itself |
 | `OUT` | `out/emira-demo.mov` | where the film lands |
 | `DISPLAY_INDEX` | `1` | which display to record (1 is main) |
 | `EMIRA` | — | the CLI to drive; otherwise the first of `/Applications/emira.app`, `dist/`, `.build/release`, `$PATH` |
+
+There is no launch pause to tune, because a launch isn't paced — it's waited on. `open -a` is followed
+by polling `emira debug` until the strip actually gains a window of that bundle id, which is the only
+"ready" the next frame depends on: an app calling itself launched is not the same event as emira
+placing its window. A fixed sleep would have to be long enough for a cold Chrome and would then spend
+that on every take, warm ones included. `LAUNCH_TIMEOUT` is only the give-up point.
 
 ## The overlay
 
