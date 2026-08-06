@@ -5,8 +5,9 @@ import Foundation
 // The Accessibility API in the only shape the rest of emira sees it: two value types over an
 // `AXUIElement`, typed reads, no `CFTypeRef` in any signature. Three things a reader must not undo:
 //
-//  · Reads are window-level only. There is deliberately no child accessor — walking a Chromium/Electron
-//    or JVM app's AX tree spins up its heavyweight accessibility engine and slows the whole machine.
+//  · Reads are window-level only. Nothing descends *below* a window — walking a Chromium/Electron or JVM
+//    app's AX tree spins up its heavyweight accessibility engine and slows the whole machine. Naming the
+//    application element's own children is not that walk, and `windows()` falls back to it.
 //  · No coordinate flip here. `AXPosition` is global top-left from the primary display's top-left,
 //    which is exactly `EmiraCore`'s virtual-strip space. The one flip lives in `ScreenGeometry`.
 //  · `@unchecked Sendable` is sound: `AXUIElement` is an immutable CF handle and the AX client API is
@@ -16,6 +17,9 @@ import Foundation
 // entirely (`AXFullScreen` has none).
 private enum AXKey {
     static let windows = "AXWindows"
+    /// The application element's own children: its windows, plus a menu bar the classifier drops.
+    /// `windows()`'s second question, never a descent below a window.
+    static let children = "AXChildren"
     static let title = "AXTitle"
     static let role = "AXRole"
     static let subrole = "AXSubrole"
@@ -88,9 +92,15 @@ public struct AXApplication: @unchecked Sendable {
 
     /// The app's windows, window-level only. `[]` for anything not answering — no grant, no AX support,
     /// exited process, timeout — all of which mean "contributes no windows right now".
+    ///
+    /// An *empty* answer is asked again as `AXChildren`, which still lists the windows of an app that has
+    /// stopped listing `AXWindows`. A *failed* read is not: that is usually the messaging timeout, and a
+    /// second one would double what a hung app costs its lane.
     public func windows() -> [AXWindow] {
-        guard let raw = copyAttribute(element, AXKey.windows) as? [AXUIElement] else { return [] }
-        return raw.map(AXWindow.init)
+        guard let listed = copyAttribute(element, AXKey.windows) as? [AXUIElement] else { return [] }
+        guard listed.isEmpty else { return listed.map(AXWindow.init) }
+        let children = copyAttribute(element, AXKey.children) as? [AXUIElement] ?? []
+        return children.map(AXWindow.init)
     }
 
     /// The window the app considers focused. Exists because an `NSWorkspace` activation notification

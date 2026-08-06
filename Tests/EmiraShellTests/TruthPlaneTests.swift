@@ -68,6 +68,14 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
                            isFullScreen: false, canBecomeMain: true) == nil)
     }
 
+    @Test func aMenuBarIsDeclinedBecauseTheChildrenFallbackCarriesOne() {
+        // `AXApplication.windows()` re-asks an empty `AXWindows` as `AXChildren`, which answers the
+        // windows *and* the app's menu bar. Nothing filters that list before the classifier, so this
+        // is the only thing standing between the fallback and a menu bar in the strip.
+        #expect(WindowRole(axRole: "AXMenuBar", axSubrole: nil,
+                           isFullScreen: false, canBecomeMain: true) == nil)
+    }
+
     @Test func theFloatingKindsAreClassifiedFromTheSubrole() {
         let cases: [(String, WindowRole)] = [
             ("AXDialog", .dialog),

@@ -726,13 +726,14 @@ animated out like a close, position remembered.
 
 A few facts that a change is likely to trip over:
 
-**AX hygiene is not optional, and most "slow AX" pain is self-inflicted.** Five rules, each of which a change
+**AX hygiene is not optional, and most "slow AX" pain is self-inflicted.** Eight rules, each of which a change
 can quietly break:
 
 - **Touch as little of the tree as possible.** Chromium/Electron and JVM apps spin up a _heavyweight_
   accessibility engine the moment a client touches their tree, which slows the whole app. Fetch window-level
-  elements only, cache `AXUIElementRef`s, never walk children, and don't re-query what an observer already
-  reports.
+  elements only, cache `AXUIElementRef`s, never descend below a window, and don't re-query what an observer
+  already reports. Naming the *application* element's own children is not a descent — it answers windows and a
+  menu bar — and it is the one place the rule bends, for `kAXWindowsAttribute` going empty below.
 - **The `kAXEnhancedUserInterface` bug.** With it on (Chromium/Electron enable it), `setFrame` gets animated and
   positions come out offset. Toggle it off immediately before a set and restore after — read before written,
   never introduced to an app that didn't have it, never left off.
@@ -740,11 +741,17 @@ can quietly break:
   per-app lanes under a short `AXUIElementSetMessagingTimeout`, which protects _us_ and does nothing for the app.
 - **Expect clamping.** Apps clamp to their own min/max, so landing exactly can take size → position → size. What
   an app answered is then a fact the geometry consults (`World.corrections`, §6) rather than something re-asked.
+- **An empty `AXWindows` is not proof of an app with no windows.** Finder stops answering it — `.success`, empty
+  array — while those same window elements are still the application element's children, and an app contributing
+  nothing simply leaves `World`. An answer that is *empty* is asked again as `AXChildren`; an answer that
+  *failed* is not, since that is usually the messaging timeout and a second one would double what a hung app
+  costs its lane.
 - **The window classifier is failable, in two directions.** `kAXWindowsAttribute` is not a list of windows —
-  Finder answers it with the desktop. An unrecognized **role** means "not a window". And a window whose subrole
-  is the literal `AXUnknown` **and** whose `AXMain` is not *settable* is app chrome that happens to be an
-  `NSWindow` — Chrome's Cmd-F find bar is a full entry in the list, frame and title and all. Both are dropped at
-  the AX boundary. An unrecognized subrole that can still be main means "a real window we leave alone".
+  Finder answers it with the desktop, and the fallback above adds a menu bar. An unrecognized **role** means
+  "not a window", which is what filters both. And a window whose subrole is the literal `AXUnknown` **and**
+  whose `AXMain` is not *settable* is app chrome that happens to be an `NSWindow` — Chrome's Cmd-F find bar is
+  a full entry in the list, frame and title and all. Both are dropped at the AX boundary. An unrecognized
+  subrole that can still be main means "a real window we leave alone".
 - **AppKit derives a window's subrole from `canBecomeMain`.** Two windows with identical style masks report
   `AXStandardWindow` or `AXDialog` purely according to whether the app overrode that method, so a decorationless
   terminal — which must override it to be typable at all — is indistinguishable from a decorated one, and the
