@@ -696,8 +696,9 @@ All three actions are **seeds into somewhere the user can already reach**: `work
 it, so a standing rule would be a second authority over it.
 
 Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/panels/popovers float;
-native-fullscreen windows are excluded; minimized and Cmd-H-hidden windows leave the strip, animated out like a
-close, position remembered.
+native-fullscreen windows are excluded; app chrome that merely happens to carry an `NSWindow` is declined
+outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the strip,
+animated out like a close, position remembered.
 
 ---
 
@@ -739,9 +740,21 @@ can quietly break:
   per-app lanes under a short `AXUIElementSetMessagingTimeout`, which protects _us_ and does nothing for the app.
 - **Expect clamping.** Apps clamp to their own min/max, so landing exactly can take size → position → size. What
   an app answered is then a fact the geometry consults (`World.corrections`, §6) rather than something re-asked.
-- **The window classifier is failable.** `kAXWindowsAttribute` is not a list of windows — Finder answers it with
-  the desktop. An unrecognized **role** means "not a window" and is dropped at the AX boundary; an unrecognized
-  **subrole** means "a real window we leave alone".
+- **The window classifier is failable, in two directions.** `kAXWindowsAttribute` is not a list of windows —
+  Finder answers it with the desktop. An unrecognized **role** means "not a window". And a window whose subrole
+  is the literal `AXUnknown` **and** whose `AXMain` is not *settable* is app chrome that happens to be an
+  `NSWindow` — Chrome's Cmd-F find bar is a full entry in the list, frame and title and all. Both are dropped at
+  the AX boundary. An unrecognized subrole that can still be main means "a real window we leave alone".
+- **AppKit derives a window's subrole from `canBecomeMain`.** Two windows with identical style masks report
+  `AXStandardWindow` or `AXDialog` purely according to whether the app overrode that method, so a decorationless
+  terminal — which must override it to be typable at all — is indistinguishable from a decorated one, and the
+  stoplight buttons are worthless as a signal. It also means subrole and settable-`AXMain` are one fact read
+  twice on the AppKit path; the conjunction earns its keep off that path, where a toolkit growing its own AX
+  tree can answer `AXUnknown` for an ordinary window and the settable `AXMain` is the half to believe.
+- **Adopting a non-window is not free even though it never tiles.** It mints a `WindowId` per appearance (a find
+  bar is opened and closed all day), attaches an observer, and enters `World.window(at:)` — which prefers floats
+  over tiled windows, so it wins the `follows-mouse` hit test over the page underneath it and takes focus it
+  cannot hold.
 
 **AX identity is the fragile part.** A match must be **unique in both directions** within 2 pt or it is not a
 match — a nearest-position match always answers, and a wrong answer is permanent and invisible. Two joins run on

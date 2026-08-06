@@ -24,7 +24,8 @@ private enum AXKey {
     static let minimized = "AXMinimized"
     /// Set on a window that has taken a native macOS full-screen Space of its own.
     static let fullScreen = "AXFullScreen"
-    /// The window an app considers its main one. Half of "make this window key".
+    /// The window an app considers its main one. Half of "make this window key", and — as a settability
+    /// rather than a value — the classifier's test for whether a window can be a primary one at all.
     static let main = "AXMain"
     /// The window that holds keyboard focus within its app. The other half.
     static let focused = "AXFocused"
@@ -129,6 +130,11 @@ public struct AXWindow: @unchecked Sendable {
     /// On a native full-screen Space, and therefore excluded from tiling entirely.
     public var isFullScreen: Bool { copyAttribute(element, AXKey.fullScreen) as? Bool ?? false }
 
+    /// Whether this window can ever be its application's *main* one — `AXMain`'s **settability**, not its
+    /// value. AppKit exposes the attribute as writable only where `NSWindow.canBecomeMain` is true, so
+    /// `false` is the framework saying this surface is not a primary window and never will be.
+    public var canBecomeMain: Bool { isSettable(element, AXKey.main) }
+
     /// A destroyed element answers `kAXErrorInvalidUIElement` to everything, so any attribute would do;
     /// `role` is the cheapest. **A busy app answers `false` too**, when the read times out — treat this
     /// as evidence, not proof.
@@ -145,13 +151,15 @@ public struct AXWindow: @unchecked Sendable {
                     width: Double(size.width), height: Double(size.height))
     }
 
-    /// Every attribute emira cares about in one pass: seven round trips, once, at first sight.
+    /// Every attribute emira cares about in one pass: seven round trips, once, at first sight, plus an
+    /// eighth only for a window that declines to name its own subrole.
     ///
     /// `nil` when the element has no readable frame, or is not a window at all — `kAXWindowsAttribute`
     /// is not the pure list its name promises, e.g. Finder answers it with the desktop, an
     /// `AXScrollArea`. Dropped here rather than reported unbound, since it will never bind.
     public func snapshot(bundleId: String) -> ObservedWindow? {
-        guard let role = WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen),
+        guard let role = WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen,
+                                    canBecomeMain: canBecomeMain),
               let frame
         else { return nil }
         return ObservedWindow(
@@ -271,12 +279,19 @@ extension WindowRole {
     /// Classify an AX element: only `.standard` tiles, everything else floats — or `nil` if this is not
     /// a window at all.
     ///
-    /// Failable because `kAXWindowsAttribute` lies about its contents (Finder answers it with the
-    /// desktop). An unrecognized *role* means "not a window"; an unrecognized *subrole* means "a real
-    /// window we leave alone". Full-screen wins over everything, since such a window's subrole often
-    /// still looks ordinary; role catches the attached kinds, because sheets and popovers are their own
-    /// role and a sheet frequently reports no subrole at all.
-    public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool) {
+    /// Failable in two directions, because `kAXWindowsAttribute` lies about its contents twice over. An
+    /// unrecognized *role* is not a window (Finder answers it with the desktop). A subrole of literally
+    /// `AXUnknown` on a window whose `AXMain` is not settable is app chrome carrying an `NSWindow`, and
+    /// **both halves are required** — either alone has real windows behind it. An unrecognized subrole
+    /// that can still be main means "a real window we leave alone".
+    ///
+    /// Full-screen wins over everything, since such a window's subrole often still looks ordinary; role
+    /// catches the attached kinds, because sheets and popovers are their own role and a sheet frequently
+    /// reports no subrole at all.
+    ///
+    /// `canBecomeMain` is a round trip, so it is read only on the branch that needs it.
+    public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool,
+                 canBecomeMain: @autoclosure () -> Bool) {
         switch axRole {
         case "AXWindow":  break                       // an ordinary window; the subrole decides
         case "AXSheet":   self = isFullScreen ? .other : .sheet;   return
@@ -293,6 +308,7 @@ extension WindowRole {
         case "AXSystemDialog":         self = .dialog
         case "AXFloatingWindow":       self = .panel
         case "AXSystemFloatingWindow": self = .panel
+        case "AXUnknown" where !canBecomeMain(): return nil   // app chrome, not a window
         default:                       self = .other
         }
     }
@@ -308,6 +324,17 @@ private func copyAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef?
         return nil
     }
     return value
+}
+
+/// Whether an attribute can be *written*, a different question from what it currently reads. A round
+/// trip like any other. Every non-`.success` `AXError` collapses to `false`: an element that cannot
+/// answer the question cannot be written either.
+private func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
+    var settable: DarwinBoolean = false
+    guard AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success else {
+        return false
+    }
+    return settable.boolValue
 }
 
 /// **Not** a *Copy* function — it borrows the value, so there is no +1 to balance here.
