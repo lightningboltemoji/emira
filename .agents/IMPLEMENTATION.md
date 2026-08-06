@@ -528,6 +528,11 @@ also what makes it total over a window that was already refusing its target. Thr
   intermediate frame would trade writes with the drag at the rate of the slowest app in the column — and none of
   it is maskable, since a cover over the window being dragged hides the one thing the user is looking at. This is
   the one motion deliberately outside the transition machinery.
+- **The release is not the mouse-up**, and cannot be. The app is still draining the resize when the button comes
+  up: the window is not yet the size it was dragged to, and neither AX nor the window server can say what that
+  size will be, because nothing has decided it. So `Event.dragEnded` arrives once the window stops moving rather
+  than when the button does (`WorldWatcher.beginSettle`), and the adoption reads a `World` that has caught up.
+  Nothing is written while that wait is open, so the reports it waits on carry no echoes of our own.
 - **A drag of the _left_ edge moves the viewport by the width delta.** The strip accumulates left to right, so a
   column grows rightward whichever edge is pulled; letting the offset take the difference is what puts the moving
   edge back under the pointer, and it costs nothing — the offset is already the one authority on where the strip
@@ -795,9 +800,13 @@ was already using where they put it. The scan already in flight is one of those 
 left to announce is precisely what that scan missed — so the merge runs over it as well as over the ones
 coalesced behind it.
 
-**Observers speak `WorldObservation`, not `Event`.** Two cases decide the type: "a window appeared" is not a
+**Observers speak `WorldObservation`, not `Event`.** Three cases decide the type: "a window appeared" is not a
 window we can name (the notification carries an element with no window number, so the response is a re-scan),
-and "a window moved" is not a frame (AX never says where to). Both responses are policy.
+"a window moved" is not a frame (AX never says where to), and a mouse-up is not the end of a drag — the window
+under it goes on being resized by its app for some milliseconds afterwards, so the release is held until the
+frames stop arriving. All three responses are policy, and the last two are why the watcher owns a clock: a
+`WorldObservation` is a fact about the desktop and an `Event` is one the core can act on, which for anything
+the truth plane answers late is a fact that has to wait for its own answer.
 
 **The cover is the working area, not the display.** Our overlay is `.floating` (level 3); the menu bar is
 `.mainMenu` (level 24) and always composites on top of it, over the base capture's own copy of it. So the

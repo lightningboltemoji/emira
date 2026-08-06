@@ -48,9 +48,9 @@ public enum WorldObservation: Sendable, Equatable {
     /// pointer, and the answer that matters is which window moves.
     case mouseDown
 
-    /// A mouse button came up somewhere on the system — the end of a possible drag, and the moment a
-    /// tiled window the user dragged off its target re-asserts its layout, or one they resized has that
-    /// size adopted.
+    /// A mouse button came up somewhere on the system. The end of the *press*, which is not yet the end
+    /// of the drag: the window it was on is still being resized by its app for some milliseconds after
+    /// this, so `WorldWatcher` holds it and reports `Event.dragEnded` once the frames stop arriving.
     case mouseUp
 
     /// The pointer is at `point` — top-left global coordinates, the core's own space. A raw sample and

@@ -17,10 +17,14 @@ import Foundation
 //    out sets a dirty bit honoured exactly once when it returns.
 // 4. A destroyed element is not always a window leaving the strip — a tab group's selected tab dies
 //    while the group carries on — so a destroy is announced only after one scan has said whether
-//    anything took its place (`vanish`). The single deferral in this file, and it is bounded.
+//    anything took its place (`vanish`).
+// 5. A mouse-up is not the end of a drag. The app is still draining the resize when the button comes
+//    up, so the size the window was dragged to is in neither AX nor the window server yet, and a
+//    release passed straight through carries a frame from mid-drag. Held until the frames stop
+//    arriving (`beginSettle`).
 //
-// Everything else is bookkeeping, with one rule: nothing keyed on a pid or a `WindowId` outlives the
-// thing it is keyed on.
+// The last two are the only deferrals here, and both are bounded. Everything else is bookkeeping, with
+// one rule: nothing keyed on a pid or a `WindowId` outlives the thing it is keyed on.
 
 /// Turns the live system into `Event`s: enumerates at boot, watches everything it adopts, and keeps the
 /// core's `World` in agreement with the desktop from then on. Holds no core state (it dispatches through
@@ -51,6 +55,16 @@ public final class WorldWatcher {
     /// closing an app's *last* window looks like. This fires only when a scan settles nothing, and its
     /// cost when it does is one dead window on the strip for a quarter second.
     public static let successionGrace: TimeInterval = 0.25
+
+    /// How long a released drag's frame reports must go quiet before it counts as finished. An app is
+    /// still draining the resize when the button comes up, so the size a window was dragged to is in
+    /// neither AX nor the window server until some milliseconds after the release.
+    public static let dragSettleQuiet: TimeInterval = 0.06
+
+    /// The longest a release may wait for that quiet — the backstop for a window that never stops
+    /// reporting, one animating its own size. The wait holds the core's drag latch open with it; a
+    /// settle capped out here adopts the last frame that did arrive.
+    public static let dragSettleLimit: TimeInterval = 0.25
 
     private let source: any ObservationSource
     private let enumerator: AXEnumerator
@@ -111,6 +125,18 @@ public final class WorldWatcher {
     /// report displaces (`resolveFocus`), so it tracks reports rather than deliveries and is
     /// deliberately not cleared when its window dies.
     private var focus: WindowId?
+
+    /// Whether a mouse-up is waiting to become `dragEnded` — see `beginSettle`.
+    private var isSettling = false
+
+    /// Which settle is open. Bumped once per mouse-up, so the limit scheduled with one settle cannot
+    /// close the next.
+    private var settleId = 0
+
+    /// Which wait for quiet is current. Bumped every time the wait restarts, so only the newest timer
+    /// can close the settle and the ones it superseded expire silently. `DelayScheduler` does not
+    /// cancel, so a stamp is how a timer learns it is stale.
+    private var quietId = 0
 
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
                 scheduler: any DelayScheduler, intent: FocusIntent, sink: EventSink,
@@ -211,10 +237,13 @@ public final class WorldWatcher {
             resolveFocus(id)
 
         case .mouseDown:
+            // A press arriving mid-settle closes it first: the bracket the core reads is a latch, and
+            // two `dragBegan`s either side of no `dragEnded` would arm it twice over one release.
+            endSettle()
             emit(.dragBegan)
 
         case .mouseUp:
-            emit(.dragEnded)
+            beginSettle()
 
         case .pointerMoved(let point):
             // Not an `Event`, and not this type's to filter either: a sample is not news, and 120 of
@@ -560,6 +589,46 @@ public final class WorldWatcher {
         }
     }
 
+    // The settle (the release that waits for the window to stop)
+
+    /// Hold a mouse-up back until the frames it is about have arrived, then let it through as
+    /// `dragEnded` — the end of a drag is the window going *quiet*, not the button coming up, since an
+    /// app is still draining the resize when it does. Nothing is written while a settle is open, so
+    /// the reports it waits on carry no echo of our own.
+    private func beginSettle() {
+        endSettle()   // an up with no down under it: whatever was open belongs to the earlier release
+        isSettling = true
+        settleId += 1
+        let settle = settleId
+        scheduler.schedule(after: Self.dragSettleLimit) { [weak self] in
+            guard let self, isSettling, settleId == settle else { return }
+            endSettle()
+        }
+        waitForQuiet()
+    }
+
+    /// Start (or restart) the wait for the reports to stop. Every read that answers during a settle
+    /// comes back through here, so a window still in motion keeps pushing the release out ahead of it.
+    private func waitForQuiet() {
+        quietId += 1
+        let (settle, quiet) = (settleId, quietId)
+        scheduler.schedule(after: Self.dragSettleQuiet) { [weak self] in
+            guard let self, isSettling, settleId == settle, quietId == quiet else { return }
+            // A read still out on a lane is the question already asked; its answer restarts the wait,
+            // so this stands down rather than closing on a frame it is about to be told about.
+            guard reading.isEmpty else { return }
+            endSettle()
+        }
+    }
+
+    /// Release the held mouse-up, if one is held. Idempotent, and the only way `dragEnded` is ever
+    /// emitted — a settle closed early by a fresh press is the same event as one closed by quiet.
+    private func endSettle() {
+        guard isSettling else { return }
+        isSettling = false
+        emit(.dragEnded)
+    }
+
     // Frame reads (the coalescer)
 
     /// Read one window's frame, then honour at most one move that arrived while we were asking.
@@ -576,6 +645,9 @@ public final class WorldWatcher {
                 registry.noteFrame(id, frame)
                 emit(.windowFrameChanged(id, frame))
             }
+            // Whether or not it carried a frame, an answer is evidence the window was still moving —
+            // and a read that came back empty still has to stop holding the settle open.
+            if isSettling { waitForQuiet() }
             guard moved.remove(id) != nil, isLive(id) else { return }
             readFrame(of: id)
         }

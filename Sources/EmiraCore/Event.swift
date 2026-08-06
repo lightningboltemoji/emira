@@ -48,8 +48,12 @@ public enum Event: Sendable, Equatable, Codable {
     /// as the user's intent rather than as an app answering back.
     case dragBegan
 
-    /// A global mouse-up: the end of a possible drag. A tiled window the user dragged *off* its target
-    /// re-tiles; one the user *resized* has the size it was left at adopted into the layout.
+    /// The end of a possible drag. A tiled window the user dragged *off* its target re-tiles; one the
+    /// user *resized* has the size it was left at adopted into the layout.
+    ///
+    /// Later than the mouse-up it stands for: an app is still draining its resize when the button comes
+    /// up, so `World` holds the size the user drew only once the window stops moving
+    /// (`WorldWatcher.beginSettle`).
     case dragEnded
 
     /// The pointer crossed into a window. A *fact* the shell reports, not an instruction: whether it
