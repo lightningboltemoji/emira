@@ -81,12 +81,17 @@ extension ConfigSchema {
     # as the CLI spells them. Nothing is bound by default — registering a hotkey takes that chord from
     # every other app on the machine, which is also why `exec` is in the vocabulary: emira has to be
     # able to give one back. Punctuation in a chord is named rather than typed.
+    #
+    # `fn` (spell it `fn` or `globe`) works on letters, digits, punctuation and space. It does not work
+    # on the arrows, the F-keys or home/end/page-up/page-down: macOS marks those with the fn flag even
+    # when fn is not held, so `fn-left` would take the bare left arrow, and it is refused by name.
     [keys]
 
     alt-h = "focus left"
     alt-shift-h = "move-window left"
     cmd-alt-period = "center-column"
     alt-space = "exec ghostty"
+    fn-h = "focus left"
     """
 
     /// The one repeating table — written out twice, because repeating is the thing to show.

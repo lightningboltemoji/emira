@@ -52,9 +52,12 @@ public final class CarbonHotkeyBinder: HotkeyBinder {
     }
 
     public func bind(_ chord: KeyChord, to id: HotkeyId) -> Bool {
+        // `nil` is a chord this registry cannot express — only fn, and only if something bypassed
+        // the router. Refusing beats registering it: see `carbonFlags`.
+        guard let modifiers = chord.modifiers.carbonFlags else { return false }
         var ref: EventHotKeyRef?
         let status = RegisterEventHotKey(
-            UInt32(chord.key.virtualKeyCode), chord.modifiers.carbonFlags,
+            UInt32(chord.key.virtualKeyCode), modifiers,
             EventHotKeyID(signature: hotkeySignature, id: id),
             GetApplicationEventTarget(), 0, &ref)
         // The usual refusal is `eventHotKeyExistsErr` — another app holds the chord. Not an error.
@@ -84,8 +87,16 @@ public final class CarbonHotkeyBinder: HotkeyBinder {
 }
 
 extension KeyModifiers {
-    /// Our modifier set in the registry's own bit layout. Neither side distinguishes left from right.
-    var carbonFlags: UInt32 {
+    /// Our modifier set in the registry's own bit layout, or `nil` for a set the registry cannot
+    /// express. Neither side distinguishes left from right.
+    ///
+    /// **There is no fn bit.** `EventModifiers` is a `UInt16` topping out at `rightControlKey`, and
+    /// `RegisterEventHotKey` matches on that width: handed a wider word it registers cleanly, returns
+    /// `noErr`, and then answers to the *unmodified* key — `fn-h` would take plain `h` from every app
+    /// on the machine. So an fn chord is refused here and routed to the tap by `SplitHotkeyBinder`,
+    /// which is what makes this `nil` unreachable in the daemon.
+    var carbonFlags: UInt32? {
+        guard !contains(.function) else { return nil }
         var flags: UInt32 = 0
         if contains(.command) { flags |= UInt32(cmdKey) }
         if contains(.option)  { flags |= UInt32(optionKey) }

@@ -20,8 +20,8 @@ import Testing
     }
 
     @Test func everyModifierCombinationRoundTrips() throws {
-        let all: [KeyModifiers] = [.control, .option, .shift, .command]
-        for bits in 0..<16 {
+        let all: [KeyModifiers] = [.control, .option, .shift, .command, .function]
+        for bits in 0..<32 {
             var modifiers: KeyModifiers = []
             for (index, modifier) in all.enumerated() where bits & (1 << index) != 0 {
                 modifiers.insert(modifier)
@@ -38,6 +38,9 @@ import Testing
         #expect(chord.description == "ctrl-alt-shift-cmd-h")
         #expect(try KeyChord.parse("cmd-shift-alt-ctrl-h") == chord)
         #expect(try KeyChord.parse("alt-cmd-h") == KeyChord.parse("cmd-alt-h"))
+        // fn leads, as ⌘-menus print 🌐 first.
+        #expect(KeyChord([.function, .command, .control], .h).description == "fn-ctrl-cmd-h")
+        #expect(try KeyChord.parse("cmd-fn-h") == KeyChord([.function, .command], .h))
     }
 
     @Test func modifierAliasesAreAccepted() throws {
@@ -45,6 +48,36 @@ import Testing
         #expect(try KeyChord.parse("option-h") == KeyChord([.option], .h))
         #expect(try KeyChord.parse("opt-h") == KeyChord([.option], .h))
         #expect(try KeyChord.parse("control-h") == KeyChord([.control], .h))
+        #expect(try KeyChord.parse("globe-h") == KeyChord([.function], .h))
+    }
+
+    /// The keys macOS already marks with the fn flag when they are pressed alone. Binding `fn` to one
+    /// would match the bare key — the failure that motivated the whole refusal, and the one that has
+    /// to stay caught at the config file rather than at somebody's keyboard.
+    @Test func functionCannotQualifyAKeyThatCarriesItsFlagAlready() throws {
+        for spelling in ["fn-left", "fn-right", "fn-up", "fn-down",
+                         "fn-home", "fn-end", "fn-pageup", "fn-pagedown",
+                         "fn-delete", "fn-f1", "fn-f12", "fn-f20"] {
+            #expect(throws: KeyChordSyntaxError.self) { try KeyChord.parse(spelling) }
+        }
+        // The diagnostic names the key, because the fix is to drop the `fn-`, not to respell it.
+        #expect(throws: KeyChordSyntaxError.functionCannotQualify("left")) {
+            try KeyChord.parse("fn-left")
+        }
+        // Those keys are perfectly bindable without fn, and stay so.
+        #expect(try KeyChord.parse("left") == KeyChord([], .left))
+        #expect(try KeyChord.parse("alt-f1") == KeyChord([.option], .f1))
+    }
+
+    /// Letters, digits and punctuation are the fn layer that is actually free — nothing else claims
+    /// the flag on them, so the tap can tell `fn-h` from `h`.
+    @Test func functionQualifiesAnOrdinaryKey() throws {
+        #expect(try KeyChord.parse("fn-h") == KeyChord([.function], .h))
+        #expect(KeyChord([.function], .h).description == "fn-h")
+        #expect(try KeyChord.parse("fn-1") == KeyChord([.function], .digit1))
+        #expect(try KeyChord.parse("fn-space") == KeyChord([.function], .space))
+        #expect(try KeyChord.parse("fn-period") == KeyChord([.function], .period))
+        #expect(try KeyChord.parse("fn-shift-h") == KeyChord([.function, .shift], .h))
     }
 
     /// An unmodified chord is legal. `f13`–`f20` exist precisely to be bound bare, and refusing them

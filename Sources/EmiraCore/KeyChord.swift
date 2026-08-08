@@ -4,9 +4,9 @@ import Foundation
 // again. `Key` is exhaustive here so `cmd-alt-zz` is refused by `Config.parse` with a line number,
 // rather than failing later at hotkey-registration time. A chord names a physical key *position*, not
 // a character: on a non-QWERTY layout `alt-h` is the key where H sits on ANSI. Spelling is words
-// separated by `-`, modifiers first in any order, re-emitted in ⌃⌥⇧⌘ order, lower-case and strict.
+// separated by `-`, modifiers first in any order, re-emitted in 🌐⌃⌥⇧⌘ order, lower-case and strict.
 
-/// The four modifier keys a binding may carry. An `OptionSet` because the empty set is meaningful
+/// The five modifier keys a binding may carry. An `OptionSet` because the empty set is meaningful
 /// (`f13` alone is a legitimate binding). No left/right distinction — the hotkey registry makes none.
 public struct KeyModifiers: OptionSet, Sendable, Hashable, Codable {
     public let rawValue: Int
@@ -17,8 +17,14 @@ public struct KeyModifiers: OptionSet, Sendable, Hashable, Codable {
     public static let shift   = KeyModifiers(rawValue: 1 << 2)
     public static let command = KeyModifiers(rawValue: 1 << 3)
 
-    /// Canonical spelling order, macOS's own ⌃⌥⇧⌘ — what re-emits `cmd-alt-h` and `alt-cmd-h` alike.
+    /// The fn (🌐) key. The Carbon registry has no bit for it and silently matches the *bare* key if
+    /// handed one, so a chord carrying `.function` is bound through an event tap instead. The two
+    /// registries divide on exactly this flag; `SplitHotkeyBinder` is where that happens.
+    public static let function = KeyModifiers(rawValue: 1 << 4)
+
+    /// Canonical spelling order, macOS's own 🌐⌃⌥⇧⌘ — what re-emits `cmd-alt-h` and `alt-cmd-h` alike.
     static let canonical: [(modifier: KeyModifiers, word: String)] = [
+        (.function, "fn"),
         (.control, "ctrl"), (.option, "alt"), (.shift, "shift"), (.command, "cmd"),
     ]
 
@@ -28,6 +34,7 @@ public struct KeyModifiers: OptionSet, Sendable, Hashable, Codable {
         ("alt", .option), ("opt", .option), ("option", .option),
         ("shift", .shift),
         ("cmd", .command), ("command", .command),
+        ("fn", .function), ("globe", .function),
     ]
 
     /// The modifier a word names, or `nil` if it doesn't name one (in which case it must be the key).
@@ -63,6 +70,21 @@ public enum Key: String, Sendable, Hashable, Codable, CaseIterable {
     // Punctuation, by name (see the type's note).
     case minus, equal, leftbracket, rightbracket, backslash
     case semicolon, quote, comma, period, slash, backtick
+
+    /// Keys macOS reports the fn flag on when they are pressed *alone* — AppKit's "function key"
+    /// class, which the window server marks whether or not fn is held. `fn` cannot qualify one: the
+    /// flag carries no information, so the binding would take the bare key. `parse` refuses it.
+    var isFunctionClass: Bool {
+        switch self {
+        case .left, .right, .up, .down,
+             .home, .end, .pageup, .pagedown, .delete,
+             .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10,
+             .f11, .f12, .f13, .f14, .f15, .f16, .f17, .f18, .f19, .f20:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// The name of the key a punctuation character sits on. Not a second spelling — `parse` never
     /// accepts these; it exists so the diagnostic for `cmd-alt-.` can name `period`.
@@ -100,6 +122,8 @@ public enum KeyChordSyntaxError: Error, Equatable, CustomStringConvertible {
     case multipleKeys(String, String)
     /// The same modifier twice.
     case repeatedModifier(String)
+    /// `fn` on a key that already reports the fn flag by itself — `fn-left` would take the left arrow.
+    case functionCannotQualify(String)
 
     public var description: String {
         switch self {
@@ -117,6 +141,9 @@ public enum KeyChordSyntaxError: Error, Equatable, CustomStringConvertible {
             return "two keys, '\(first)' and '\(second)' — a binding takes one"
         case .repeatedModifier(let word):
             return "'\(word)' twice"
+        case .functionCannotQualify(let key):
+            return "'fn' cannot qualify '\(key)': macOS reports the fn flag on that key whether or "
+                + "not fn is held, so the binding would take the bare key"
         }
     }
 }
@@ -171,6 +198,9 @@ public struct KeyChord: Sendable, Hashable, Equatable, Codable, CustomStringConv
         }
 
         guard let key else { throw KeyChordSyntaxError.noKey(text) }
+        guard !(modifiers.contains(.function) && key.isFunctionClass) else {
+            throw KeyChordSyntaxError.functionCannotQualify(key.rawValue)
+        }
         return KeyChord(modifiers, key)
     }
 

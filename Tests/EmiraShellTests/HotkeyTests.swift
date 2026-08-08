@@ -16,6 +16,9 @@ import EmiraCore
         /// Chords this binder pretends are taken by somebody else.
         var refuses: Set<KeyChord> = []
         private(set) var live: [HotkeyId: KeyChord] = [:]
+        /// What this binder currently holds, for the routing tests — which care which registry took a
+        /// chord, not what id it was given.
+        var liveChords: [KeyChord] { Array(live.values) }
         /// Every id the manager *offered*, whether or not the bind succeeded — so a test can press an
         /// id the registry never actually gave back.
         private(set) var offered: [KeyChord: HotkeyId] = [:]
@@ -123,7 +126,8 @@ import EmiraCore
 
         #expect(outcome.bound == [Self.focusLeft.chord, Self.cycleWidth.chord])
         #expect(outcome.rejected == [Self.focusRight.chord])
-        #expect(outcome.summary == "2 bound, 1 refused (taken by another app): alt-l")
+        #expect(outcome.summary
+            == "2 bound, 1 refused (taken by another app, or the AX grant revoked): alt-l")
         // And a press on a bound chord still works — the refusal didn't derail the rest.
         binder.press(Self.cycleWidth.chord)
     }
@@ -268,5 +272,102 @@ import EmiraCore
         #expect(KeyModifiers([.option]).carbonFlags == 0x0800)
         #expect(KeyModifiers([.control]).carbonFlags == 0x1000)
         #expect(KeyModifiers([.command, .option]).carbonFlags == 0x0900)
+    }
+
+    /// The bit that isn't there. `RegisterEventHotKey` takes a `UInt32` but matches on `EventModifiers`
+    /// width, so an invented fn bit registers with `noErr` and then answers to the *bare* key — `fn-h`
+    /// taking plain `h` from every app on the machine. `nil` is what stops that reaching the registry,
+    /// and this is the test that keeps it `nil`.
+    @Test func carbonCannotExpressFunction() {
+        #expect(KeyModifiers([.function]).carbonFlags == nil)
+        #expect(KeyModifiers([.function, .command]).carbonFlags == nil)
+        #expect(KeyModifiers([.command]).carbonFlags != nil)
+    }
+
+    /// The tap's layout is `CGEventFlags`, which does have a bit for every modifier — that difference
+    /// is the reason there are two registries at all.
+    @Test func theTapFlagsAreCoreGraphicsOwn() {
+        #expect(KeyModifiers([.function]).tapFlags == .maskSecondaryFn)
+        #expect(KeyModifiers([.command]).tapFlags == .maskCommand)
+        #expect(KeyModifiers([.function, .shift]).tapFlags == [.maskSecondaryFn, .maskShift])
+        #expect(KeyModifiers([]).tapFlags == [])
+    }
+
+    // MARK: - Routing
+
+    /// Each chord reaches exactly one registry, and the one that can express it.
+    @Test func fnChordsGoToTheTapAndNothingElseDoes() {
+        let carbon = FakeBinder()
+        let tap = FakeBinder()
+        let split = SplitHotkeyBinder(carbon: carbon, function: tap)
+        split.start { _ in }
+
+        #expect(split.bind(KeyChord([.function], .h), to: 1))
+        #expect(split.bind(KeyChord([.option], .h), to: 2))
+        #expect(split.bind(KeyChord([.function, .shift], .j), to: 3))
+        #expect(split.bind(KeyChord([], .f13), to: 4))
+
+        #expect(Set(tap.liveChords) == [KeyChord([.function], .h), KeyChord([.function, .shift], .j)])
+        #expect(Set(carbon.liveChords) == [KeyChord([.option], .h), KeyChord([], .f13)])
+        // Both are started, because an id names a binding rather than a registry.
+        #expect(carbon.isStarted && tap.isStarted)
+    }
+
+    /// `unbind` arrives with an id and nothing else, so the router has to remember who took it —
+    /// asking the wrong registry is silent, and leaves the chord held with nobody answering.
+    @Test func unbindReachesTheRegistryThatTookTheChord() {
+        let carbon = FakeBinder()
+        let tap = FakeBinder()
+        let split = SplitHotkeyBinder(carbon: carbon, function: tap)
+        split.start { _ in }
+        _ = split.bind(KeyChord([.function], .h), to: 7)
+        _ = split.bind(KeyChord([.option], .h), to: 8)
+
+        split.unbind(7)
+        #expect(tap.liveChords.isEmpty)
+        #expect(carbon.liveChords == [KeyChord([.option], .h)])
+
+        split.unbind(8)
+        #expect(carbon.liveChords.isEmpty)
+    }
+
+    /// A refusal from either side is still a refusal, and must not be recorded as bound — a config
+    /// reload would then unbind an id its registry never took.
+    @Test func aRefusedChordIsNotRecorded() {
+        let carbon = FakeBinder()
+        let tap = FakeBinder()
+        tap.refuses = [KeyChord([.function], .h)]
+        let split = SplitHotkeyBinder(carbon: carbon, function: tap)
+        split.start { _ in }
+
+        #expect(!split.bind(KeyChord([.function], .h), to: 1))
+        split.unbind(1)          // must not be routed anywhere; nothing to assert but the absence
+        #expect(tap.calls.filter { $0.hasPrefix("unbind") }.isEmpty)
+    }
+
+    @Test func stoppingStopsBoth() {
+        let carbon = FakeBinder()
+        let tap = FakeBinder()
+        let split = SplitHotkeyBinder(carbon: carbon, function: tap)
+        split.start { _ in }
+        split.stop()
+        #expect(!carbon.isStarted && !tap.isStarted)
+    }
+
+    /// A press through either registry is the same press: the manager holds the commands, and the id
+    /// it minted is what comes back.
+    @Test func aPressThroughTheTapFiresItsCommand() {
+        let carbon = FakeBinder()
+        let tap = FakeBinder()
+        var fired: [Command] = []
+        let manager = HotkeyManager(binder: SplitHotkeyBinder(carbon: carbon, function: tap),
+                                    sink: EventSink { if case .command(let c) = $0 { fired.append(c) } })
+        manager.apply([KeyBinding(KeyChord([.function], .h), .focus(.left)),
+                       KeyBinding(KeyChord([.option], .h), .focus(.right))])
+
+        tap.press(KeyChord([.function], .h))
+        #expect(fired == [.focus(.left)])
+        carbon.press(KeyChord([.option], .h))
+        #expect(fired == [.focus(.left), .focus(.right)])
     }
 }

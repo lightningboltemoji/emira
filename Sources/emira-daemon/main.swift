@@ -369,12 +369,15 @@ runtime.onStateChanged = { state in
 
 // Logged here because a keypress that correctly changes nothing looks exactly like a chord that
 // never registered, and the keyboard leaves no other trace.
-let hotkeys = HotkeyManager(binder: CarbonHotkeyBinder(), sink: EventSink { event in
-    if case .command(let command) = event {
-        log("key: \(command.words.joined(separator: " "))")
-    }
-    runtime.sink(event)
-})
+// Two registries, because `fn` is not in the system one's vocabulary at any width.
+let hotkeys = HotkeyManager(
+    binder: SplitHotkeyBinder(carbon: CarbonHotkeyBinder(), function: FunctionKeyTap()),
+    sink: EventSink { event in
+        if case .command(let command) = event {
+            log("key: \(command.words.joined(separator: " "))")
+        }
+        runtime.sink(event)
+    })
 
 // The other intent source, and the same wrapping for the same reason: a gesture that correctly changes
 // nothing looks exactly like one that never registered, and the trackpad leaves no other trace. The

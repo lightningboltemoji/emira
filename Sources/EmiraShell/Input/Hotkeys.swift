@@ -2,9 +2,10 @@ import Foundation
 import EmiraCore
 
 // The hotkey subsystem's policy half — which chords are taken, what happens when the config changes,
-// what a press turns into. The framework-bound half is behind `HotkeyBinder` in `CarbonHotkeys.swift`.
-// A press enters through the sink as `Event.command`, so this is an event *source*, not an effect,
-// and the reducer never reads `Config.keys`.
+// what a press turns into. The framework-bound halves are behind `HotkeyBinder`, in
+// `CarbonHotkeys.swift` and `FunctionKeyTap.swift`. A press enters through the sink as
+// `Event.command`, so this is an event *source*, not an effect, and the reducer never reads
+// `Config.keys`.
 
 /// Identifies one live binding. Minted here, handed to the binder, handed back with a press.
 public typealias HotkeyId = UInt32
@@ -12,9 +13,10 @@ public typealias HotkeyId = UInt32
 /// The system's hotkey registry, narrowed to the four things we do with it. Implemented for real by
 /// `CarbonHotkeyBinder`; tests supply a double.
 ///
-/// Implementers: `bind` returning `false` (another app already holds the chord) is a normal outcome,
-/// not an error — the manager reports it and binds the rest. A press is delivered on the main actor
-/// with the id that was bound; `unbind` on an unknown id does nothing.
+/// Implementers: `bind` returning `false` — another app already holds the chord, or this registry
+/// cannot take it — is a normal outcome, not an error; the manager reports it and binds the rest. A
+/// press is delivered on the main actor with the id that was bound; `unbind` on an unknown id does
+/// nothing.
 @MainActor
 public protocol HotkeyBinder: AnyObject {
     /// Begin delivering presses. Called once, before the first `bind`.
@@ -28,6 +30,49 @@ public protocol HotkeyBinder: AnyObject {
     func stop()
 }
 
+/// Two registries behind one, because neither takes every chord: the system registry has no fn bit at
+/// any width, and the tap holds only the chords that need one. The whole of the routing rule is that
+/// flag, and it is decided here rather than inside either binder so that each stays a plain account of
+/// one mechanism.
+@MainActor
+public final class SplitHotkeyBinder: HotkeyBinder {
+
+    private let carbon: any HotkeyBinder
+    private let function: any HotkeyBinder
+
+    /// Which registry took each live id. `unbind` arrives with an id and nothing else, and asking the
+    /// wrong one is silent — it would leave the chord registered with no answerer.
+    private var owners: [HotkeyId: any HotkeyBinder] = [:]
+
+    public init(carbon: any HotkeyBinder, function: any HotkeyBinder) {
+        self.carbon = carbon
+        self.function = function
+    }
+
+    /// Both, and with the same closure: an id identifies a binding, not a registry.
+    public func start(_ onPress: @escaping @MainActor (HotkeyId) -> Void) {
+        carbon.start(onPress)
+        function.start(onPress)
+    }
+
+    public func bind(_ chord: KeyChord, to id: HotkeyId) -> Bool {
+        let binder = chord.modifiers.contains(.function) ? function : carbon
+        guard binder.bind(chord, to: id) else { return false }
+        owners[id] = binder
+        return true
+    }
+
+    public func unbind(_ id: HotkeyId) {
+        owners.removeValue(forKey: id)?.unbind(id)
+    }
+
+    public func stop() {
+        owners.removeAll()
+        carbon.stop()
+        function.stop()
+    }
+}
+
 /// Keeps the system hotkey registry in step with `Config.keys`, turning a press into `Event.command`.
 @MainActor
 public final class HotkeyManager {
@@ -35,7 +80,8 @@ public final class HotkeyManager {
     /// What one `apply` did.
     public struct Outcome: Equatable {
         public var bound: [KeyChord] = []
-        /// Refused by the system, almost always because another app holds them.
+        /// Refused by the registry that would have held them: another app has the chord, or — for an
+        /// fn chord — macOS would not give us a tap, which is what a revoked AX grant looks like.
         public var rejected: [KeyChord] = []
         /// The binding list matched the live one, so nothing was touched.
         public var isUnchanged = false
@@ -45,7 +91,7 @@ public final class HotkeyManager {
             if isUnchanged { return "unchanged" }
             var text = bound.isEmpty ? "none bound" : "\(bound.count) bound"
             if !rejected.isEmpty {
-                text += ", \(rejected.count) refused (taken by another app): "
+                text += ", \(rejected.count) refused (taken by another app, or the AX grant revoked): "
                     + rejected.map(\.description).joined(separator: ", ")
             }
             return text

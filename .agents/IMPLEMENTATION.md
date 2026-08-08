@@ -160,7 +160,7 @@ dispatch(event)
 capture, so nothing in the shell owns or outlives the pump, and the "cross a thread to get here, deliver on the
 main actor" AX boundary is expressed once in one type. The sources are:
 
-`WorldWatcher` (AX observers + `NSWorkspace`) · `DisplayLinkDriver` (ticks) · `HotkeyManager` (Carbon) ·
+`WorldWatcher` (AX observers + `NSWorkspace`) · `DisplayLinkDriver` (ticks) · `HotkeyManager` (Carbon, and a tap for fn) ·
 `SocketServer` (the CLI) · `ConfigLoader` (hot reload) · `PointerFocus` / `PointerWake` (filtered samples) ·
 and the executors themselves, acking their own effects.
 
@@ -718,7 +718,7 @@ animated out like a close, position remembered.
 | `Guide/`                  | one transient minimap per display; `GuideModel` is the arithmetic, `GuidePanel` the AppKit               | `GuideModel` is pure                                |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
 | `Display/`                | `CADisplayLink` → `tick(dt)`, a hold deadline per cover, and the display set as a source                 | `FrameClock`, `HoldTimer`                           |
-| `Input/`                  | the two intent sources: Carbon `RegisterEventHotKey` → `Event.command`, and a gesture `CGEventTap` → the three trackpad events | `HotkeyBinder`, `GestureTapper`   |
+| `Input/`                  | the two intent sources: chords → `Event.command` through Carbon `RegisterEventHotKey`, or a consuming `CGEventTap` for the fn ones; and a gesture `CGEventTap` → the three trackpad events | `HotkeyBinder`, `GestureTapper`   |
 | `Config/`                 | the half that needs a disk: read → watch → report                                                        | `FileWatcher`                                       |
 | `Ipc/`                    | unix socket, JSON-lines, `Request` → `Reply`                                                             | a real socket, in-test                              |
 | `MenuBar/`, `Onboarding/` | the two GUIs; the policy half of each is pure                                                            | `StatusModel`, `OnboardingModel`                    |
@@ -920,7 +920,20 @@ frame of the dissolve. Any alpha below 1 disqualifies a window from occluding; a
 level.
 
 **Hotkeys consume.** An `NSEvent` global monitor is available under the AX grant but cannot swallow the
-keystroke, so `alt-h` would scroll the strip _and_ type into the focused app. Hence Carbon. A hotkey manager is
+keystroke, so `alt-h` would scroll the strip _and_ type into the focused app. Hence Carbon, for every chord it
+can express — which is every chord without `fn`. **`fn` is not in the Carbon registry's vocabulary at any
+width**: `EventModifiers` is a `UInt16` ending at `rightControlKey`, and `RegisterEventHotKey` matches on that
+width, so a wider word carrying an invented fn bit registers with `noErr` and then answers to the _unmodified_
+key — `fn-h` taking plain `h` from every app on the machine. `carbonFlags` returns `nil` rather than let that
+reach the registry, and `SplitHotkeyBinder` routes the chord to `FunctionKeyTap` instead: a consuming
+`CGEventTap`, created lazily so a config without `fn-` never makes one, and running **on its own thread**. That
+last part is what answers the objection this paragraph would otherwise raise against a tap — matching reads a
+locked snapshot and the hop to the main actor is `async` and happens after the decision to consume, so a main
+actor blocked on AX cannot stall a keystroke. It needs no grant beyond Accessibility. A swallowed press is
+remembered by key so its release is swallowed to match: `fn` is usually let go first, and a release matched on
+the chord again would miss and hand the focused app a key-up whose key-down it never saw. The cost is a rule the
+grammar has to carry: macOS marks the arrows, the F-keys and the nav cluster with the fn flag whether or not fn
+is held, so `fn-left` would match the bare left arrow and `KeyChord.parse` refuses it by name. A hotkey manager is
 an event **source**, not an effect — it belongs beside the socket server, and `Config.keys` is a value the
 reducer never reads. **There are no default bindings**: a registered chord is taken from every application on
 the machine, so a default is emira confiscating a keystroke nobody asked it to. That is also what puts `exec` in
@@ -1105,7 +1118,7 @@ emira/
     │   ├── Guide/       GuideModel (pure) · GuidePanel · RoundedLayer · GuideIcons · Guide
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
     │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer · ScreenWatcher
-    │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · Gestures (policy) · GestureTap
+    │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · FunctionKeyTap · Gestures (policy) · GestureTap
     │   ├── Config/      ConfigLoader · ConfigFile
     │   ├── Ipc/         SocketServer · RequestRouter
     │   ├── MenuBar/     StatusItem — StatusModel (pure) + LoginItem + MenuBarItem
