@@ -60,8 +60,8 @@ public final class GuidePanel {
     private let viewport: RoundedLayer
     /// The focus ring, drawn over everything, at the focused window's frame plus its in-flight travel.
     private let ring: RoundedLayer
-    /// Pooled by `WindowId` and rebuilt only when the id *set* changes; a frame is then a `place` per
-    /// tile inside one `CATransaction`.
+    /// Pooled by `WindowId`, built and torn down only as the id *set* changes; a frame is then an
+    /// offer of content and a `place` per tile inside one `CATransaction`.
     private var tiles: [WindowId: RoundedLayer] = [:]
     /// The lines the strip divides along, under the tiles. Pooled by *count*: a boundary has no identity
     /// to key on, and the count changes only when the strip's shape does.
@@ -122,15 +122,18 @@ public final class GuidePanel {
 
     // A frame
 
-    /// Draw one frame of the guide. `content` is asked only for tiles whose layer is being *built*, so
-    /// a still or an icon is resolved once per window rather than once per frame.
+    /// Draw one frame of the guide. `content` is asked for **every tile, every frame**: a window's
+    /// pixels reach `SurfaceCache` only when the cover they were filmed for comes down, which is
+    /// strictly later than the frame its tile was built in, so a tile asked once would be asked at the
+    /// one moment there is nothing to answer with. An answer costs a dictionary lookup, and only a tile
+    /// whose answer changed touches a layer.
     public func render(_ layout: GuideLayout, content: (GuideTile) -> GuideContent) {
-        rebuildIfNeeded(layout.tiles, content: content)
-
         CATransaction.begin()
         // The guide's geometry comes from the core's own animators, frame by frame; without this each
-        // assignment would start an implicit 0.25 s animation of its own.
+        // assignment would start an implicit 0.25 s animation of its own — `contents` included, which is
+        // why the pool is reconciled inside the transaction rather than ahead of it.
         CATransaction.setDisableActions(true)
+        reconcile(layout.tiles, content: content)
         // The ribbon first: everything below is placed in *its* coordinates, and a growing strip must
         // not show its new tiles a frame before the ribbon that clips them.
         ribbon.frame = geometry.local(layout.panel, in: window.frame)
@@ -177,26 +180,38 @@ public final class GuidePanel {
         geometry.local(rect, within: Rect(origin: .zero, size: size))
     }
 
-    /// Rebuild the tile pool when the window *set* changes — a window opened, closed, or left the
-    /// strip. Everything else is a frame assignment on layers that already exist.
-    private func rebuildIfNeeded(_ wanted: [GuideTile], content: (GuideTile) -> GuideContent) {
-        guard Set(wanted.map(\.window)) != Set(tiles.keys) else { return }
-        for tile in tiles.values { tile.layer.removeFromSuperlayer() }
-        tiles.removeAll(keepingCapacity: true)
+    /// Match the tile pool to `wanted`, then offer each tile its content.
+    ///
+    /// A tile survives everything but its own window leaving the strip, a newcomer arriving beside it
+    /// included. What it is kept for is its `drawn` cache: that is what lets a frame which only moves a
+    /// tile rebuild no path.
+    private func reconcile(_ wanted: [GuideTile], content: (GuideTile) -> GuideContent) {
+        let live = Set(wanted.map(\.window))
+        for id in Set(tiles.keys).subtracting(live) {
+            tiles.removeValue(forKey: id)?.layer.removeFromSuperlayer()
+        }
         for tile in wanted {
-            // A tile paints something whatever its content is: at this scale a hole reads as a missing
-            // window, and a window with no pixels is still on the strip. No edge — what says where one
-            // window ends and the next begins is the separator between them, drawn once for the two of
-            // them rather than twice, and running the whole length of what it divides.
-            let shape = RoundedLayer(scale: backingScale, fill: Self.tileFill, edge: nil,
-                                     content: content(tile))
-            tiles[tile.window] = shape
-            ribbon.insertSublayer(shape.layer, below: ring.layer)
+            let shape = tiles[tile.window] ?? build(tile.window)
+            shape.carry(content(tile))
         }
     }
 
+    /// A tile's layer, in the tree and in the pool. It paints something whatever its content turns out
+    /// to be: at this scale a hole reads as a missing window, and a window with no pixels is still on
+    /// the strip. No edge — what says where one window ends and the next begins is the separator
+    /// between them, drawn once for the two of them rather than twice, and running the whole length of
+    /// what it divides.
+    private func build(_ id: WindowId) -> RoundedLayer {
+        let shape = RoundedLayer(scale: backingScale, fill: Self.tileFill, edge: nil)
+        tiles[id] = shape
+        // Below the ring and so above the separators, wherever the pool's older layers happen to sit:
+        // tiles partition the strip and never overlap, so their order among themselves says nothing.
+        ribbon.insertSublayer(shape.layer, below: ring.layer)
+        return shape
+    }
+
     /// Grow or shrink the separator pool to `count`. New lines go in directly above the viewport, so
-    /// they stay under the tiles however often the pool above them is rebuilt.
+    /// they stay under the tiles however the pool above them comes and goes.
     private func fitSeparators(to count: Int) {
         while separators.count > count { separators.removeLast().removeFromSuperlayer() }
         while separators.count < count {

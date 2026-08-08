@@ -1166,7 +1166,8 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
   identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display
-  raise fence in `CompositorTests`), the pointer plane, `GuideModel`, hotkeys, config loading, onboarding, teardown.
+  raise fence in `CompositorTests`), the pointer plane, `GuideModel` and the guide's tile (`GuideTileTests`
+  drives `RoundedLayer` against a detached `CALayer`), hotkeys, config loading, onboarding, teardown.
   Everything runs against the seams in §7 — the shell's untestable calls are one file deep at every boundary.
 
 The reducer suites run with **`MockExecutor`**, which records effects instead of touching macOS: the entire

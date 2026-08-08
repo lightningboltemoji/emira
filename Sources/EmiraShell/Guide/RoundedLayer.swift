@@ -16,57 +16,76 @@ import EmiraCore
 //
 // The path is rebuilt only when the shape itself changes. A scroll translates a tile without resizing
 // it, and only the tiles near an end of the ribbon change corners, so most frames rebuild nothing.
+//
+// **What a tile carries can change under it**, and it is one layer either way — the difference between
+// the two `GuideContent` cases that draw something is a contents gravity and whether it wears a mask. A
+// tile is not rebuilt to change its picture, because the pool is keyed by window and a window that
+// acquires a still is the same window it was.
 
 /// A rounded rect whose four corners can differ: a fill, an optional stroke inside it, and what it
 /// carries.
 @MainActor
 final class RoundedLayer {
 
-    /// What a tile carries, and how it is fitted — the whole of the difference between the two
-    /// `GuideContent` cases that draw anything.
-    private enum Content {
-        /// The still *is* the window, so it fills the tile and needs the silhouette as a mask to be cut
-        /// to its corners.
-        case filling(CALayer, clip: CAShapeLayer)
-        /// A square icon in a rectangular tile: centred and padded by `GuideModel.placeholder`, so it
-        /// never reaches a corner and needs no mask — an offscreen pass per tile it does not cost.
-        case inscribed(CALayer)
-    }
-
     /// The shape itself. The caller owns where it sits in the tree.
     let layer = CAShapeLayer()
 
+    private let scale: CGFloat
     private let stroke: CGFloat
-    private let content: Content?
+
+    /// The picture, built on first use and kept across content swaps. A shape layer's sublayers
+    /// composite *above* its shape, so it draws over the fill; it never reaches the stroke, being either
+    /// masked inside it or padded away from it.
+    private var picture: CALayer?
+    /// Cuts a still to the tile's corners. Only a `.preview` wears one — an icon is inscribed well clear
+    /// of them and would be paying for an offscreen pass per tile that buys it nothing.
+    private var clip: CAShapeLayer?
+    /// What `picture` draws now. The authority for how it is fitted, and what makes a re-offer of the
+    /// content already on screen free.
+    private var carried: GuideContent = .blank
 
     /// The shape last drawn, so a frame that only moves the layer rebuilds no path.
     private var drawn: (size: CGSize, corners: Corners)?
 
-    init(scale: CGFloat, fill: CGColor?, edge: (color: CGColor, width: CGFloat)?,
-         content: GuideContent = .blank) {
+    init(scale: CGFloat, fill: CGColor?, edge: (color: CGColor, width: CGFloat)?) {
+        self.scale = scale
         stroke = edge?.width ?? 0
         layer.contentsScale = scale
         layer.fillColor = fill
         layer.strokeColor = edge?.color
         layer.lineWidth = stroke
+    }
 
-        // A shape layer's sublayers composite *above* its shape, so both of these draw over the fill.
-        // Neither reaches the stroke: the still is masked inside it, and the icon is padded away from it.
+    /// Draw `content` from now on. A no-op when it is what the tile already carries, which is the
+    /// ordinary frame — the panel offers content every frame so that a still landing after the tile was
+    /// built is picked up, and almost every offer is the same image object as the last.
+    func carry(_ content: GuideContent) {
+        guard content != carried else { return }
+        carried = content
+
         switch content {
         case .blank:
-            self.content = nil
+            picture?.removeFromSuperlayer()
+            picture = nil
+            clip = nil
         case .preview(let image):
-            let still = Self.picture(image, scale: scale, gravity: .resize)
-            let clip = CAShapeLayer()
-            clip.contentsScale = scale
-            still.mask = clip
-            layer.addSublayer(still)
-            self.content = .filling(still, clip: clip)
+            // The still *is* the window, so it fills the tile and needs the silhouette as a mask to be
+            // cut to its corners.
+            let picture = adoptedPicture()
+            picture.contents = image
+            picture.contentsGravity = .resize
+            picture.mask = adoptedClip()
         case .placeholder(let image):
-            let icon = Self.picture(image, scale: scale, gravity: .resizeAspect)
-            layer.addSublayer(icon)
-            self.content = .inscribed(icon)
+            // A square icon in a rectangular tile: centred and padded by `GuideModel.placeholder`, so it
+            // never reaches a corner and needs no mask.
+            let picture = adoptedPicture()
+            picture.contents = image
+            picture.contentsGravity = .resizeAspect
+            picture.mask = nil
         }
+        // A swap between two frames of the same shape gets no `place`, so it fits itself to the shape
+        // already drawn. Nothing to fit before the first one, which follows within the same transaction.
+        if let drawn { fitPicture(to: drawn.size, corners: drawn.corners) }
     }
 
     /// Place the shape for this frame, in the parent layer's own coordinates.
@@ -78,32 +97,47 @@ final class RoundedLayer {
         let bounds = CGRect(origin: .zero, size: frame.size)
         layer.path = Self.path(bounds.insetBy(dx: stroke / 2, dy: stroke / 2),
                                corners.inset(by: Double(stroke) / 2))
+        fitPicture(to: frame.size, corners: corners)
+    }
 
-        switch content {
-        case .filling(let still, let clip):
-            still.frame = bounds
-            clip.frame = bounds
+    /// Fit the picture to a shape of this size and curve — how it is fitted being the whole of the
+    /// difference between the two cases that draw something.
+    private func fitPicture(to size: CGSize, corners: Corners) {
+        guard let picture else { return }
+        let bounds = CGRect(origin: .zero, size: size)
+        switch carried {
+        case .preview:
+            picture.frame = bounds
+            clip?.frame = bounds
             // Inside the stroke rather than under it: the stroke is the tile's own edge and has to read
             // at its full width against a still that fills everything up to it.
-            clip.path = Self.path(bounds.insetBy(dx: stroke, dy: stroke),
-                                  corners.inset(by: Double(stroke)))
-        case .inscribed(let icon):
+            clip?.path = Self.path(bounds.insetBy(dx: stroke, dy: stroke),
+                                   corners.inset(by: Double(stroke)))
+        case .placeholder:
             // Centred, which is why no `ScreenGeometry` appears: the flip between the core's top-left
             // rect and the layer's bottom-left one is the identity on a rect centred in this very size.
-            let rect = GuideModel.placeholder(in: Size(width: frame.width, height: frame.height))
-            icon.frame = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
-        case nil:
+            let rect = GuideModel.placeholder(in: Size(width: size.width, height: size.height))
+            picture.frame = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height)
+        case .blank:
             break
         }
     }
 
-    private static func picture(_ image: CGImage, scale: CGFloat,
-                                gravity: CALayerContentsGravity) -> CALayer {
-        let layer = CALayer()
-        layer.contentsScale = scale
-        layer.contents = image
-        layer.contentsGravity = gravity
-        return layer
+    private func adoptedPicture() -> CALayer {
+        if let picture { return picture }
+        let built = CALayer()
+        built.contentsScale = scale
+        layer.addSublayer(built)
+        picture = built
+        return built
+    }
+
+    private func adoptedClip() -> CAShapeLayer {
+        if let clip { return clip }
+        let built = CAShapeLayer()
+        built.contentsScale = scale
+        clip = built
+        return built
     }
 
     /// A rounded rect with four independent radii, in a layer's own (bottom-left) coordinates.
