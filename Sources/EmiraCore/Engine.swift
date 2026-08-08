@@ -91,14 +91,10 @@ public struct State: Sendable, Equatable, Codable {
     public func metrics(of id: MonitorId) -> LayoutMetrics? {
         guard let monitor = world.monitor(id) else { return nil }
         return LayoutMetrics(
+            config: config,
             workingArea: monitor.workingArea,
-            widthPresets: config.widthPresets,
-            heightPresets: config.heightPresets,
             heightSelections: workspaces.heightSelections,
             heightOverrides: workspaces.heightOverrides,
-            columnGap: config.columnGap,
-            windowGap: config.windowGap,
-            outerGaps: config.outerGaps,
             corrections: world.corrections,
             parkFloors: world.parkFloors)
     }
@@ -1700,8 +1696,7 @@ public enum Engine {
     /// there" cannot answer differently.
     private static func revealedOffset(_ s: State, of id: WindowId, from offset: Double,
                                        metrics: LayoutMetrics, center: Bool) -> Double? {
-        center ? s.layout.scrollOffsetToCenter(window: id, metrics: metrics)
-               : s.layout.scrollOffsetToReveal(window: id, from: offset, metrics: metrics)
+        s.layout.scrollOffsetToFrame(window: id, from: offset, metrics: metrics, center: center)
     }
 
     // The trackpad scroll (the strip under the hand)

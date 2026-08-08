@@ -15,9 +15,14 @@ import EmiraMotion
 //
 // **What the table deliberately does not describe**: `outer-gap` (one value with five spellings),
 // `[keys]` (an open table whose names the user invents) and `[[window-rules]]` (repeating, ordered,
-// cross-validated). Each is read by a function named for it in `ConfigSyntax.swift`, and each gets an
-// editor of its own in the settings window — forcing them in here would produce a worse GUI, not a
-// better schema.
+// cross-validated). Each is read by a function named for it in `ConfigSyntax.swift` — forcing them in
+// here would produce a worse GUI, not a better schema.
+//
+// **They are still a list.** `bespoke` is the three of them, carrying what a consumer needs to place
+// one: a label, a sentence, the section it belongs to, the block the generated document writes, and a
+// fragment that sets it to something its default is not. A surface the table cannot describe is a
+// surface every consumer would otherwise name by hand — and one that no consumer names by hand is
+// invisible rather than deliberate, which is what `outer-gap` was.
 
 /// One setting the config file may carry: how it is spelled, what it means, what a legal value is, and
 /// how that value crosses between the file and a `Config` field.
@@ -157,10 +162,15 @@ extension Setting {
     }
 
     /// The groups a settings window shows, in the order it shows them. `keys` and `windowRules` carry
-    /// no entries on purpose: they are the two sections the table cannot describe, and naming them here
-    /// is what keeps a window's list of sections one list rather than "the schema's, plus two".
+    /// no *settings* on purpose: they are two of the three surfaces the table cannot describe, and they
+    /// are on `bespoke` instead — naming them here is what keeps a window's list of sections one list
+    /// rather than "the schema's, plus two".
+    ///
+    /// **There is no springs section.** The four spring tables are eight advanced dials of `animation`:
+    /// a section whose every entry is advanced opens on nothing but a disclosure triangle, which is a
+    /// tab that says the settings are elsewhere.
     public enum Section: String, CaseIterable, Sendable {
-        case layout, focus, mouse, animation, springs, guide, keys, windowRules
+        case layout, focus, mouse, animation, guide, keys, windowRules
 
         public var title: String {
             switch self {
@@ -168,7 +178,6 @@ extension Setting {
             case .focus:       return "Focus"
             case .mouse:       return "Mouse"
             case .animation:   return "Animation"
-            case .springs:     return "Springs"
             case .guide:       return "Guide"
             case .keys:        return "Keys"
             case .windowRules: return "Window rules"
@@ -184,6 +193,52 @@ extension Setting {
 
     /// The key as it is written *inside* its table, which is the only part a line carries.
     var name: String { String(key.split(separator: ".").last ?? "") }
+}
+
+/// A config surface the table cannot describe: what it is called, where it belongs, why it is here
+/// rather than in `settings`, and the block the generated document writes for it.
+///
+/// **Not a `Setting` with holes in it.** Each of the three fails a different requirement of the table —
+/// one value with five spellings, a table of invented names, an ordered repeating block — so none of
+/// them has the `(read, write, default)` triple every entry rests on. What they *do* share is being
+/// something a consumer has to place: the document has to write it, the coverage test has to name it,
+/// and a settings window has to either edit it or say why it doesn't. That much is a list.
+public struct Bespoke: Sendable {
+
+    /// The dotted key, or the table's name — spelled the way the file spells it: `"layout.outer-gap"`,
+    /// `"keys"`, `"window-rules"`.
+    public let key: String
+    /// The surface's name in prose, or on a control's label.
+    public let label: String
+    /// One sentence: what it does. Shown under a control, exactly as a `Setting`'s is.
+    public let help: String
+    /// Which group it belongs to.
+    public let section: Setting.Section
+    /// The key this is written directly after, or `nil` to follow every setting in its table.
+    ///
+    /// **One field, so the document and the panel cannot disagree about where it goes.** Outer gaps
+    /// belong beside the two other gaps rather than after the preset lists, and that is a fact about
+    /// the setting rather than about either surface — spelling it twice is how the two orders would
+    /// come to differ.
+    public let after: String?
+    /// Why the table cannot carry it. The reason is data rather than a comment because it is the
+    /// answer to the only question this list ever provokes.
+    public let reason: String
+
+    /// The block the generated document carries — hand-written prose, for the reason its reader is
+    /// hand-written. Parsed by the test that pins the document, so a spelling that stopped being legal
+    /// fails the suite rather than misleading a reader.
+    let documentation: String
+    /// A fragment that sets this surface to something its default is not, for the test that proves
+    /// every field of `Config` is reachable from the file. Carries its own header where it needs one.
+    let sample: String
+
+    /// The `[table]` this is written *inside*, or `nil` when it opens a header of its own. Derived from
+    /// the spelling, so where the document puts a surface is not a second decision.
+    var table: String? {
+        let segments = key.split(separator: ".")
+        return segments.count > 1 ? segments.dropLast().joined(separator: ".") : nil
+    }
 }
 
 //
@@ -342,6 +397,113 @@ public enum ConfigSchema {
     /// accept the header itself and not only the keys beneath it — `[layuot]` contributes no key.
     static let tables: Set<String> = Set(settings.map(\.table))
 
+    /// The three surfaces the table cannot describe, in the order the document writes them.
+    ///
+    /// Every consumer that walks `settings` has to decide what to do about these, and before this list
+    /// existed each of them decided by hand: the document placed three named constants, the coverage
+    /// test spelled three fragments into a string, and the settings window did nothing at all — which
+    /// is how `outer-gap` came to have no editor without anyone choosing that.
+    public static let bespoke: [Bespoke] = [
+        Bespoke(key: "layout.outer-gap",
+                label: "Outer gaps",
+                help: "Points held clear at the top, left, bottom and right of the working area.",
+                section: .layout,
+                after: "layout.window-gap",
+                reason: "One value with five spellings: `outer-gap` sets all four edges and each "
+                      + "`outer-gap-<side>` replaces one, so no single entry can carry it and no "
+                      + "single default can describe it.",
+                documentation: outerGapBlock,
+                sample: "outer-gap = 7"),
+
+        Bespoke(key: "keys",
+                label: "Keys",
+                help: "Chords bound to commands, spelled exactly as the CLI spells them.",
+                section: .keys,
+                after: nil,
+                reason: "An open table: its key names are chords the file's author invents, so there "
+                      + "is no fixed set of keys to enumerate.",
+                documentation: keysBlock,
+                sample: """
+                [keys]
+                alt-h = "focus left"
+                """),
+
+        Bespoke(key: "window-rules",
+                label: "Window rules",
+                help: "What happens to a window the first time emira meets it.",
+                section: .windowRules,
+                after: nil,
+                reason: "Repeating, ordered and cross-validated: file order is precedence, and a rule "
+                      + "is refused unless it both matches something and does something.",
+                documentation: windowRulesBlock,
+                sample: """
+                [[window-rules]]
+                app-id = "com.example.app"
+                float = true
+                """),
+    ]
+
+    // The prose the three carry into the generated document. Here rather than beside the renderer
+    // because it is the *entry's* — a `Setting` carries its own sentence for the same reason, and a
+    // block kept next to the code that prints it is a block that can be printed for a surface the
+    // schema no longer has.
+
+    /// One logical value with five spellings, so no single entry can carry it.
+    private static let outerGapBlock = """
+    # Points of margin held clear at the edges of the working area. Not a strut: a strut is forbidden
+    # ground, an outer gap is empty at rest and crossed in motion.
+    # In points, must be at least 0.
+    outer-gap = 0
+
+    # …and outer-gap-left, outer-gap-bottom, outer-gap-right — each replacing one side of it. A side on
+    # its own means that side, so outer-gap-left alone leaves the other three where they were.
+    # In points, must be at least 0.
+    outer-gap-top = 0
+    """
+
+    /// The one open table: its key names are invented by whoever writes the file.
+    private static let keysBlock = """
+    # The one open table: its names are chords you invent, and its values are commands spelled exactly
+    # as the CLI spells them. Nothing is bound by default — registering a hotkey takes that chord from
+    # every other app on the machine, which is also why `exec` is in the vocabulary: emira has to be
+    # able to give one back. Punctuation in a chord is named rather than typed.
+    #
+    # `fn` (spell it `fn` or `globe`) works on letters, digits, punctuation and space. It does not work
+    # on the arrows, the F-keys or home/end/page-up/page-down: macOS marks those with the fn flag even
+    # when fn is not held, so `fn-left` would take the bare left arrow, and it is refused by name.
+    [keys]
+
+    alt-h = "focus left"
+    alt-shift-h = "move-window left"
+    cmd-alt-period = "center-column"
+    alt-space = "exec ghostty"
+    fn-h = "focus left"
+    """
+
+    /// The one repeating table — written out twice, because repeating is the thing to show.
+    private static let windowRulesBlock = """
+    # A list, so the header repeats, and the only place order in the file means anything: every matching
+    # rule applies, top to bottom, later ones overriding earlier ones field by field. A rule has to both
+    # match something and do something. Regular expressions are compiled when the file is read, so a
+    # broken one is a line number rather than a rule that quietly never fires.
+    [[window-rules]]
+
+    # …or app-id-regex / title / title-regex, all of which must match.
+    app-id = "com.tinyspeck.slackmacgap"
+    # Where a matching window starts…
+    workspace = "3"
+    # …and how wide it starts, on width-presets' scale.
+    width = 0.5
+
+    # Write a regex in a 'literal string': a "…" string would need every backslash doubled, and \\d is
+    # not an escape this grammar admits at all.
+    [[window-rules]]
+
+    title-regex = 'Inspector'
+    # Off the strip entirely, overriding whatever emira made of the window's role.
+    float = true
+    """
+
     private static let layout: [Setting] = [
         Setting("layout.column-gap", \.columnGap, .number(atLeast: 0, unit: .points),
                 label: "Column gap", help: "Points between adjacent columns on the strip.",
@@ -491,7 +653,7 @@ public enum ConfigSchema {
             Setting("\(table).stiffness", .number(greaterThan: 0, unit: .bare),
                     label: "\(title) stiffness",
                     help: "Spring constant k for \(drives) — larger is stiffer, and faster.",
-                    section: .springs, advanced: true,
+                    section: .animation, advanced: true,
                     get: { $0[keyPath: field].stiffness },
                     set: { config, stiffness in
                         let spring = config[keyPath: field]
@@ -502,7 +664,7 @@ public enum ConfigSchema {
             Setting("\(table).damping-ratio", .number(atLeast: 0, unit: .bare),
                     label: "\(title) damping ratio",
                     help: "ζ for \(drives) — 1 settles without overshoot, less overshoots.",
-                    section: .springs, advanced: true,
+                    section: .animation, advanced: true,
                     get: { $0[keyPath: field].dampingRatio },
                     set: { config, ratio in
                         let spring = config[keyPath: field]

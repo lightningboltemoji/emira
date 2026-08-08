@@ -14,6 +14,16 @@ column-gap = 0
 # In points, must be at least 0.
 window-gap = 0
 
+# Points of margin held clear at the edges of the working area. Not a strut: a strut is forbidden
+# ground, an outer gap is empty at rest and crossed in motion.
+# In points, must be at least 0.
+outer-gap = 0
+
+# …and outer-gap-left, outer-gap-bottom, outer-gap-right — each replacing one side of it. A side on
+# its own means that side, so outer-gap-left alone leaves the other three where they were.
+# In points, must be at least 0.
+outer-gap-top = 0
+
 # Center a focused column rather than scrolling the least that reveals it.
 center-focused-column = false
 
@@ -32,16 +42,6 @@ width-presets = [0.3333333333333333, 0.5, 0.6666666666666666]
 # A list of sizes — 1 or less is a fraction of the extent it is resolved against, anything
 # larger is a point count.
 height-presets = [0.3333333333333333, 0.5, 0.6666666666666666]
-
-# Points of margin held clear at the edges of the working area. Not a strut: a strut is forbidden
-# ground, an outer gap is empty at rest and crossed in motion.
-# In points, must be at least 0.
-outer-gap = 0
-
-# …and outer-gap-left, outer-gap-bottom, outer-gap-right — each replacing one side of it. A side on
-# its own means that side, so outer-gap-left alone leaves the other three where they were.
-# In points, must be at least 0.
-outer-gap-top = 0
 
 [focus]
 

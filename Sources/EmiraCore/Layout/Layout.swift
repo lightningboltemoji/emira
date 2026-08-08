@@ -733,4 +733,16 @@ public struct Layout: Sendable, Equatable, Codable {
         guard let i = columnIndex(ofWindow: id) else { return nil }
         return strip(metrics: metrics).offsetToCenter(i, viewportWidth: metrics.contentArea.width)
     }
+
+    /// The offset that frames `id`'s column, from `offset` — centred, or the minimal reveal, which is
+    /// what `layout.center-focused-column` chooses between. `nil` for a window with no column.
+    ///
+    /// In one place so that "where would this come to rest" and "is it already there" cannot answer
+    /// differently — and so that a preview of the setting and the reducer obeying it are the same
+    /// expression rather than two that agree today.
+    public func scrollOffsetToFrame(window id: WindowId, from offset: Double,
+                                    metrics: LayoutMetrics, center: Bool) -> Double? {
+        center ? scrollOffsetToCenter(window: id, metrics: metrics)
+               : scrollOffsetToReveal(window: id, from: offset, metrics: metrics)
+    }
 }

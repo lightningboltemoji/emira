@@ -607,6 +607,10 @@ if bootConfigError == nil { startManaging() }
 // shell — must all read the *same* post-`applyEnvironment` value.
 
 loader.onLoad = { result in
+    // The settings window, if one is up, so an edit made elsewhere does not get clobbered by a draft
+    // that never saw it. It tells its own save from a foreign edit itself — this only says "the file
+    // moved".
+    menuBar.configFileChanged()
     switch result {
     case .success(let parsed):
         let live = applyEnvironment(to: parsed)
@@ -687,6 +691,14 @@ var isShuttingDown = false
 }
 
 menuBar.onQuit = { shutdown() }
+
+// **Hotkeys are suspended while the settings window is up.** `RegisterEventHotKey` claims a chord at the
+// window server, so a binding fires whatever is focused: with every display scrimmed, a stray chord
+// would rearrange a desktop the user cannot see, and a bound `⌘A` would never reach a numeric field.
+// `apply` is the same call a reload makes, so resuming is just re-applying what the config says.
+menuBar.onSettingsVisible = { visible in
+    if visible { hotkeys.suspend() } else { hotkeys.resume() }
+}
 
 // Ctrl-C / `kill` should take the socket file with them; a crash won't, hence `SocketServer`'s
 // stale-socket handling. `SIG_IGN` first — the default disposition still fires before a

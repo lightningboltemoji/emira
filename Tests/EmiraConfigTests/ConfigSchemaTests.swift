@@ -88,9 +88,13 @@ import EmiraCore
     /// display and live (`MonitorInfo.struts`).
     static let notKeys: Set<String> = []
 
-    /// A file that disagrees with the default about *everything*: every schema entry, driven off the
-    /// table, plus the three bespoke sections by hand. Any field of `Config` still at its default after
+    /// A file that disagrees with the default about *everything*: every schema entry and every bespoke
+    /// surface, both driven off their own lists. Any field of `Config` still at its default after
     /// reading it is a field with no way to configure it.
+    ///
+    /// **Nothing is spelled out here any more.** This test used to *be* the list of what claims a field
+    /// — three fragments typed into a string — which meant a surface could claim one here and be
+    /// invisible everywhere else, which is what `outer-gap` was.
     @Test func everyFieldOfConfigIsCoveredClaimedOrExcluded() throws {
         var tables: [(name: String, lines: [String])] = []
         for setting in ConfigSchema.settings {
@@ -100,24 +104,16 @@ import EmiraCore
             if tables.last?.name != setting.table { tables.append((setting.table, [])) }
             tables[tables.endIndex - 1].lines.append("\(setting.name) = \(value.spelled)")
         }
-        // The three the table doesn't describe. Spelled out here on purpose: this test is the list of
-        // what claims a field, so a section that claims one has to appear in it.
-        if let layout = tables.firstIndex(where: { $0.name == "layout" }) {
-            tables[layout].lines.append("outer-gap = 7")
+        // A surface written inside a table the settings already opened joins it; one that opens a header
+        // of its own follows them all. The document places them the same way, off the same list.
+        for surface in ConfigSchema.bespoke {
+            guard let table = surface.table,
+                  let i = tables.firstIndex(where: { $0.name == table }) else { continue }
+            tables[i].lines.append(surface.sample)
         }
-        let text = tables.map { "[\($0.name)]\n\($0.lines.joined(separator: "\n"))" }
-            .joined(separator: "\n\n")
-            + """
-
-
-        [keys]
-        alt-h = "focus left"
-
-        [[window-rules]]
-        app-id = "com.example.app"
-        float = true
-
-        """
+        let blocks = ConfigSchema.bespoke.filter { $0.table == nil }.map(\.sample)
+        let text = (tables.map { "[\($0.name)]\n\($0.lines.joined(separator: "\n"))" } + blocks)
+            .joined(separator: "\n\n") + "\n"
 
         let config = try Config.parse(text)
         let defaults = Self.fields(of: Config())
@@ -126,8 +122,60 @@ import EmiraCore
         #expect(unchanged == Self.notKeys, """
         These fields of Config came back at their default from a file that disagrees with every \
         setting the schema knows: \(unchanged.subtracting(Self.notKeys).sorted()). Each needs a schema \
-        entry, a named bespoke section, or a line in `notKeys` saying why it isn't a setting.
+        entry, an entry on `ConfigSchema.bespoke`, or a line in `notKeys` saying why it isn't a setting.
         """)
+    }
+
+    // The bespoke list
+
+    /// Every surface on it carries what a consumer needs to place it, and says why it is there. The
+    /// reason is checked because it is the only thing standing between "the table cannot describe this"
+    /// and "nobody got round to it".
+    @Test func everyBespokeSurfaceIsDescribed() {
+        for surface in ConfigSchema.bespoke {
+            #expect(!surface.label.isEmpty, "\(surface.key) has no label")
+            #expect(surface.help.hasSuffix("."), "\(surface.key)'s help is not a sentence")
+            #expect(surface.reason.count > 40, "\(surface.key)'s reason does not say anything")
+        }
+        // A list that grows is the table quietly giving up on being one.
+        #expect(ConfigSchema.bespoke.count <= 4)
+    }
+
+    /// A surface goes somewhere real: `after` names a setting that exists, sits in the same table and
+    /// the same section, and is not behind the disclosure — a row placed after a dial would be inside
+    /// the advanced group in the panel and outside it in the document.
+    @Test func everySurfacesPlacementNamesSomethingItCanFollow() throws {
+        for surface in ConfigSchema.bespoke {
+            guard let after = surface.after else {
+                #expect(surface.table == nil || surface.section != .layout,
+                        "\(surface.key) has a table but no key to follow, so it lands at the end")
+                continue
+            }
+            let anchor = try #require(ConfigSchema.setting(for: after),
+                                      "\(surface.key) follows `\(after)`, which is not a setting")
+            #expect(anchor.table == surface.table, "\(surface.key) follows a key in another table")
+            #expect(anchor.section == surface.section, "\(surface.key) follows a key in another section")
+            #expect(!anchor.isAdvanced, "\(surface.key) follows a dial behind the disclosure")
+        }
+    }
+
+    /// No surface is also a setting, in either direction — two entries for one key would be two
+    /// opinions about what writes it.
+    @Test func aSurfaceIsNotAlsoASetting() {
+        for surface in ConfigSchema.bespoke {
+            #expect(ConfigSchema.setting(for: surface.key) == nil,
+                    "\(surface.key) is on both lists")
+        }
+    }
+
+    /// Every surface's sample actually sets something, which is what makes the coverage test above a
+    /// proof rather than a shape.
+    @Test func everyBespokeSampleParsesAndChangesSomething() throws {
+        for surface in ConfigSchema.bespoke {
+            let text = surface.table.map { "[\($0)]\n\(surface.sample)" } ?? surface.sample
+            let config = try Config.parse(text)
+            #expect(config != Config(), "\(surface.key)'s sample changes nothing")
+        }
     }
 
     /// A legal value for `setting` that isn't its default, built off the entry's `kind` alone — so a

@@ -1,7 +1,6 @@
 import Foundation
 import Testing
-import EmiraCore
-@testable import EmiraShell
+@testable import EmiraCore
 
 // The guide's arithmetic, with no AppKit and no window server — the half of the guide that is worth
 // asserting, which is why it is a file of its own (`MenuBar`'s `StatusModel` split, again).

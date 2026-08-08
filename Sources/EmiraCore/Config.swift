@@ -393,3 +393,34 @@ public struct Config: Sendable, Equatable, Codable {
         self.windowRules = windowRules
     }
 }
+
+// The `Config → LayoutMetrics` mapping, here rather than beside `LayoutMetrics`: layout is geometry and
+// takes numbers, so `Layout.swift` naming `Config` would point the dependency the wrong way.
+//
+// Five of the nine inputs are the file's; the other four are the running desktop's, and default to
+// empty. That is not a stub — a caller with no world has no correction to apply and nothing parked, so
+// the empty is the honest answer rather than a placeholder for one.
+
+extension LayoutMetrics {
+    /// The metrics `config` asks for on a display whose working area is `workingArea`.
+    ///
+    /// The one place the file's geometry becomes the layout's, so a second caller cannot form a second
+    /// opinion of what `column-gap` means.
+    public init(config: Config,
+                workingArea: Rect,
+                heightSelections: [WindowId: Int] = [:],
+                heightOverrides: [WindowId: PresetSize] = [:],
+                corrections: [WindowId: SizeCorrection] = [:],
+                parkFloors: [WindowId: Double] = [:]) {
+        self.init(workingArea: workingArea,
+                  widthPresets: config.widthPresets,
+                  heightPresets: config.heightPresets,
+                  heightSelections: heightSelections,
+                  heightOverrides: heightOverrides,
+                  columnGap: config.columnGap,
+                  windowGap: config.windowGap,
+                  outerGaps: config.outerGaps,
+                  corrections: corrections,
+                  parkFloors: parkFloors)
+    }
+}

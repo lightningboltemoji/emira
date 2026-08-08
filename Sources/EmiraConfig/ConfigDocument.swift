@@ -75,6 +75,50 @@ public struct ConfigDocument {
         try commit(edited)
     }
 
+    /// Record `value` for `setting` — which is `set` or `remove`, because **setting something to its
+    /// default _unsets_ it**: an absent key already means that, and a file that writes it down pins it
+    /// against ever changing.
+    ///
+    /// The fork lives here rather than at a call site because a `Setting` is what knows its own default
+    /// and a bare key does not. Two consumers now write settings — `emira config set` and the settings
+    /// window — and a rule about what a file should contain must not be one either of them could
+    /// quietly disagree about.
+    ///
+    /// - Throws: as `set` and `remove` do.
+    public mutating func set(_ setting: Setting, to value: TOMLValue) throws {
+        if setting.isDefault(value) {
+            try remove(setting.key)
+        } else {
+            try set(setting.key, to: value)
+        }
+    }
+
+    /// Set `key` to `value`, and take the line straight back out when the file means the same without
+    /// it.
+    ///
+    /// `set(_ setting:to:)`'s rule — *write nothing the file already says* — for a key whose default is
+    /// **not a constant**. A per-side outer gap defaults to whatever `outer-gap` says two lines up, so
+    /// what a line would be redundant *with* is not knowable from the key alone: the only way to ask is
+    /// to take it out and read again. That costs one re-parse of a page-long file, which is what every
+    /// edit here already costs anyway.
+    ///
+    /// A removal the schema will not read is simply not made and the line stays — a `[keys]` entry is
+    /// the shape that could do it, since a chord's absence is not a default but one fewer binding.
+    ///
+    /// - Throws: as `set` does, and the document is untouched when it throws.
+    public mutating func setOrUnset(_ key: String, to value: TOMLValue) throws {
+        var written = self
+        try written.set(key, to: value)
+
+        var pruned = written
+        do {
+            try pruned.remove(key)
+            self = pruned.config == written.config ? pruned : written
+        } catch {
+            self = written
+        }
+    }
+
     /// Unset `key`, taking its whole line with it — **its trailing comment included**, since a comment
     /// on a value line describes that value and would be left describing nothing. A key the file
     /// doesn't set is left alone.

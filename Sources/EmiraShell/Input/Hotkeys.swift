@@ -113,6 +113,10 @@ public final class HotkeyManager {
 
     private var started = false
 
+    /// What `suspend` gave up, to be taken again by `resume`. `nil` means not suspended — distinct from
+    /// an empty list, which is a config that binds nothing.
+    private var suspended: [KeyBinding]?
+
     public init(binder: any HotkeyBinder, sink: EventSink) {
         self.binder = binder
         self.sink = sink
@@ -124,6 +128,13 @@ public final class HotkeyManager {
     /// released and re-taken wholesale rather than diffed.
     @discardableResult
     public func apply(_ bindings: [KeyBinding]) -> Outcome {
+        // Suspended, and this is a reload rather than the suspend itself: the new list is what `resume`
+        // will take, and nothing is registered in the meantime.
+        if suspended != nil, !bindings.isEmpty {
+            let changed = suspended != bindings
+            suspended = bindings
+            return Outcome(isUnchanged: !changed)
+        }
         if let live, live == bindings { return Outcome(isUnchanged: true) }
 
         if !started {
@@ -149,6 +160,28 @@ public final class HotkeyManager {
         return outcome
     }
 
+    /// Hand every chord back to the system, remembering what to take again.
+    ///
+    /// The settings window is what asks: `RegisterEventHotKey` claims a chord **at the window server**,
+    /// so a binding fires whatever is focused — with every display scrimmed that rearranges a desktop
+    /// the user cannot see, and a bound `⌘A` never reaches a numeric field. What to restore is held
+    /// here rather than by the caller, because the caller's copy of the config is the one that goes
+    /// stale across a reload while `live` is by definition what is registered.
+    ///
+    /// A reload landing *while* suspended replaces what will be restored, not what is bound now.
+    public func suspend() {
+        guard suspended == nil else { return }
+        suspended = live ?? []
+        apply([])
+    }
+
+    /// Take back the chords `suspend` gave up. A no-op if nothing was suspended.
+    public func resume() {
+        guard let bindings = suspended else { return }
+        suspended = nil
+        apply(bindings)
+    }
+
     /// Release every chord — a registry entry outliving its answerer is a leak nothing else surfaces.
     public func stop() {
         guard started else { return }
@@ -156,6 +189,7 @@ public final class HotkeyManager {
         started = false
         commands.removeAll()
         live = nil
+        suspended = nil
     }
 
     private func fire(_ id: HotkeyId) {

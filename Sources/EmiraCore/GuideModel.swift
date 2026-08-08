@@ -1,5 +1,4 @@
 import Foundation
-import EmiraCore
 
 // The guide's arithmetic, stated once and with no AppKit in it — `GuidePanel` is the wiring, this is
 // the policy, the same split `MenuBar` keeps between `StatusModel` and `MenuBarItem`.
@@ -59,20 +58,27 @@ public struct GuideLayout: Equatable, Sendable {
 
 /// Four corner radii, in `Rect`'s own top-left orientation: `topLeft` is the corner at `(minX, minY)`.
 /// `CALayer.cornerRadius` is one number for all four, and the guide needs four — see `corners(of:in:)`.
-struct Corners: Equatable, Sendable {
-    var topLeft: Double
-    var topRight: Double
-    var bottomRight: Double
-    var bottomLeft: Double
+public struct Corners: Equatable, Sendable {
+    public var topLeft: Double
+    public var topRight: Double
+    public var bottomRight: Double
+    public var bottomLeft: Double
 
-    static func uniform(_ radius: Double) -> Corners {
+    public init(topLeft: Double, topRight: Double, bottomRight: Double, bottomLeft: Double) {
+        self.topLeft = topLeft
+        self.topRight = topRight
+        self.bottomRight = bottomRight
+        self.bottomLeft = bottomLeft
+    }
+
+    public static func uniform(_ radius: Double) -> Corners {
         Corners(topLeft: radius, topRight: radius, bottomRight: radius, bottomLeft: radius)
     }
 
     /// The same corners on a rect inset by `d`: concentric, so every radius tightens by exactly the
     /// inset and none goes below zero. A stroke drawn inside a silhouette, or a mask drawn inside a
     /// stroke, is this.
-    func inset(by d: Double) -> Corners {
+    public func inset(by d: Double) -> Corners {
         Corners(topLeft: max(topLeft - d, 0), topRight: max(topRight - d, 0),
                 bottomRight: max(bottomRight - d, 0), bottomLeft: max(bottomLeft - d, 0))
     }
@@ -231,7 +237,8 @@ public enum GuideModel {
     /// it scrolls away from it. `d` is the *larger* of the two offsets, so a tile flush against one edge
     /// but well along it is not in the corner. Each radius is capped at half the short side, below which
     /// a rounded rect stops being one.
-    static func corners(of rect: Rect, in container: Rect, radius: Double, outer: Double) -> Corners {
+    public static func corners(of rect: Rect, in container: Rect, radius: Double,
+                               outer: Double) -> Corners {
         // Clamped at zero: a tile hanging off the ribbon has its corner outside the clip, where the
         // ribbon's own curve is already what the eye sees.
         let left = max(rect.minX - container.minX, 0)
@@ -261,7 +268,7 @@ public enum GuideModel {
     /// because by then the short side is short enough that padding costs more than it buys. Between the
     /// two it is linear, and it is the same rule whether the tile is thin (a narrow column) or flat (a
     /// window stacked in one): what is being crunched is the aspect, not an axis.
-    static func placeholder(in size: Size) -> Rect {
+    public static func placeholder(in size: Size) -> Rect {
         guard !size.isEmpty else { return .zero }
         let short = min(size.width, size.height)
         let squareness = short / max(size.width, size.height)

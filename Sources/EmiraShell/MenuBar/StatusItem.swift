@@ -2,6 +2,7 @@ import AppKit
 import ServiceManagement
 import EmiraConfig
 import EmiraCore
+import EmiraSettings
 
 // The menu bar item — emira's entire GUI: the focused workspace's address, a way into the config
 // file, a quit and an open-at-login action, and a failure channel for the config file, which is
@@ -161,11 +162,18 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
 
     /// Somewhere to report a failed login-item toggle. The daemon points this at its log.
     public var onError: (@MainActor (String) -> Void)?
+    /// The settings window went up or came down. The daemon suspends its hotkeys while it is up:
+    /// `RegisterEventHotKey` claims a chord at the window server, so a binding fires whatever is
+    /// focused — and with every display scrimmed that would rearrange a desktop the user cannot see.
+    public var onSettingsVisible: (@MainActor (Bool) -> Void)?
 
     private let item: NSStatusItem
     private var model: StatusModel
     /// The file the daemon actually loaded, which `$EMIRA_CONFIG` may have moved.
     private let configPath: String
+    /// The settings window while it is up. Held so a second `⌘,` raises nothing rather than opening a
+    /// second scrim over the first, and cleared by its own close.
+    private var settings: SettingsWindow?
 
     public init(model: StatusModel = StatusModel(), configPath: String = Config.defaultPath()) {
         self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -250,13 +258,21 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         }
         menu.addItem(login)
 
+        // Keeps its place and loses the shortcut: `⌘,` now belongs to the window, and editing the file
+        // by hand stays one click away — the file is still the authority, and a config that will not
+        // parse is the one most worth opening.
         let config = NSMenuItem(title: "Open config file",
-                                action: #selector(openConfigFile), keyEquivalent: ",")
+                                action: #selector(openConfigFile), keyEquivalent: "")
         config.target = self
         config.toolTip = configPath
         menu.addItem(config)
 
         menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings", action: #selector(openSettings),
+                                  keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
 
         let quit = NSMenuItem(title: "Quit emira", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -277,6 +293,57 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
             try ConfigFile.open(at: configPath)
         } catch {
             onError?("config file: \(error.localizedDescription)")
+        }
+    }
+
+    /// Raise the settings window, reading the file the same way the daemon does — an absent one is the
+    /// starter document, because emira must run before it is configured.
+    ///
+    /// A file that does not parse keeps the window shut and says so: the window would open read-only on
+    /// it, and until it can, sending the user to the file is the honest move.
+    @objc private func openSettings() {
+        guard settings == nil else { return }
+        do {
+            try ConfigFile.create(at: configPath)
+            settings = try SettingsWindow.open(text: currentText()) { [weak self] outcome in
+                guard let self else { return }
+                if case .save(let rendered, let basedOn) = outcome { save(rendered, basedOn: basedOn) }
+                settings = nil
+                onSettingsVisible?(false)
+            }
+            onSettingsVisible?(true)
+        } catch {
+            onError?("settings: \(error.localizedDescription)")
+        }
+    }
+
+    private func currentText() -> String {
+        (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+    }
+
+    /// The config file changed on disk. Forwarded to the settings window, which is the only thing that
+    /// can tell its own save from somebody else's edit.
+    public func configFileChanged() {
+        settings?.fileChanged(text: currentText())
+    }
+
+    /// Write the draft, the same atomic dance `emira config set` does and the one `ConfigWatcher` is
+    /// built to survive. The daemon's ordinary hot reload applies it; nothing here tells it anything.
+    ///
+    /// **Checked against what is on disk first.** The window watches for foreign edits and offers to
+    /// reload, but a change arriving between that offer and this write would slip past it — and a
+    /// comment-only edit changes the file without changing the `Config` the loader reports at all. The
+    /// file itself is the only thing that knows, so it is asked at the last possible moment.
+    private func save(_ rendered: String, basedOn: String) {
+        guard currentText() == basedOn else {
+            onError?("settings: the config file changed on disk — nothing was written")
+            return
+        }
+        do {
+            try Data(rendered.utf8).write(to: URL(fileURLWithPath: configPath), options: .atomic)
+            settings?.saved()
+        } catch {
+            onError?("settings: \(error.localizedDescription)")
         }
     }
 

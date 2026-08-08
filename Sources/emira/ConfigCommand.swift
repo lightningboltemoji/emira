@@ -102,13 +102,7 @@ enum ConfigCommand {
 
         guard var document = document() else { return ExitCode.failure }
         do {
-            // Setting something to its default *unsets* it: an absent key already means that, and a
-            // file that writes it down pins it against ever changing.
-            if setting.isDefault(value) {
-                try document.remove(key)
-            } else {
-                try document.set(key, to: value)
-            }
+            try document.set(setting, to: value)
             try save(document.rendered)
             return ExitCode.success
         } catch let error as ConfigSyntaxError {

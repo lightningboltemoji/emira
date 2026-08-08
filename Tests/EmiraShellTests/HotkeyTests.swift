@@ -370,4 +370,77 @@ import EmiraCore
         carbon.press(KeyChord([.option], .h))
         #expect(fired == [.focus(.left), .focus(.right)])
     }
+
+    // Suspend and resume — the settings window handing the keyboard back
+
+    /// `RegisterEventHotKey` claims a chord at the window server, so a binding fires whatever is
+    /// focused. With the settings window scrimming every display, that would rearrange a desktop the
+    /// user cannot see.
+    @Test func suspendReleasesEveryChordAndResumeTakesThemBack() {
+        let binder = FakeBinder()
+        let (manager, recorder) = Self.manager(binder)
+        manager.apply([Self.focusLeft, Self.focusRight])
+        #expect(binder.liveChords.count == 2)
+
+        manager.suspend()
+        #expect(binder.liveChords.isEmpty)
+        // And a press of a released chord reaches nothing.
+        binder.press(Self.focusLeft.chord)
+        #expect(recorder.commands.isEmpty)
+
+        manager.resume()
+        #expect(Set(binder.liveChords) == [Self.focusLeft.chord, Self.focusRight.chord])
+        binder.press(Self.focusLeft.chord)
+        #expect(recorder.commands == [.focus(.left)])
+    }
+
+    @Test func suspendingTwiceIsTheSameAsOnce() {
+        let binder = FakeBinder()
+        let (manager, _) = Self.manager(binder)
+        manager.apply([Self.focusLeft])
+        manager.suspend()
+        manager.suspend()
+        manager.resume()
+
+        // The second suspend must not overwrite what the first put aside with the empty set it sees.
+        #expect(binder.liveChords == [Self.focusLeft.chord])
+    }
+
+    @Test func resumingWithoutSuspendingChangesNothing() {
+        let binder = FakeBinder()
+        let (manager, _) = Self.manager(binder)
+        manager.apply([Self.focusLeft])
+        let before = binder.calls.count
+
+        manager.resume()
+
+        #expect(binder.calls.count == before)
+        #expect(binder.liveChords == [Self.focusLeft.chord])
+    }
+
+    /// A config saved *from* the settings window reloads while the window is still up. The new bindings
+    /// are what comes back, and nothing is registered in the meantime.
+    @Test func aReloadWhileSuspendedChangesWhatResumeTakes() {
+        let binder = FakeBinder()
+        let (manager, _) = Self.manager(binder)
+        manager.apply([Self.focusLeft])
+        manager.suspend()
+
+        manager.apply([Self.focusRight, Self.cycleWidth])
+        #expect(binder.liveChords.isEmpty, "a reload must not re-take chords behind the scrim")
+
+        manager.resume()
+        #expect(Set(binder.liveChords) == [Self.focusRight.chord, Self.cycleWidth.chord])
+    }
+
+    @Test func stoppingWhileSuspendedLeavesNothingToResume() {
+        let binder = FakeBinder()
+        let (manager, _) = Self.manager(binder)
+        manager.apply([Self.focusLeft])
+        manager.suspend()
+        manager.stop()
+
+        manager.resume()
+        #expect(binder.liveChords.isEmpty)
+    }
 }

@@ -93,6 +93,15 @@ Four consequences, and they are the whole design:
 **The residual cost is content, never motion.** A snapshot layer's _content_ is frozen for a transition's
 length; its movement is always smooth. Keep transitions short.
 
+**The reconstruction is drawn at three scales, and there is one of it.** The cover is the desktop at full size;
+the guide is the same projection small enough to answer *where am I*; the settings window's mock desktop is it
+smaller again, on a scrim over the real one. Each is the strip's own geometry through one scalar, so an
+off-screen column, an animated resize and a gap the user is dragging appear in all three without any of them
+being implemented twice — and a preview that reimplemented gap arithmetic would be a second opinion about where
+a window goes. What the third one does **not** get is the reducer: a preview has no truth plane, nothing to
+place, nothing to cover and nothing that can refuse, so reaching for the Engine there would not be reuse but a
+second desktop.
+
 **The strip _is_ off-screen stashing.** Windows live at absolute positions on an infinite axis; a
 viewport-worth is on screen and everything else is parked off it, and workspaces are further-off regions of
 that same space. This is how emira **never touches native macOS Spaces**, whose animations we could not
@@ -157,6 +166,17 @@ happen on.
 - **No state without an exit.** emira will not enter a condition it has no way out of — it hides the pointer
   only while it can see the motion that would unhide it, rather than on a timeout that would also fire on
   somebody who is merely reading.
+- **Configuring emira is editing its file, and the settings window is a second way to do that rather than a
+  second authority.** It reads the file, writes the file, and tells the daemon nothing — hot reload does the
+  rest, so the preview and the desktop cannot come to hold different opinions. It splices single values and
+  never rewrites: emira is configured by hand today, and the comments, the ordering and the blank lines that
+  group one table from the next are the author's work. A file it cannot parse does not open it at all — the
+  menu says so and the file is one click away — because splicing text whose meaning is unknown is the one
+  thing a GUI must not do, and a config that will not parse is the one most worth editing by hand.
+- **What the file can hold, the window can reach — or the omission is written down.** Three surfaces are
+  not settings the schema can tabulate; they are still on a list (`ConfigSchema.bespoke`), and a surface
+  with no editor names the reason it has none. A config the GUI silently cannot see is a config the GUI is
+  lying about.
 - **A config file that is wrong is an error, not a silent shrug.** Missing means defaults, because emira must
   run before it is configured. An unknown key is an error naming its line, because a window manager that
   quietly ignores `colum-gap` is one the user believes is broken. Broken on reload changes _nothing_ —

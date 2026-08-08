@@ -93,7 +93,8 @@ a plane in `CompositingExecutor.plane(of:)`, which is exhaustive on purpose.
 
 ## 3. Module graph & where things go
 
-Five library targets and two executables. Dependencies point strictly upward; nothing below imports a framework.
+Six library targets and two executables. Dependencies point strictly upward; nothing below `EmiraSettings`
+imports a framework.
 
 ```
 EmiraMotion     pure math — springs, easing curves, the scalar Animator.  (zero deps)
@@ -104,9 +105,13 @@ EmiraCore       pure — geometry, ids, Command/Event/Effect, State, layout engi
    ├── EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.
    └── EmiraConfig     pure — the TOML grammar and the config schema; text ⇄ `Config`.
     ▲
+EmiraSettings   AppKit — the settings window: the scrim, the mock desktop, the controls.
+    │           Sees the config and the geometry; may not name the reducer.
+    │                        (deps: EmiraCore, EmiraConfig, EmiraMotion; imports AppKit/QuartzCore)
+    ▲
 EmiraShell      imperative — Runtime, Executor, AX, Capture, Compositor, Guide, Pointer,
     │           Display, Hotkeys, ConfigLoader, IPC, MenuBar, Onboarding, Teardown.
-    │  (deps: EmiraCore, EmiraConfig, EmiraProtocol; imports AppKit/QuartzCore/SCK/AX/Carbon/CG)
+    │  (deps: EmiraCore, EmiraConfig, EmiraProtocol, EmiraSettings; imports AppKit/QuartzCore/SCK/AX/Carbon/CG)
     ▲
    ├── emira-daemon   executable — NSApplication accessory host that wires the Runtime.
    └── emira          executable — CLI; socket client, plus `emira config` over the file.
@@ -120,6 +125,11 @@ Each boundary buys one enforced property:
 - **`EmiraConfig` separate from `EmiraCore`** — the config _values_ stay in core because the reducer reads them;
   what moved out is the _format_. The target is what makes "the settings GUI sees the config and nothing else"
   enforced rather than intended, and it does the same for `emira config` in the other direction.
+- **`EmiraSettings` separate from `EmiraShell`** — a target rather than a folder, for `EmiraConfig`'s reason one
+  rung further out: it sees the config and the geometry and nothing else, so a preview cannot reach the reducer.
+  The graph does not enforce that on its own — `EmiraConfig` pulls in `EmiraCore` — so `ImportFenceTests` scans
+  the sources for `Engine`, `State`, `Event`, `Effect` and `Command` and fails on any of them. The fence reads
+  code alone, since the module's own header states the rule by naming all five.
 - **`EmiraProtocol` separate from the CLI** — an executable can't be imported, so anything with logic in it is
   untested by construction. Partial writes, a peer hanging up mid-reply, and version-mismatched answers are
   exactly the failures that need tests.
@@ -132,6 +142,7 @@ Each boundary buys one enforced property:
 | decides _what should happen_ — geometry, policy, sequencing | `EmiraCore`               |
 | is scalar motion given `dt`                                 | `EmiraMotion`             |
 | is a fact about the config file's _text_                    | `EmiraConfig`             |
+| is how a *setting* is shown, previewed or edited            | `EmiraSettings`           |
 | needs a framework, a thread, or a system answer             | `EmiraShell`              |
 | only wires things together                                  | `emira-daemon/main.swift` |
 
@@ -965,6 +976,78 @@ the daemon's own executable with `--probe-capture` (same binary, same signature,
 what TCC records against) and why `GrantRow.refreshed()` is monotonic. And a grant given to a _running_ emira is
 only half a grant, so onboarding ends in a deliberate restart rather than proceeding.
 
+**The settings window is a target of its own, and the shell only raises it.** `EmiraSettings` sees the config
+and the geometry; `ImportFenceTests` is what makes that a fact (§3). Three things cross the boundary, all from
+the shell: it hands over the file's text, it is handed back text to write, and it tells the window when the file
+changed underneath it.
+
+- **The composition.** A scrim over **every** display — `NSVisualEffectView` at `.hudWindow` with
+  `blendingMode = .behindWindow`, dimmed, at `CGShieldingWindowLevel() − 1` so it covers the menu bar and the
+  Dock. `.underPageBackground` and `.windowBackground` are opaque and render as flat black with the blur
+  working perfectly behind them, which is a silent failure and therefore a decision rather than a taste. The
+  mock monitor and the control slab float on the scrim of the display holding the pointer.
+- **It is set down on the desktop and lifted off it, and those are one animation run in either direction.**
+  The whole composition dissolves while the stack it carries travels the last 4% of a zoom, from just above
+  the glass on the way in and back above it on the way out — an arrival that reads as an object placed on the
+  desktop rather than a window that appeared over it. The curve is symmetric, so the exit is the entrance
+  backwards and not a second animation that happens to take the same time; a scale *above* one is what makes
+  it a placement, since below one the same motion tells the opposite story. **A scrim cannot zoom** — its
+  edges are the screen's, so a scaled one would show desktop down one side and crop the other — which is why
+  the travel belongs to the stack and the dissolve to everything. `Stage` is that stack as one view: the
+  stacking arithmetic, one transform about one centre, and a click in the space between the monitor and the
+  slab still reaching the blur it looks like. Reduce Motion keeps the dissolve and drops the travel, which is
+  what the preference asks a zoom to become rather than what it asks to be removed.
+- **The preview is the reconstruction's projection at a third scale**, after the cover and the guide. One
+  scalar, `k`, applied in `Projection.mock(_:)` and nowhere earlier: `LayoutMetrics` is built against the
+  display's **true-point** working area and `naturalFrames` answers true-point rects, so an 8 pt gap is 8 pt of
+  a real screen rather than 8 pt of a mock. A window's corner, its title bar and its stoplights are real
+  dimensions projected the same way, or the chrome drifts from the layout at every other `k`.
+- **A `Scene` is the set and a `Take` is the script over it**, keyed per **setting** rather than per section.
+  The script is empty for most of them: a setting that *is* geometry re-derives with nothing playing, and a
+  script is for behaviour — `focus right` has to happen for `focus.system-events` to mean anything. Several
+  takes share one scene, so crossing between two settings in a section costs nothing at all. `Catalog` maps
+  setting → take, and every schema entry must have one or be named on `notDemonstrable` with a reason.
+- **The panel is a fold, and the exception is a list rather than an omission.** Rows come off
+  `ConfigSchema.settings` filtered by section; a bespoke surface has no `kind` for `ControlFactory` to switch
+  on, so each editor it gets is written — `OuterGapsControl` is the one there is, four edges on one row because
+  the file spells one value five ways and four rows would say the opposite. `BespokeEditors.notEditable` names
+  the two with no editor and why, and `BespokeTests` requires one or the other. Both protocols exist for this:
+  a `PanelRow` shows a draft, a `SettingControl` is a `PanelRow` that is exactly one setting.
+- **The panel says it has more in it twice, and neither is a scroll bar.** Its scroller is half a row
+  short of a whole number of them, so a row is always cut by the bottom edge rather than sitting flush
+  with it — content, not chrome, and it survives someone who has turned scroll bars off. Over that, a
+  gradient mask on the clip view dissolves the end that has more into the blur behind the slab, and
+  **only** that end: both ends of a list that fits fade not at all, which is what makes it an
+  affordance rather than a gradient. `ScrollFade` is the arithmetic and is tested; the layer is
+  plumbing over it. The half is taken off the panel's height rather than added on — the mock, the gap
+  and the slab are one centred stack, already close to a scaled display's height. Two inputs feed it
+  and both are observed: the clip view's bounds for how far it is scrolled, the document view's frame
+  for how much there is to scroll, which settles a layout pass after the rows go in. The mask is
+  rewritten on every pass rather than when a remembered value moves — the layer is the fact, and a
+  memory that says "already correct" while nothing is installed is a fade that never appears.
+- **A section becomes a tab when it has something to show** — a setting, or a bespoke surface with an editor.
+  `keys` and `windowRules` have neither and are not tabs. There is no springs section either: the four spring
+  tables are eight advanced dials of `animation`, because a tab whose every row is behind the disclosure opens
+  on a triangle and nothing else.
+- **The scroll offset is a fold over the beats**, not a function of the final set: `offsetToReveal` is relative
+  to where the strip already is, so a take that focuses right twice reveals from the offset the first one left
+  — which is what the reducer does, one command at a time.
+- **`PreviewMotion` is `Motion` with the sessions removed** — an `Animator` per quantity and a `RectAnimator`
+  per window, and nothing else. Which spring carries a displacement follows the schema's own sentences: a size
+  that changed is a resize, a pure translation is the viewport's if the viewport moved and the strip's own
+  rearrangement if it did not.
+- **Save writes the file and hot reload does the rest.** No route pushes a draft to the running daemon, so the
+  preview and the desktop cannot hold different opinions. The write is checked against what is on disk first,
+  because a comment-only edit changes the file without changing the `Config` the loader reports.
+- **Hotkeys are suspended while it is up.** `RegisterEventHotKey` claims a chord at the window server, so a
+  binding fires whatever is focused — with every display scrimmed that rearranges a desktop the user cannot
+  see. `HotkeyManager` holds what to restore, since the daemon's copy of the config goes stale across a reload.
+- **The mock takes no input, and absorbs it.** Nothing inside it is addressable — no hover, no focus, no drag
+  — but a click lands on it and stops there rather than falling through to the scrim. Those are two different
+  properties and the difference is dismissal: the mock is what the user is looking at, so a click on it must
+  not be a click on the blur behind it. Dismissing is Escape, or a **double** click on the blur; a single one
+  is too easy to spend by accident on a window covering every display, and what it costs is an edit.
+
 ---
 
 ## 8. Cross-cutting rules
@@ -1028,19 +1111,34 @@ the way past would answer differently on a second run.
 
 **The schema is a table, not a procedure.** One `Setting` per key, each carrying its spelling, its sentence, its
 legal values, and a codec that moves the value between file and `Config` field. Reading is a loop over it; the
-example document is a render of it; `emira config explain` and (later) the settings window are its consumers, so
-nothing describing a setting is written down twice.
+example document is a render of it; `emira config explain` prints it; the settings window **lays it out**. Four
+consumers off one list, so nothing describing a setting is written down twice — and `Setting.Kind` carries the
+rule that makes the fourth cheap: one case per shape of control, never per setting.
+
+**Setting something to its default unsets it.** An absent key already means the default, and a file that writes
+it down pins it against ever changing. The fork lives on `ConfigDocument.set(_ setting:to:)` rather than at a
+call site, because a `Setting` is what knows its own default and a bare key does not — and two consumers now
+write settings. `setOrUnset(_ key:to:)` is the same rule for a key whose default is **not a constant**: a
+per-side outer gap defaults to whatever `outer-gap` says two lines up, so what a line would be redundant with is
+found by taking it out and reading again rather than by asking the key.
 
 **Unknown keys are refused, and there is no second list of valid names.** The reader _takes_ each key the schema
 knows and reports whatever is left, so "which keys are valid" _is_ the reading code. A declared-but-empty
 `[layuot]` is caught too. Silence is the failure mode that matters: a window manager that ignores `colum-gap` is
 one the user believes is broken.
 
-Three sections stay hand-written and are named as such in the reader — **`outer-gap`** (one logical value with
-five spellings), **`[keys]`** (an open table whose names the user invents) and **`[[window-rules]]`**
-(repeating, ordered, cross-validated). They are exactly the three that would get bespoke editors in a settings
-window. A test pins that every stored property of `Config` is either covered by an entry, claimed by one of
-those three, or on an explicit not-a-key list — so a new field cannot be added without a config story.
+**The three the table can't describe are still a list.** `outer-gap` (one logical value with five spellings),
+`[keys]` (an open table whose names the user invents) and `[[window-rules]]` (repeating, ordered,
+cross-validated) each keep a hand-written reader — but they are on `ConfigSchema.bespoke`, carrying a label, a
+sentence, a section, the documentation block, a sample that disagrees with the default, and the reason the table
+cannot hold them. Every consumer that walks `settings` has to decide what to do about these three, and before
+the list they each decided by hand: the generated document placed three named constants, the coverage test
+spelled three fragments into a string, and the settings window did nothing at all — which is how `outer-gap`
+came to have no control without anyone choosing that. `after` names the key a surface is written
+directly behind, and the document and the panel both read it, so the three gaps are together in both. A test pins that every stored property of `Config` is
+covered by an entry, claimed by a surface on that list, or on an explicit not-a-key list, so a new field cannot
+be added without a config story; `EmiraSettings` pins the second half, that a surface either builds an editor or
+is named with the reason it has none (§7).
 
 **Writing goes back through `ConfigDocument`, not through serializing.** It holds the text beside its parse and
 changes one value by splicing over the bytes that value occupies, so a file keeps its comments, ordering and
@@ -1102,12 +1200,17 @@ emira/
 └── Sources/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
-    │                    Event · Effect · Config · Rules · Engine
+    │                    Event · Effect · Config · Rules · Engine · GuideModel (pure)
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
     │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
+    ├── EmiraSettings/   Draft · Scene · Take · Catalog · PreviewModel · PreviewMotion (pure)
+    │                    Projection (the one number) · Wallpaper · GuidePreview
+    │                    SettingsWindow (the scrim) · Stage · DesktopView · MockMenuBar · MockIcons
+    │                    ControlSlab (+ ScrollFade) · Controls · Bespoke · PreviewClock
+    │                    SettingsStyle · Environment
     ├── EmiraShell/      Runtime · Executor · WindowRegistry · WorldWatcher · Teardown
     │                    ProcessLauncher · Scheduler · Permissions · Logging
     │   ├── AX/          AXAccess · AXClient · AXEnumerator · AXWriter · AXExecutor
@@ -1115,7 +1218,7 @@ emira/
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
-    │   ├── Guide/       GuideModel (pure) · GuidePanel · RoundedLayer · GuideIcons · Guide
+    │   ├── Guide/       GuidePanel · RoundedLayer · GuideIcons · Guide
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
     │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer · ScreenWatcher
     │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · FunctionKeyTap · Gestures (policy) · GestureTap
@@ -1176,11 +1279,25 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   (round-trip identity over a corpus), and the schema as text (every entry reads back whatever it prints, and
   `emira.example.toml` matches its golden).
 - **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
+- **`EmiraSettingsTests`** — the draft (an edit as text, unset-on-default, a refusal that does not land), the
+  preview's geometry against `Layout`'s own, a take's arrangement at a given `t`, which spring drives which
+  quantity, the wallpaper's luminance under the menu bar, the guide preview's panel, and the three claims that
+  are really about the schema: every setting builds a control, every setting is demonstrated by a take or named
+  on `Catalog.notDemonstrable`, and every bespoke surface builds an editor or is named on
+  `BespokeEditors.notEditable`. `BespokeTests` also drives the outer-gap editor end to end — a side that
+  matches the base key it resolves against is not written down, and one set back to what the file already means
+  takes its line out again. `ScrollFadeTests` covers the scroll affordance: which end fades and by how much,
+  and — off a laid-out slab — that the scroller is still half a row short of a whole number of them.
+  `StageTests` pins the presentation: the zoom holds the composition's centre whatever anchor point the
+  backing layer carries, a corner travels its own distance from it, the stack is the stage's own bounds, and
+  the gap between the monitor and the slab still answers the scrim. Plus `ImportFenceTests`, which is what makes the target's boundary a fact rather
+  than an intention. No window server anywhere — a control is a view tree, and building one is free.
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
   identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display
-  raise fence in `CompositorTests`), the pointer plane, `GuideModel` and the guide's tile (`GuideTileTests`
-  drives `RoundedLayer` against a detached `CALayer`), hotkeys, config loading, onboarding, teardown.
+  raise fence in `CompositorTests`), the pointer plane, the guide's tile (`GuideTileTests` drives
+  `RoundedLayer` against a detached `CALayer`), hotkeys — including that `suspend`/`resume` hands every chord
+  back while the settings window is up — config loading, onboarding, teardown.
   Everything runs against the seams in §7 — the shell's untestable calls are one file deep at every boundary.
 
 The reducer suites run with **`MockExecutor`**, which records effects instead of touching macOS: the entire
