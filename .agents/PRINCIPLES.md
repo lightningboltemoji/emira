@@ -202,6 +202,11 @@ happen on.
   background app hide it. The one route that works is §2's exception, and **passing over the Dock brings the
   cursor back whatever we do** — the window server enforces that deliberately, so it is a limit to document
   rather than a bug to work around.
+- **Which app is active is macOS's to grant, per caller.** `NSRunningApplication.activate()` can simply be
+  refused — a background agent is not always eligible to change activation — and its return value is the only
+  sign. The Accessibility API is not subject to that decision, so the front stays reachable by writing
+  `AXFrontmost` where AppKit is refused. Focus lands by whichever route is open, which is §4's bargain again:
+  the placement is owed, the mechanism is not.
 - **A screenshot costs per call, not per pixel, and the window server serializes them.** A covered
   transition's head cost is therefore linear in how many columns it scopes and independent of display size —
   so anything that narrows the scope is worth more than anything that makes one capture cheaper.

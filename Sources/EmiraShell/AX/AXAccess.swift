@@ -38,6 +38,9 @@ private enum AXKey {
     /// An app's currently focused window. Read on activation, when `NSWorkspace` says an app came
     /// forward but not which of its windows.
     static let focusedWindow = "AXFocusedWindow"
+    /// Whether the app is the active one. Written when AppKit's own activation is refused — see
+    /// `AXWindowWriter.focus`.
+    static let frontmost = "AXFrontmost"
     /// The window's own close button. A window-level *attribute*, not a child walk — the one element
     /// below a window emira ever asks for, and the only public way to close a foreign window
     /// (`IMPLEMENTATION.md` §7's "never walk children" is about enumerating a tree, not naming a
@@ -101,6 +104,12 @@ public struct AXApplication: @unchecked Sendable {
         guard listed.isEmpty else { return listed.map(AXWindow.init) }
         let children = copyAttribute(element, AXKey.children) as? [AXUIElement] ?? []
         return children.map(AXWindow.init)
+    }
+
+    /// Bring the app forward through AX rather than AppKit. Answers the one refusal `activate()` has no
+    /// way around (`AXWindowWriter.focus`); `false` from an app that does not expose the attribute.
+    func makeFrontmost() -> Bool {
+        setAttribute(element, AXKey.frontmost, true as CFTypeRef)
     }
 
     /// The window the app considers focused. Exists because an `NSWorkspace` activation notification

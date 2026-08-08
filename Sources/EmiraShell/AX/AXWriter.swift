@@ -63,10 +63,11 @@ public protocol WindowWriter {
     /// that really writes also puts the request on the `FocusIntent` record, since the echo it provokes
     /// is only distinguishable from the user's own Cmd-Tab by what we asked for.
     ///
-    /// Calls `completion` once it has activated the app, and not at all when a newer focus superseded
-    /// this one first — an activation nobody made is not one to report. Which window ends up focused
-    /// still comes back from the observers; this says only that an activation happened, which is a
-    /// fact about the *app* and the one thing focus has to answer for.
+    /// Calls `completion` once it has activated the app — not when a newer focus superseded this one
+    /// first, and **not when every route to the front was refused**: an activation nobody made is not
+    /// one to report. Which window ends up focused still comes back from the observers; this says only
+    /// that an activation happened, which is a fact about the *app* and the one thing focus has to
+    /// answer for.
     func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
 
     /// Raise a window within its app's stack, without touching focus.
@@ -129,6 +130,14 @@ public final class AXWindowWriter: WindowWriter {
     /// The `makeKey` itself is left to run. It cannot bring an app forward on its own, its own lane
     /// already orders it against the app's other writes, and the echo it may post is what `FocusIntent`
     /// exists to recognise on the way back.
+    ///
+    /// **`activate()` can be refused, and returning `false` is the only sign of it.** macOS decides
+    /// per-caller whether a request to change activation is honoured, and a background agent is not
+    /// always eligible — a daemon launched from a terminal can find itself able to bring *that terminal*
+    /// forward and nothing else, which reads exactly like one app refusing focus forever. `AXFrontmost`
+    /// is the second answer and not a duplicate of the first: it is the Accessibility API, which emira
+    /// holds a grant for, rather than AppKit activation, which is the thing being withheld. It goes out
+    /// only on a refusal, so the common path keeps both its latency and the ordering the ticket buys.
     public func focus(_ window: WindowRegistry.Record,
                       then completion: @escaping @MainActor () -> Void) {
         let ticket = intent.request(window.id)
@@ -136,12 +145,20 @@ public final class AXWindowWriter: WindowWriter {
         let pid = window.pid
         client.perform(app: pid) { _ in
             element.makeKey()
-        } then: { [intent] _ in
+        } then: { [intent, client] _ in
             guard intent.isCurrent(ticket) else { return }
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
-            NSRunningApplication(processIdentifier: pid)?.activate()
-            completion()
+            if NSRunningApplication(processIdentifier: pid)?.activate() == true {
+                return completion()
+            }
+            let application = client.application(for: pid)
+            client.perform(app: pid) { _ in
+                application.makeFrontmost()
+            } then: { raised in
+                guard raised else { return }   // nothing came forward: nothing to report
+                completion()
+            }
         }
     }
 

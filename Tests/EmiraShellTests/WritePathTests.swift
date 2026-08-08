@@ -632,8 +632,9 @@ final class ScriptedWriter: WindowWriter {
     }
 }
 
-/// A writer whose `focus` activates nothing and therefore reports nothing — the real one's superseded
-/// case, where a newer focus took the ticket while this one was out on its lane.
+/// A writer whose `focus` activates nothing and therefore reports nothing — the real one's two silent
+/// cases: a newer focus took the ticket while this one was out on its lane, or every route to the front
+/// was refused.
 @MainActor
 private final class SilentFocusWriter: WindowWriter {
     func place(_ moves: [WindowMove], of app: pid_t,

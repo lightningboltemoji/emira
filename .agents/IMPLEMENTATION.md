@@ -784,6 +784,15 @@ the `WindowId` makes a tab switch _unobservable to the core_, so the column, its
 float state survive one without a single `Event`. Three maps move together or the seam leaks — number, element,
 and the record's element. A destroy notification therefore **waits for one scan** before retiring an id.
 
+**Whether emira may change which app is active is macOS's decision, and `activate()` returning `false` is the
+only sign it went the other way.** A background agent is not always eligible, and one launched from a terminal
+can find itself able to bring _that terminal_ forward and nothing else — which reads as one app refusing focus
+forever rather than as a refusal at all. `AXWindowWriter.focus` answers a refusal by writing `AXFrontmost` on
+the application element: the Accessibility API, which emira holds a grant for, rather than AppKit activation,
+which is the thing being withheld. It goes out **only** on a refusal, so the common path keeps its latency and
+the cross-app ordering `FocusIntent`'s ticket buys. A focus neither route lands reports nothing, so no
+`appActivated` is claimed for an activation that never happened.
+
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The
 enhanced-UI flag is **read before it is written** and restored after — never introduced to an app that didn't
