@@ -41,9 +41,9 @@ Windows are arranged for you along an infinitely-wide strip. A slice of the stri
 
 ## Config
 
-Read from `~/.config/emira/emira.toml`. Schema in [`emira.example.toml`](emira.example.toml).
+Read from `~/.config/emira/emira.toml`. Schema in [`emira.example.toml`](emira.example.toml). 
 
-I hope to add a GUI in the future.
+GUI is partially implemented under the menu bar > `Settings`.
 
 ## Install
 
