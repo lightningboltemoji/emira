@@ -17,16 +17,7 @@ import EmiraMotion
 @MainActor
 public final class SettingsWindow: NSObject, NSWindowDelegate {
 
-    /// Why the window came down. The caller owns the file, so a save is handed back as text rather than
-    /// written here — `ConfigDocument`'s no-I/O rule, one level out.
-    public enum Outcome: Sendable {
-        case dismissed
-        /// Save this text — but only if the file still holds `basedOn`. The window never writes, so the
-        /// caller owning the path is also the one that can check nobody else got there first.
-        case save(rendered: String, basedOn: String)
-    }
-
-    private var scrims: [NSWindow] = []
+    private var scrims: [ScrimWindow] = []
     private var content: NSWindow?
     private var stage: Stage?
     private var clock: PreviewClock?
@@ -50,21 +41,41 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
     /// Bumped by every hover, so a dwell that has been superseded knows not to take the stage.
     private var hoverGeneration = 0
 
-    private let onClose: @MainActor (Outcome) -> Void
+    /// Save this text — but only if the file still holds `basedOn`. The window never writes, so the
+    /// caller owning the path is the one that can check nobody got there first — `ConfigDocument`'s
+    /// no-I/O rule, one level out. **Saving is not closing**, and its being a callback of its own is
+    /// what keeps a caller from letting go of a window that is still up.
+    private let onSave: @MainActor (_ rendered: String, _ basedOn: String) -> Void
+    /// The composition is off the screen, and is sent exactly once.
+    private let onClose: @MainActor () -> Void
 
-    /// Open over every attached display, with the content on the one holding the pointer.
+    /// The window's own reference to itself, held from `show()` to `close()`. **Being on screen is what
+    /// keeps this object alive**: AppKit owns a window that is ordered in, so a caller letting go of the
+    /// last one buys no teardown — only a dim that nothing is listening to.
+    private var presented: SettingsWindow?
+    /// `close()` is one-way, and a second one would tell the caller twice. A quadruple click on the dim
+    /// is three `mouseDown`s past the threshold, so this is reachable by ordinary use.
+    private var isClosing = false
+
+    /// Open over every attached display, with the content on the one holding the pointer. The window
+    /// owns itself while it is up: the value returned is for *talking* to, and `dismiss()` ends one.
     ///
     /// - Parameter text: the config file's text. An absent file is the caller's to turn into the starter
     ///   document, for the reason nothing here does I/O.
+    @discardableResult
     public static func open(text: String,
-                            onClose: @escaping @MainActor (Outcome) -> Void) throws -> SettingsWindow {
-        let window = try SettingsWindow(text: text, onClose: onClose)
+                            onSave: @escaping @MainActor (_ rendered: String, _ basedOn: String) -> Void,
+                            onClose: @escaping @MainActor () -> Void) throws -> SettingsWindow {
+        let window = try SettingsWindow(text: text, onSave: onSave, onClose: onClose)
         window.show()
         return window
     }
 
-    private init(text: String, onClose: @escaping @MainActor (Outcome) -> Void) throws {
+    private init(text: String,
+                 onSave: @escaping @MainActor (_ rendered: String, _ basedOn: String) -> Void,
+                 onClose: @escaping @MainActor () -> Void) throws {
         self.draft = try Draft(text)
+        self.onSave = onSave
         self.onClose = onClose
         let screen = Self.screenUnderPointer()
         let projection = Projection(screen: screen,
@@ -87,6 +98,7 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
 
     private func show() {
         let host = Self.screenUnderPointer()
+        presented = self
 
         for screen in NSScreen.screens {
             let scrim = makeScrim(on: screen, interactive: screen == host)
@@ -127,17 +139,11 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         }, completionHandler: { MainActor.assumeIsolated(completion) })
     }
 
-    private func makeScrim(on screen: NSScreen, interactive: Bool) -> NSWindow {
-        let window: NSWindow
-        if interactive {
-            let keyable = KeyableWindow(contentRect: screen.frame, styleMask: .borderless,
-                                        backing: .buffered, defer: false)
-            keyable.onCancel = { [weak self] in self?.dismiss() }
-            window = keyable
-        } else {
-            window = NSWindow(contentRect: screen.frame, styleMask: .borderless,
-                              backing: .buffered, defer: false)
-        }
+    private func makeScrim(on screen: NSScreen, interactive: Bool) -> ScrimWindow {
+        let window = ScrimWindow(contentRect: screen.frame, styleMask: .borderless,
+                                 backing: .buffered, defer: false)
+        window.takesKey = interactive
+        if interactive { window.onCancel = dismissal() }
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -162,11 +168,22 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         dim.wantsLayer = true
         dim.layer?.backgroundColor = NSColor.black.withAlphaComponent(SettingsStyle.dim).cgColor
         dim.autoresizingMask = [.width, .height]
-        dim.onDismiss = { [weak self] in self?.dismiss() }
+        dim.onDismiss = dismissal()
         backdrop.addSubview(dim)
 
         window.contentView = backdrop
         return window
+    }
+
+    /// The two ways down, as one closure. **It answers whether anyone was there to ask**: a `false` is
+    /// this object having gone while its scrims are still up, which `presented` exists to make
+    /// impossible — and which the views treat as their own to survive rather than as nothing happening.
+    private func dismissal() -> @MainActor () -> Bool {
+        { [weak self] in
+            guard let self else { return false }
+            close()
+            return true
+        }
     }
 
     private func buildContent(on screen: NSScreen) {
@@ -245,9 +262,10 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
     }
 
     /// Hand the text to whoever owns the file, with the baseline it was built on so a foreign edit
-    /// cannot be clobbered.
+    /// cannot be clobbered. **The window stays up** — `saved()` comes back and the draft goes on being
+    /// edited, which is why this is not a way out of here.
     private func commit() {
-        onClose(.save(rendered: draft.rendered, basedOn: draft.baseline.rendered))
+        onSave(draft.rendered, draft.baseline.rendered)
     }
 
     /// Told by the shell that the file on disk changed.
@@ -422,11 +440,15 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
 
     // Coming down
 
-    @objc private func dismiss() {
-        close(.dismissed)
+    /// Take the composition off the screen. The only way to end one from outside: a release cannot,
+    /// which is the point of `presented`.
+    public func dismiss() {
+        close()
     }
 
-    private func close(_ outcome: Outcome) {
+    private func close() {
+        guard !isClosing else { return }
+        isClosing = true
         environment.stop()
         clock?.invalidate()
         clock = nil
@@ -438,14 +460,19 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         present(.lifted, on: windows) {
             for window in windows { window.orderOut(nil) }
         }
-        onClose(outcome)
+        onClose()
+        // Last, and the object may not survive it: `show()` took this reference and nothing else is
+        // required to hold one. Every path in gets here through a `self` the caller keeps alive.
+        presented = nil
     }
 }
 
 /// The dim over the blur, and the thing a click outside the content lands on.
 @MainActor
 final class ScrimView: NSView {
-    var onDismiss: (@MainActor () -> Void)?
+    /// Take the window down, answering whether there was anything left to take it. See
+    /// `ScrimWindow.tearDownOrphans()` for what a `false` means and why it is not simply ignored.
+    var onDismiss: (@MainActor () -> Bool)?
 
     /// A single click is far too easy to spend by accident on a window that covers every display, and
     /// what it costs is an edit. Two is a thing you meant.
@@ -457,23 +484,34 @@ final class ScrimView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         guard event.clickCount >= Self.clicksToDismiss else { return }
-        onDismiss?()
+        if onDismiss?() != true { ScrimWindow.tearDownOrphans() }
     }
 }
 
-/// A borderless window that can take the keyboard. Borderless answers `false` by default, and the
-/// symptom is a control that silently ignores a keystroke.
+/// A borderless scrim, one per display. The host's takes the keyboard — borderless answers `false` by
+/// default, and the symptom of forgetting is a control that silently ignores a keystroke — and owns
+/// Escape, which is what a scrim asking to be dismissed is called in the responder chain.
 ///
-/// It also owns Escape, for the reason the click on the dim exists: a scrim asks to be dismissed, and
-/// `cancelOperation` is the responder chain's name for that.
+/// **Both ways down answer even when there is nobody to ask**, skipping the teardown rather than the
+/// way out. `PRINCIPLES.md` §4 is the rule and `tearDownOrphans()` is the answer.
 @MainActor
-final class KeyableWindow: NSWindow {
-    var onCancel: (@MainActor () -> Void)?
+final class ScrimWindow: NSWindow {
+    var onCancel: (@MainActor () -> Bool)?
+    /// Only the display holding the pointer carries the controls, and only that one may take the
+    /// keyboard: a key window on another screen would put the focus ring somewhere nobody is looking.
+    var takesKey = false
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeKey: Bool { takesKey }
+    override var canBecomeMain: Bool { takesKey }
 
     override func cancelOperation(_ sender: Any?) {
-        onCancel?()
+        if onCancel?() != true { Self.tearDownOrphans() }
+    }
+
+    /// Every scrim on the screen, straight off it — the whole composition and not the one window that
+    /// was pressed on, because the scrims are one thing to whoever is looking at them and a display
+    /// that keeps its dim has nothing left to press.
+    static func tearDownOrphans() {
+        for window in NSApp.windows.compactMap({ $0 as? ScrimWindow }) { window.orderOut(nil) }
     }
 }

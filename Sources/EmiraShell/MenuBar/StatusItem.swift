@@ -171,8 +171,9 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
     private var model: StatusModel
     /// The file the daemon actually loaded, which `$EMIRA_CONFIG` may have moved.
     private let configPath: String
-    /// The settings window while it is up. Held so a second `⌘,` raises nothing rather than opening a
-    /// second scrim over the first, and cleared by its own close.
+    /// The settings window while it is up: a second `⌘,` raises nothing, and the file watcher has
+    /// something to tell. **Not an owner** — the composition owns itself and clears this from its own
+    /// close, so letting go here would orphan the scrims rather than take them down.
     private var settings: SettingsWindow?
 
     public init(model: StatusModel = StatusModel(), configPath: String = Config.defaultPath()) {
@@ -305,12 +306,16 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         guard settings == nil else { return }
         do {
             try ConfigFile.create(at: configPath)
-            settings = try SettingsWindow.open(text: currentText()) { [weak self] outcome in
-                guard let self else { return }
-                if case .save(let rendered, let basedOn) = outcome { save(rendered, basedOn: basedOn) }
-                settings = nil
-                onSettingsVisible?(false)
-            }
+            settings = try SettingsWindow.open(
+                text: currentText(),
+                onSave: { [weak self] rendered, basedOn in
+                    self?.save(rendered, basedOn: basedOn)
+                },
+                onClose: { [weak self] in
+                    guard let self else { return }
+                    settings = nil
+                    onSettingsVisible?(false)
+                })
             onSettingsVisible?(true)
         } catch {
             onError?("settings: \(error.localizedDescription)")

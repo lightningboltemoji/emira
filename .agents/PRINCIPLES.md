@@ -173,6 +173,12 @@ happen on.
   group one table from the next are the author's work. A file it cannot parse does not open it at all — the
   menu says so and the file is one click away — because splicing text whose meaning is unknown is the one
   thing a GUI must not do, and a config that will not parse is the one most worth editing by hand.
+- **A surface that covers the desktop comes off it, whatever else has failed.** The settings window dims
+  every display and suspends the chords, so Escape and a double click on the dim are the whole of the way
+  back to the machine, and both are unconditional. The composition is alive because it is _on screen_ rather
+  than because somebody is holding it, and a dismissal that finds nothing listening takes the scrims off the
+  screen itself — losing the teardown rather than the desktop. Saving is not a way out: it writes the file
+  and the window stays up, so a save that read as a close would leave a dim nobody owns.
 - **What the file can hold, the window can reach — or the omission is written down.** Three surfaces are
   not settings the schema can tabulate; they are still on a list (`ConfigSchema.bespoke`), and a surface
   with no editor names the reason it has none. A config the GUI silently cannot see is a config the GUI is

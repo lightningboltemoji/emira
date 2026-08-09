@@ -986,9 +986,11 @@ what TCC records against) and why `GrantRow.refreshed()` is monotonic. And a gra
 only half a grant, so onboarding ends in a deliberate restart rather than proceeding.
 
 **The settings window is a target of its own, and the shell only raises it.** `EmiraSettings` sees the config
-and the geometry; `ImportFenceTests` is what makes that a fact (§3). Three things cross the boundary, all from
-the shell: it hands over the file's text, it is handed back text to write, and it tells the window when the file
-changed underneath it.
+and the geometry; `ImportFenceTests` is what makes that a fact (§3). Four things cross the boundary: the shell
+hands over the file's text, it is handed back text to write, it tells the window when the file changed
+underneath it, and it is told when the composition has come off the screen. **Text to write and the window
+closing are two crossings and not one**, because a caller told the window is gone is entitled to let go of it,
+and a save leaves the window up.
 
 - **The composition.** A scrim over **every** display — `NSVisualEffectView` at `.hudWindow` with
   `blendingMode = .behindWindow`, dimmed, at `CGShieldingWindowLevel() − 1` so it covers the menu bar and the
@@ -1134,6 +1136,16 @@ changed underneath it.
   properties and the difference is dismissal: the mock is what the user is looking at, so a click on it must
   not be a click on the blur behind it. Dismissing is Escape, or a **double** click on the blur; a single one
   is too easy to spend by accident on a window covering every display, and what it costs is an edit.
+- **The composition owns itself while it is on screen**, from the scrims being ordered in to `close()`. The
+  reference the shell keeps is for *talking* to the window — a second `⌘,`, a file that changed — and
+  `dismiss()` is what ends one, since a release cannot. What that rules out is not a leak: AppKit owns a
+  window that is ordered in, so a dropped last reference leaves every display dim with each callback into a
+  `nil weak self` behind it, answering neither Escape nor a click, and the chords resumed because the shell
+  was told it had gone. Beneath that, the two ways down answer even when there is nobody to ask:
+  `ScrimWindow.tearDownOrphans()` takes the scrims off the screen, and it is every scrim rather than the one
+  that was pressed on because they are one thing to whoever is looking at them. `close()` is one-way for the
+  same reason the count is two — a quadruple click is three dismissals — and `DismissalTests` holds both the
+  threshold and the answer of last resort.
 
 ---
 
