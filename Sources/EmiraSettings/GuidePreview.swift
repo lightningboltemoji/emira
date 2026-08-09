@@ -15,8 +15,17 @@ import EmiraCore
 /// One frame of the guide on the mock desktop. Panel in true screen points; everything inside it in
 /// panel-local guide points, which is `GuideLayout`'s own convention.
 public struct GuidePreview: Sendable, Equatable {
+
+    /// One tile, and **which window it is** — because `guide.style` is a choice about what a tile
+    /// *draws*, and `preview` draws that window's own still. Without the id the two rungs would be one
+    /// picture.
+    public struct Tile: Sendable, Equatable {
+        public let id: WindowId
+        public let rect: Rect
+    }
+
     public let panel: Rect
-    public let tiles: [Rect]
+    public let tiles: [Tile]
     public let viewport: Rect
     public let ring: Rect?
 
@@ -35,9 +44,17 @@ public struct GuidePreview: Sendable, Equatable {
                                                      strip: strip) else { return nil }
         return GuidePreview(
             panel: projection.panel,
-            tiles: frames.keys.sorted().compactMap { frames[$0].map(projection.project) },
+            tiles: frames.keys.sorted().compactMap { id in
+                frames[id].map { Tile(id: id, rect: projection.project($0)) }
+            },
             viewport: projection.project(Rect(x: workingArea.minX + scrollOffset, y: workingArea.minY,
                                               width: workingArea.width, height: workingArea.height)),
             ring: frames[focus].map(projection.project))
+    }
+
+    /// The same guide with its panel somewhere else — what the movement spring produces while
+    /// `guide.position` is being changed and the ribbon is gliding across the desktop.
+    public func on(panel moved: Rect) -> GuidePreview {
+        GuidePreview(panel: moved, tiles: tiles, viewport: viewport, ring: ring)
     }
 }

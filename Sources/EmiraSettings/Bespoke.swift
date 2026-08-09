@@ -23,7 +23,7 @@ enum BespokeEditors {
         let editor: any PanelRow
         switch surface.key {
         case "layout.outer-gap":
-            editor = OuterGapsControl(surface: surface, onChange: onChange)
+            editor = OuterGapsControl(surface: surface, onChange: onChange, onHover: onHover)
         default:
             // Unreachable while `BespokeTests` passes: a surface with neither an editor nor a reason
             // fails there rather than opening on a blank row here.
@@ -77,7 +77,12 @@ final class OuterGapsControl: PanelRow {
     private let fields: [NSTextField]
     private let onChange: @MainActor (Draft.Edit) -> Void
 
-    init(surface: Bespoke, onChange: @escaping @MainActor (Draft.Edit) -> Void) {
+    /// The key one edge is spelled by — what a take is looked up under, for hovering and for editing
+    /// alike, so the mock marks the same edge either way.
+    static func key(ofSide name: String) -> String { "layout.outer-gap-\(name)" }
+
+    init(surface: Bespoke, onChange: @escaping @MainActor (Draft.Edit) -> Void,
+         onHover: @escaping @MainActor (String) -> Void = { _ in }) {
         self.key = surface.key
         self.onChange = onChange
 
@@ -100,9 +105,23 @@ final class OuterGapsControl: PanelRow {
             field.widthAnchor.constraint(equalToConstant: 44).isActive = true
             fields.append(field)
 
-            let cell = NSStackView(views: [label, field])
-            cell.orientation = .horizontal
-            cell.spacing = 3
+            let pair = NSStackView(views: [label, field])
+            pair.orientation = .horizontal
+            pair.spacing = 3
+            pair.translatesAutoresizingMaskIntoConstraints = false
+
+            // **Each edge reports its own hover**, which is what lets the mock mark the one under the
+            // hand. Four numbers on one row is the right editor and the wrong pointer target, so the
+            // target is put back a level down rather than the row being split into four.
+            let cell = RowView()
+            cell.addSubview(pair)
+            NSLayoutConstraint.activate([
+                pair.leadingAnchor.constraint(equalTo: cell.leadingAnchor),
+                pair.trailingAnchor.constraint(equalTo: cell.trailingAnchor),
+                pair.topAnchor.constraint(equalTo: cell.topAnchor),
+                pair.bottomAnchor.constraint(equalTo: cell.bottomAnchor),
+            ])
+            cell.onHover = { onHover(Self.key(ofSide: name)) }
             cells.append(cell)
         }
 
@@ -134,7 +153,7 @@ final class OuterGapsControl: PanelRow {
     /// file from filling up with lines that repeat the base.
     @objc private func typed(_ sender: NSTextField) {
         guard let index = fields.firstIndex(of: sender) else { return }
-        let key = "layout.outer-gap-\(Self.sides[index].name)"
+        let key = Self.key(ofSide: Self.sides[index].name)
         let text = sender.stringValue.trimmingCharacters(in: .whitespaces)
         // Handed over as text when it is not a number, so the schema refuses it in its own words —
         // `NumberControl`'s rule, and for its reason.

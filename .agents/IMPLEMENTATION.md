@@ -1016,6 +1016,80 @@ changed underneath it.
   script is for behaviour — `focus right` has to happen for `focus.system-events` to mean anything. Several
   takes share one scene, so crossing between two settings in a section costs nothing at all. `Catalog` maps
   setting → take, and every schema entry must have one or be named on `notDemonstrable` with a reason.
+  **The draft is an input to the catalog**, because a script's shape can be the value: a ladder take walks
+  one beat per rung, so three widths typed is three beats and five is five, and a spring dial's loop is
+  paced by the spring being edited (`Take.paced(by:)` over §8's own settle arithmetic). And a take
+  answering `nil` means **hold the stage**, never cut to the section — a row with no picture must leave
+  the setting above it on screen rather than tearing the mock away from it.
+- **A setting that fires on an event is asked on the event, never held as an invariant.**
+  `mouse.follows-focus` sends the pointer *when focus moves* — one `CGWarpMouseCursorPosition` — so
+  `PreviewModel` asks it where focus has just changed and parks the cursor there. Asked every frame
+  instead it stops being that setting and becomes "the cursor is always in the middle of the focused
+  window", which pins the hand through every take that carries one: a scripted travel never appears to
+  move, and a script walking a cursor to a window's *edge* holds it at that window's centre until
+  something else takes the pointer over. The same reading applies to the fold itself — focus answering a
+  hover is folded at every beat and not only at the end, because a command back to the window a hover
+  already left is a focus change, and one the fold cannot see is a pointer that is never sent after it.
+- **A script says what happened; the draft says what it did.** A beat asks for a cursor to be hidden, an
+  event to be honoured, a swipe to carry, a tick to be drawn, a column to grow by a third of a screen —
+  and `mouse.hide`, `focus.system-events`, `mouse.trackpad-scroll`, `layout.resize-detent` and the geometry
+  decide. That split is what makes a rung whose answer is "nothing moves" a *refusal* rather than a preview
+  that has stopped working, and it is why `Cue` has two states. It is also why a take may stage its own
+  premise where a value the *user* owns would otherwise decide what the demonstration shows: a detent is a
+  distance to the screen's edge, so `Scenes.detentPair` spends explicit widths rather than the draft's
+  ladder, and the first press completes and the second catches whatever `width-presets` says.
+- **The cue names the cause as a command**, spelled the way `[keys]` spells one — `focus right`, not
+  `⌥L`. A chord is a fact about one user's keyboard and unreadable to anyone who has not bound it; the
+  verb is what the beat is about, and it is text the reader can go and type. The exception is
+  `focus.system-events`, whose whole subject is focus emira did *not* cause: there is no command to name,
+  so it keeps `⌘⇥`, and the badge reading a foreign chord is itself the distinction. The spelling is held
+  as a `String` because the import fence keeps `Command` out of `EmiraSettings` — `CueTests` parses every
+  one back and checks it re-emits unchanged, which is where the two vocabularies are pinned together.
+- **Three house rules are load-bearing in code**, and the comments that cite them say so by name.
+  **Two motion vocabularies, never mixed** is why the camera has its own fixed curve in `CameraTravel`
+  and the desktop has the draft's springs in `PreviewMotion`; a sludgy `movement.stiffness` must not be
+  able to hide behind an equally sludgy lens. **A hand is not a spring** is `PreviewState.travel`:
+  direct manipulation is modelled as a linear tween the view draws exactly, a warp is a jump because
+  `CGWarpMouseCursorPosition` is one, and only machine motion springs. The rule is about the hand as an
+  *input* — `scrub` and `dragEdge` track it 1:1 with nothing in between, and must. A hand being
+  **animated** is the opposite case and takes `PreviewModel.reach`, the minimum-jerk profile a person
+  reaching for something actually traces: a scripted cursor at a constant speed sets off and stops dead
+  inside one frame, and what that reads as is a cursor that teleported and then slid. **Legibility is bought with
+  the camera, never with a lie** is why `Camera.frame(containing:display:)` only ever *grows* a subject to
+  the display's aspect, so a shot always contains whole the object the value is measured against — and
+  why nothing on the mock is ever drawn larger than it is. What that object is, is the setting's to say:
+  for a gap it is the two **edges** the number holds apart and not the two windows they belong to, which
+  is what puts both gaps at the same push-in. **Life size is the
+  ceiling**, and `Camera.maximumScale` is where the rule stops being a resolution and becomes arithmetic:
+  no camera may draw one real point as more than one mock point. A gap is a length judged by eye — that
+  *is* the demonstration — so at the cap a 40 pt gap is drawn at 40 points and the number in the field is
+  the thing on the screen. The one framing allowed closer is the guide's own panel, and it is allowed
+  because nothing read at it is a length: `style` is what a tile draws and `span` is how many there are.
+  `guide.gap` is points, and it is framed by `guideCorner`, which keeps the cap.
+- **The camera is a `Rect` inside the monitor's clip**, and a property of the *setting* rather than the
+  section. `Projection.camera` is what `mock(_:)` maps through, so one number carries a push-in through a
+  title bar, a corner radius and a shadow together; the bezel never moves, because a slab that grew would
+  fight `Stage`'s own placement zoom. Crossing from `column-gap` to `window-gap` is then a pan, and the pan
+  is the difference between the two settings: the same shot at the same distance, a right angle apart —
+  the seam *between* two columns, and the seam *inside* one at a window's height centred on it.
+- **The window says two things about the desktop, and both are answerable.** The **ring** is a claim that
+  focus is part of what a setting is about, so `Take.showsFocus` turns it off for the six on the Layout tab
+  that are pure geometry — a gap is the same number whichever window is focused, and a blue border on one
+  of them is a subject the setting does not have for the eye to follow. The **mark** is `Mark.Drawn`, and
+  there are exactly two: the gutter an outer gap holds open, filled, which at `0` collapses to the hairline
+  that makes the row legible before anything is typed; and the flush tick, granted only where a column edge
+  really has landed on a viewport edge. A gutter is drawn as a washed region inside an accent outline, and
+  the wash is **measured**: it lies on the user's own desktop picture, so `Wallpaper.luminance(of:layer:)`
+  samples the strip it covers and it flips black or white — the same question the mock menu bar asks, for
+  the same reason. That is not a second accent; an accent stripe on an accent-coloured wallpaper is a
+  stripe nobody can see.
+- **A pane is one image.** `MockContent` draws a window's whole interior — band, stoplights, the app's icon
+  and a suggestion of the app — in Core Graphics at true-point sizes rasterized at mock scale, and the pane
+  paints that still into whatever rect it now occupies. The still is taken **on arrival and never in
+  flight**, which is what the compositor does with a screenshot and what makes `animation.window` a
+  `contentsGravity` rather than a second mechanism; the 80 ms cross-fade when it is taken again is the app
+  catching up. The guide borrows the same image for `guide.style = preview`, which is the relationship the
+  real guide has with the real cover rather than an imitation of it.
 - **The panel is a fold, and the exception is a list rather than an omission.** Rows come off
   `ConfigSchema.settings` filtered by section; a bespoke surface has no `kind` for `ControlFactory` to switch
   on, so each editor it gets is written — `OuterGapsControl` is the one there is, four edges on one row because
@@ -1041,10 +1115,14 @@ changed underneath it.
 - **The scroll offset is a fold over the beats**, not a function of the final set: `offsetToReveal` is relative
   to where the strip already is, so a take that focuses right twice reveals from the offset the first one left
   — which is what the reducer does, one command at a time.
-- **`PreviewMotion` is `Motion` with the sessions removed** — an `Animator` per quantity and a `RectAnimator`
-  per window, and nothing else. Which spring carries a displacement follows the schema's own sentences: a size
-  that changed is a resize, a pure translation is the viewport's if the viewport moved and the strip's own
-  rearrangement if it did not.
+- **`PreviewMotion` is `Motion` with the sessions removed** — a `RectAnimator` per window and one for the
+  guide's panel, and nothing else. Which spring carries a displacement follows the schema's own sentences: a
+  coast after a trackpad lift is the glide spring, a size that changed is a resize, a pure translation is the
+  viewport's if the viewport moved and the strip's own rearrangement if it did not. **The cursor is not here
+  at all** — `PreviewModel` owns the whole of where one is, because a hand traces its own path and a
+  warp arrives in a single frame, and neither is a spring. `animation.transition` is the *shape* of every
+  arrival rather than its speed, and it governs every take rather than only its own: `snap` changes every
+  frame at once, and `off` holds each window at its old frame for a fixed stagger and then jumps it.
 - **Save writes the file and hot reload does the rest.** No route pushes a draft to the running daemon, so the
   preview and the desktop cannot hold different opinions. The write is checked against what is on disk first,
   because a comment-only edit changes the file without changing the `Config` the loader reports.
@@ -1216,8 +1294,10 @@ emira/
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
     ├── EmiraSettings/   Draft · Scene · Take · Catalog · PreviewModel · PreviewMotion (pure)
-    │                    Projection (the one number) · Wallpaper · GuidePreview
-    │                    SettingsWindow (the scrim) · Stage · DesktopView · MockMenuBar · MockIcons
+    │                    Camera (the lens + the marks) · Cue (the input badge) · GuidePreview
+    │                    Projection (the one number) · Wallpaper
+    │                    SettingsWindow (the scrim) · Stage · DesktopView · MockContent · CueLayer
+    │                    MockMenuBar · MockIcons
     │                    ControlSlab (+ ScrollFade) · Controls · Bespoke · PreviewClock
     │                    SettingsStyle · Environment
     ├── EmiraShell/      Runtime · Executor · WindowRegistry · WorldWatcher · Teardown
@@ -1290,7 +1370,13 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
 - **`EmiraSettingsTests`** — the draft (an edit as text, unset-on-default, a refusal that does not land), the
   preview's geometry against `Layout`'s own, a take's arrangement at a given `t`, which spring drives which
-  quantity, the wallpaper's luminance under the menu bar, the guide preview's panel, and the three claims that
+  quantity, the wallpaper's luminance under the menu bar, the guide preview's panel, and — for each take that
+  is a *demonstration* rather than geometry — the assertion the setting turns on: that the focus ring
+  transfers on the frame the cursor crosses the seam, that the three `system-events` rungs answer three
+  different patterns of taken and declined, that a magnet settles flush and `free` plainly does not, that a
+  detent catches on the second growth and lets the third past, that a drag's neighbours do not move and the
+  last 500 ms are opposite between the two rungs, that `snap`, `smooth` and `off` are three different
+  pictures, and that the guide is raised by motion and lowered by `duration`. Plus the three claims that
   are really about the schema: every setting builds a control, every setting is demonstrated by a take or named
   on `Catalog.notDemonstrable`, and every bespoke surface builds an editor or is named on
   `BespokeEditors.notEditable`. `BespokeTests` also drives the outer-gap editor end to end — a side that

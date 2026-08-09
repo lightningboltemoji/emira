@@ -51,23 +51,33 @@ struct Wallpaper {
         }
     }
 
-    /// The average relative luminance of the strip `band` points tall across the top of a layer `size`
-    /// points — the region a menu bar would sit over. `0` is black, `1` is white.
+    /// The average relative luminance of `region` — a rect in the coordinates of a layer `size` points
+    /// with its origin at the layer's **top** left, which is how `CGImage.cropping(to:)` measures.
+    /// `0` is black, `1` is white.
     ///
     /// Rec. 709 coefficients, on the sRGB values as stored: the exact gamma treatment would move the
     /// number by less than the gap between "clearly light" and "clearly dark", which is the only
     /// distinction drawn from it.
-    func luminanceUnderMenuBar(layer size: CGSize, band: CGFloat) -> Double {
-        guard let image, band > 0, size.width > 0, size.height > 0 else {
+    ///
+    /// **Two things ask.** The menu bar flips between black and white on it, as macOS's own does; and
+    /// the gutter band buys its contrast the same way, because it lies on the user's own picture and an
+    /// accent-coloured stripe is invisible on an accent-coloured desktop.
+    func luminance(of region: CGRect, layer size: CGSize) -> Double {
+        guard let image, region.width > 0, region.height > 0, size.width > 0, size.height > 0 else {
             return Self.luminance(of: fill)
         }
-        let strip = CGRect(x: 0, y: 0, width: size.width, height: band)
-        guard let source = sourceRect(for: strip, layer: size, image: image),
+        guard let source = sourceRect(for: region, layer: size, image: image),
               let cropped = image.cropping(to: source),
               let sampled = Self.average(of: cropped) else {
             return Self.luminance(of: fill)
         }
         return sampled
+    }
+
+    /// The strip `band` points tall across the top of a layer `size` points — the region a menu bar
+    /// would sit over.
+    func luminanceUnderMenuBar(layer size: CGSize, band: CGFloat) -> Double {
+        luminance(of: CGRect(x: 0, y: 0, width: size.width, height: band), layer: size)
     }
 
     /// The region of `image`, in its own pixels, that is drawn into `destination` — a rect in layer

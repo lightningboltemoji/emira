@@ -11,7 +11,7 @@ import EmiraMotion
     /// Most of this suite is about the spring machinery rather than about which spring drives what, so
     /// it runs one spring everywhere and `theRightSpringDrivesEachQuantity` covers the split.
     static func uniform(_ spring: SpringParams) -> PreviewSprings {
-        PreviewSprings(scroll: spring, resize: spring, movement: spring)
+        PreviewSprings(scroll: spring, resize: spring, movement: spring, glide: spring)
     }
 
     static let workingArea = PreviewModelTests.workingArea
@@ -142,7 +142,8 @@ import EmiraMotion
 
     static let split = PreviewSprings(scroll: SpringParams(stiffness: 111, dampingRatio: 1),
                                       resize: SpringParams(stiffness: 222, dampingRatio: 1),
-                                      movement: SpringParams(stiffness: 333, dampingRatio: 1))
+                                      movement: SpringParams(stiffness: 333, dampingRatio: 1),
+                                      glide: SpringParams(stiffness: 444, dampingRatio: 1))
 
     static func played(_ take: Take, from: Double, to: Double,
                        config: Config = Config()) -> PreviewMotion {
@@ -200,25 +201,59 @@ import EmiraMotion
                                   config: config, workingArea: workingArea)
     }
 
-    @Test func thePointerTravelsOnFocusAndStaysPutWhenItIsOff() throws {
-        let left = Self.pointerState(follows: .force, focus: WindowId(21))
-        let right = Self.pointerState(follows: .force, focus: WindowId(22))
-        #expect(try #require(left.pointer).x != #require(right.pointer).x)
-
-        // Off is the demonstration: focus moves and the pointer does not.
-        let offLeft = Self.pointerState(follows: .off, focus: WindowId(21))
-        let offRight = Self.pointerState(follows: .off, focus: WindowId(22))
-        #expect(offLeft.pointer == offRight.pointer)
+    /// A focus change, scripted — **the only thing a warp answers**. A set at rest has no focus change
+    /// in it, and a cursor recentred on a set that is merely *sitting* focused somewhere is the setting
+    /// misread as "the pointer is always in the middle of the focused window".
+    static func warping(_ follows: MouseFollowsFocus, at t: Double) -> PreviewState {
+        var config = Config()
+        config.mouseFollowsFocus = follows
+        let take = Take(scene: Scenes.twoColumns,
+                        beats: [(0.5, .focus(WindowId(22)))], period: 3)
+        return PreviewModel.state(of: take, at: t, config: config, workingArea: workingArea)
     }
 
-    @Test func hidingThePointerLeavesItWhereItIsAndStopsDrawingIt() throws {
-        let shown = Self.pointerState(follows: .force, focus: WindowId(22))
-        let hidden = Self.pointerState(follows: .force, focus: WindowId(22), hides: true)
+    @Test func thePointerTravelsOnFocusAndStaysPutWhenItIsOff() throws {
+        let before = try #require(Self.warping(.force, at: 0.2).pointer)
+        let after = try #require(Self.warping(.force, at: 1.0).pointer)
+        #expect(before.x != after.x)
 
+        // Off is the demonstration: focus moves and the pointer does not.
+        #expect(try #require(Self.warping(.off, at: 0.2).pointer)
+                    == #require(Self.warping(.off, at: 1.0).pointer))
+    }
+
+    @Test func aSetAtRestIsNotAFocusChange() throws {
+        // Two sets differing only in *where focus already is* owe the pointer nothing: nothing has
+        // moved, so nothing warps. Applied as an invariant instead, `follows-focus` pins the cursor to
+        // the focused window through every take that carries one — including a hand on a resize handle.
+        let left = Self.pointerState(follows: .force, focus: WindowId(21))
+        let right = Self.pointerState(follows: .force, focus: WindowId(22))
+        #expect(left.pointer == right.pointer)
+    }
+
+    @Test func aCursorNeverDrawnIsNotACursorBeingHidden() throws {
+        // `mouse.hide` takes the cursor away **on an event** and gives it back on the next movement, so
+        // the script asks and the draft decides. A set that simply never drew one would be showing the
+        // setting's *absence*; with nothing having asked, turning it on changes nothing at all.
+        let shown = Self.pointerState(follows: .force, focus: WindowId(22))
+        let on = Self.pointerState(follows: .force, focus: WindowId(22), hides: true)
         #expect(shown.isPointerShown)
-        #expect(!hidden.isPointerShown)
+        #expect(on.isPointerShown)
         // `hide` is about drawing, not about following — the two settings must stay separable.
-        #expect(shown.pointer == hidden.pointer)
+        #expect(shown.pointer == on.pointer)
+    }
+
+    @Test func askingForTheCursorToGoIsOnlyGrantedWhenTheSettingIsOn() throws {
+        let asked = Scenes.barePointer.moving { $0.isHidden = true }
+        var off = Config()
+        off.hidesCursor = false
+        var on = Config()
+        on.hidesCursor = true
+
+        #expect(PreviewModel.state(of: asked, config: off,
+                                   workingArea: Self.workingArea).isPointerShown)
+        #expect(!PreviewModel.state(of: asked, config: on,
+                                    workingArea: Self.workingArea).isPointerShown)
     }
 
     @Test func aSetWithNoPointerHasNone() {
@@ -229,20 +264,19 @@ import EmiraMotion
         #expect(state.pointer == nil)
     }
 
-    @Test func thePointerSpringsToItsNewPlaceRatherThanJumping() throws {
+    @Test func aWarpIsAJumpAndTheSpringsKnowNothingAboutIt() throws {
+        // The real `follows-focus` is one `CGWarpMouseCursorPosition`, which is a *jump*. So the cursor
+        // is `PreviewModel`'s from end to end — a hand tracks its own path linearly and a warp arrives
+        // in a frame, and neither is a spring.
         var motion = PreviewMotion()
-        motion.snap(to: Self.pointerState(follows: .force, focus: WindowId(21)))
-        let after = Self.pointerState(follows: .force, focus: WindowId(22))
+        motion.snap(to: Self.warping(.force, at: 0.2))
+        let after = Self.warping(.force, at: 1.0)
         motion.retarget(to: after, springs: Self.uniform(.smooth))
 
-        // The first frame is still where it was.
-        let start = try #require(Self.pointerState(follows: .force, focus: WindowId(21)).pointer)
-        let drawn = try #require(motion.pointer(of: after))
-        #expect(abs(drawn.x - start.x) < 1e-9)
-
-        #expect(!motion.isSettled())
-        for _ in 0..<600 { motion.advance(by: 1.0 / 120.0) }
+        // Nothing is in flight on the pointer's account: the two states place the same windows.
         #expect(motion.isSettled())
-        #expect(abs(try #require(motion.pointer(of: after)).x - #require(after.pointer).x) < 0.5)
+        let landed = try #require(after.pointer)
+        let target = try #require(after.frames[WindowId(22)])
+        #expect(abs(landed.x - target.center.x) < 0.5)
     }
 }

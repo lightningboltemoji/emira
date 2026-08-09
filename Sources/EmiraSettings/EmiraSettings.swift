@@ -1,5 +1,5 @@
 // The graphical settings window: a scrim over every display, the user's own desktop drawn small and
-// floating above it, and the controls floating beside that. See `PLAN.md` while this is being built.
+// floating above it, and the controls floating beside that.
 //
 // **The boundary, and it is the reason this is a target rather than a folder.** This module may read
 // `Config` and call `Layout`, `Strip` and `LayoutMetrics`. It may not name `Engine`, `State`, `Event`,

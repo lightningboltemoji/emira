@@ -524,7 +524,7 @@ public enum ConfigSchema {
                 section: .layout),
 
         Setting("layout.interactive-resize", \.interactiveResize, .toggle,
-                label: "Adopt a hand resize",
+                label: "Interactive resize",
                 help: "Keep the size a window is left at when resized by its own handle.",
                 section: .layout),
 

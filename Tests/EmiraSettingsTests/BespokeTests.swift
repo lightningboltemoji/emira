@@ -149,7 +149,7 @@ import EmiraCore
                                        workingArea: area)
         #expect(after.frames != before.frames)
 
-        let take = try #require(Catalog.take(for: "layout.outer-gap"))
+        let take = try #require(Catalog.take(for: "layout.outer-gap", config: Config()))
         #expect(take.isStatic, "geometry needs no script")
         #expect(take.scene == Scenes.threeColumns)
     }

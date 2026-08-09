@@ -33,10 +33,11 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
 
     private var draft: Draft
     private var take: Take
-    /// The section on screen — what a row falls back to when what it names has no take of its own,
-    /// which is every setting on `Catalog.notDemonstrable` and every bespoke surface.
-    private var section: Setting.Section = .layout
     private var motion = PreviewMotion()
+    /// The camera, travelling on the window's own fixed curve. **Deliberately not in `PreviewMotion`**:
+    /// the desktop moves on the user's springs and the furniture moves on ours, and mixing the two is
+    /// what would let a sludgy `movement.stiffness` hide behind an equally sludgy lens.
+    private var camera: CameraTravel
     private var projection: Projection
 
     /// Seconds into the take. Advanced by the clock, and held still while a control is being dragged so
@@ -66,10 +67,12 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         self.draft = try Draft(text)
         self.onClose = onClose
         let screen = Self.screenUnderPointer()
-        self.projection = Projection(screen: screen,
-                                     mockWidth: Double(screen.frame.width)
-                                         * SettingsStyle.mockWidthFraction)
-        // P2 drives one setting. The section's set is what it plays over, which is a static take.
+        let projection = Projection(screen: screen,
+                                    mockWidth: Double(screen.frame.width)
+                                        * SettingsStyle.mockWidthFraction)
+        self.projection = projection
+        self.camera = CameraTravel(projection.displayFrame)
+        // The section's set is what the window opens on, which is a static take.
         self.take = Catalog.take(for: .layout)
         super.init()
     }
@@ -200,25 +203,35 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
     /// A tab was picked. The section's set goes up at once — no dwell, since the panel under the
     /// pointer changed wholesale.
     private func sectionChanged(to section: Setting.Section) {
-        self.section = section
         play(Catalog.take(for: section))
     }
 
     /// The pointer entered a row, which named the setting or the surface under it. Held for
     /// `hoverDwell` before it counts, and superseded by anything the pointer reaches in the meantime.
+    ///
+    /// **A row with nothing to show holds the stage.** `Catalog` answering `nil` means "leave whatever
+    /// is playing alone" rather than "fall back to the section": crossing `hold-timeout` on the way down
+    /// the panel must not tear the mock away from the setting above it, which the user would read as
+    /// that setting having no picture either.
     private func hovered(_ key: String) {
         hoverGeneration &+= 1
         let mine = hoverGeneration
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverDwell) { [weak self] in
-            guard let self, hoverGeneration == mine else { return }
-            play(Catalog.take(for: key) ?? Catalog.take(for: section))
+            guard let self, hoverGeneration == mine,
+                  let take = Catalog.take(for: key, config: draft.config) else { return }
+            play(take)
         }
     }
 
+    /// **An edit restarts the take it edited.** A ladder is walked one beat per rung, so committing a
+    /// new list must play the new ladder from the top rather than resuming three rungs into a script
+    /// that no longer exists.
     private func edit(_ edit: Draft.Edit) {
-        // No dwell: you touched it, you meant it.
-        play(Catalog.take(for: edit.key) ?? Catalog.take(for: section))
         draft.apply(edit)
+        // No dwell: you touched it, you meant it. And a setting with no picture still holds the stage.
+        // Looked up **after** the edit has landed, because the draft is an input to the catalog: a
+        // fourth width typed has to walk a four-rung ladder, not the three that were there before.
+        if let take = Catalog.take(for: edit.key, config: draft.config) { play(take, restarting: true) }
         // The draft is the authority: every control re-reads it, so a refused edit shows the file's
         // value rather than the one that was typed.
         stage?.slab.show(draft)
@@ -281,8 +294,8 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
     /// the draft's own springs, so every hover is itself a small demonstration of the animation
     /// settings. The same take again is left alone — restarting its loop would be a jump nobody asked
     /// for, and it is what makes crossing between two settings that share a set cost nothing.
-    private func play(_ take: Take) {
-        guard take != self.take else { return }
+    private func play(_ take: Take, restarting: Bool = false) {
+        guard take != self.take || restarting else { return }
         self.take = take
         elapsed = 0
         renderNow(settle: false)
@@ -295,8 +308,11 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
                                        config: draft.config, workingArea: projection.workingArea)
         if settle || !animates {
             motion.snap(to: state)
+            camera.snap(to: framing(of: state))
         } else {
-            motion.retarget(to: state, springs: PreviewSprings(draft.config))
+            motion.retarget(to: state, springs: PreviewSprings(draft.config),
+                            mode: draft.config.transitionMode, head: state.head)
+            camera.retarget(to: framing(of: state))
         }
         draw(state)
         syncClock()
@@ -312,21 +328,40 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         // idempotent when nothing moved — every delta is zero and no animator is touched — so the
         // ordinary frame costs a comparison and the beat costs a spring, with no flag between them.
         if animates {
-            motion.retarget(to: state, springs: PreviewSprings(draft.config))
+            // **`animation.transition` governs every take, not only its own.** It is what the desktop
+            // will do once saved, so a preview that exempted itself would be showing a different
+            // machine — the same discipline the springs keep.
+            motion.retarget(to: state, springs: PreviewSprings(draft.config),
+                            mode: draft.config.transitionMode, head: state.head)
+            camera.retarget(to: framing(of: state))
         } else {
             motion.snap(to: state)
+            camera.snap(to: framing(of: state))
         }
         motion.advance(by: dt)
         motion.prune()
+        camera.advance(by: dt)
 
         draw(state)
         syncClock()
     }
 
+    /// Where the take wants the camera, resolved against this display. Off the **layout's** frames and
+    /// not the animated ones: the lens travels to where the desktop is going, so the two arrive
+    /// together rather than the camera chasing the strip.
+    private func framing(of state: PreviewState) -> Rect {
+        state.camera.frame(of: state, in: projection)
+    }
+
     private func draw(_ state: PreviewState) {
         stage?.desktop.render(scene: state.scene, frames: motion.frames(of: state),
-                              pointer: motion.pointer(of: state),
-                              showsPointer: state.isPointerShown, guide: state.guide)
+                              targets: state.frames, camera: camera.current,
+                              pointer: state.pointer, cursor: state.scene.pointer,
+                              showsPointer: state.isPointerShown,
+                              animation: draft.config.windowAnimation, raised: state.raised,
+                              showsFocus: state.showsFocus,
+                              guide: motion.guide(of: state), guideStyle: draft.config.guide.style,
+                              mark: state.mark)
     }
 
     /// **Reduce Motion turns the springs off, not the demonstration.** A take still plays and its beats
@@ -359,6 +394,7 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         let host = Self.screenUnderPointer()
         projection = Projection(screen: host,
                                 mockWidth: Double(host.frame.width) * SettingsStyle.mockWidthFraction)
+        camera = CameraTravel(projection.displayFrame)
         for screen in NSScreen.screens {
             let scrim = makeScrim(on: screen, interactive: screen == host)
             scrims.append(scrim)
@@ -377,7 +413,7 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
     /// The link runs only while there is something to draw — a settled preview on a static take costs
     /// nothing at idle, which is most of a settings window's life.
     private func syncClock() {
-        if take.isStatic && motion.isSettled() {
+        if take.isStatic && motion.isSettled() && camera.isSettled() {
             clock?.stop()
         } else {
             clock?.start()

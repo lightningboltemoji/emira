@@ -1,5 +1,7 @@
+import Foundation
 import EmiraConfig
 import EmiraCore
+import EmiraMotion
 
 // Which take demonstrates which **setting** — the unit is the setting and not the section, because that
 // is the difference between a preview and a demonstration: hovering `center-focused-column` should show
@@ -16,18 +18,27 @@ import EmiraCore
 /// The takes, keyed by setting.
 public enum Catalog {
 
-    /// What `key` demonstrates with, or `nil` for a setting on `notDemonstrable`.
+    /// What `key` demonstrates with under `config`, or `nil` for a setting on `notDemonstrable`.
     ///
-    /// Unknown keys answer `nil` too: the schema is the authority on what settings exist, and a catalog
-    /// that had its own opinion would be a second one. **A bespoke surface's key is known** — it is on
-    /// `ConfigSchema.bespoke` — and answers its section's set, which is right for the one that has an
-    /// editor: outer gaps are geometry, and geometry re-derives with nothing playing.
-    public static func take(for key: String) -> Take? {
+    /// **`nil` means hold the stage, not cut to the section.** A row with nothing to show must leave
+    /// whatever was playing exactly where it is — crossing `hold-timeout` on the way down the panel
+    /// tearing the mock away from the setting above it is the worst thing a preview can do, because the
+    /// user reads it as the setting they just left having no picture either.
+    ///
+    /// **The draft is an input, because a script's shape can be the value.** A ladder take walks one
+    /// beat per rung, so three widths typed is three beats and five is five; nothing else here reads it,
+    /// and a take that hard-coded a beat count would be lying about the number in the field beside it.
+    ///
+    /// Unknown keys answer `nil`: the schema is the authority on what settings exist, and a catalog
+    /// that had its own opinion would be a second one. `scripted` is consulted first, because the four
+    /// edges of `outer-gap` are keys the *file* spells and the schema does not.
+    public static func take(for key: String, config: Config) -> Take? {
+        if let take = scripted(key, config) { return take }
         guard !notDemonstrable.contains(key) else { return nil }
         let section = ConfigSchema.setting(for: key)?.section
             ?? ConfigSchema.bespoke.first { $0.key == key }?.section
         guard let section else { return nil }
-        return byKey[key] ?? self.take(for: section)
+        return self.take(for: section)
     }
 
     /// What a section shows when nothing in it is hovered — the set at rest.
@@ -51,51 +62,133 @@ public enum Catalog {
     /// The settings with no honest picture, and why. A take that mimed one would teach the user
     /// something false, which is worse than a control with only its sentence under it.
     ///
-    /// - `layout.interactive-resize` is a hand on a real window's frame.
-    /// - `animation.hold-timeout` is how long emira waits before giving up on a window it cannot see.
-    /// - `animation.cover` is a policy about what gets captured, not about what moves.
+    /// - `animation.hold-timeout` bounds **the cover**, and a preview has no cover: no truth plane,
+    ///   nothing to place, nothing that can refuse. A take miming one would have to invent both a hung
+    ///   app and a cover to drop, and would be teaching a mechanism the mock does not have.
     public static let notDemonstrable: Set<String> = [
-        "layout.interactive-resize",
         "animation.hold-timeout",
-        "animation.cover",
     ]
 
-    /// The settings whose demonstration is more than their section's set at rest. Everything absent here
-    /// is demonstrated by geometry alone — `PreviewModel` re-derives on every draft change, so a gap
-    /// opens under the hand with nothing playing.
-    static let byKey: [String: Take] = [
-        // Layout — the one setting here that is behaviour rather than geometry: a preset ladder only
-        // means something while a column is climbing it.
-        "layout.width-presets": Scenes.widthCycle,
-        "layout.height-presets": Scenes.widthCycle,
+    /// The settings whose demonstration is more than their section's set at rest. Everything answering
+    /// `nil` here is demonstrated by geometry alone — `PreviewModel` re-derives on every draft change,
+    /// so a gap opens under the hand with nothing playing.
+    private static func scripted(_ key: String, _ config: Config) -> Take? {
+        switch key {
+
+        // The two gaps are the same set seen from two places, and **the pan is the setting**: one frames
+        // the seam *between* two columns, the other the seam *inside* one, both at the same push-in and
+        // a right angle apart. Neither plays a beat — geometry re-derives under the hand.
+        //
+        // **No ring on either**, and that is the second half of the same thought: a gap is the same
+        // number whichever window is focused, so a blue border on one of them is a subject the setting
+        // does not have.
+        case "layout.column-gap":
+            return Take(scene: Scenes.threeColumns, camera: .seams(slack: 0.25), showsFocus: false)
+        case "layout.window-gap":
+            return Take(scene: Scenes.threeColumns, camera: .stackSeam, showsFocus: false)
+
+        // **Outer gaps are wide and stay wide**: the value is measured from the screen's own edges, and
+        // a frame that lost them would lose the setting. The band is the value — at `0` it is a hairline
+        // because the gutter is — and only the edge under the hand is marked, because the row is four
+        // controls and the mock has to say which one. Geometry again, so again no ring.
+        case "layout.outer-gap-top":
+            return Take(scene: Scenes.threeColumns, mark: .outerGap(.top), showsFocus: false)
+        case "layout.outer-gap-left":
+            return Take(scene: Scenes.threeColumns, mark: .outerGap(.left), showsFocus: false)
+        case "layout.outer-gap-bottom":
+            return Take(scene: Scenes.threeColumns, mark: .outerGap(.bottom), showsFocus: false)
+        case "layout.outer-gap-right":
+            return Take(scene: Scenes.threeColumns, mark: .outerGap(.right), showsFocus: false)
+
+        // Where a reveal comes to rest. Three screens of strip, so the column being revealed starts
+        // partly off the right edge: under `off` it slides in and stops flush against that edge, and
+        // under `on` it carries on to the middle. Toggling mid-take retargets the viewport live, which
+        // is the clearest statement the setting can get.
+        case "layout.center-focused-column":
+            return Scenes.strideRight
+
+        // Where a grow comes to rest. Two presses of the same size: the first takes its whole delta, the
+        // second arrives at a quarter of it and stops with the strip flush against the screen's edge —
+        // or, unchecked, carries the neighbour a fifth of a screen off it.
+        case "layout.resize-detent":
+            return Scenes.growDetent
+
+        // A hand on a window's own edge. Off is identical up to the release and opposite for the last
+        // 500 ms, which is precisely the setting.
+        case "layout.interactive-resize":
+            return Scenes.handResize
+
+        // The ladders. A preset list only means something while something is climbing it, and what
+        // climbs is the axis the setting names — a width for `width-presets`, and a **height**, in the
+        // stacked column, for the one that has been showing a width.
+        case "layout.width-presets":
+            return Scenes.widthLadder(config)
+        case "layout.height-presets":
+            return Scenes.heightLadder(config)
 
         // Focus. Travelling across the strip is the only way `focus right` means anything, and
         // `system-events` is about a focus change emira did not cause — so the take goes far enough
         // that the strip has to move to keep up.
-        "focus.system-events": Scenes.focusTravel,
-        "focus.follows-mouse": Scenes.pointerFollows,
+        case "focus.system-events":
+            return Scenes.systemEvents
+        case "focus.follows-mouse":
+            return Scenes.pointerCrosses
 
-        // Mouse. Every one of these plays over the set that carries a pointer; what differs is what the
+        // Mouse. Every one of these plays over a set that carries a pointer; what differs is what the
         // draft does to it, which is `PreviewModel`'s business rather than the script's.
-        "mouse.hide": Scenes.pointerFollows,
-        "mouse.follows-focus": Scenes.pointerFollows,
-        "mouse.trackpad-scroll": Scenes.pointerScroll,
-        "mouse.trackpad-scroll-direction": Scenes.pointerScroll,
+        case "mouse.hide":
+            return Scenes.pointerHides
+        case "mouse.follows-focus":
+            return Scenes.pointerRungs
+        case "mouse.trackpad-scroll", "mouse.trackpad-scroll-direction":
+            return Scenes.trackpadSwipe
 
         // Animation. `transition` and `window` are both about what a move looks like, so both want one
         // happening; the springs each drive the quantity their own help sentence names.
-        "animation.transition": Scenes.focusTravel,
-        "animation.window": Scenes.widthCycle,
+        case "animation.transition":
+            return Scenes.rearrange
+        case "animation.cover":
+            return Scenes.coverTrade
 
-        "animation.scroll.stiffness": Scenes.focusTravel,
-        "animation.scroll.damping-ratio": Scenes.focusTravel,
-        "animation.glide.stiffness": Scenes.focusTravel,
-        "animation.glide.damping-ratio": Scenes.focusTravel,
-        "animation.resize.stiffness": Scenes.widthCycle,
-        "animation.resize.damping-ratio": Scenes.widthCycle,
-        "animation.movement.stiffness": Scenes.widthCycle,
-        "animation.movement.damping-ratio": Scenes.widthCycle,
-    ]
+        // The camera frames the growing column **whole**, which on a tiled desktop is very nearly the
+        // display: a column is full height, and a shot contains the object the value is measured
+        // against. The artifact is big enough at that framing to be the subject.
+        case "animation.window":
+            return Scenes.widthLadder(config).looking(.stack)
+
+        // Each dial gets the motion its own help sentence names, and each is **paced by the spring being
+        // edited** — one complete motion, then a beat of rest, whatever the slider says. A `k = 20`
+        // scroll interrupted by the next beat and a `k = 400` one leaving the desktop still for most of
+        // the loop are the same bug seen from two ends.
+        case "animation.scroll.stiffness", "animation.scroll.damping-ratio":
+            return Scenes.strideRight.paced(by: Scenes.beat(config.scrollSpring, over: 900))
+        case "animation.glide.stiffness", "animation.glide.damping-ratio":
+            return Scenes.trackpadSwipe.paced(by: Scenes.beat(config.glideSpring, over: 400))
+        case "animation.resize.stiffness", "animation.resize.damping-ratio":
+            return Scenes.widthLadder(config).paced(by: Scenes.beat(config.resizeSpring, over: 300))
+        case "animation.movement.stiffness", "animation.movement.damping-ratio":
+            return Scenes.translate.paced(by: Scenes.beat(config.moveSpring, over: 1200))
+
+        // The guide. Six settings over one long set and one motion loop, and what separates them is
+        // **where the camera stands** — which is the whole argument for a framing per setting.
+        case "guide.style", "guide.span":
+            // Close: `style` is a choice about what a tile draws, and `span` about how many of them
+            // there are. Both are unreadable at a couple of points across.
+            return Scenes.guideLife(config, camera: .guidePanel)
+        case "guide.position", "guide.width":
+            // Wide, always. A corner is only a corner against the whole screen, and the width is a
+            // fraction *of the working width* — the screen's own edges are the ruler.
+            return Scenes.guideLife(config)
+        case "guide.gap":
+            return Scenes.guideLife(config, camera: .guideCorner)
+        case "guide.duration":
+            // The only setting in the window whose subject is **time**, so the loop is the value.
+            return Scenes.guideLife(config, camera: .guidePanel)
+
+        default:
+            return nil
+        }
+    }
 }
 
 /// The sets, written once and shared by every take that plays over them. Ids are minted here and are
@@ -125,28 +218,268 @@ public enum Scenes {
         ],
         focus: WindowId(11))
 
-    /// The Layout set with the real guide drawn on it. The Guide section's, and the only set that
-    /// carries one: elsewhere it would be a second thing moving that no setting on screen explains.
+    /// **Eight columns, three screens** — the Guide set, and the only one that carries a guide.
+    ///
+    /// It has to be long. `scale = min(width, 1) / span` shrinks the panel to a short strip, so on a
+    /// set that fits on one screen both `width` and `span` read as broken rather than as settings.
     public static let guided = Scene(
-        columns: threeColumns.columns, focus: threeColumns.focus, hasGuide: true)
+        columns: zip(101..., [MockRole.editor, .browser, .terminal, .chat,
+                              .notes, .music, .editor, .browser]).map {
+            MockColumn(id: ColumnId(UInt64($0.0)), windows: [window(UInt64($0.0), $0.1)],
+                       widthPreset: 1)
+        },
+        focus: WindowId(101),
+        hasGuide: true)
+
+    public static let guidedFirst = WindowId(101)
+
+    /// **The guide's whole life cycle, every few seconds.** A column moves, the guide arrives, it holds
+    /// for `duration`, it goes, and there is a beat of nothing before it happens again — which is what
+    /// the daemon does, and what makes picking `placeholder` from `off` a cause with an effect.
+    ///
+    /// The period is derived from the value, so at `duration = 4` the loop is six seconds rather than
+    /// restarting before the guide has ever gone away.
+    static func guideLife(_ config: Config, camera: Camera = .wide) -> Take {
+        // A beat of nothing before the first motion, so a loop opens on a desktop with no guide on it
+        // and the arrival is something you watch happen rather than something already there.
+        let raise = 0.6
+        let cycle = max(config.guide.duration, 0.3) + 1.1
+        return Take(scene: guided, camera: camera,
+                    beats: [(raise, .focusRight), (raise + cycle, .focus(guidedFirst))],
+                    period: raise + cycle * 2)
+    }
 
     /// Where the four-column take returns to at the end of its loop.
     public static let fourColumnsFirst = WindowId(11)
 
+    /// **Six columns at a half — three screens of content.** The set every take about *where the strip
+    /// comes to rest* plays over, because a reveal is only a reveal when there is something off the
+    /// edge to reveal, and a viewport that already holds everything cannot demonstrate a viewport.
+    ///
+    /// The rung is the user's own second width preset rather than a number written here: the mock
+    /// spends the draft's own ladder, as everything else on it does.
+    public static let longStrip = Scene(
+        columns: zip(31..., [MockRole.editor, .browser, .terminal, .chat, .notes, .music]).map {
+            MockColumn(id: ColumnId(UInt64($0.0)), windows: [window(UInt64($0.0), $0.1)],
+                       widthPreset: 1)
+        },
+        focus: WindowId(31))
+
+    /// Where the long strip's take returns to at the end of its loop.
+    public static let longStripFirst = WindowId(31)
+
+    /// Focus walking three columns up the long strip and travelling home, with a beat of rest on each
+    /// arrival — **the hold is the content**, since what the setting decides is where each reveal
+    /// *lands* and there is nothing to read while the strip is still moving.
+    static let strideRight = Take(
+        scene: longStrip,
+        beats: [(1.0, .focusRight), (2.0, .focusRight), (3.0, .focusRight),
+                (4.2, .focus(longStripFirst))],
+        period: 5.4)
+
     /// Two columns and room for a pointer to travel between them. The Mouse set.
+    ///
+    /// `pointerFocus` is `.always` here, and that is a **premise the take stages**: `mouse.follows-focus`
+    /// has a rung whose whole content is what a *hovered* focus change does to the cursor, and there is
+    /// no honest way to show it without a hover that moves focus. Staged rather than claimed — the
+    /// pointer visibly causes the change on screen.
     public static let twoColumns = Scene(
         columns: [
-            MockColumn(id: ColumnId(21), windows: [window(21, .notes)]),
-            MockColumn(id: ColumnId(22), windows: [window(22, .browser)]),
+            MockColumn(id: ColumnId(21), windows: [window(21, .notes)], widthPreset: 1),
+            MockColumn(id: ColumnId(22), windows: [window(22, .browser)], widthPreset: 1),
         ],
         focus: WindowId(21),
-        hasPointer: true)
+        pointer: MockPointer(at: .window(WindowId(21))),
+        pointerFocus: .always)
 
-    /// A column cycling its width, for the springs that drive a size.
-    static let widthCycle = Take(scene: threeColumns,
-                                 beats: [(0.8, .cycleWidth),
-                                         (1.9, .widthPreset(0, column: ColumnId(2)))],
-                                 period: 3.0)
+    /// How long a scripted travel takes. A hand crossing half a screen, near enough — long enough that
+    /// the crossing is a moment you can see happen rather than a jump.
+    static let handTravel: Double = 0.5
+
+    /// Two columns and a third **partly off the right edge**, with focus answering the pointer exactly
+    /// when the setting says so. The Focus-follows-mouse set.
+    public static let hoverStrip = Scene(
+        columns: [
+            MockColumn(id: ColumnId(41), windows: [window(41, .editor)], widthPreset: 0),
+            MockColumn(id: ColumnId(42), windows: [window(42, .browser)], widthPreset: 0),
+            MockColumn(id: ColumnId(43), windows: [window(43, .terminal)], widthPreset: 1),
+        ],
+        focus: WindowId(41),
+        pointer: MockPointer(at: .window(WindowId(41))),
+        pointerFocus: .whenConfigured)
+
+    /// **The pointer is the actor and focus is what answers it**, which is the direction that separates
+    /// this setting from `mouse.follows-focus`.
+    ///
+    /// The last crossing is the clause that makes emira's version of the setting unlike every other
+    /// window manager's: the third column starts off the right edge, and crossing into it focuses it
+    /// *and scrolls the strip to reveal it*.
+    static let pointerCrosses = Take(
+        scene: hoverStrip,
+        beats: [(1.0, .hover(.window(WindowId(42)), over: handTravel)),
+                (2.4, .hover(.window(WindowId(43)), over: handTravel)),
+                (4.0, .hover(.window(WindowId(41)), over: handTravel))],
+        period: 5.6)
+
+    /// Four rungs, and every one of them gets a picture. **A** — focus moves to a window the pointer is
+    /// not in, which separates `off`. **C** — the pointer crosses a seam and moves focus itself, which
+    /// separates `force`, since only that rung yanks the cursor away from the spot the hand aimed at.
+    /// **B** — focus lands on the window the pointer is already inside, which separates `lazy`.
+    ///
+    /// The order is A, C, B because each needs focus somewhere particular first, and a transit beat is
+    /// another A rather than a wasted one.
+    ///
+    /// **The transit is a warp under three of the four rungs, so the hand walks back before B**, whose
+    /// whole content is focus landing on the window the pointer is *already inside* — a premise the
+    /// take has to establish rather than assume.
+    static let pointerRungs = Take(
+        scene: twoColumns,
+        beats: [(1.1, .focus(WindowId(22))),                                      // A
+                (2.5, .hover(.inside(WindowId(21), x: 0.3, y: 0.72),
+                             over: handTravel)),                                  // C
+                (3.9, .focus(WindowId(22))),                                      // transit — an A
+                (4.7, .pointer(.inside(WindowId(21), x: 0.3, y: 0.72),
+                               over: handTravel)),                                // the hand walks back
+                (5.9, .focus(WindowId(21))),                                      // B
+                (7.2, .pointer(.window(WindowId(21)), over: handTravel))],        // home
+        period: 8.4)
+
+    /// How long one rung of a ladder is held. Long enough to read the new width against the neighbours
+    /// that reflowed under it, short enough that a five-rung ladder is still a loop and not a slideshow.
+    static let rung: Double = 0.9
+
+    /// How long one beat of a spring dial's take should be: the spring's own settle over `distance`,
+    /// plus a beat of rest. **Feel is a calculation, not a taste** — remaining distance under a
+    /// critically damped spring is `D(1 + ωt)e^(−ωt)`, so settle time is `u/ω` where
+    /// `(1 + u)e^(−u) = ε/D`. This is that equation read the other way, and the underdamped case is
+    /// approximated by the same envelope, which is what the tail actually decays under.
+    static func beat(_ spring: SpringParams, over distance: Double) -> Double {
+        let omega = max(spring.naturalFrequency, 1e-6)
+        let epsilon = 0.5
+        let ratio = max(min(epsilon / max(distance, epsilon), 0.9), 1e-9)
+        // `(1 + u)e^(−u) = ratio`, monotone decreasing in `u`, so bisection is exact enough and cannot
+        // wander off the way a Newton step can near the flat end.
+        var low = 0.0, high = 40.0
+        for _ in 0..<60 {
+            let mid = (low + high) / 2
+            if (1 + mid) * exp(-mid) > ratio { low = mid } else { high = mid }
+        }
+        let settle = (low + high) / 2 / (omega * max(spring.dampingRatio, 0.2))
+        // Floored and capped so a dial dragged to an extreme leaves a loop someone can still watch.
+        return min(max(settle + 0.35, 0.5), 2.6)
+    }
+
+    /// The focused column walking **the whole width ladder**, one beat per rung, in the order the field
+    /// spells them and wrapping to the first.
+    ///
+    /// `cycleWidth` rather than a spelled rung, because that is the command the setting is about:
+    /// `PresetCycle` normalizes an unbounded index, so `n` steps land back where they started and the
+    /// return to rung zero is played rather than rewound. The extra rung at the end is the rest beat, so
+    /// the loop shows the first width twice as long as any other.
+    static func widthLadder(_ config: Config) -> Take {
+        let rungs = max(config.widthPresets.count, 1)
+        return Take(scene: threeColumns,
+                    beats: (1...rungs).map { (Double($0) * rung, Beat.cycleWidth) },
+                    period: Double(rungs + 1) * rung)
+    }
+
+    /// The **stacked** column walking the height ladder: the focused window takes each rung in turn
+    /// while its stackmate takes the leftover, so the pair visibly trade the column rather than one of
+    /// them changing in isolation.
+    ///
+    /// The ladder includes the rung the field cannot spell — **auto**, where the two are equal — so the
+    /// loop is `auto → first → … → last → auto`, which is what cycling actually does.
+    static func heightLadder(_ config: Config) -> Take {
+        let rungs = config.heightPresets.count
+        let focus = threeColumns.focus
+        let ladder: [Int?] = (0..<rungs).map { $0 } + [nil]
+        return Take(scene: threeColumns, camera: .stack,
+                    beats: ladder.enumerated().map {
+                        (Double($0.offset + 1) * rung, Beat.heightPreset($0.element, window: focus))
+                    },
+                    period: Double(rungs + 2) * rung)
+    }
+
+    /// Three kinds of target on one set, because the setting is a ladder over exactly three of them:
+    /// a tiled window **on screen**, one parked **off the right edge**, and a **float** over the strip
+    /// that emira does not place. A set without a float cannot say what `ignore` still honours.
+    public static let systemTargets = Scene(
+        columns: [
+            MockColumn(id: ColumnId(61), windows: [window(61, .editor)], widthPreset: 1),
+            MockColumn(id: ColumnId(62), windows: [window(62, .browser)], widthPreset: 1),
+            MockColumn(id: ColumnId(63), windows: [window(63, .terminal)], widthPreset: 1),
+        ],
+        focus: WindowId(61),
+        floats: [MockFloat(window: window(64, .chat),
+                           at: Rect(x: 0.30, y: 0.22, width: 0.30, height: 0.44))])
+
+    /// `⌘⇥` three times, at the three kinds of target — and **each rung answers a different pattern of
+    /// taken and declined across them**, which is the whole of a three-word setting whose desktop looks
+    /// identical in two of them.
+    ///
+    /// **The one cue that stays a chord**, because the setting is about focus emira did *not* cause:
+    /// there is no command to name, and a badge that invented one would claim the opposite of the point.
+    static let systemEvents = Take(
+        scene: systemTargets,
+        beats: [(0.8, .cue(.keys("⌘⇥"))), (0.8, .systemFocus(WindowId(63))),
+                (1.9, .cue(nil)),
+                (2.3, .focus(WindowId(61))),
+                (3.0, .cue(.keys("⌘⇥"))), (3.0, .systemFocus(WindowId(62))),
+                (4.1, .cue(nil)),
+                (4.5, .focus(WindowId(61))),
+                (5.2, .cue(.keys("⌘⇥"))), (5.2, .systemFocus(WindowId(64))),
+                (6.3, .cue(nil)),
+                (6.7, .focus(WindowId(61)))],
+        period: 7.8)
+
+    /// Three columns filling the screen exactly. What a rearrangement needs: every window that moves
+    /// stays on screen, so a strip caught half-arranged is *visibly* half-arranged.
+    public static let threeAcross = Scene(
+        columns: [
+            MockColumn(id: ColumnId(91), windows: [window(91, .editor)]),
+            MockColumn(id: ColumnId(92), windows: [window(92, .browser)]),
+            MockColumn(id: ColumnId(93), windows: [window(93, .terminal)]),
+        ],
+        focus: WindowId(91))
+
+    /// **One motion, big enough that half-arranged is visibly wrong**, with a held frame either side so
+    /// that the *shape* of the change is what differs between the three rungs.
+    ///
+    /// `smooth` glides, `snap` changes in one frame — the held frames are what make an instant cut read
+    /// as atomicity rather than as a dropped animation — and `off` staggers, which is the honest
+    /// picture of what the cover is for.
+    static let rearrange = Take(
+        scene: threeAcross,
+        beats: [(1.2, .cue(.command("move-window right"))), (1.2, .moveColumn(ColumnId(91), to: 2)),
+                (2.1, .cue(nil)),
+                (3.0, .cue(.command("move-window left"))), (3.0, .moveColumn(ColumnId(91), to: 0)),
+                (3.9, .cue(nil))],
+        period: 5.0)
+
+    /// A `move-window` that is **pure translation** — nothing on screen changes size, so the movement
+    /// spring is the only spring in the shot and its dials have nowhere to hide.
+    static let translate = Take(
+        scene: threeAcross,
+        beats: [(1.0, .moveColumn(ColumnId(91), to: 2)),
+                (2.6, .moveColumn(ColumnId(91), to: 0))],
+        period: 4.2)
+
+    /// **The trade `animation.cover` is**: a head latency against a briefly wrong window. The take shows
+    /// the two shapes rather than claiming a duration — `exact` pauses and then moves sharply from the
+    /// first frame; `immediate` moves on the cue and sharpens when the app catches up.
+    ///
+    /// The rearrangement carries a **width change** with it, and it has to: a stale still can only be
+    /// seen to be stale where the rect it is painted into has changed shape, and a pure translation
+    /// paints the same picture into the same size either way.
+    static let coverTrade = Take(
+        scene: threeAcross,
+        beats: [(1.0, .cue(.command("move-window right"))), (1.0, .coverHead),
+                (1.0, .moveColumn(ColumnId(91), to: 2)),
+                (1.0, .widthPreset(2, column: ColumnId(91))),
+                (2.2, .cue(nil)),
+                (3.2, .moveColumn(ColumnId(91), to: 0)),
+                (3.2, .widthPreset(0, column: ColumnId(91)))],
+        period: 5.2)
 
     /// Focus travelling far enough that the strip scrolls under it, for the springs that drive the
     /// viewport.
@@ -155,15 +488,146 @@ public enum Scenes {
                                           (2.4, .focusRight), (3.4, .focus(fourColumnsFirst))],
                                   period: 4.4)
 
-    /// Focus crossing between two windows with a pointer on the set — what `mouse.follows-focus` sends
-    /// the pointer after, and what `mouse.hide` takes away.
-    static let pointerFollows = Take(scene: twoColumns,
-                                     beats: [(1.0, .focusRight), (2.4, .focus(WindowId(21)))],
-                                     period: 3.6)
+    /// Two narrow columns with the right third of the screen left bare, and the pointer parked out on
+    /// it. `mouse.hide`'s set: a cursor disappearing against a plain field is a disappearance, and one
+    /// disappearing over a window is a cursor that might just be somewhere in the furniture.
+    public static let barePointer = Scene(
+        columns: [
+            MockColumn(id: ColumnId(51), windows: [window(51, .notes)], widthPreset: 0),
+            MockColumn(id: ColumnId(52), windows: [window(52, .browser)], widthPreset: 0),
+        ],
+        focus: WindowId(51),
+        pointer: MockPointer(at: .spot(x: 0.86, y: 0.56)))
 
-    /// The strip travelling under a resting pointer — a trackpad scroll is the strip moving, not the
-    /// pointer, and the two settings here decide whether and which way.
-    static let pointerScroll = Take(scene: twoColumns,
-                                    beats: [(1.0, .cycleWidth), (2.2, .widthPreset(0, column: ColumnId(21)))],
-                                    period: 3.4)
+    /// A focus change takes the cursor away, and **the cursor's own movement brings it back** — which is
+    /// the whole of "until the mouse next moves". The motion is the cause and the fade follows it.
+    static let pointerHides = Take(
+        scene: barePointer,
+        beats: [(1.0, .cue(.command("focus right"))), (1.0, .focusRight), (1.0, .hidePointer(true)),
+                (2.1, .cue(nil)),
+                (2.8, .pointer(.spot(x: 0.79, y: 0.51), over: handTravel)),
+                (2.8, .hidePointer(false)),
+                (4.2, .focus(WindowId(51))),
+                (4.2, .pointer(.spot(x: 0.86, y: 0.56), over: handTravel))],
+        period: 5.6)
+
+    /// The long strip with a pointer parked on it that **never moves**: a trackpad scroll moves the
+    /// strip, not the cursor, and a cursor drifting along with it would be the wrong picture entirely.
+    public static let scrolled = Scene(
+        columns: longStrip.columns, focus: longStripFirst,
+        pointer: MockPointer(at: .spot(x: 0.5, y: 0.62)))
+
+    /// The swipe, the lift, and where it comes to rest.
+    ///
+    /// The cue is load-bearing twice over: without a finger direction on screen you can see the strip
+    /// move and not tell which way the hand went, which is the *whole* of `-direction`; and under `off`
+    /// the cue arriving and dimming is the only thing that distinguishes a refusal from a broken loop.
+    ///
+    /// **The resting frame is held a full second**, because the difference between the two live rungs
+    /// is *where it stopped* and there is nothing to read while it is still moving.
+    static let trackpadSwipe = Take(
+        scene: scrolled,
+        beats: [(0.6, .cue(.swipe(.right))),
+                (0.9, .scrub(screens: 1.25, over: 0.8)),
+                (1.7, .lift), (1.7, .cue(nil)),
+                (2.3, .flushMark(.left)),
+                (2.7, .flushMark(nil)),
+                (3.9, .scrub(screens: -1.25, over: 0.7)),
+                (4.6, .lift)],
+        period: 6.0)
+
+    /// Two columns at widths **the take chose rather than the draft's ladder**, leaving a boundary
+    /// exactly one step and a little further off.
+    ///
+    /// The one set on the panel that spends explicit widths, and it has to: a detent is a *distance* to
+    /// the screen's edge, and off a user ladder that distance is anything at all — already zero where
+    /// two presets fill the screen, so the first press is the catch and there is nothing to compare it
+    /// against. An override is also what a `grow` leaves behind, so a take about continuous widths
+    /// starting from one is the same object it is about to produce.
+    public static let detentPair = Scene(
+        columns: [
+            MockColumn(id: ColumnId(71), windows: [window(71, .editor)],
+                       widthOverride: .proportion(0.35)),
+            MockColumn(id: ColumnId(72), windows: [window(72, .browser)],
+                       widthOverride: .proportion(0.27)),
+        ],
+        focus: WindowId(71))
+
+    /// What one press of the detent take asks for, as a percentage of the working width — big enough
+    /// that a press arriving at a quarter of it is a difference nobody has to be told about.
+    ///
+    /// The badge is spelled from the same number, so the words on screen and the width on screen cannot
+    /// drift apart. `Int` because a percentage is written `30%` and not `30.0%`, which is the spelling
+    /// `Command.parse` takes back — `CueTests` checks every cue re-emits unchanged.
+    static let growStep: Double = 30
+    static var growCue: Cue { .command("grow \(Int(growStep))%") }
+
+    /// The grow set with a hand on it — and the narrow column is the one dragged, so the neighbour it
+    /// grows over is still visible standing still. Its own scene rather than the detent's, because a
+    /// cursor on that take would be a second thing moving that no setting on screen explains.
+    ///
+    /// **The hand starts on the handle**, in the shape a handle puts it in. Everything this take is
+    /// about happens along one horizontal line, and the cursor never leaves it.
+    public static let dragPair = Scene(
+        columns: [
+            MockColumn(id: ColumnId(71), windows: [window(71, .editor)], widthPreset: 0),
+            MockColumn(id: ColumnId(72), windows: [window(72, .browser)], widthPreset: 1),
+        ],
+        focus: WindowId(71),
+        pointer: MockPointer(at: .inside(WindowId(71), x: 1, y: PreviewModel.dragGrip),
+                             shape: .resizeEW))
+
+    /// **The right edge is dragged**, and nothing but the dragged window moves until the release — both
+    /// true of the real thing, and the pull-out and the reflow are one motion because they are one
+    /// event: the layout taking the size as its own intent.
+    ///
+    /// **Wide from first frame to last.** The subject is a window growing by a third of a screen and
+    /// then keeping or losing it, which is a shape read against the display's own edges; a lens pushed in
+    /// on the handle would be moving while the very thing it was framing changed size, and two motions
+    /// at once is one motion nobody can read. The handle announces itself with the cursor instead, which
+    /// is what a handle does.
+    ///
+    /// The hand is aimed at **exactly** the point the drag will carry — `x: 1` is the trailing edge and
+    /// `dragGrip` is where the reducer takes hold — because a cursor that lands a fraction short pops
+    /// sideways the instant the button goes down.
+    /// **A shuttle along one line**: pull the edge out, let go, read what happened to it, walk back to
+    /// where the edge now is, pull again. A third of a screen in two thirds of a second is somebody
+    /// pulling an edge rather than easing one across, and the walk back is quicker because nothing is
+    /// being aimed at along the way.
+    ///
+    /// The rewind rides that walk. Under `on` the width is adopted, so the rung has to be restored for
+    /// the loop to start over, and doing it while the hand travels left makes it one motion rather than
+    /// a window shrinking on its own.
+    static let handResize = Take(
+        scene: dragPair,
+        beats: [(0.4, .press(true)),
+                (0.5, .dragEdge(by: .percent(30), over: 0.65)),
+                (1.15, .release), (1.15, .press(false)),
+                (2.7, .widthPreset(0, column: ColumnId(71))),
+                (2.7, .cursor(.arrow)),
+                (2.7, .pointer(.inside(WindowId(71), x: 1, y: PreviewModel.dragGrip), over: 0.45)),
+                // Back on the handle, so the shape says so again — and the loop wraps on the cursor it
+                // started with.
+                (3.15, .cursor(.resizeEW))],
+        period: 3.7)
+
+    /// Two presses of the same size, and **the catch is the content** — so the caught arrangement is
+    /// held for two seconds and the loop is mostly that.
+    ///
+    /// The set leaves the screen's edge one step *and a quarter* away, so the first press takes its whole
+    /// delta and the second arrives at a quarter of it. The badge says the same words both times: what
+    /// differs is what the desktop does with them.
+    ///
+    /// `grow` is continuous, a `SizeDelta` rather than a rung, which is exactly why the setting exists:
+    /// the ladder is deliberately exempt from the detent because a preset is an exact intent.
+    static let growDetent = Take(
+        scene: detentPair,
+        beats: [(0.8, .cue(growCue)), (0.8, .grow(.percent(growStep))),
+                (1.9, .cue(nil)),
+                (2.4, .cue(growCue)), (2.4, .grow(.percent(growStep))),
+                (2.4, .flushMark(.right)),
+                (3.5, .cue(nil)),
+                (4.2, .flushMark(nil)),
+                (4.6, .widthOverride(.proportion(0.35), column: ColumnId(71)))],
+        period: 5.8)
 }

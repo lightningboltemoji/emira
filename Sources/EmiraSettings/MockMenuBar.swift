@@ -103,7 +103,7 @@ final class MockMenuBar {
     /// whichever of black or white reads over `luminance` — the average brightness of the wallpaper
     /// directly beneath it.
     func place(width: CGFloat, height: CGFloat, projection: Projection, luminance: Double) {
-        let wanted: NSColor = luminance > 0.5 ? .black : .white
+        let wanted: NSColor = luminance > SettingsStyle.inkFlip ? .black : .white
         if wanted != foreground { tint(wanted) }
         layer.frame = CGRect(x: 0, y: 0, width: width, height: height)
 
