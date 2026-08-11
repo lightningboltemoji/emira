@@ -100,15 +100,18 @@ import EmiraMotion
             .windowCreated(EngineFix.snapshot(1)),
             .windowCreated(EngineFix.snapshot(2)),                     // focused, column 1
         ]).0
+        // The ladder's own rung, read rather than written down: with a gap in play a ⅓ column is ⅓ of the
+        // content width *and the gap it carries*, and the subject here is that the undo restores it.
+        let rung = EngineFix.width(s, 1)
 
         let (full, ffx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
         s = full
         #expect(EngineFix.hasEffect(ffx) { if case .park(WindowId(1), _) = $0 { return true }; return false })
-        #expect(EngineFix.width(s, 1) == 1000)
+        #expect(EngineFix.width(s, 1) == 1000)                         // 100% is the content width, gap or no
 
         let (back, bfx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
         #expect(EngineFix.hasEffect(bfx) { if case .setFrame(WindowId(1), _) = $0 { return true }; return false })
-        #expect(EngineFix.approxScalar(EngineFix.width(back, 1), EngineFix.third))
+        #expect(EngineFix.approxScalar(EngineFix.width(back, 1), rung))
     }
 
     /// An explicit width verb clears fullscreen, and the press that clears it is continuous: the delta

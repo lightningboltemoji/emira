@@ -27,15 +27,21 @@ import EmiraCore
 
     // The one the phase is done when it passes.
 
-    @Test func raisingColumnGapByTenMovesTheThirdColumnByExactlyTwenty() throws {
+    @Test func raisingColumnGapReflowsTheStripInsideTheSameWorkingArea() throws {
         let third = try #require(Scenes.threeColumns.columns.last?.windows.first?.id)
 
         let before = try #require(Self.state(Self.config(columnGap: 8)).frames[third])
         let after = try #require(Self.state(Self.config(columnGap: 18)).frames[third])
 
-        // Two gaps sit between the first column's left edge and the third's, so ten points each.
-        #expect(after.minX - before.minX == 20)
-        #expect(after.width == before.width)
+        // A proportion is a share of the extent *and* the gap it carries, so a wider gap narrows all
+        // three columns and slides the later ones along. Both are ⅔ of the 10 pt rise — the third
+        // column's left edge is `2(A + gap)/3` — and they cancel exactly…
+        #expect(abs((after.minX - before.minX) - 20.0 / 3) < 1e-9)
+        #expect(abs((before.width - after.width) - 20.0 / 3) < 1e-9)
+        // …which is the property a user sees: three ⅓ columns and their two gaps fill the working area
+        // at either setting, so the run ends flush with it rather than overflowing by a gap per boundary.
+        #expect(abs(before.maxX - Self.workingArea.maxX) < 1e-9)
+        #expect(abs(after.maxX - Self.workingArea.maxX) < 1e-9)
         #expect(after.minY == before.minY)
     }
 

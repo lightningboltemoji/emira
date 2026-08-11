@@ -16,11 +16,18 @@ import EmiraMotion
 
     static let workingArea = PreviewModelTests.workingArea
 
-    static func state(columnGap: Double, scene: Scene = Scenes.threeColumns) -> PreviewState {
+    static func state(columnGap: Double, scene: Scene = Scenes.threeColumns,
+                      widths: PresetCycle? = nil) -> PreviewState {
         var config = Config()
         config.columnGap = columnGap
+        if let widths { config.widthPresets = widths }
         return PreviewModel.state(of: scene, config: config, workingArea: workingArea)
     }
+
+    /// Fixed column widths, for the tests about *which spring drives what*: a proportion is a share of
+    /// the gap as well as the extent, so under one a gap change is a resize too and there is no such
+    /// thing as a rearrangement that moved without resizing.
+    static let pinned = PresetCycle([.fixed(500)])
 
     static let third = Scenes.threeColumns.columns[2].windows[0].id
 
@@ -165,25 +172,27 @@ import EmiraMotion
     }
 
     @Test func aViewportThatMovedTravelsUnderTheScrollSpring() throws {
-        // Four half-width columns overflow the strip, so focusing right scrolls it — and every window
-        // shifts by the same amount without changing size.
+        // Two half-width columns fill the strip exactly, so it takes the *third* to scroll it — and then
+        // every window shifts by the same amount without changing size.
         var config = Config()
         config.columnGap = 8
-        let take = Take(scene: Scenes.fourColumns, beats: [(1, .focusRight)], period: 10)
+        let take = Take(scene: Scenes.fourColumns,
+                        beats: [(1, .focus(WindowId(13)))], period: 10)
         let motion = Self.played(take, from: 0, to: 2, config: config)
 
-        let shifted = try #require(motion.windows[WindowId(11)])
+        let shifted = try #require(motion.windows[WindowId(12)])
         #expect(shifted.x.params.stiffness == 111)
         #expect(shifted.width.current == 0, "nothing resized, so this is a translation")
     }
 
     @Test func aRearrangementThatDidNotScrollTravelsUnderTheMovementSpring() throws {
         // A gap change slides the later columns along without resizing any of them and without moving
-        // the viewport — which leaves exactly "a window the strip rearranged".
+        // the viewport — which leaves exactly "a window the strip rearranged". Fixed widths, or the gap
+        // would be resizing them too and this would be a test about two springs at once.
         var motion = PreviewMotion()
-        motion.snap(to: Self.state(columnGap: 8))
-        let after = Self.state(columnGap: 18)
-        #expect(after.scrollOffset == Self.state(columnGap: 8).scrollOffset)
+        motion.snap(to: Self.state(columnGap: 8, widths: Self.pinned))
+        let after = Self.state(columnGap: 18, widths: Self.pinned)
+        #expect(after.scrollOffset == Self.state(columnGap: 8, widths: Self.pinned).scrollOffset)
         motion.retarget(to: after, springs: Self.split)
 
         let slid = try #require(motion.windows[Self.third])

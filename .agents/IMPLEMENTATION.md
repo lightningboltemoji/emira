@@ -513,11 +513,33 @@ a hand resize) shadows a preset index (from `cycle-width`). Because it shadows r
 underneath needs no memory and no restore policy. Percentages are of the **working area**, not of the column's
 own width, so `grow`/`shrink` are exact inverses.
 
+**A proportion is a share of the extent _and_ of the gap it is laid out with** — `Extent { span, gap }`, and the
+two never travel apart, which is the whole reason it is a type rather than two arguments. `n` tiles have `n − 1`
+gaps between them, so a tile takes its share of the span widened by one gap and pays one gap back:
+`(span + gap)·p − gap`. Proportions summing to 1 then fill the span exactly, however they partition it and into
+however many pieces — the `n` gaps the tiles pay and the `n − 1` between them cancel down to the one folded in.
+Charging the gaps on top of a full share instead leaves any such run `(n − 1) · gap` too long, which on the
+strip is a viewport that scrolls by a gap and a last column with its outer margin eaten.
+
+Three consequences worth stating, because each is the sort of thing a reader checks the formula against:
+
+- **`p = 1` is still the whole span**, gap or no — one tile pays a gap it also had folded in. `fullscreen`
+  resolves through this, so it cannot drift a gap away from `width-presets = [1.0]`.
+- **`column-gap` is not only spacing.** Raising it narrows every proportional column, because the gap is part of
+  what the proportion is a share of. A reload therefore re-places columns a pure spacing change would not have.
+- **At `gap = 0` the fold vanishes**, so a zero-gap layout is the plain share it always was.
+
+`Extent` has an inverse, `proportion(of:)`, for the callers that record a resolved size back as an intent
+(`grow`/`shrink` at a `.percent`, and the settings preview's mirror of it). It is stated beside the formula it
+inverts so the two cannot drift.
+
 **Height resolves the same way, one container over**: a `heightOverride` (a hand resize) shadows a preset index
 (`cycle-height`) shadows **auto**, which shares the column's leftover height with the other autos. Both rungs
 are `Workspaces`' rather than the column's, keyed by `WindowId`, so a window carries its height through the four
 structural edits and across a workspace. `LayoutMetrics.heightIntent(of:)` is the one place the stack resolves,
-for the reason `Layout.resolvedWidth` is on the other axis.
+for the reason `Layout.resolvedWidth` is on the other axis. `Column` builds its own vertical `Extent` from the
+column box and `window-gap`, which is what keeps the two rungs consistent: **auto** already shares what is left
+_after_ the gaps, so a window pinned to the proportion it would have been given comes out the same height.
 
 **What an app answered is a fact the geometry consults** — `World.corrections`, one `SizeCorrection
 { wanted, actual }` per window, keyed on the _question_ rather than stored as a `minWidth`, so a refusal at one

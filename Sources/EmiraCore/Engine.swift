@@ -1952,7 +1952,7 @@ public enum Engine {
             // Stored in the unit the user typed: a percentage leaves a proportion, points leave points.
             let intent: PresetSize
             switch delta {
-            case .percent where available > 0: intent = .proportion(width / available)
+            case .percent where available > 0: intent = metrics.widthExtent.proportion(of: width)
             case .percent, .points:            intent = .fixed(width)
             }
             layout.setWidthOverride(intent, ofColumn: column.id)

@@ -568,7 +568,7 @@ import EmiraCore
         #expect(abs(config.scrollSpring.damping - defaults.scrollSpring.damping) < 1e-9)
         // The presets are the ⅓/½/⅔ ladder to three decimal places, which is as close as a file gets.
         #expect(config.widthPresets.presets.count == 3)
-        #expect(config.widthPresets.resolved(at: 1, available: 1000) == 500)
+        #expect(config.widthPresets.resolved(at: 1, in: Extent(span: 1000, gap: 0)) == 500)
         // No default bindings: an unbound emira confiscates no keystroke from any other app.
         #expect(config.keys.isEmpty)
     }

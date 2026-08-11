@@ -160,6 +160,11 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// The **logical** viewport: the working area inset by the outer gaps. Where the strip is laid out.
     public var contentArea: Rect { workingArea.inset(by: outerGaps) }
 
+    /// What a column-width proportion is a share of — the logical viewport and the gap the strip lays
+    /// columns out with, so `width-presets = [0.5, 0.5]` fills it exactly. The vertical counterpart is
+    /// `Column`'s own, built from the column box and `windowGap`.
+    public var widthExtent: Extent { Extent(span: contentArea.width, gap: columnGap) }
+
     /// The **physical** viewport in strip space, for a strip scrolled to `offset`.
     ///
     /// `widenedBy` carries a sweep's travel distance, so the swept query composes with this one rather
@@ -514,10 +519,10 @@ public struct Layout: Sendable, Equatable, Codable {
     /// no `SizeCorrection` consulted. This *is* the question a correction answers, and an answer
     /// matched against a question nobody asked is the one way this machinery goes wrong.
     private func uncorrectedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
-        (column.isFullscreen ? .proportion(1.0)
-            : column.widthOverride
-            ?? metrics.widthPresets.size(at: column.widthPreset))
-            .resolved(available: metrics.contentArea.width)
+        metrics.widthExtent.resolve(
+            column.isFullscreen ? .proportion(1.0)
+                : column.widthOverride
+                ?? metrics.widthPresets.size(at: column.widthPreset))
     }
 
     /// A column's resolved width by id — what `cycleWidth` animates *to*, so the presentation plane

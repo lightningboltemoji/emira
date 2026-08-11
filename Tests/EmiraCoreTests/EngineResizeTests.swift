@@ -377,12 +377,14 @@ import EmiraMotion
     /// speed and the nearer one decides. 320 + 320 + 200 with a 10 pt gap leaves 140 at the right edge but
     /// only 10 at the left once the middle column is centred — a notch the uncentred strip doesn't have.
     @Test func aCentredResizeCatchesOnTheEdgeTheUncentredOneNeverReaches() {
+        // Fixed widths, so the arrangement above is exactly the one laid out: this is a test about where
+        // a detent catches, and a proportion would make it one about how a proportion resolves.
         func trio(centered: Bool) -> State {
-            let config = Config(widthPresets: PresetCycle([.proportion(0.32)]), columnGap: 10,
+            let config = Config(widthPresets: PresetCycle([.fixed(320)]), columnGap: 10,
                                 centerFocusedColumn: centered, resizeDetent: true,
                                 transitionMode: .off)
             var s = EngineFix.world(3, config: config)
-            s.layout.setWidthOverride(.proportion(0.20), ofColumn: s.layout.columns[2].id)
+            s.layout.setWidthOverride(.fixed(200), ofColumn: s.layout.columns[2].id)
             (s, _) = Engine.reduce(s, .focusChanged(WindowId(2), origin: .system))
             return EngineFix.settle(s)
         }

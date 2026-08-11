@@ -10,8 +10,9 @@ import EmiraMotion
     /// The observable effect of editing the file: the strip is re-resolved against the new metrics
     /// and every window re-placed, with no window having moved and no command having been given.
     @Test func aConfigReloadRelaysOutInPlace() {
-        // Quarter-width columns, so both stay on screen and the gap is the only thing that moves.
-        let narrow = Config(widthPresets: PresetCycle([.proportion(0.25)]))
+        // Fixed-width columns, so both stay on screen and the gap really is the only thing that moves —
+        // a *proportional* width is a share of the gap too, and re-resolves with it (below).
+        let narrow = Config(widthPresets: PresetCycle([.fixed(250)]))
         let (s, _) = EngineFix.run(EngineFix.booted(config: narrow), [
             .windowCreated(EngineFix.snapshot(1)),
             .windowCreated(EngineFix.snapshot(2)),
@@ -27,6 +28,28 @@ import EmiraMotion
         #expect(EngineFix.placement(of: WindowId(1), in: fx) == nil)
         #expect(EngineFix.approx(next.world.windows[WindowId(1)]?.frame ?? .zero,
                                  Rect(x: 0, y: 0, width: 250, height: 800)))
+    }
+
+    /// `column-gap` is not only spacing: a proportion is a share of the extent *and* the gap, so raising
+    /// it narrows every proportional column to keep the ladder's arithmetic exact. Both columns are
+    /// therefore re-placed, which is the one way this reload differs from the fixed-width one above.
+    @Test func raisingTheColumnGapReResolvesProportionalWidths() {
+        let quarters = Config(widthPresets: PresetCycle([.proportion(0.25)]))
+        let (s, _) = EngineFix.run(EngineFix.booted(config: quarters), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),
+        ])
+        #expect(EngineFix.approxScalar(EngineFix.width(s, 0), 250))     // ¼ of 1000, no gap to fold
+
+        var gapped = quarters
+        gapped.columnGap = 40
+        let (next, fx) = Engine.reduce(s, .configChanged(gapped))
+        // ¼ of (1000 + 40) less the gap it carries = 220, so four of them and three gaps still make 1000.
+        #expect(EngineFix.approxScalar(EngineFix.width(next, 0), 220))
+        #expect(EngineFix.approx(EngineFix.placement(of: WindowId(1), in: fx) ?? .zero,
+                                 Rect(x: 0, y: 0, width: 220, height: 800)))
+        #expect(EngineFix.approx(EngineFix.placement(of: WindowId(2), in: fx) ?? .zero,
+                                 Rect(x: 260, y: 0, width: 220, height: 800)))
     }
 
     /// The spring is *seeded* into the animator at construction, so storing the new config isn't

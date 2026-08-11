@@ -228,7 +228,7 @@ public enum PreviewModel {
                 // window springs back to the one the ladder says — emira taking it back, not a glitch.
                 if config.interactiveResize {
                     let width = live.width(at: min(phase, live.at + live.over))
-                    scene = scene.setting(widthOverride: .proportion(width / metrics.contentArea.width),
+                    scene = scene.setting(widthOverride: metrics.widthExtent.proportion(of: width),
                                           ofColumn: live.column)
                 }
                 drag = nil
@@ -422,7 +422,8 @@ public enum PreviewModel {
             travel = min(travel, notch)
         }
         let width = min(max(from + travel, 1), available)
-        return scene.setting(widthOverride: .proportion(width / available), ofColumn: column.id)
+        return scene.setting(widthOverride: metrics.widthExtent.proportion(of: width),
+                             ofColumn: column.id)
     }
 
     /// The mark to draw, if any: the flush tick where the script asked for one **and the geometry

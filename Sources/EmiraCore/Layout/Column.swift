@@ -63,6 +63,11 @@ public struct Column: Sendable, Equatable {
     public var count: Int { windowHeights.count }
     public var isEmpty: Bool { windowHeights.isEmpty }
 
+    /// What a pinned height is a share of — the column box and the gap it stacks with. The vertical twin
+    /// of `LayoutMetrics.widthExtent`, and what keeps a window pinned to ½ the same height as an `auto`
+    /// neighbour: `auto` already shares what is left *after* the gaps, so a proportion must too.
+    var extent: Extent { Extent(span: frame.height, gap: gap) }
+
     /// Each window's resolved point height, top→bottom, 1:1 with `windowHeights`. Presets resolve
     /// against the column height; what remains after them and the gaps splits equally among the autos,
     /// clamped at zero. Bounds are water-filled **in both directions**: an auto whose bound rules its
@@ -81,7 +86,7 @@ public struct Column: Sendable, Equatable {
             case .auto:
                 isAuto[i] = true
             case .preset(let size):
-                heights[i] = size.resolved(available: frame.height)
+                heights[i] = extent.resolve(size)
                 fixedSum += heights[i]
             }
         }

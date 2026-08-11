@@ -1,9 +1,38 @@
 import Foundation
 
 // Cyclable size presets: the widths a column cycles through and the heights a window cycles through
-// inside it. A preset is a proportion or a fixed point count, resolved against the available extent
-// only at layout time, so "½" tracks whichever monitor the column lands on. The selection is an index
-// the caller stores, so cycling is `+1 mod count`. Every accessor is total against a drifted index.
+// inside it. A preset is a proportion or a fixed point count, resolved against an `Extent` only at
+// layout time, so "½" tracks whichever monitor the column lands on. The selection is an index the
+// caller stores, so cycling is `+1 mod count`. Every accessor is total against a drifted index.
+
+/// The space a run of tiles fills and the gap between two adjacent ones — what a `PresetSize` resolves
+/// against. **`n` tiles have `n − 1` gaps between them, so a tile is a share of the span widened by one
+/// gap and pays one gap back**, which is what makes proportions summing to 1 fill `span` exactly.
+public struct Extent: Sendable, Equatable {
+    /// The extent a proportion is a share of: the content area's width, or the column box's height.
+    public let span: Double
+    /// The gap between two adjacent tiles laid out in it — inter-tile only, as `Strip` and `Column` mean it.
+    public let gap: Double
+
+    public init(span: Double, gap: Double) {
+        self.span = span
+        self.gap = gap
+    }
+
+    /// `size` in points. A `.fixed` is taken verbatim; a `.proportion` gets the share above.
+    public func resolve(_ size: PresetSize) -> Double {
+        switch size {
+        case .proportion(let fraction): return (span + gap) * fraction - gap
+        case .fixed(let points): return points
+        }
+    }
+
+    /// The proportion `resolve` would turn back into `points` — the inverse, for the callers that record
+    /// a resolved size as an intent. Stated beside the formula it inverts so the two cannot drift.
+    public func proportion(of points: Double) -> PresetSize {
+        .proportion((points + gap) / (span + gap))
+    }
+}
 
 /// One preset entry: a fraction of the available working extent, or an absolute point count.
 public enum PresetSize: Sendable, Equatable, Codable {
@@ -11,14 +40,6 @@ public enum PresetSize: Sendable, Equatable, Codable {
     case proportion(Double)
     /// An absolute size in points, independent of the working extent.
     case fixed(Double)
-
-    /// Resolve to points against the working extent (a width for a column, a height for a window).
-    public func resolved(available: Double) -> Double {
-        switch self {
-        case .proportion(let fraction): return available * fraction
-        case .fixed(let points): return points
-        }
-    }
 }
 
 /// An ordered, wrap-around list of `PresetSize`s that a cycle command steps through.
@@ -51,8 +72,8 @@ public struct PresetCycle: Sendable, Equatable, Codable {
     }
 
     /// Convenience: resolve the preset at `index` straight to points.
-    public func resolved(at index: Int, available: Double) -> Double {
-        size(at: index).resolved(available: available)
+    public func resolved(at index: Int, in extent: Extent) -> Double {
+        extent.resolve(size(at: index))
     }
 
     /// The next selection when cycling forward, wrapping past the end back to the start.

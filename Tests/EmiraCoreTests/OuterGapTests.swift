@@ -65,10 +65,50 @@ import Testing
     /// `fullscreen` means the same 100% everything else does: the content width, so a fullscreen column
     /// fills the strip's area with the outer margin still showing. A second definition of "full" is how
     /// the two verbs would come to rest one outer gap apart.
-    @Test func fullscreenIsTheContentWidthNotTheDisplayWidth() {
-        let m = metrics()                            // 1000 wide, 40 pt outer gaps ⇒ 920 of content
+    @Test(arguments: [0.0, 20.0, 60.0])
+    func fullscreenIsTheContentWidthNotTheDisplayWidth(columnGap: Double) {
+        let m = metrics(columnGap: columnGap)        // 1000 wide, 40 pt outer gaps ⇒ 920 of content
         let column = ColumnLayout(id: ColumnId(1), windowIds: [w0], fullscreen: .plain)
+        // Whatever `column-gap` is: a lone column pays a gap it also had folded in, so 100% is 100%.
         #expect(Layout(columns: [column]).resolvedWidth(of: column, metrics: m) == 920)
+    }
+
+    /// **The two gaps are different quantities and both are owed.** A proportion is a share of the
+    /// content area *and* of the `column-gap` the strip lays columns out with, so widths summing to 1
+    /// fill the content area exactly: the run ends flush with the strip's right edge, the outer margin
+    /// is still there, and the strip does not scroll. Charging the column gaps on top of a full content
+    /// width instead leaves a run `(n − 1) · column-gap` too long — a strip that scrolls by a gap and a
+    /// last column sitting on the display edge with its outer margin eaten.
+    @Test(arguments: [0.0, 20.0, 60.0])
+    func widthsSummingToOneFillTheContentAreaWhateverTheColumnGap(columnGap: Double) {
+        let m = metrics(columnGap: columnGap)        // 920 of content at x = 40, on a 1000 display
+        let layout = Layout(columns: [
+            ColumnLayout(id: ColumnId(1), windowIds: [w0]),
+            ColumnLayout(id: ColumnId(2), windowIds: [w1]),
+        ])
+        let strip = layout.strip(metrics: m)
+        #expect(abs(strip.contentWidth - m.contentArea.width) < 1e-9)
+        #expect(strip.maxOffset(viewportWidth: m.contentArea.width) == 0)   // nothing to scroll to
+
+        let frames = layout.targetFrames(scrollOffset: 0, metrics: m)
+        #expect(frames[w0]?.minX == 40)                                     // flush, content left
+        #expect(abs((frames[w1]?.maxX ?? 0) - 960) < 1e-9)                  // flush, content right
+        #expect(abs((frames[w1]?.minX ?? 0) - ((frames[w0]?.maxX ?? 0) + columnGap)) < 1e-9)
+    }
+
+    /// The same claim for an uneven partition and a longer run — the arithmetic is not tuned for equal
+    /// splits, because the `n` gaps the columns pay and the `n − 1` between them cancel either way.
+    @Test(arguments: [0.0, 20.0, 60.0])
+    func anUnevenPartitionFillsItToo(columnGap: Double) {
+        var m = metrics(columnGap: columnGap)
+        m.widthPresets = PresetCycle([.proportion(0.5), .proportion(0.25), .proportion(0.25)])
+        let layout = Layout(columns: (0..<3).map {
+            ColumnLayout(id: ColumnId(UInt64($0 + 1)), windowIds: [WindowId(UInt64($0 + 1))],
+                         widthPreset: $0)
+        })
+        let strip = layout.strip(metrics: m)
+        #expect(abs(strip.contentWidth - m.contentArea.width) < 1e-9)
+        #expect(strip.maxOffset(viewportWidth: m.contentArea.width) == 0)
     }
 
     /// The width floor a correction imposes is capped at the content width too — one definition of

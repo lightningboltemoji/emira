@@ -242,8 +242,8 @@ public struct GuideSettings: Sendable, Equatable, Codable {
 /// The pure configuration values the reducer reads.
 public struct Config: Sendable, Equatable, Codable {
     /// The column width presets `cycleWidth` steps through. A column stores an *index* into this
-    /// cycle, resolved to points against the monitor at layout time, so a "½" column stays ½ on any
-    /// display.
+    /// cycle, resolved to points against the monitor's `Extent` at layout time — the content area and
+    /// `columnGap` — so a "½" column stays ½ on any display and two of them tile it exactly.
     public var widthPresets: PresetCycle
     /// The window height presets `cycleHeight` steps through, resolved against the *column* height the
     /// same way widths resolve against the content width. The ladder has one more rung than it lists:
