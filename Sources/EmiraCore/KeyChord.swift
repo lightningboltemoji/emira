@@ -23,7 +23,11 @@ public struct KeyModifiers: OptionSet, Sendable, Hashable, Codable {
     public static let function = KeyModifiers(rawValue: 1 << 4)
 
     /// Canonical spelling order, macOS's own 🌐⌃⌥⇧⌘ — what re-emits `cmd-alt-h` and `alt-cmd-h` alike.
-    static let canonical: [(modifier: KeyModifiers, word: String)] = [
+    ///
+    /// Public because it is also the order a *control* has to lay its modifiers out in, and the order
+    /// is not the settings window's to pick: four chips in a second order would be a second opinion
+    /// about a spelling this type already fixes.
+    public static let canonical: [(modifier: KeyModifiers, word: String)] = [
         (.function, "fn"),
         (.control, "ctrl"), (.option, "alt"), (.shift, "shift"), (.command, "cmd"),
     ]
@@ -74,7 +78,7 @@ public enum Key: String, Sendable, Hashable, Codable, CaseIterable {
     /// Keys macOS reports the fn flag on when they are pressed *alone* — AppKit's "function key"
     /// class, which the window server marks whether or not fn is held. `fn` cannot qualify one: the
     /// flag carries no information, so the binding would take the bare key. `parse` refuses it.
-    var isFunctionClass: Bool {
+    public var isFunctionClass: Bool {
         switch self {
         case .left, .right, .up, .down,
              .home, .end, .pageup, .pagedown, .delete,
@@ -85,6 +89,132 @@ public enum Key: String, Sendable, Hashable, Codable, CaseIterable {
             return false
         }
     }
+
+    /// This key's virtual key code — its *physical position*, which is what both the hotkey registry
+    /// and a recorded press speak in. `0x04` is the key where H sits on US layout, whatever it types
+    /// elsewhere.
+    ///
+    /// **Hex rather than `kVK_*`, and here rather than beside the registry that spends it.** The
+    /// package's hard rule is that nothing below imports a framework and `EmiraCore` is Foundation-only,
+    /// so a table spelled in Carbon's constants cannot live where both consumers can reach it — and the
+    /// alternative, a second table in the module that records keystrokes, is exactly the silent
+    /// transposition this is arranged to prevent. What the spelling bought was checkability against
+    /// Apple's header; `HotkeyTests` now checks it, entry by entry, against those same constants, plus
+    /// the injectivity the spelling never gave us. Checked beats checkable.
+    ///
+    /// A `switch` rather than a table literal, so a `Key` added without a code is a compile error here
+    /// rather than a trap the first time somebody binds it.
+    public var virtualKeyCode: UInt16 {
+        switch self {
+        case .a: return 0x00
+        case .b: return 0x0B
+        case .c: return 0x08
+        case .d: return 0x02
+        case .e: return 0x0E
+        case .f: return 0x03
+        case .g: return 0x05
+        case .h: return 0x04
+        case .i: return 0x22
+        case .j: return 0x26
+        case .k: return 0x28
+        case .l: return 0x25
+        case .m: return 0x2E
+        case .n: return 0x2D
+        case .o: return 0x1F
+        case .p: return 0x23
+        case .q: return 0x0C
+        case .r: return 0x0F
+        case .s: return 0x01
+        case .t: return 0x11
+        case .u: return 0x20
+        case .v: return 0x09
+        case .w: return 0x0D
+        case .x: return 0x07
+        case .y: return 0x10
+        case .z: return 0x06
+
+        case .digit0: return 0x1D
+        case .digit1: return 0x12
+        case .digit2: return 0x13
+        case .digit3: return 0x14
+        case .digit4: return 0x15
+        case .digit5: return 0x17
+        case .digit6: return 0x16
+        case .digit7: return 0x1A
+        case .digit8: return 0x1C
+        case .digit9: return 0x19
+
+        case .f1:  return 0x7A
+        case .f2:  return 0x78
+        case .f3:  return 0x63
+        case .f4:  return 0x76
+        case .f5:  return 0x60
+        case .f6:  return 0x61
+        case .f7:  return 0x62
+        case .f8:  return 0x64
+        case .f9:  return 0x65
+        case .f10: return 0x6D
+        case .f11: return 0x67
+        case .f12: return 0x6F
+        case .f13: return 0x69
+        case .f14: return 0x6B
+        case .f15: return 0x71
+        case .f16: return 0x6A
+        case .f17: return 0x40
+        case .f18: return 0x4F
+        case .f19: return 0x50
+        case .f20: return 0x5A
+
+        case .left:  return 0x7B
+        case .right: return 0x7C
+        case .up:    return 0x7E
+        case .down:  return 0x7D
+
+        case .enter:  return 0x24
+        case .tab:    return 0x30
+        case .space:  return 0x31
+        case .escape: return 0x35
+        // The key a Mac keyboard *labels* "delete" is `kVK_Delete`, and ⌦ is `kVK_ForwardDelete`; this
+        // type names them `backspace` and `delete`. The two conventions meet here.
+        case .backspace: return 0x33
+        case .delete:    return 0x75
+
+        case .home:     return 0x73
+        case .end:      return 0x77
+        case .pageup:   return 0x74
+        case .pagedown: return 0x79
+
+        case .minus:        return 0x1B
+        case .equal:        return 0x18
+        case .leftbracket:  return 0x21
+        case .rightbracket: return 0x1E
+        case .backslash:    return 0x2A
+        case .semicolon:    return 0x29
+        case .quote:        return 0x27
+        case .comma:        return 0x2B
+        case .period:       return 0x2F
+        case .slash:        return 0x2C
+        case .backtick:     return 0x32
+        }
+    }
+
+    /// The key at a virtual key code, or `nil` for a position this vocabulary has no name for — which is
+    /// what a recorder answers a press with, and what makes an unnameable key a refusal by name rather
+    /// than a binding that silently never fires.
+    ///
+    /// **Derived from `virtualKeyCode`, never written twice.** A second table would be free to disagree
+    /// with the first, and the disagreement is invisible: the chord would register against one physical
+    /// key and be displayed as another.
+    public init?(virtualKeyCode code: UInt16) {
+        guard let key = Self.named[code] else { return nil }
+        self = key
+    }
+
+    /// The forward table read backwards. A transposition collapses two entries into one, so this is
+    /// shorter than `allCases` exactly when the map is not injective — which is what `HotkeyTests`
+    /// checks, rather than trapping here at first use.
+    private static let named: [UInt16: Key] = Dictionary(
+        allCases.map { ($0.virtualKeyCode, $0) }, uniquingKeysWith: { first, _ in first })
 
     /// The name of the key a punctuation character sits on. Not a second spelling — `parse` never
     /// accepts these; it exists so the diagnostic for `cmd-alt-.` can name `period`.
@@ -232,4 +362,11 @@ public struct KeyBinding: Sendable, Equatable, Codable {
         self.chord = chord
         self.command = command
     }
+
+    /// The command as the file spells it — `"focus left"`, the binding's own right-hand side.
+    ///
+    /// A *spelled* view of the binding, so a surface that may read the vocabulary but not the reducer's
+    /// input can show what a chord does. `Cue` established the pattern; `Command.parse(line:)` takes it
+    /// back.
+    public var spelling: String { command.words.joined(separator: " ") }
 }

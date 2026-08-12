@@ -52,16 +52,140 @@ import Testing
     /// a table entry no command produces (dead verb) both fail here.
     @Test func verbTableCoversEveryCommand() {
         let spelled = Set(Self.all.compactMap(\.words.first))
-        let tabled = Set(Command.verbs.map(\.name))
+        let tabled = Set(Vocabulary.verbs.map(\.name))
         #expect(spelled == tabled,
                 "unparseable: \(spelled.subtracting(tabled).sorted()); dead: \(tabled.subtracting(spelled).sorted())")
+    }
+
+    // The table as something a control can be built from
+    //
+    // The vocabulary is offerable — a keybinding editor reads `Verb.argument` to decide whether to put a
+    // popup, a number field or a text field beside the verb. What makes that safe is that everything the
+    // table offers is something `parse` takes back, which is what these three check.
+
+    /// **Every word the table offers parses.** A popup rung that produced a syntax error would be the
+    /// editor teaching the user a spelling the file refuses.
+    @Test func everyOfferedWordParsesBackToACommand() throws {
+        for verb in Vocabulary.verbs {
+            switch verb.argument {
+            case .none:
+                #expect(throws: Never.self, "\(verb.name) takes nothing but refused it") {
+                    try Command.parse([verb.name])
+                }
+            case .words(let words, let fallback):
+                for word in words {
+                    #expect(throws: Never.self, "\(verb.name) offers '\(word)' and refused it") {
+                        try Command.parse([verb.name, word])
+                    }
+                }
+                // A default is a promise that the bare verb is a command.
+                if fallback != nil {
+                    #expect(throws: Never.self, "\(verb.name) has a default and refused a bare verb") {
+                        try Command.parse([verb.name])
+                    }
+                } else {
+                    #expect(throws: CommandSyntaxError.self, "\(verb.name) needs an argument") {
+                        try Command.parse([verb.name])
+                    }
+                }
+            case .address(let words, let name, _):
+                for word in words {
+                    #expect(throws: Never.self, "\(verb.name) offers '\(word)' and refused it") {
+                        try Command.parse([verb.name, word])
+                    }
+                }
+                switch name {
+                case .alphabet(let addresses):
+                    #expect(addresses.count == 36)
+                    for address in addresses {
+                        #expect(throws: Never.self, "\(verb.name) refused address '\(address)'") {
+                            try Command.parse([verb.name, address])
+                        }
+                    }
+                case .number(let floor):
+                    #expect(throws: Never.self) { try Command.parse([verb.name, String(floor)]) }
+                    // …and the rung below the floor is the one the field must not offer.
+                    #expect(throws: CommandSyntaxError.self) {
+                        try Command.parse([verb.name, String(floor - 1)])
+                    }
+                }
+            case .magnitude(let units):
+                for unit in units {
+                    #expect(throws: Never.self, "\(verb.name) offers '\(unit)' and refused it") {
+                        try Command.parse([verb.name, "50\(unit)"])
+                    }
+                }
+            case .line:
+                #expect(throws: Never.self) { try Command.parse(line: "\(verb.name) ghostty") }
+            }
+        }
+    }
+
+    /// The other direction: a magnitude the editor composed comes back out spelled the same way, so a
+    /// number field and a unit toggle are a complete control for `grow`.
+    @Test func everyMagnitudeUnitRoundTripsThroughItsWord() throws {
+        let deltas: [String: SizeDelta] = ["px": .points(50), "%": .percent(50)]
+        for verb in Vocabulary.verbs {
+            guard case .magnitude(let units) = verb.argument else { continue }
+            for unit in units {
+                let delta = try #require(deltas[unit], "no round-trip written for unit '\(unit)'")
+                #expect(delta.word == "50\(unit)")
+                let command = try Command.parse([verb.name, delta.word])
+                #expect(command.words == [verb.name, delta.word])
+            }
+        }
+    }
+
+    /// **Pinned, because the usage output is `emira --help`.** The signatures are now derived from the
+    /// arguments rather than spelled beside them, and this is what says the derivation lands on the same
+    /// bytes it replaced.
+    @Test func everySignatureIsSpelledExactlyAsItWas() {
+        let expected: [String: String] = [
+            "focus": "focus <left|right|up|down>",
+            "move-window": "move-window <left|right|up|down>",
+            "consume-or-expel": "consume-or-expel <left|right|up|down>",
+            "center-column": "center-column",
+            "cycle-width": "cycle-width",
+            "grow": "grow <Npx|N%>",
+            "shrink": "shrink <Npx|N%>",
+            "cycle-height": "cycle-height",
+            "fullscreen": "fullscreen [on|off|toggle]",
+            "float": "float [on|off|toggle]",
+            "close-window": "close-window",
+            "focus-workspace": "focus-workspace <0-9|a-z|(next|prev)[-non-empty]>",
+            "move-to-workspace": "move-to-workspace <0-9|a-z|(next|prev)[-non-empty]>",
+            "move-to-workspace-and-focus":
+                "move-to-workspace-and-focus <0-9|a-z|(next|prev)[-non-empty]>",
+            "focus-monitor": "focus-monitor <N|left|right|up|down|next|prev>",
+            "move-to-monitor": "move-to-monitor <N|left|right|up|down|next|prev>",
+            "move-to-monitor-and-focus": "move-to-monitor-and-focus <N|left|right|up|down|next|prev>",
+            "move-workspace-to-monitor": "move-workspace-to-monitor <N|left|right|up|down|next|prev>",
+            "move-workspace-to-monitor-and-focus":
+                "move-workspace-to-monitor-and-focus <N|left|right|up|down|next|prev>",
+            "exec": "exec <shell command>",
+            "debug": "debug",
+        ]
+        #expect(Set(expected.keys) == Set(Vocabulary.verbs.map(\.name)))
+        for verb in Vocabulary.verbs {
+            #expect(verb.signature == expected[verb.name], "signature moved for '\(verb.name)'")
+        }
+    }
+
+    /// Only `exec` takes the rest of the line, and it is `.line` that says so — the flag used to be a
+    /// third thing to remember to set.
+    @Test func onlyTheOpenArgumentTakesTheRestOfTheLine() {
+        for verb in Vocabulary.verbs {
+            let isOpen: Bool
+            if case .line = verb.argument { isOpen = true } else { isOpen = false }
+            #expect(isOpen == (verb.name == "exec"), "'\(verb.name)' disagrees about its raw tail")
+        }
     }
 
     /// **`config` is not a verb.** The CLI branches on that word before `Command.parse` ever sees it —
     /// the config file is a file it reads, not a thing the daemon is asked to do — so a verb spelled
     /// that way would be unreachable, and unreachable *silently*.
     @Test func noVerbIsSpelledConfig() {
-        #expect(!Command.verbs.contains { $0.matches("config") })
+        #expect(Vocabulary.verb(named: "config") == nil)
     }
 
     // Canonical spellings (pinned — they're a user-facing contract)
@@ -256,11 +380,11 @@ import Testing
     }
 
     @Test func usageListsEveryVerbWithItsGrammarInAlignedColumns() {
-        let lines = Command.usage.split(separator: "\n").map(String.init)
-        #expect(lines.count == Command.verbs.count)
+        let lines = Vocabulary.usage.split(separator: "\n").map(String.init)
+        #expect(lines.count == Vocabulary.verbs.count)
 
         var summaryColumns: Set<Int> = []
-        for (line, verb) in zip(lines, Command.verbs) {
+        for (line, verb) in zip(lines, Vocabulary.verbs) {
             #expect(line.hasPrefix("  " + verb.signature), "usage line for '\(verb.name)': \(line)")
             #expect(line.hasSuffix(verb.summary), "usage line for '\(verb.name)': \(line)")
             summaryColumns.insert(line.count - verb.summary.count)

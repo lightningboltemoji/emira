@@ -5,6 +5,14 @@
 // `Config` and call `Layout`, `Strip` and `LayoutMetrics`. It may not name `Engine`, `State`, `Event`,
 // `Effect` or `Command`.
 //
+// **`Vocabulary` and `Verb` are not a sixth.** The five forbidden names are the reducer: its state, its
+// input, its output, and the machine between them. The vocabulary is the *spellings* — the words a
+// binding is written in — and a keybinding editor has to offer them, which is a different thing from
+// consuming them. What crosses is `String`: a verb's name, its summary, the shape of its argument. The
+// panel composes `focus left` and hands it to the draft, the draft hands it to the schema, and the
+// schema is where it becomes a `Command` — in another module, as it always was. `Cue` established the
+// pattern before there was an editor to need it.
+//
 // The line falls there because what a preview honestly needs is the *geometry*, and geometry is the
 // authority worth sharing — a mock desktop that reimplemented gap arithmetic would be a second opinion
 // about where a window goes. What the reducer does is reconcile a truth plane against a structure, and

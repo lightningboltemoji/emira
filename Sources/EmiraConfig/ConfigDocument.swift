@@ -119,6 +119,58 @@ public struct ConfigDocument {
         }
     }
 
+    /// Rename `key` to `newKey`, leaving its value, its line and its trailing comment exactly where
+    /// they are.
+    ///
+    /// **One splice, not a `remove` and a `set`.** Two edits have two failure modes the user did not ask
+    /// for: a refused second half leaves the binding *deleted*, and the insert relocates the line to the
+    /// end of the table's run, so editing line 2 of 12 moves it to line 12. Order carries no meaning in
+    /// `[keys]` — unlike `[[window-rules]]`, where it is precedence — but it is still the author's file,
+    /// and a chord editor that reshuffled the table on every retyped chord would be rewriting it.
+    ///
+    /// Only the *name* moves. Both keys must sit in the same table: the segments before the last one say
+    /// where the line is, and changing those is moving the line rather than renaming it — a different
+    /// operation, with a different answer to what happens to the comment above it.
+    ///
+    /// A key the file doesn't set is left alone, as `remove` leaves one alone.
+    ///
+    /// - Throws: `ConfigSyntaxError` — `duplicateKey` when the file already carries `newKey`, and
+    ///   whatever the schema makes of the renamed line. The document is untouched when it throws.
+    public mutating func rename(_ key: String, to newKey: String) throws {
+        guard key != newKey else { return }
+        guard let span = table.span(of: key) else { return }
+
+        let (table: oldTable, name: _) = Self.split(key)
+        let (table: newTable, name: newName) = Self.split(newKey)
+        guard oldTable == newTable else {
+            throw ConfigSyntaxError.badValue(
+                line: table.line(of: key) ?? 0, key: key,
+                message: "cannot be renamed into another table — '\(newKey)' is not written here")
+        }
+
+        var edited = text
+        edited.replaceSubrange(span.key, with: TOMLTable.spell(key: newName))
+        try commit(edited)
+    }
+
+    /// The keys the file writes under `table`, spelled the way it spells them, in file order.
+    ///
+    /// **What a caller holding a *meaning* needs in order to name the line that carries it.** An open
+    /// table's names are the user's: a `[keys]` name is a chord, and a chord has more than one spelling
+    /// — `cmd-alt-h` and `alt-cmd-h` are one hotkey and two TOML keys. An editor that keyed its edits by
+    /// the canonical spelling would ask this document to change a key the file has never written, and
+    /// every method here leaves a key it does not find alone.
+    public func names(under table: String) -> [String] {
+        self.table.names(under: table)
+    }
+
+    /// A dotted key split into the table it is written under and its own name.
+    private static func split(_ key: String) -> (table: String, name: String) {
+        var path = key.split(separator: ".").map(String.init)
+        let name = path.popLast() ?? key
+        return (path.joined(separator: "."), name)
+    }
+
     /// Unset `key`, taking its whole line with it — **its trailing comment included**, since a comment
     /// on a value line describes that value and would be left describing nothing. A key the file
     /// doesn't set is left alone.

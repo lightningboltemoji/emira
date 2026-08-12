@@ -51,6 +51,12 @@ public struct Draft {
         setting.value(in: config)
     }
 
+    /// The keys the file writes under `table`, spelled the way it spells them — what an editor over an
+    /// open table keys its edits by, since those names are the user's rather than the schema's.
+    public func names(under table: String) -> [String] {
+        document.names(under: table)
+    }
+
     /// One thing a control asks the draft to do.
     ///
     /// **Two cases, because the two surfaces disagree about what a file should contain.** A `Setting`
@@ -58,17 +64,31 @@ public struct Draft {
     /// file says elsewhere — an `outer-gap-top` is redundant when it matches the `outer-gap` two lines
     /// up — so it is asked rather than known. Both rules live on `ConfigDocument`, and this is which of
     /// them a row is entitled to.
+    /// **Four cases, because an open table can be added to and taken from.** A `Setting` is never
+    /// absent — unsetting one restores its default, which `set(_ setting:to:)` already does — but a
+    /// `[keys]` entry's absence is one fewer binding, and its *name* is the thing being edited as often
+    /// as its value. Neither is expressible as a value written to a key.
     public enum Edit {
         /// A key the table describes, at the value a control produced.
         case setting(Setting, TOMLValue)
         /// One key of a surface the table cannot describe, spelled the way the file spells it.
         case key(String, TOMLValue)
+        /// A key taken out of the file entirely, line and trailing comment together. Not "back to its
+        /// default": a binding has no default to return to.
+        case unset(String)
+        /// A key renamed in place, its value and its position untouched — a chord retyped.
+        case rename(String, to: String)
 
         /// The dotted key this touches — what a take is looked up by.
+        ///
+        /// A rename answers the **new** name, because that is where the thing being edited now lives:
+        /// the row under the pointer after the edit is the renamed one.
         public var key: String {
             switch self {
-            case .setting(let setting, _): return setting.key
-            case .key(let key, _):         return key
+            case .setting(let setting, _):  return setting.key
+            case .key(let key, _):          return key
+            case .unset(let key):           return key
+            case .rename(_, let newKey):    return newKey
             }
         }
     }
@@ -83,6 +103,8 @@ public struct Draft {
             switch edit {
             case .setting(let setting, let value): try document.set(setting, to: value)
             case .key(let key, let value):         try document.setOrUnset(key, to: value)
+            case .unset(let key):                  try document.remove(key)
+            case .rename(let key, let newKey):     try document.rename(key, to: newKey)
             }
             refusal = nil
         } catch let error as ConfigSyntaxError {

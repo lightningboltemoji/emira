@@ -126,6 +126,38 @@ public struct Take: Sendable, Equatable {
              beats: beats, period: period)
     }
 
+    /// The same take with the command that causes it named on the badge — up for the beat that starts
+    /// the motion and down once it has been read.
+    ///
+    /// **What a `[keys]` row demonstrates is the verb, and the verb is the one thing the desktop cannot
+    /// show.** Windows move for all sorts of reasons; the badge is what says this one moved because
+    /// `focus right` ran. `Cue.command` carries it as the file's own text, which `CueTests` parses back.
+    ///
+    /// The badge rides the *first* beat, which is the one the user pressed a key for. A take with no
+    /// beats has no moment to name and is handed back unchanged.
+    ///
+    /// **The badge comes down inside the loop, whatever the loop's length**, since a beat at or past
+    /// `period` never plays and one still up at the wrap is lowered by nothing. The pacing is not this
+    /// method's to assume — a ladder is as long as the user's preset list — so a short loop shortens the
+    /// dwell, and one with no room for a badge is handed back unbadged rather than given a flicker.
+    public func badged(_ spelling: String) -> Take {
+        guard let first = beats.map(\.at).min() else { return self }
+        let down = min(first + Self.badgeDwell, period - Self.badgeTail)
+        guard down > first else { return self }
+        let raised: [(at: Double, beat: Beat)] =
+            [(first, .cue(.command(spelling))), (down, .cue(nil))]
+        return Take(scene: scene, camera: camera, mark: mark, showsFocus: showsFocus,
+                    beats: (beats + raised).sorted { $0.at < $1.at }, period: period)
+    }
+
+    /// How long the command stays on the badge. Long enough to read a two-word phrase, short enough that
+    /// it is gone before the motion it named has finished settling.
+    static let badgeDwell: Double = 1.1
+
+    /// The clear stretch a badge lands in front of the wrap. It is down for at least this long before
+    /// the loop restarts, so the take is seen to finish rather than to stop.
+    static let badgeTail: Double = 0.3
+
     /// The same script with every beat respaced to `interval`, and a beat of rest on the end.
     ///
     /// **The period is derived from the spring being edited.** A spring dial's take has to show one

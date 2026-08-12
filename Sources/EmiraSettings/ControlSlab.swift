@@ -441,8 +441,15 @@ final class ControlSlab: NSVisualEffectView {
     }
 
     @objc private func tabPicked() {
-        guard Self.sections.indices.contains(tabs.selectedSegment) else { return }
-        section = Self.sections[tabs.selectedSegment]
+        select(section: tabs.selectedSegment)
+    }
+
+    /// Show the `index`-th tab, exactly as clicking it does — the one path that changes which controls
+    /// exist, so a test asks for a section the same way a hand does.
+    func select(section index: Int) {
+        guard Self.sections.indices.contains(index) else { return }
+        tabs.selectedSegment = index
+        section = Self.sections[index]
         showsAdvanced = false
         rebuild()
         onSection?(section)

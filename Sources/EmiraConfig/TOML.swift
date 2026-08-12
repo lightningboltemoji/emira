@@ -23,6 +23,10 @@ struct TOMLSpan: Equatable {
     /// The value's own text — its trailing comment and the whitespace around it excluded. What an
     /// edit splices over.
     let value: Range<String.Index>
+    /// The key's own name as it was written: the **last segment** of the key expression, quoting and
+    /// all. What a rename splices over — the segments before it name the table the line sits in, and
+    /// changing those would be moving the line rather than renaming it.
+    let key: Range<String.Index>
     /// The whole line carrying it — its trailing comment included, its terminator not. What an unset
     /// takes out.
     let line: Range<String.Index>
@@ -161,6 +165,24 @@ struct TOMLTable: Equatable {
         values[path]?.span
     }
 
+    /// Which line a dotted path was written on — what a diagnostic about it points at.
+    func line(of path: String) -> Int? {
+        values[path]?.line
+    }
+
+    /// The keys written directly under `path`, as they were spelled, earliest line first. A deeper key
+    /// is not one of them: `keys.alt-h` is a name under `keys`, and `layout.spring.stiffness` is not.
+    func names(under path: String) -> [String] {
+        let prefix = path + "."
+        let found: [(name: String, line: Int)] = values.compactMap { key, value in
+            guard key.hasPrefix(prefix) else { return nil }
+            let name = String(key.dropFirst(prefix.count))
+            guard !name.contains(".") else { return nil }
+            return (name, value.line)
+        }
+        return found.sorted { ($0.line, $0.name) < ($1.line, $1.name) }.map(\.name)
+    }
+
     /// The stretch of file a new key under `path` goes at the end of, or `nil` when the file declares
     /// no such table and so has no run to join.
     func extent(of path: [String]) -> Range<String.Index>? {
@@ -215,13 +237,14 @@ struct TOMLTable: Equatable {
             guard let equals = indexOfUnquoted("=", in: trimmed) else {
                 throw ConfigSyntaxError.syntax(line: line, message: "expected 'key = value'")
             }
-            let path = current + (try keyPath(trimmed[..<equals], line: line))
+            let (names, keySpan) = try keyPath(trimmed[..<equals], line: line)
+            let path = current + names
             let dotted = path.joined(separator: ".")
             guard table.values[dotted] == nil else {
                 throw ConfigSyntaxError.duplicateKey(line: line, key: dotted)
             }
             table.values[dotted] = try value(trimmed[trimmed.index(after: equals)...],
-                                             line: line, on: lineSpan)
+                                             line: line, key: keySpan, on: lineSpan)
             table.extend(current, over: lineSpan)
         }
         return table
@@ -249,7 +272,7 @@ struct TOMLTable: Equatable {
         guard rest.isEmpty || rest.hasPrefix("#") else {
             throw ConfigSyntaxError.syntax(line: line, message: "unexpected text after '\(closer)'")
         }
-        let path = try keyPath(opened[..<close], line: line)
+        let path = try keyPath(opened[..<close], line: line).segments
         guard !path.isEmpty else {
             throw ConfigSyntaxError.syntax(line: line, message: "empty table header")
         }
@@ -259,8 +282,14 @@ struct TOMLTable: Equatable {
     /// A dot-separated key expression — headers and key names are spelled the same way. Each segment is
     /// bare (`column-gap`) or quoted (`"cmd-alt-h"`); quoting admits characters the bare charset
     /// (letters, digits, `-`, `_`) refuses.
-    private static func keyPath(_ text: Substring, line: Int) throws -> [String] {
+    ///
+    /// `last` is where the final segment was written, quoting included — the one part of the expression
+    /// a rename replaces. Returned from here rather than found again afterwards, because finding it
+    /// again means a second, subtly different reading of the same grammar.
+    private static func keyPath(_ text: Substring, line: Int) throws
+        -> (segments: [String], last: Range<String.Index>) {
         var segments: [String] = []
+        var last = text.startIndex..<text.startIndex
         var rest = text.trimmed
         while true {
             guard let first = rest.first else {
@@ -269,6 +298,7 @@ struct TOMLTable: Equatable {
             if first == "\"" {
                 let (string, remainder) = try quotedString(rest, line: line)
                 segments.append(string)
+                last = rest.startIndex..<remainder.startIndex
                 rest = remainder.trimmed
             } else {
                 let end = rest.firstIndex(of: ".") ?? rest.endIndex
@@ -277,9 +307,10 @@ struct TOMLTable: Equatable {
                     throw ConfigSyntaxError.syntax(line: line, message: "invalid key '\(bare)'")
                 }
                 segments.append(String(bare))
+                last = bare.startIndex..<bare.endIndex
                 rest = rest[end...]
             }
-            guard let next = rest.first else { return segments }
+            guard let next = rest.first else { return (segments, last) }
             guard next == "." else {
                 throw ConfigSyntaxError.syntax(line: line, message: "unexpected text after key")
             }
@@ -294,19 +325,19 @@ struct TOMLTable: Equatable {
     /// The right-hand side of a `key = value`, with any trailing comment removed. `lineSpan` is the
     /// whole line, carried down so every value — an array's elements included — knows both the text it
     /// occupies and the line that holds it.
-    private static func value(_ text: Substring, line: Int,
+    private static func value(_ text: Substring, line: Int, key keySpan: Range<String.Index>,
                               on lineSpan: Range<String.Index>) throws -> TOMLValue {
         let body = stripComment(text).trimmed
         guard !body.isEmpty else {
             throw ConfigSyntaxError.syntax(line: line, message: "missing value after '='")
         }
-        if body.hasPrefix("[") { return try array(body, line: line, on: lineSpan) }
-        return try scalar(body, line: line, on: lineSpan)
+        if body.hasPrefix("[") { return try array(body, line: line, key: keySpan, on: lineSpan) }
+        return try scalar(body, line: line, key: keySpan, on: lineSpan)
     }
 
-    private static func array(_ text: Substring, line: Int,
+    private static func array(_ text: Substring, line: Int, key keySpan: Range<String.Index>,
                               on lineSpan: Range<String.Index>) throws -> TOMLValue {
-        let span = TOMLSpan(value: text.startIndex..<text.endIndex, line: lineSpan)
+        let span = TOMLSpan(value: text.startIndex..<text.endIndex, key: keySpan, line: lineSpan)
         guard text.hasSuffix("]") else {
             throw ConfigSyntaxError.syntax(
                 line: line, message: "unterminated array — it must open and close on one line")
@@ -320,14 +351,14 @@ struct TOMLTable: Equatable {
             if element.hasPrefix("[") {
                 throw ConfigSyntaxError.syntax(line: line, message: "nested arrays are not supported")
             }
-            elements.append(try scalar(element, line: line, on: lineSpan))
+            elements.append(try scalar(element, line: line, key: keySpan, on: lineSpan))
         }
         return TOMLValue(payload: .array(elements), line: line, span: span)
     }
 
-    private static func scalar(_ text: Substring, line: Int,
+    private static func scalar(_ text: Substring, line: Int, key keySpan: Range<String.Index>,
                                on lineSpan: Range<String.Index>) throws -> TOMLValue {
-        let span = TOMLSpan(value: text.startIndex..<text.endIndex, line: lineSpan)
+        let span = TOMLSpan(value: text.startIndex..<text.endIndex, key: keySpan, line: lineSpan)
         func read(_ payload: TOMLValue.Payload, _ quoting: TOMLValue.Quoting = .basic) -> TOMLValue {
             TOMLValue(payload: payload, quoting: quoting, line: line, span: span)
         }

@@ -28,7 +28,7 @@ func bundledVersion() -> String {
     Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
 }
 
-/// Help text. The verb list comes from `Command.usage` and the config subcommands from
+/// Help text. The verb list comes from `Vocabulary.usage` and the config subcommands from
 /// `ConfigCommand.usage`, so each vocabulary is defined in exactly one place — and they stay two
 /// vocabularies, because one is sent to the daemon and the other is a file on disk.
 func help() -> String {
@@ -38,7 +38,7 @@ func help() -> String {
     Usage: emira [--dry-run] <command> [arguments]
 
     Commands:
-    \(Command.usage)
+    \(Vocabulary.usage)
 
     The config file, read and written here rather than sent:
     \(ConfigCommand.usage)

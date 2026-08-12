@@ -131,4 +131,54 @@ import EmiraCore
         #expect(draft.config == Config())
         #expect(!draft.isDirty)
     }
+
+    // The two edits an open table needs
+    //
+    // A `Setting` is never absent and never renamed. A `[keys]` entry is both, constantly — which is
+    // why neither of these is expressible as a value written to a key.
+
+    @Test func anUnsetTakesTheWholeLine() throws {
+        var draft = try Draft("""
+        [keys]
+        alt-h = "focus left"   # the one I actually use
+        alt-l = "focus right"
+        """)
+        draft.apply(.unset("keys.alt-h"))
+
+        #expect(draft.refusal == nil)
+        #expect(draft.config.keys.count == 1)
+        // The trailing comment described that binding, so it goes with it.
+        #expect(!draft.rendered.contains("actually use"))
+        #expect(draft.rendered == "[keys]\nalt-l = \"focus right\"")
+    }
+
+    @Test func aRenameRetypesTheChordAndKeepsTheCommand() throws {
+        var draft = try Draft("[keys]\nalt-h = \"focus left\"\nalt-l = \"focus right\"\n")
+        draft.apply(.rename("keys.alt-h", to: "keys.ctrl-alt-h"))
+
+        #expect(draft.refusal == nil)
+        #expect(draft.config.keys.map(\.chord.description) == ["ctrl-alt-h", "alt-l"])
+        #expect(draft.config.keys.first?.spelling == "focus left")
+    }
+
+    /// **A refused rename leaves the binding where it was, not deleted.** The whole reason this is one
+    /// edit rather than a `remove` and a `set`: two edits have a state between them in which the user's
+    /// binding does not exist.
+    @Test func aRefusedRenameLeavesTheBindingAlone() throws {
+        var draft = try Draft("[keys]\nalt-h = \"focus left\"\nalt-l = \"focus right\"\n")
+        let before = draft.rendered
+        draft.apply(.rename("keys.alt-h", to: "keys.alt-l"))
+
+        #expect(draft.refusal != nil)
+        #expect(draft.rendered == before, "a refused rename landed")
+        #expect(draft.config.keys.count == 2)
+        #expect(!draft.isDirty)
+    }
+
+    /// An edit names the key a take is looked up by — and after a rename that is the *new* name, since
+    /// the row under the pointer is the renamed one.
+    @Test func anEditNamesTheKeyItLeavesBehind() {
+        #expect(Draft.Edit.unset("keys.alt-h").key == "keys.alt-h")
+        #expect(Draft.Edit.rename("keys.alt-h", to: "keys.cmd-j").key == "keys.cmd-j")
+    }
 }

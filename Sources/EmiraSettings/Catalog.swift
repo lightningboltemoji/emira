@@ -33,6 +33,7 @@ public enum Catalog {
     /// that had its own opinion would be a second one. `scripted` is consulted first, because the four
     /// edges of `outer-gap` are keys the *file* spells and the schema does not.
     public static func take(for key: String, config: Config) -> Take? {
+        if let take = binding(key, config) { return take }
         if let take = scripted(key, config) { return take }
         guard !notDemonstrable.contains(key) else { return nil }
         let section = ConfigSchema.setting(for: key)?.section
@@ -52,12 +53,166 @@ public enum Catalog {
             return Take(scene: Scenes.fourColumns)
         case .mouse:
             return Take(scene: Scenes.twoColumns)
-        case .keys, .windowRules:
-            // No entries in the schema, so nothing ever asks — but the switch is total on purpose, so
-            // adding a section is a compile error here rather than a blank mock at runtime.
+        case .keys:
+            // The Keys tab holds a *list*, so its set at rest is what the strip looks like before any
+            // of the bindings on it has fired. The long one, because most of the verbs that have a
+            // picture play over it.
+            return Take(scene: Scenes.longStrip)
+        case .windowRules:
+            // No entries in the schema and no editor, so nothing ever asks — but the switch is total on
+            // purpose, so adding a section is a compile error here rather than a blank mock at runtime.
             return Take(scene: Scenes.threeColumns)
         }
     }
+
+    // The bindings
+    //
+    // **The unit here is the verb, not the binding.** A chord is one user's; what a row demonstrates is
+    // what the command it runs does, badged with `Cue.command` — the spelling the file itself carries,
+    // and the same badge every other take on the panel uses for a cause that happens off screen.
+    //
+    // The rule `notDemonstrable` keeps for settings, one rung out: **every verb has a take or a written
+    // reason**, and `CatalogTests` will not let a verb be added without one. The list starts longer than
+    // the settings one, because the mock is a single display showing a single workspace and a third of
+    // the vocabulary is about the other displays and the other workspaces.
+
+    /// What a `[keys]` row demonstrates — the command bound to that chord, over the set that shows it.
+    ///
+    /// The chord is *parsed* out of the key rather than compared as text, because the key a row is
+    /// looked up by is the one the **file** spells and `cmd-alt-h` and `alt-cmd-h` are one hotkey
+    /// written two ways. What it resolves to is read from the draft's own bindings, so a row shows what
+    /// it currently runs and follows the command popup as that changes.
+    private static func binding(_ key: String, _ config: Config) -> Take? {
+        let prefix = "keys."
+        guard key.hasPrefix(prefix), let chord = try? KeyChord.parse(String(key.dropFirst(prefix.count)))
+        else { return nil }
+        guard let binding = config.keys.first(where: { $0.chord == chord }) else { return nil }
+
+        let spelling = binding.spelling
+        let verb = String(spelling.prefix { !$0.isWhitespace })
+        guard let take = demonstration(of: verb, config) else { return nil }
+        return take.badged(spelling)
+    }
+
+    /// The verbs with a picture, and what plays it. Everything else is on `notDemonstrableVerbs`.
+    ///
+    /// **A beat per verb, or nothing.** Every take here is the mock doing the thing the verb names —
+    /// not a rearrangement that happens to look like it. That is what keeps the list short and what
+    /// makes the ones that are here worth watching.
+    private static func demonstration(of verb: String, _ config: Config) -> Take? {
+        switch verb {
+
+        // Focus walking the strip, far enough that the viewport has to move to keep up — which is the
+        // whole of what `focus` does that a two-column set cannot show.
+        case "focus":
+            return Take(scene: Scenes.longStrip,
+                        beats: [(0.8, .focusRight), (1.8, .focusRight),
+                                (3.0, .focus(Scenes.longStripFirst))],
+                        period: 4.2)
+
+        // Pure translation across a full screen, so what moves is one column and nothing else.
+        case "move-window":
+            return Take(scene: Scenes.threeAcross,
+                        beats: [(0.9, .moveColumn(ColumnId(91), to: 2)),
+                                (2.4, .moveColumn(ColumnId(91), to: 0))],
+                        period: 3.9)
+
+        // The two ladders, walked by the very commands they are ladders for — and paced by the draft's
+        // own list, so a five-rung cycle is five beats.
+        case "cycle-width":
+            return Scenes.widthLadder(config)
+        case "cycle-height":
+            return Scenes.heightLadder(config)
+
+        // A continuous width change, on the set that leaves room for one. `grow` has a beat of its own;
+        // `shrink` is scripted as the width it arrives at, which is the same picture read backwards.
+        case "grow":
+            return Take(scene: Scenes.detentPair,
+                        beats: [(0.9, .grow(.percent(Scenes.growStep))),
+                                (2.6, .widthOverride(.proportion(0.35), column: ColumnId(71)))],
+                        period: 4.0)
+        case "shrink":
+            return Take(scene: Scenes.detentPair,
+                        beats: [(0.9, .widthOverride(.proportion(0.20), column: ColumnId(71))),
+                                (2.6, .widthOverride(.proportion(0.35), column: ColumnId(71)))],
+                        period: 4.0)
+
+        // The strip's full width, and back — **not macOS's full screen**, which is the confusion the
+        // picture is there to settle: the neighbours scroll out of view rather than a new Space opening.
+        case "fullscreen":
+            return Take(scene: Scenes.threeColumns,
+                        beats: [(0.9, .widthOverride(.proportion(1), column: ColumnId(2))),
+                                (2.6, .widthOverride(nil, column: ColumnId(2)))],
+                        period: 4.0)
+
+        default:
+            return nil
+        }
+    }
+
+    /// The verbs with no honest picture, and what a take would have had to invent to give them one.
+    ///
+    /// Three groups, and none of them is a gap in the catalogue. **The mock is one display showing one
+    /// workspace**, so every verb whose subject is another display or another workspace is genuinely
+    /// undemonstrable on it. **Three verbs need a mechanism the mock has no beat for** — membership,
+    /// floating, closing — and a take that mimed one would be teaching a picture the desktop cannot
+    /// actually make. **Two have no picture at all**: a shell line and a JSON dump both happen off
+    /// screen, which is the point of `exec` and the whole of `debug`.
+    public static let notDemonstrableVerbs: [String: String] = [
+        "consume-or-expel": """
+        Changes which column a window belongs to, and no beat moves a window between a column and its \
+        neighbour — the mock scripts focus, widths and whole-column moves. A take would have to invent \
+        the mechanism rather than show it.
+        """,
+
+        "center-column": """
+        Scrolls the viewport on its own, and the mock only ever moves the strip as a consequence of \
+        focusing something. A take would be playing `focus` and calling it by another name.
+        """,
+
+        "close-window": """
+        Takes a window off the desktop, and no beat removes one — every set is fixed for the life of \
+        its take, which is what lets the view pool a layer per mock window.
+        """,
+
+        "float": """
+        Takes a window off the strip, and a `MockFloat` is part of a *set* rather than something a beat \
+        can produce. A take would have to cut between two sets, which reads as the preview restarting.
+        """,
+
+        "focus-workspace": Self.oneWorkspace,
+        "move-to-workspace": Self.oneWorkspace,
+        "move-to-workspace-and-focus": Self.oneWorkspace,
+
+        "focus-monitor": Self.oneDisplay,
+        "move-to-monitor": Self.oneDisplay,
+        "move-to-monitor-and-focus": Self.oneDisplay,
+        "move-workspace-to-monitor": Self.oneDisplay,
+        "move-workspace-to-monitor-and-focus": Self.oneDisplay,
+
+        "exec": """
+        Launches something, and says nothing about the desktop — a window the process opens arrives \
+        later as an ordinary creation. The mock has no apps to launch and no dock to launch them from.
+        """,
+
+        "debug": """
+        A read, answered out of band over the socket. Nothing happens on the desktop at all, which is \
+        the one case where a still picture is the honest one.
+        """,
+    ]
+
+    /// The mock shows one workspace, and the whole content of a workspace verb is the other one.
+    private static let oneWorkspace = """
+    The mock is a single workspace, so there is nowhere for a window to go and nothing to switch to. \
+    A take would have to cut to a second desktop, which is the preview restarting rather than a command \
+    running.
+    """
+
+    /// …and one display.
+    private static let oneDisplay = """
+    The mock is a single display. Every monitor verb's whole content is the *other* screen, and a set \
+    with one screen in it cannot show a window arriving on another.
+    """
 
     /// The settings with no honest picture, and why. A take that mimed one would teach the user
     /// something false, which is worse than a control with only its sentence under it.

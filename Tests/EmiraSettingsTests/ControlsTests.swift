@@ -51,9 +51,10 @@ import EmiraConfig
     /// re-derived here, or this tests a copy of the rule and not the rule.
     @Test func onlySectionsWithSomethingToShowBecomeTabs() {
         let offered = ControlSlab.sections
-        // Both carry a bespoke surface and neither has an editor, so neither is a tab that opens on
-        // nothing.
-        #expect(!offered.contains(.keys))
+        // `keys` carries no *setting* at all and is a tab entirely on the strength of its editor —
+        // which is the claim `ControlSlab.sections` makes, and the one this is here to hold.
+        #expect(offered.contains(.keys))
+        // `window-rules` still has none, so it is still not a tab that opens on nothing.
         #expect(!offered.contains(.windowRules))
         #expect(offered.contains(.layout))
         for section in offered {
@@ -117,10 +118,12 @@ import EmiraConfig
         return reported
     }
 
-    /// The value an edit carries, whichever surface it came off.
-    static func value(of edit: Draft.Edit) -> TOMLValue {
+    /// The value an edit carries, whichever surface it came off — and `nil` for the two that carry
+    /// none, which no control on this suite's list can produce.
+    static func value(of edit: Draft.Edit) -> TOMLValue? {
         switch edit {
         case .setting(_, let value), .key(_, let value): return value
+        case .unset, .rename: return nil
         }
     }
 

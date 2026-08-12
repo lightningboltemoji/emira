@@ -24,6 +24,8 @@ enum BespokeEditors {
         switch surface.key {
         case "layout.outer-gap":
             editor = OuterGapsControl(surface: surface, onChange: onChange, onHover: onHover)
+        case "keys":
+            editor = KeysEditor(surface: surface, onChange: onChange, onHover: onHover)
         default:
             // Unreachable while `BespokeTests` passes: a surface with neither an editor nor a reason
             // fails there rather than opening on a blank row here.
@@ -40,12 +42,6 @@ enum BespokeEditors {
     /// file" is the only question the omission provokes, and the answer is a fact about what the editor
     /// would have to do rather than about how much time there was.
     static let notEditable: [String: String] = [
-        "keys": """
-        A chord editor has to capture keystrokes rather than read a value, and every chord it captures \
-        is one the user may be about to bind — so the field has to hold ⌘Q and ⎋ without either \
-        reaching the app. Hotkeys are already suspended behind the scrim, which is half of it.
-        """,
-
         "window-rules": """
         Order in the file is precedence, so an editor has to move whole blocks — an API `ConfigDocument` \
         does not have, and deliberately: it splices single values, and `set` refuses a positional index \
@@ -54,7 +50,8 @@ enum BespokeEditors {
     ]
 }
 
-// The one bespoke editor there is.
+// Outer gaps, the simpler of the two bespoke editors. `[keys]` is `KeysEditor.swift`, which is a list
+// rather than a row and needs the space to say why.
 //
 // **Four fields on one row, not a row each.** The four edges are one setting the file happens to spell
 // five ways, and four rows of "Outer gap top" would say the opposite — as well as pushing every other

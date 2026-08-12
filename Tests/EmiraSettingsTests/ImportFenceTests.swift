@@ -15,6 +15,13 @@ import Testing
 
     /// The five names the settings window may not reach for. `Layout`, `Strip` and `LayoutMetrics` are
     /// deliberately absent: geometry is exactly what this module is allowed to share.
+    ///
+    /// **`Vocabulary` and `Verb` are absent too, and that is not an oversight.** The five here are the
+    /// reducer — its state, its input, its output, and the machine between them. The vocabulary is the
+    /// spellings, and offering a word is not consuming one: the keys editor composes `focus left` as
+    /// text and the *schema* is where that becomes a `Command`, in another module. What would breach the
+    /// fence is calling `Command.parse` to check it, which is why the panel never does — the draft is
+    /// the authority on what is legal and this module is only the authority on what is offerable.
     static let forbidden = ["Engine", "State", "Event", "Effect", "Command"]
 
     @Test func settingsNeverNamesTheReducer() throws {

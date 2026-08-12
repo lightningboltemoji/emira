@@ -376,4 +376,108 @@ import EmiraCore
         #expect(document.rendered == Self.real + #"alt-p = "exec osascript -e 'say \"hi\"'""# + "\n")
         #expect(document.config.keys.count == bound + 1)
     }
+
+    // Renaming
+    //
+    // The edit a chord editor makes constantly, and the one `remove` + `set` gets wrong twice over: a
+    // refused second half deletes the binding, and the insert moves the line to the end of the table.
+
+    /// **The line does not move.** A binding retyped in the middle of a twelve-line table stays in the
+    /// middle of it — which is what makes an editor over somebody's hand-written file bearable.
+    @Test func aRenameHoldsItsPlaceInTheTable() throws {
+        var document = try ConfigDocument(Self.real)
+        let before = document.rendered.split(separator: "\n", omittingEmptySubsequences: false)
+        let line = try #require(before.firstIndex { $0.hasPrefix("alt-3 = ") })
+
+        try document.rename("keys.alt-3", to: "keys.cmd-alt-3")
+
+        let after = document.rendered.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(after.count == before.count, "a rename changed the file's line count")
+        #expect(after[line] == "cmd-alt-3 = \"focus-workspace 3\"")
+        // Every other line is byte-for-byte what it was.
+        for (index, pair) in zip(before, after).enumerated() where index != line {
+            #expect(pair.0 == pair.1, "line \(index + 1) moved")
+        }
+    }
+
+    /// Only the name is spliced: the value, the spacing around the `=` and the trailing comment are
+    /// all the author's and none of them is re-rendered.
+    @Test func aRenameKeepsTheValueSpacingAndTrailingComment() throws {
+        var document = try ConfigDocument("""
+        [keys]
+        alt-h   =   "focus left"   # the one I actually use
+        alt-l = "focus right"
+        """)
+        try document.rename("keys.alt-h", to: "keys.ctrl-alt-h")
+        #expect(document.rendered == """
+        [keys]
+        ctrl-alt-h   =   "focus left"   # the one I actually use
+        alt-l = "focus right"
+        """)
+        #expect(document.config.keys.first?.chord.description == "ctrl-alt-h")
+    }
+
+    /// A chord the file already carries is refused — by the grammar's own duplicate-key complaint,
+    /// since the renamed text is read back before it is taken — **and nothing changes**.
+    @Test func aRenameOntoAnExistingKeyIsRefusedAndChangesNothing() throws {
+        var document = try ConfigDocument("""
+        [keys]
+        alt-h = "focus left"
+        alt-l = "focus right"
+        """)
+        let before = document.rendered
+        #expect(throws: ConfigSyntaxError.self) { try document.rename("keys.alt-h", to: "keys.alt-l") }
+        #expect(document.rendered == before, "a refused rename landed")
+        #expect(document.config.keys.count == 2)
+    }
+
+    /// A name the *chord* grammar refuses is refused too, and by the same route — the renamed line is
+    /// re-read, so `[keys]`' own reader is what complains.
+    @Test func aRenameToAnIllegalChordIsRefused() throws {
+        var document = try ConfigDocument("[keys]\nalt-h = \"focus left\"\n")
+        let before = document.rendered
+        #expect(throws: ConfigSyntaxError.self) { try document.rename("keys.alt-h", to: "keys.fn-left") }
+        #expect(document.rendered == before)
+    }
+
+    /// Renaming into another table is not a rename — the segments before the last one say where the
+    /// line *is*, and moving it is a different edit with a different answer about the comment above it.
+    @Test func aRenameIntoAnotherTableIsRefused() throws {
+        var document = try ConfigDocument("[keys]\nalt-h = \"focus left\"\n")
+        let before = document.rendered
+        let error = try #require(throws: ConfigSyntaxError.self) {
+            try document.rename("keys.alt-h", to: "layout.column-gap")
+        }
+        #expect(error.message.contains("another table"))
+        #expect(document.rendered == before)
+    }
+
+    /// A key the file doesn't set is left alone, exactly as `remove` leaves one alone.
+    @Test func renamingAKeyTheFileDoesNotSetIsANoOp() throws {
+        var document = try ConfigDocument(Self.real)
+        let before = document.rendered
+        try document.rename("keys.cmd-f19", to: "keys.cmd-f20")
+        #expect(document.rendered == before)
+    }
+
+    /// Round-trip identity survives it: rename and rename back is the file it started as.
+    @Test func aRenameAndItsInverseIsTheFileItStartedAs() throws {
+        for file in Self.corpus {
+            var document = try ConfigDocument(file.text)
+            guard document.config.keys.count > 0 else { continue }
+            let chord = try #require(document.config.keys.first?.chord.description)
+            try document.rename("keys.\(chord)", to: "keys.ctrl-shift-f19")
+            #expect(document.rendered != file.text, "\(file): the rename did nothing")
+            try document.rename("keys.ctrl-shift-f19", to: "keys.\(chord)")
+            #expect(document.rendered == file.text, "\(file): a rename round trip lost bytes")
+        }
+    }
+
+    /// A quoted key is renamed as a quoted key — the splice covers the quoting, so a name the bare
+    /// charset refuses does not come back out bare and unreadable.
+    @Test func aQuotedKeyIsRenamedWithItsQuoting() throws {
+        var document = try ConfigDocument("[keys]\n\"alt-h\" = \"focus left\"\n")
+        try document.rename("keys.alt-h", to: "keys.alt-j")
+        #expect(document.rendered == "[keys]\nalt-j = \"focus left\"\n")
+    }
 }

@@ -64,7 +64,7 @@ Everything else in this document is a consequence of these four.
 a new verb is added in exactly one place: the CLI parses `argv` into it, the hotkey manager maps a chord to it,
 the config file binds keys to it, the wire protocol carries it, the core consumes it as `Event.command`.
 
-The rule it lives by: **every verb in it does something.** `Command.usage` _is_ `emira --help`, and a listed
+The rule it lives by: **every verb in it does something.** `Vocabulary.usage` _is_ `emira --help`, and a listed
 verb is a promise. That is not automatic — a verb can parse, ride the socket, be answered `ok`, and be inert in
 the reducer with the syntax and wire tests green the whole time, because those check that a verb _parses_.
 
@@ -72,7 +72,14 @@ the reducer with the syntax and wire tests green the whole time, because those c
 keybindings need the identical `argv ↔ Command` mapping and `EmiraConfig` cannot depend on an executable.
 `words` is an exhaustive `switch` the compiler checks; a test pins the verb table against it. This is also why
 there is **no `swift-argument-parser`**: the grammar is "verb, then at most one word", and `exec` — the one verb
-whose argument is a _shell_ line — declares `takesRawTail` and gets everything after its own word, unsplit.
+whose argument is a _shell_ line — gets everything after its own word, unsplit.
+
+**The table is `Vocabulary`, and the grammar in it is data.** A surface that must _offer_ the vocabulary
+rather than read it can call neither `usage` nor `parse`, since both answer only once something has been typed.
+So a `Verb` carries its argument as a **shape**, `Verb.Argument`, and the printed grammar is derived from it.
+Five shapes carry twenty-one verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
+control, never per verb** — and each reads its choices off the type that parses them back. It is top-level
+rather than nested in `Command`: a consumer of the _spellings_ is not a consumer of the reducer's input.
 
 **`Event` is the replay log.** Every input to the reducer is a case of it, which is what makes
 `(State, Event) → (State, [Effect])` replayable in principle. Two consequences bind the shell: nothing may enter
@@ -1116,10 +1123,35 @@ and a save leaves the window up.
   real guide has with the real cover rather than an imitation of it.
 - **The panel is a fold, and the exception is a list rather than an omission.** Rows come off
   `ConfigSchema.settings` filtered by section; a bespoke surface has no `kind` for `ControlFactory` to switch
-  on, so each editor it gets is written — `OuterGapsControl` is the one there is, four edges on one row because
-  the file spells one value five ways and four rows would say the opposite. `BespokeEditors.notEditable` names
-  the two with no editor and why, and `BespokeTests` requires one or the other. Both protocols exist for this:
-  a `PanelRow` shows a draft, a `SettingControl` is a `PanelRow` that is exactly one setting.
+  on, so each editor it gets is written — `OuterGapsControl` is four edges on one row because the file spells
+  one value five ways and four rows would say the opposite, and `KeysEditor` is the other.
+  `BespokeEditors.notEditable` names the one with no editor and why, and `BespokeTests` requires one or the
+  other. Both protocols exist for this: a `PanelRow` shows a draft, a `SettingControl` is a `PanelRow` that is
+  exactly one setting.
+- **`[keys]` is the editor that is a whole surface.** `KeysEditor` is one `PanelRow` owning its
+  own children, which it reconciles against the draft — the slab rebuilds rows only when the section changes,
+  so a surface whose length moves under `show(draft)` has to manage that itself. A binding is two capsules
+  reading as one phrase: `ChordBubble`, whose modifier chips and key popup stay live while `ChordRecorder`
+  listens for a press, so a chord is reachable by hand or by pressing it; and `CommandBubble`, a verb popup
+  plus whatever `Verb.Argument` asks for — the one `switch` over `Argument` in the package, which is
+  `ControlFactory`'s rule one vocabulary over. **The draft stays the authority on what is legal**, and the
+  editor is the authority only on what may be *offered*: two spellings of one chord are one hotkey, which it
+  catches on `KeyChord` and marks on the capsules that disagree rather than letting the file refuse the whole
+  edit from the foot of the panel.
+- **Reconciling the rows is two claims, and the second one is about the view hierarchy.** Matching a binding
+  to a row it already has keeps the *object*; moving that row with `insertArrangedSubview` keeps its *place*,
+  because taking a view out of the hierarchy ends any editing session inside it and a stack rebuilt whenever
+  the order moved would cost the user the line they were typing. That is what makes the arrangement free to
+  change: the half-built row opens directly under the button that made it — not being in the file yet, file
+  order has no claim on where it sits — and on commit it joins the bound rows and takes its place among them,
+  still the same row.
+- **The argument well is a fixed budget, and `rebuildArgument` is where that is enforced.** The bubble's width
+  comes from the row, so a control sized by its own content would leave the engine a layout with a required
+  constraint to break — and it breaks both ways: a verb with no argument collapses the well and strands the ⊖,
+  an address popup sized to `previous-non-empty` rather than to what the row is showing overruns it and the ⊖
+  is drawn over. So the well guarantees the precondition its own constraints depend on rather than five inits
+  each remembering it, and tells the control it may compress. A truncated word is a control that still works;
+  a broken constraint is a row whose remove button is somewhere else.
 - **The panel says it has more in it twice, and neither is a scroll bar.** Its scroller is half a row
   short of a whole number of them, so a row is always cut by the bottom edge rather than sitting flush
   with it — content, not chrome, and it survives someone who has turned scroll bars off. Over that, a
@@ -1133,9 +1165,9 @@ and a save leaves the window up.
   rewritten on every pass rather than when a remembered value moves — the layer is the fact, and a
   memory that says "already correct" while nothing is installed is a fade that never appears.
 - **A section becomes a tab when it has something to show** — a setting, or a bespoke surface with an editor.
-  `keys` and `windowRules` have neither and are not tabs. There is no springs section either: the four spring
-  tables are eight advanced dials of `animation`, because a tab whose every row is behind the disclosure opens
-  on a triangle and nothing else.
+  `keys` carries no setting at all and is a tab entirely on the strength of its editor; `windowRules` has
+  neither and is not one. There is no springs section either: the four spring tables are eight advanced dials
+  of `animation`, because a tab whose every row is behind the disclosure opens on a triangle and nothing else.
 - **The scroll offset is a fold over the beats**, not a function of the final set: `offsetToReveal` is relative
   to where the strip already is, so a take that focuses right twice reveals from the offset the first one left
   — which is what the reducer does, one command at a time.
@@ -1243,16 +1275,29 @@ write settings. `setOrUnset(_ key:to:)` is the same rule for a key whose default
 per-side outer gap defaults to whatever `outer-gap` says two lines up, so what a line would be redundant with is
 found by taking it out and reading again rather than by asking the key.
 
+**A key can also be renamed, and it is one splice.** `rename(_:to:)` writes over the key's own text —
+`TOMLSpan` carries where that is, alongside the value and the line — so the value, the spacing and the trailing
+comment stay where the author left them and the line keeps its place in the table. A `remove` and a `set` would
+not: a refused second half deletes the binding, and the insert moves the line to the end of its table's run.
+
+**An open table's names are the user's, so a caller holding a meaning has to ask which line carries it.**
+Every method here finds a key by the text it was written as and leaves one it cannot find alone — which is
+right for a splicer and a trap for an editor, because a `[keys]` name is a *chord* and a chord has more than
+one spelling: `cmd-alt-h`, `alt-cmd-h` and `h-cmd` are one hotkey and three TOML keys. `names(under:)` answers
+what the file actually says, and the surface that knows what those names mean does the matching. Keying an edit
+by the canonical spelling instead is silent: the document is asked to change a line that does not exist, and
+answers by doing nothing.
+
 **Unknown keys are refused, and there is no second list of valid names.** The reader _takes_ each key the schema
 knows and reports whatever is left, so "which keys are valid" _is_ the reading code. A declared-but-empty
 `[layuot]` is caught too. Silence is the failure mode that matters: a window manager that ignores `colum-gap` is
 one the user believes is broken.
 
 **The three the table can't describe are still a list.** `outer-gap` (one logical value with five spellings),
-`[keys]` (an open table whose names the user invents) and `[[window-rules]]` (repeating, ordered,
-cross-validated) each keep a hand-written reader — but they are on `ConfigSchema.bespoke`, carrying a label, a
-sentence, a section, the documentation block, a sample that disagrees with the default, and the reason the table
-cannot hold them. Every consumer that walks `settings` has to decide what to do about these three, and before
+`[keys]` (an open table whose names the user invents — editable in the window, but by a written editor rather
+than by the fold) and `[[window-rules]]` (repeating, ordered, cross-validated) each keep a hand-written reader
+— but they are on `ConfigSchema.bespoke`, carrying a label, a sentence, a section, the documentation block, a
+sample that disagrees with the default, and the reason the table cannot hold them. Every consumer that walks `settings` has to decide what to do about these three, and before
 the list they each decided by hand: the generated document placed three named constants, the coverage test
 spelled three fragments into a string, and the settings window did nothing at all — which is how `outer-gap`
 came to have no control without anyone choosing that. `after` names the key a surface is written
@@ -1333,6 +1378,7 @@ emira/
     │                    SettingsWindow (the scrim) · Stage · DesktopView · MockContent · CueLayer
     │                    MockMenuBar · MockIcons
     │                    ControlSlab (+ ScrollFade) · Controls · Bespoke · PreviewClock
+    │                    KeysEditor (the [keys] list + both bubbles) · ChordRecorder · Keycap
     │                    SettingsStyle · Environment
     ├── EmiraShell/      Runtime · Executor · WindowRegistry · WorldWatcher · Teardown
     │                    ProcessLauncher · Scheduler · Permissions · Logging
@@ -1410,12 +1456,19 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   different patterns of taken and declined, that a magnet settles flush and `free` plainly does not, that a
   detent catches on the second growth and lets the third past, that a drag's neighbours do not move and the
   last 500 ms are opposite between the two rungs, that `snap`, `smooth` and `off` are three different
-  pictures, and that the guide is raised by motion and lowered by `duration`. Plus the three claims that
-  are really about the schema: every setting builds a control, every setting is demonstrated by a take or named
-  on `Catalog.notDemonstrable`, and every bespoke surface builds an editor or is named on
-  `BespokeEditors.notEditable`. `BespokeTests` also drives the outer-gap editor end to end — a side that
-  matches the base key it resolves against is not written down, and one set back to what the file already means
-  takes its line out again. `ScrollFadeTests` covers the scroll affordance: which end fades and by how much,
+  pictures, and that the guide is raised by motion and lowered by `duration`. Plus the five claims that
+  are really about the schema and the vocabulary: every setting builds a control, every setting is demonstrated
+  by a take or named on `Catalog.notDemonstrable`, every bespoke surface builds an editor or is named on
+  `BespokeEditors.notEditable`, every **verb** builds a control, and every verb is demonstrated or named on
+  `Catalog.notDemonstrableVerbs`. `KeysTests` drives the `[keys]` editor end to end — a binding added, retyped,
+  retargeted and deleted as *text* — and `RecorderTests` covers the recorder's decision, which is a pure
+  function of a keycode and a flag word and so needs no event. Two of its claims need the panel actually laid
+  out, because neither is observable on a control built and never placed: that **every argument shape leaves
+  the row its own width** and its ⊖ where every other row has one, and — off a real window and a real first
+  responder — that a reorder **keeps the field under the hand**, which row identity alone does not buy and
+  only a live editing session can tell apart. `BespokeTests` also drives the outer-gap editor end to end — a
+  side that matches the base key it resolves against is not written down, and one set back to what the file
+  already means takes its line out again. `ScrollFadeTests` covers the scroll affordance: which end fades and by how much,
   and — off a laid-out slab — that the scroller is still half a row short of a whole number of them.
   `StageTests` pins the presentation: the zoom holds the composition's centre whatever anchor point the
   backing layer carries, a corner travels its own distance from it, the stack is the stage's own bounds, and
@@ -1426,7 +1479,10 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display
   raise fence in `CompositorTests`), the pointer plane, the guide's tile (`GuideTileTests` drives
   `RoundedLayer` against a detached `CALayer`), hotkeys — including that `suspend`/`resume` hands every chord
-  back while the settings window is up — config loading, onboarding, teardown.
+  back while the settings window is up, and **the keycode table pinned entry by entry against `kVK_*`** —
+  config loading, onboarding, teardown. The table lives in `EmiraCore`, which may not import Carbon, so this
+  suite is where it meets Apple's header, and it checks injectivity too: a transposition is invisible at every
+  call site.
   Everything runs against the seams in §7 — the shell's untestable calls are one file deep at every boundary.
 
 The reducer suites run with **`MockExecutor`**, which records effects instead of touching macOS: the entire

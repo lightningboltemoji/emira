@@ -140,4 +140,155 @@ import EmiraCore
             #expect(!Catalog.take(for: section).scene.columns.isEmpty)
         }
     }
+
+    // The bindings
+    //
+    // The house rule one rung out: **every verb has a take or a written reason.** The list of reasons is
+    // longer than the settings one and is meant to be — the mock is one display showing one workspace,
+    // and a third of the vocabulary is about the others.
+
+    /// A file binding every verb in the vocabulary to a chord, so the catalogue can be asked about all
+    /// twenty-one at once. Built off `Vocabulary` rather than listed, so a verb added to the table is
+    /// covered here without this file being touched.
+    static func everyVerbBound() throws -> Config {
+        let spellings = Vocabulary.verbs.map { verb -> String in
+            switch verb.argument {
+            case .none:                    return verb.name
+            case .words(let words, _):     return "\(verb.name) \(words[0])"
+            case .address(let words, _, _): return "\(verb.name) \(words[0])"
+            case .magnitude(let units):    return "\(verb.name) 100\(units[0])"
+            case .line:                    return "\(verb.name) ghostty"
+            }
+        }
+        // One letter per verb — twenty-six of them against twenty-one verbs, and every one a legal chord.
+        let letters = "abcdefghijklmnopqrstuvwxyz".map(String.init)
+        let lines = zip(letters, spellings).map { "ctrl-alt-\($0.0) = \"\($0.1)\"" }
+        #expect(lines.count == Vocabulary.verbs.count, "not every verb got a chord")
+        return try Config.parse("[keys]\n" + lines.joined(separator: "\n") + "\n")
+    }
+
+    @Test func everyVerbIsDemonstratedOrSaysWhyNot() throws {
+        let config = try Self.everyVerbBound()
+        var orphans: [String] = []
+        for binding in config.keys {
+            let verb = String(binding.spelling.prefix { !$0.isWhitespace })
+            if Catalog.notDemonstrableVerbs[verb] != nil { continue }
+            if Catalog.take(for: "keys.\(binding.chord)", config: config) == nil { orphans.append(verb) }
+        }
+        #expect(orphans.isEmpty, """
+        These verbs have no take and are not on `Catalog.notDemonstrableVerbs`: \(orphans.sorted()). \
+        Either give it a demonstration or name it with what a take would have had to invent — a row \
+        with only its sentence under it is honest, a picture that mimes one is not.
+        """)
+    }
+
+    /// A reason has to name a real verb and has to say what the take would have had to invent. A bare
+    /// list would be a licence to forget.
+    @Test func everyReasonNamesARealVerbAndSaysSomething() {
+        let named = Set(Vocabulary.verbs.map(\.name))
+        for (verb, reason) in Catalog.notDemonstrableVerbs {
+            #expect(named.contains(verb), "`\(verb)` is on the list but is not a verb")
+            #expect(reason.count > 80, "`\(verb)`'s reason does not say what a take would have to invent")
+        }
+    }
+
+    /// …and a verb cannot be on both lists, which is how a demonstration quietly stops being watched.
+    @Test func noVerbIsBothDemonstratedAndExcused() throws {
+        let config = try Self.everyVerbBound()
+        for binding in config.keys {
+            let verb = String(binding.spelling.prefix { !$0.isWhitespace })
+            guard Catalog.notDemonstrableVerbs[verb] != nil else { continue }
+            #expect(Catalog.take(for: "keys.\(binding.chord)", config: config) == nil,
+                    "`\(verb)` is excused and demonstrated at the same time")
+        }
+    }
+
+    /// **A binding's take is badged with the command it runs.** A chord is one user's; the verb is what
+    /// the row is about, and the desktop cannot show which verb moved a window.
+    @Test func aBindingsTakeNamesTheCommandItRuns() throws {
+        let config = try Config.parse("[keys]\nalt-h = \"focus left\"\n")
+        let take = try #require(Catalog.take(for: "keys.alt-h", config: config))
+        let cues = take.beats.compactMap { beat -> Cue? in
+            if case .cue(let cue) = beat.beat { return cue }
+            return nil
+        }
+        #expect(cues.first?.glyph == .command("focus left"))
+        // …and it comes down again, so the badge is a moment rather than a label on the mock.
+        #expect(take.beats.contains { beat in
+            if case .cue(nil) = beat.beat { return true }
+            return false
+        })
+    }
+
+    /// The badge follows the command popup: retarget the binding and the mock says the new verb.
+    @Test func retargetingABindingRetargetsItsDemonstration() throws {
+        let before = try Config.parse("[keys]\nalt-h = \"focus left\"\n")
+        let after = try Config.parse("[keys]\nalt-h = \"cycle-width\"\n")
+        let one = try #require(Catalog.take(for: "keys.alt-h", config: before))
+        let two = try #require(Catalog.take(for: "keys.alt-h", config: after))
+        #expect(one.scene != two.scene, "two verbs demonstrated over the same set")
+    }
+
+    /// A chord the file does not carry has nothing to demonstrate — and `nil` means **hold the stage**,
+    /// so a half-built row in the composer leaves whatever was playing exactly where it is.
+    @Test func aChordTheFileDoesNotCarryHoldsTheStage() throws {
+        let config = try Config.parse("[keys]\nalt-h = \"focus left\"\n")
+        #expect(Catalog.take(for: "keys.cmd-j", config: config) == nil)
+    }
+
+    /// Every demonstration returns to where it started, exactly as a setting's does — a loop that drifts
+    /// is one that looks broken by the third pass. **The badge is part of where it started**: a cue still
+    /// up when the take restarts is lowered by nothing, so it cuts at the seam rather than landing.
+    @Test func everyBindingTakeReturnsToItsOwnStart() throws {
+        let config = try Self.everyVerbBound()
+        let area = PreviewModelTests.workingArea
+        for binding in config.keys {
+            guard let take = Catalog.take(for: "keys.\(binding.chord)", config: config),
+                  !take.isStatic else { continue }
+            let start = PreviewModel.state(of: take, at: 0, config: config, workingArea: area)
+            let end = PreviewModel.state(of: take, at: take.period - 1e-6,
+                                         config: config, workingArea: area)
+            #expect(end.frames == start.frames,
+                    "\(binding.spelling)'s take does not return to its own start")
+            #expect(end.scene.cue == nil,
+                    "\(binding.spelling)'s badge is still up when its loop wraps")
+        }
+    }
+
+    /// A binding take's beats fall inside its own loop, which is what
+    /// `everyTakesBeatsFallInsideItsOwnLoop` claims one rung in for settings. A beat at or past the
+    /// period never plays at all.
+    @Test func everyBindingTakesBeatsFallInsideItsOwnLoop() throws {
+        let config = try Self.everyVerbBound()
+        for binding in config.keys {
+            guard let take = Catalog.take(for: "keys.\(binding.chord)", config: config),
+                  !take.isStatic else { continue }
+            for (at, _) in take.beats {
+                #expect(at >= 0 && at < take.period,
+                        "\(binding.spelling)'s beat at \(at)s is outside its \(take.period)s loop")
+            }
+        }
+    }
+
+    /// …**including on a loop the user made short**, which is the case the fixtures above are all too
+    /// comfortable to be. A ladder is as long as the preset list, so a single width preset is a 1.8 s
+    /// loop against a 1.1 s dwell — and a down-beat past the wrap is one that never plays, leaving the
+    /// badge up with nothing to lower it. The dwell shortens to fit rather than the badge outliving it.
+    @Test func aBadgeOnAShortLoopStillComesDownInsideIt() throws {
+        let config = try Config.parse("""
+        [layout]
+        width-presets = [0.5]
+
+        [keys]
+        alt-c = "cycle-width"
+        """)
+        let take = try #require(Catalog.take(for: "keys.alt-c", config: config))
+        let lowered = try #require(take.beats.first { beat in
+            if case .cue(nil) = beat.beat { return true }
+            return false
+        }, "a short loop dropped the badge rather than shortening it")
+
+        #expect(lowered.at < take.period, "the badge is still up when the loop restarts")
+        #expect(take.period - lowered.at >= Take.badgeTail, "the badge stops rather than lands")
+    }
 }

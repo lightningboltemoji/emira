@@ -833,7 +833,7 @@ public enum Engine {
 
         // The only verb that is permanently a no-op here: `dumpState` is a *read*, answered out of band
         // by the shell off `Runtime.state`. Everything else in the vocabulary does
-        // something — a listed verb is a promise, since `Command.usage` is `emira --help`.
+        // something — a listed verb is a promise, since `Vocabulary.usage` is `emira --help`.
         case .dumpState:
             return []
         }

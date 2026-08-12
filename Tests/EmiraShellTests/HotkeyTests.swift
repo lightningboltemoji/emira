@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import Foundation
 import Testing
 import EmiraCore
@@ -6,7 +7,11 @@ import EmiraCore
 // The hotkey subsystem's policy — everything above the system registry, which is `HotkeyBinder`, four
 // methods wide, with `CarbonHotkeyBinder` untestable by construction. What is tested: what a config
 // reload does to the live bindings, what happens when the system refuses a chord, and what a press
-// turns into — plus the Carbon keycode table, whose failure mode no call site could catch.
+// turns into — plus the keycode table, whose failure mode no call site could catch.
+//
+// **The table itself lives in `EmiraCore`**, which may not import Carbon, and this suite is where it
+// meets `kVK_*`. That is the trade: the spelling was checkable by eye and is now checked by a test,
+// which also catches the transposition eyes never did.
 
 @Suite @MainActor struct HotkeyTests {
 
@@ -243,26 +248,74 @@ import EmiraCore
 
     /// The keycode table's failure mode is a transposition: two key names sharing one code means one
     /// silently binds the wrong physical key, undetectable at the call site. Injectivity catches it.
+    ///
+    /// Asked through `Key(virtualKeyCode:)`, which is the reverse table — so a collision fails here
+    /// rather than trapping when the reverse map is first built.
     @Test func theKeycodeTableIsInjective() {
-        var codes: [Int: Key] = [:]
+        var codes: [UInt16: Key] = [:]
         for key in Key.allCases {
             let code = key.virtualKeyCode
             #expect(codes[code] == nil, "\(key.rawValue) and \(codes[code]?.rawValue ?? "") share \(code)")
             codes[code] = key
+            #expect(Key(virtualKeyCode: code) == key,
+                    "\(key.rawValue) does not come back from \(code) — the reverse table lost it")
         }
         #expect(codes.count == Key.allCases.count)
     }
 
-    /// A spot-check against Apple's own numbers, so the table is anchored to something outside itself.
-    @Test func theKeycodesAreThePhysicalOnes() {
-        #expect(Key.a.virtualKeyCode == 0x00)
-        #expect(Key.h.virtualKeyCode == 0x04)
-        #expect(Key.space.virtualKeyCode == 0x31)
-        #expect(Key.enter.virtualKeyCode == 0x24)
-        #expect(Key.left.virtualKeyCode == 0x7B)
-        // The two delete keys, which are named the other way round from Apple's constants on purpose.
-        #expect(Key.backspace.virtualKeyCode == 0x33)
-        #expect(Key.delete.virtualKeyCode == 0x75)
+    /// A keycode no key in the vocabulary sits on has no name, rather than a wrong one. What the
+    /// recorder leans on to refuse a press by name.
+    @Test func anUnnamedKeycodeIsNil() {
+        // The physical modifier keys themselves, which are never the *key* half of a chord.
+        for code: UInt16 in [UInt16(kVK_Shift), UInt16(kVK_Command), UInt16(kVK_Option),
+                             UInt16(kVK_Control), UInt16(kVK_CapsLock), UInt16(kVK_Function),
+                             UInt16(kVK_ANSI_Keypad0), UInt16(kVK_VolumeUp)] {
+            #expect(Key(virtualKeyCode: code) == nil, "\(code) named a key it should not")
+        }
+    }
+
+    /// **Every entry against Apple's own header.** The table used to be spelled in `kVK_*` so a reader
+    /// could check it by eye; it now lives in `EmiraCore`, which may not import Carbon, so the checking
+    /// moves here and stops being by eye. This is the whole of what that spelling bought.
+    @Test func everyKeycodeIsApplesOwn() {
+        let expected: [Key: Int] = [
+            .a: kVK_ANSI_A, .b: kVK_ANSI_B, .c: kVK_ANSI_C, .d: kVK_ANSI_D, .e: kVK_ANSI_E,
+            .f: kVK_ANSI_F, .g: kVK_ANSI_G, .h: kVK_ANSI_H, .i: kVK_ANSI_I, .j: kVK_ANSI_J,
+            .k: kVK_ANSI_K, .l: kVK_ANSI_L, .m: kVK_ANSI_M, .n: kVK_ANSI_N, .o: kVK_ANSI_O,
+            .p: kVK_ANSI_P, .q: kVK_ANSI_Q, .r: kVK_ANSI_R, .s: kVK_ANSI_S, .t: kVK_ANSI_T,
+            .u: kVK_ANSI_U, .v: kVK_ANSI_V, .w: kVK_ANSI_W, .x: kVK_ANSI_X, .y: kVK_ANSI_Y,
+            .z: kVK_ANSI_Z,
+
+            .digit0: kVK_ANSI_0, .digit1: kVK_ANSI_1, .digit2: kVK_ANSI_2, .digit3: kVK_ANSI_3,
+            .digit4: kVK_ANSI_4, .digit5: kVK_ANSI_5, .digit6: kVK_ANSI_6, .digit7: kVK_ANSI_7,
+            .digit8: kVK_ANSI_8, .digit9: kVK_ANSI_9,
+
+            .f1: kVK_F1, .f2: kVK_F2, .f3: kVK_F3, .f4: kVK_F4, .f5: kVK_F5, .f6: kVK_F6,
+            .f7: kVK_F7, .f8: kVK_F8, .f9: kVK_F9, .f10: kVK_F10, .f11: kVK_F11, .f12: kVK_F12,
+            .f13: kVK_F13, .f14: kVK_F14, .f15: kVK_F15, .f16: kVK_F16, .f17: kVK_F17,
+            .f18: kVK_F18, .f19: kVK_F19, .f20: kVK_F20,
+
+            .left: kVK_LeftArrow, .right: kVK_RightArrow, .up: kVK_UpArrow, .down: kVK_DownArrow,
+
+            .enter: kVK_Return, .tab: kVK_Tab, .space: kVK_Space, .escape: kVK_Escape,
+            // Named the other way round from Apple's constants, on purpose: the key labelled "delete"
+            // on a Mac keyboard is `backspace` here, and ⌦ is `delete`.
+            .backspace: kVK_Delete, .delete: kVK_ForwardDelete,
+
+            .home: kVK_Home, .end: kVK_End, .pageup: kVK_PageUp, .pagedown: kVK_PageDown,
+
+            .minus: kVK_ANSI_Minus, .equal: kVK_ANSI_Equal, .leftbracket: kVK_ANSI_LeftBracket,
+            .rightbracket: kVK_ANSI_RightBracket, .backslash: kVK_ANSI_Backslash,
+            .semicolon: kVK_ANSI_Semicolon, .quote: kVK_ANSI_Quote, .comma: kVK_ANSI_Comma,
+            .period: kVK_ANSI_Period, .slash: kVK_ANSI_Slash, .backtick: kVK_ANSI_Grave,
+        ]
+        // Every key, not merely every entry written here — the two lists have to be the same length or
+        // a key could quietly go unchecked.
+        #expect(Set(expected.keys) == Set(Key.allCases))
+        for key in Key.allCases {
+            #expect(Int(key.virtualKeyCode) == expected[key],
+                    "\(key.rawValue) is \(key.virtualKeyCode), Apple says \(expected[key] ?? -1)")
+        }
     }
 
     @Test func theModifierFlagsAreCarbonsOwn() {
