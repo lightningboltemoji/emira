@@ -16,18 +16,22 @@ import EmiraCore
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
 //
-// Concurrency: the batch fans out, but the window server *serializes* screenshot requests — a batch
-// costs roughly 10 ms per capture however it is shaped, and the requested pixel dimensions do not enter
-// into it. The group buys partial overlap, not parallelism, so scope size is the latency. None of
-// ScreenCaptureKit's descriptor types are `Sendable`, so everything derived from one content fetch
-// shares an isolation region a child task may not reach into. Hence free functions at file scope
-// (isolation propagates into nested types) and `nonisolated(unsafe)` on each filter — narrow and true,
-// since a filter is built at the send site, never stored or mutated, and used by exactly one child task.
+// **The batch is taken one capture at a time, and that is the fast path.** The window server serializes
+// screenshot requests, so overlapping them hides nothing — and worse, inflates each one: ~25 ms taken
+// alone against ~41 ms with anything else in flight, which is 1.55–1.90× on the batch and grows under
+// CPU load. Two in flight pays that in full, so there is no concurrency width to tune, only overlap to
+// avoid. Pixel dimensions do not enter into it, a 500×400 window costing what an 1100×800 one does, so
+// **the scope size alone is the latency** at ~25 ms a window.
 //
-// That serialization is why pieces are handed back one at a time rather than as a batch: a cover gated
-// on the base alone (`CoverMode.immediate`) then waits for one capture rather than for all of them. And
-// it is why the base is awaited *before* the group opens rather than added as its first task — `addTask`
-// order is not execution order, so a base merely queued first can be taken last.
+// Pieces are handed back as they land rather than as a batch, and in scope order: a cover gated on the
+// base alone (`CoverMode.immediate`) waits for one capture rather than all of them, and the extend gate
+// acks per window. The base is captured before any window because it is the gate — no layer can be
+// raised until it lands.
+//
+// None of ScreenCaptureKit's descriptor types are `Sendable`, so everything derived from one content
+// fetch shares an isolation region. Hence free functions at file scope (isolation propagates into nested
+// types) and `nonisolated(unsafe)` on the base filter — narrow and true, since it is built at the send
+// site, never stored or mutated. The window filters need none: nothing reaches for them off this task.
 
 /// Captures window surfaces and the desktop beneath them via ScreenCaptureKit.
 @MainActor
@@ -83,9 +87,7 @@ private struct Shot: Sendable {
     let frame: Rect
 }
 
-/// What one child task of the batch came back with. The base and the window stills go through the
-/// *same* task group rather than a group plus an `async let`, because two concurrent readers of one
-/// isolation region is exactly what Swift 6 rejects.
+/// One thing the batch produced, handed to `deliver` the moment it lands rather than with the rest.
 private enum Piece: Sendable {
     case window(Shot)
     case base(CGImage)
@@ -138,27 +140,19 @@ private func grab(windows: Set<CGWindowID>,
         }
     }
 
-    await withTaskGroup(of: Piece?.self) { group in
-        for window in targets {
-            let frame = window.frame
-            guard frame.width >= 1, frame.height >= 1 else { continue }
-            nonisolated(unsafe) let filter = SCContentFilter(desktopIndependentWindow: window)
-            let number = window.windowID
-            let rect = Rect(x: Double(frame.minX), y: Double(frame.minY),
-                            width: Double(frame.width), height: Double(frame.height))
-            let size = (width: Int(frame.width * scale), height: Int(frame.height * scale))
-            group.addTask {
-                guard let image = try? await shot(filter, width: size.width, height: size.height)
-                else { return nil }
-                return .window(Shot(number: number, image: image, frame: rect))
-            }
+    // One at a time, in scope order. See the file header: overlapping these is measurably slower.
+    for window in targets {
+        let frame = window.frame
+        guard frame.width >= 1, frame.height >= 1 else { continue }
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let size = (width: Int(frame.width * scale), height: Int(frame.height * scale))
+        // A capture that failed is simply not delivered; the batch carries on without it.
+        guard let image = try? await shot(filter, width: size.width, height: size.height) else {
+            continue
         }
-
-        for await piece in group {
-            // A piece that failed is simply not delivered; the batch carries on without it.
-            guard let piece else { continue }
-            await deliver(piece)
-        }
+        let rect = Rect(x: Double(frame.minX), y: Double(frame.minY),
+                        width: Double(frame.width), height: Double(frame.height))
+        await deliver(.window(Shot(number: window.windowID, image: image, frame: rect)))
     }
 }
 

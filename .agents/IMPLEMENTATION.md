@@ -306,7 +306,9 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
   `[min, max + w]`, so `Layout.sweptWindowIds` needs no new geometry.
 - **It carries a shoulder** — the column just outside each end — because a retarget's new stills take a capture
   round trip and nothing holds the layers back while they are out. Not free: the window server serializes
-  screenshot requests, so every shouldered window adds ~10 ms to the head of every scroll.
+  screenshot requests, so every shouldered window adds ~25 ms to the head of every scroll, whatever its size.
+  That number is the reason `SCKCapturer` takes its batch one capture at a time rather than through a task
+  group — overlapping requests does not hide the serialization, it inflates each request to ~41 ms.
 - **A scope grows and never shrinks.** A retarget _widens_ the scope, captures what that adds, and grows the
   raised cover (`Effect.extendCover`) when the still lands. Nothing is removed: a window the old destination
   swept is mid-flight on both planes.
