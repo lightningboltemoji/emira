@@ -995,7 +995,9 @@ top-level `Int` on both messages and `Wire.probeVersion` reads it _before_ decod
 build gets a sentence instead of an undecodable envelope. `Reply.state` carries **opaque JSON**, so a CLI one
 release behind still dumps a newer daemon's state. `dumpState` is a **read**, answered out of band straight off
 `Runtime.state` — safe _because of_ invariant 4, since the socket's main-actor hop always lands between pumps.
-All socket I/O runs on one private serial queue; the main thread never blocks on a client.
+All socket I/O runs on one private serial queue; the main thread never blocks on a client. The idle deadline
+bounds a peer that never speaks or never drains its reply, never a request already accepted — an answer owed is
+delivered however long the hop to main takes, because how busy the daemon is was never the peer's doing.
 
 **The socket path is checked, never trusted.** `$TMPDIR/emira.sock` (per-user and `0700` by construction,
 reboot-cleaned, short enough for `sun_path`), overridable via `EMIRA_SOCKET`. Bind only if nothing is there, or

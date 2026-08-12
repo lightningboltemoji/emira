@@ -160,8 +160,13 @@ public final class SocketServer: @unchecked Sendable {
         connection.source = source
         source.resume()
 
-        // A peer that says nothing, or never drains its reply, must not hold a descriptor forever.
-        queue.asyncAfter(deadline: .now() + idleTimeout) { [weak self] in self?.closeConnection(id) }
+        // A peer that says nothing, or never drains its reply, must not hold a descriptor forever. One
+        // that is mid-answer is neither: the request is accepted and the reply is owed however long the
+        // hop to main takes, so the deadline spares it and `answer` closes it when the hop lands.
+        queue.asyncAfter(deadline: .now() + idleTimeout) { [weak self] in
+            guard let self, let connection = self.connections[id], !connection.isAnswering else { return }
+            self.closeConnection(id)
+        }
     }
 
     // One request, one reply

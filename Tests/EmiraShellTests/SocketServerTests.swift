@@ -41,12 +41,19 @@ import EmiraCore
         return server
     }
 
+    /// The client's 5s default bounds a human waiting at a terminal; here it would bound every other
+    /// `@MainActor` suite in the process, which the reply hop queues behind. These tests claim an
+    /// answer comes back and is right, never that it is prompt. `nonisolated`: the dial is off-actor.
+    nonisolated static let timeout: TimeInterval = 60
+
     /// Dial from a background thread and await the answer, so the main actor stays free to run the
     /// server's handler hop.
     static func send(_ request: Request, to path: String) async throws -> Reply {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
-                continuation.resume(with: Result { try SocketClient.send(request, to: path) })
+                continuation.resume(with: Result {
+                    try SocketClient.send(request, to: path, timeout: timeout)
+                })
             }
         }
     }
@@ -55,7 +62,9 @@ import EmiraCore
     static func exchange(_ line: Data, with path: String) async throws -> Reply {
         let reply: Data = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global().async {
-                continuation.resume(with: Result { try SocketClient.exchange(line: line, to: path) })
+                continuation.resume(with: Result {
+                    try SocketClient.exchange(line: line, to: path, timeout: timeout)
+                })
             }
         }
         return try Wire.decode(Reply.self, from: reply)
@@ -165,6 +174,24 @@ import EmiraCore
         #expect(try await Self.exchange(both, with: path).outcome == .ok)
 
         // One `focus left` from window 3, not two: focus is on 2, not 1.
+        #expect(runtime.state.world.focusedWindow == WindowId(2))
+    }
+
+    /// The idle deadline is for a peer that never speaks or never reads. A busy daemon answers late
+    /// rather than hanging up — reaped instead, the client sees a dead connection and the command it
+    /// asked for ran anyway.
+    @Test func aReplyHeldUpPastTheIdleDeadlineIsStillDelivered() async throws {
+        let path = Self.temporaryPath()
+        let runtime = Self.bootedRuntime()
+        // A handler slower than its own deadline: what a main actor busy elsewhere looks like from here.
+        let server = SocketServer(path: path, idleTimeout: 0.5) { request in
+            usleep(1_500_000)
+            return RequestRouter.reply(to: request, from: runtime)
+        }
+        try server.start()
+        defer { server.stop() }
+
+        #expect(try await Self.send(Request(.focus(.left)), to: path).outcome == .ok)
         #expect(runtime.state.world.focusedWindow == WindowId(2))
     }
 
