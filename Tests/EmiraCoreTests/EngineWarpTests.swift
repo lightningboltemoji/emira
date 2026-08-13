@@ -6,6 +6,9 @@ import Testing
 // paid. The timing is the whole of it — under a cover the reals have already teleported, so the right
 // target exists immediately while the user is still watching layers travel toward it.
 //
+// So the suite needs a clock: `trace` drives one transition frame by frame and reports the tick each
+// landmark fell on, which is the only way to state a rule whose whole content is "before the end".
+//
 // The platform facts stay recorded in the change file rather than asserted here: that a warp posts no
 // event, and that `CGWarpMouseCursorPosition` takes top-left global coordinates and works from a
 // background process, are facts about the window server no unit test can witness.
@@ -22,6 +25,69 @@ import Testing
 
     static func warps(_ effects: [Effect]) -> [Rect] {
         effects.compactMap { if case .warpPointer(let rect) = $0 { rect } else { nil } }
+    }
+
+    /// What one transition did, in ticks. `nil` for a landmark that never came.
+    struct Trace {
+        var warps: [Rect] = []
+        /// The tick the visit was paid on, counted from the command.
+        var warpTick: Int?
+        /// The tick the session closed on — the instant the old rule paid at.
+        var closeTick: Int?
+        /// Every `setLayerFrame` emitted in the same batch as the warp: where the user could see each
+        /// stand-in at the moment the cursor moved.
+        var standIns: [LayerId: Rect] = [:]
+        /// The state the visit was paid into — the session is still open in it, so it is the only one
+        /// that can say which layer was standing in for which window.
+        var atWarp = State()
+        /// The state once everything has come to rest.
+        var settled = State()
+    }
+
+    /// Drive one transition to its close, frame by frame, recording when things happened. Answers every
+    /// capture, reports the cover on screen, lands every real, then ticks — `EngineFix.drive` with a
+    /// clock in it, and bounded so a non-converging spring fails rather than hangs.
+    static func trace(_ start: State, _ opening: [Effect]) -> Trace {
+        var t = Trace()
+        var s = start
+        var queue = opening
+        var ticks = 0
+
+        func feed(_ event: Event) {
+            let wasOpen = s.motion.isTransitioning
+            let (next, fx) = Engine.reduce(s, event)
+            s = next
+            for case .warpPointer(let rect) in fx {
+                t.warps.append(rect)
+                guard t.warpTick == nil else { continue }
+                t.warpTick = ticks
+                t.atWarp = s
+                for case .setLayerFrame(let layer, let rect) in fx { t.standIns[layer] = rect }
+            }
+            if wasOpen, !s.motion.isTransitioning, t.closeTick == nil { t.closeTick = ticks }
+            queue += fx
+        }
+
+        for _ in 0..<4000 {
+            var feedback: [Event] = []
+            for effect in queue {
+                switch effect {
+                case .capture(_, let w, _): feedback.append(.captureReady(w))
+                case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
+                case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
+                default: continue
+                }
+            }
+            queue = []
+            if feedback.isEmpty {
+                guard s.motion.isTransitioning else { break }
+                feedback = [.tick(dt: 1.0 / 120)]
+                ticks += 1
+            }
+            for event in feedback { feed(event) }
+        }
+        t.settled = s
+        return t
     }
 
     // With no session open the visit is paid at once
@@ -49,45 +115,98 @@ import Testing
         }
     }
 
-    // With a session open the visit is owed until it closes
+    // With a session open the visit is owed until the reveal reaches it
 
-    @Test func aFocusMidTransitionOwesTheVisitUntilTheSessionCloses() {
+    /// The whole rule, end to end: one visit, booked by the command, paid **while the window is still
+    /// travelling**, to the frame that window is going to come to rest at.
+    @Test func aFocusMidTransitionIsPaidBeforeTheSessionCloses() throws {
         let s = EngineFix.world(3, config: Self.following)
         let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
 
         #expect(Self.warps(effects).isEmpty, "a cursor arriving before its window is the flash a cover prevents")
-        #expect(next.pointer.pendingWarp != nil)
+        let owed = try #require(next.pointer.pendingWarp)
         #expect(next.motion.isTransitioning)
 
-        // Drive the whole transition: captures, the raise, the teleport, the springs, the close.
-        var seen: [Rect] = []
-        var s2 = next
-        var queue = effects
-        for _ in 0..<4000 {
-            var feedback: [Event] = []
-            for effect in queue {
-                switch effect {
-                case .capture(_, let w, _): feedback.append(.captureReady(w))
-                case .beginTransition: feedback.append(.coverOnScreen(MonitorId(1)))
-                case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
-                case .warpPointer(let rect): seen.append(rect)
-                default: continue
-                }
-            }
-            queue = []
-            if feedback.isEmpty {
-                guard s2.motion.isTransitioning else { break }
-                feedback = [.tick(dt: 1.0 / 120)]
-            }
-            for event in feedback {
-                let (n, out) = Engine.reduce(s2, event)
-                s2 = n
-                queue += out
-            }
+        let t = Self.trace(next, effects)
+        #expect(t.warps.count == 1, "exactly one visit")
+        #expect(t.settled.pointer.pendingWarp == nil)
+        #expect(!t.settled.motion.isTransitioning)
+
+        let warpTick = try #require(t.warpTick, "the visit was never paid")
+        let closeTick = try #require(t.closeTick)
+        #expect(warpTick < closeTick, "the pointer arrives before the transition ends, not with it")
+        // Not a hair before it: the point is a lead the eye can use. The spring's tail is most of the
+        // session, so half a window of travel left over lands the visit inside the first third of it.
+        #expect(warpTick * 3 < closeTick,
+                "paid on tick \(warpTick) of \(closeTick) — too late to read as anticipation")
+
+        // Where it was sent is where the window ends up: a prediction, not a snapshot of a window
+        // mid-flight. This is the half the lead could quietly break.
+        let resting = try #require(t.settled.world.windows[owed]?.frame)
+        let metrics = try #require(t.settled.metrics())
+        #expect(t.warps.first == resting.intersection(metrics.workingArea))
+    }
+
+    /// **The gate itself**: at the instant the cursor moves, the pixels under it belong to the window it
+    /// was sent to. Asked of the stand-in the same batch blits — the arriving window's own layer — which
+    /// is what the user is looking at while the cover is up, and the reason the lead is safe at all.
+    @Test func theCursorLandsOnTheArrivingWindowsStandIn() throws {
+        let s = EngineFix.world(3, config: Self.following)
+        let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
+        let owed = try #require(next.pointer.pendingWarp)
+
+        let t = Self.trace(next, effects)
+        let landing = try #require(t.warps.first).center
+        let layer = try #require(t.atWarp.motion.layerIds(for: owed).first)
+        let standIn = try #require(t.standIns[layer], "the arriving window blitted no frame that tick")
+
+        #expect(standIn.contains(landing),
+                "the cursor landed at \(landing) with the window's stand-in at \(standIn)")
+        // …and it is genuinely still travelling: a stand-in already at rest would make the test above
+        // true for the old close-gated timing too.
+        #expect(!EngineFix.approx(standIn, try #require(t.warps.first), tol: 1),
+                "the window should still have ground to cover when the cursor arrives")
+    }
+
+    /// Nothing is paid before the cover is up. The reals have not teleported yet, so the truth plane
+    /// still describes where the window *was* — there is no destination to have arrived at.
+    @Test func theVisitIsNotPaidBeforeTheCoverIsUp() throws {
+        let s = EngineFix.world(3, config: Self.following)
+        var (next, effects) = Engine.reduce(s, .command(.focus(.left)))
+        let owed = try #require(next.pointer.pendingWarp)
+
+        // Every capture in — the session is `.raising`, one event short of a cover on the glass.
+        for case .capture(_, let w, _) in effects {
+            let (n, fx) = Engine.reduce(next, .captureReady(w))
+            next = n
+            effects = fx
         }
-        #expect(seen.count == 1, "exactly one visit, once the session closed")
-        #expect(s2.pointer.pendingWarp == nil)
-        #expect(!s2.motion.isTransitioning)
+        #expect(next.motion.phase(of: MonitorId(1)) == .raising)
+        #expect(Self.warps(effects).isEmpty)
+
+        let (ticked, out) = Engine.reduce(next, .tick(dt: 1.0 / 120))
+        #expect(Self.warps(out).isEmpty, "a cursor on a photograph of the old desktop")
+        #expect(ticked.pointer.pendingWarp == owed, "and the visit is still owed")
+    }
+
+    /// **The cover that holds a visit is the one over the window the pointer is going to.** A cover on
+    /// the other screen answers about neither the destination nor what is drawn under it, and holding
+    /// the visit for it would leave the cursor behind for a reveal it is not part of.
+    @Test func aCoverOnAnotherDisplayDoesNotHoldTheVisit() throws {
+        var s = MonitorSessionTests.desktop(2, config: Self.following)
+        let left = try #require(s.monitors.shown(on: MonitorId(1)))
+        // On screen there, since a visit to a parked window is dropped for its own reason.
+        let owed = try #require(s.workspaces[left].allWindowIds.first(where: s.world.placedOnScreen.contains))
+        #expect(s.motion.phase(of: MonitorId(1)) == .idle)
+
+        // A session on the second display only, opened where a cross-display edit would leave one.
+        s.motion.openTransition(scope: [owed], on: MonitorId(2))
+        #expect(s.motion.isTransitioning)
+
+        s.pointer.pendingWarp = owed
+        let (next, effects) = Engine.reduce(s, .tick(dt: 1.0 / 120))
+        #expect(Self.warps(effects).count == 1, "the window it is going to is not under a cover")
+        #expect(next.pointer.pendingWarp == nil)
     }
 
     /// Newest wins — the resolution `FocusIntent` and every retargeted animator already use. A second

@@ -718,6 +718,13 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   rules stop the runaway and neither is an optimisation: it fires on **pointer motion only, never window
   motion** (that is the termination argument), and it is **suspended while a cover is up** while still
   _tracking_, so a cover coming down leaves the baseline under the hand rather than reporting a phantom crossing.
+- `[mouse] follows-focus` — the pointer is owed a visit (`Pointer.pendingWarp`), and **it is paid the instant
+  the arriving window's stand-in covers the point the cursor will land on** (`Engine.revealHasReached`). That
+  is the earliest moment at which the cursor cannot arrive anywhere but on its own window, and the destination
+  is known as soon as the reals teleport, so both numbers the gate reads exist for as long as a cover is up.
+  Asked of the display holding the destination, since a cover on the other screen answers about neither;
+  before that display's cover is up nothing has moved and the truth plane still names where the window _was_,
+  so there is no destination to have reached.
 - **Focus off the strip is an entry condition, not a dead end.** A focus command with no column to start from
   re-enters at the near end: `right` at the leftmost column, `left` at the rightmost.
 - `Engine.stripAnchor` — "where was the user working", used when focus rests on nothing. It reads

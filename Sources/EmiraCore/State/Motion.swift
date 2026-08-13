@@ -555,8 +555,8 @@ public struct Motion: Sendable, Equatable, Codable {
     /// Whether `id` has a session open (cover in flight). `false` ⇒ idle steady state on that screen.
     public func isTransitioning(on id: MonitorId?) -> Bool { phase(of: id) != .idle }
 
-    /// Whether **any** display has a session open — what the frame clock and the pointer's owed warp
-    /// ask, neither of them being about a particular screen.
+    /// Whether **any** display has a session open — what the frame clock asks, one clock for every
+    /// screen (D9) and so not a question about a particular one.
     public var isTransitioning: Bool {
         detached.transition != nil || viewports.values.contains { $0.transition != nil }
     }

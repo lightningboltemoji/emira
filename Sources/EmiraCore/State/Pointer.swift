@@ -8,7 +8,8 @@ import Foundation
 /// debt the reducer took on and has not paid. One type, because they are one subsystem's.
 public struct Pointer: Sendable, Equatable, Codable {
 
-    /// The window the pointer owes a visit, held until the transition revealing it closes. Newest wins,
+    /// The window the pointer owes a visit, held until the reveal carrying it reaches the point the
+    /// cursor will land on — `Engine.revealHasReached`, not the transition's close. Newest wins,
     /// the resolution `FocusIntent` and every retargeted animator already use: a second focus mid-scroll
     /// means the pointer was always going to the second window.
     public var pendingWarp: WindowId?

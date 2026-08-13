@@ -399,13 +399,14 @@ public enum Engine {
         effects.insert(.setCursorHidden(true), at: 0)
     }
 
-    /// Send the pointer after focus — but not until the user can see where it went. A post-pass beside
-    /// `trackFocusRing`, and for its reason: "focus moved" is a difference between two states that none
-    /// of the dozen paths into `World.setFocus` can see.
+    /// Send the pointer after focus — but not until the window it is going to is under the point it will
+    /// land on. A post-pass beside `trackFocusRing`, and for its reason: "focus moved" is a difference
+    /// between two states that none of the dozen paths into `World.setFocus` can see.
     ///
-    /// **The visit is owed while a session is open and paid the moment none is** — one rule for both the
-    /// covered case and the uncovered one. Warping on the focus change itself would put the cursor on
-    /// its target 250 ms before the window gets there, which is the flash the cover exists to prevent.
+    /// **The visit is owed until the reveal reaches its destination and paid the instant it does** — one
+    /// rule for the travelling case and the still one, where a window that is not moving is there
+    /// already (`revealHasReached`). Warping on the focus change itself would put the cursor on its
+    /// target 250 ms before the window gets there, which is the flash the cover exists to prevent.
     ///
     /// **The source gates the owing, never the paying**: by payment time the event that booked the visit
     /// is several events ago, and `FocusOrigin` could not answer anyway, a hovered focus reducing into
@@ -429,9 +430,7 @@ public enum Engine {
             s.pointer.pendingWarp = s.config.mouseFollowsFocus.warps(pointerCaused: pointerCaused)
                 ? s.world.focusedWindow : nil
         }
-        // Across every display, not the acting one: a cover anywhere is a desktop the user is not
-        // being shown, and the visit is owed until every one of them is down.
-        guard let owed = s.pointer.pendingWarp, !s.motion.isTransitioning else { return }
+        guard let owed = s.pointer.pendingWarp, revealHasReached(owed, in: s) else { return }
         // Dropped whether or not it produces an effect: a window that closed, parked or went off-screen
         // while the cover was up is not one to send the pointer to, and nothing here retries.
         s.pointer.pendingWarp = nil
@@ -441,6 +440,37 @@ public enum Engine {
               // takes the pointer to the part of itself the user can actually see.
               let target = frame.intersection(metrics.workingArea) else { return }
         effects.append(.warpPointer(into: target))
+    }
+
+    /// Whether `owed`'s reveal has come far enough to be visited: **whether its stand-in already covers
+    /// the point the pointer is going to land on.** That is the earliest instant at which the cursor
+    /// cannot arrive anywhere but on its own window, so it is the one this asks for.
+    ///
+    /// Asked of the display holding `owed` rather than of the desktop: the cover that matters is the one
+    /// over the window the pointer is going to, and a cover on the other screen answers about neither.
+    /// Geometry it cannot resolve reads as reached — a float, a parked column, a desktop with no display
+    /// attached. None of them is a window travelling toward the pointer, and the payment's own guard is
+    /// where a visit with nowhere to go is dropped.
+    private static func revealHasReached(_ owed: WindowId, in s: State) -> Bool {
+        let home = s.workspaces.workspace(of: owed) ?? s.monitors.shown
+        guard let display = s.monitors.monitor(of: home) else { return true }
+        switch s.motion.phase(of: display) {
+        // Nothing on that screen is travelling: the reals are where they are going to be.
+        case .idle:
+            return true
+        // No cover, so no real window has moved and the truth plane still describes where `owed` *was*.
+        // There is no destination to measure against yet, let alone arrive at.
+        case .capturing, .raising:
+            return false
+        // Reals teleported, layers travelling — the one phase with both numbers this needs: the
+        // destination on the truth plane and the stand-in on the presentation plane.
+        case .covered:
+            guard let metrics = s.metrics(of: display), let frame = s.world.windows[owed]?.frame,
+                  let target = frame.intersection(metrics.workingArea),
+                  let presented = naturalFrame(s, of: owed, on: display,
+                                               widths: s.motion.currentColumnWidths) else { return true }
+            return presented.displaced(by: s.motion.displacement(of: owed)).contains(target.center)
+        }
     }
 
     /// Seed the guide's focus ring when focus moved between two windows on the strip.
