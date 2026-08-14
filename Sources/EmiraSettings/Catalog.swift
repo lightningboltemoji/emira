@@ -324,21 +324,41 @@ public enum Catalog {
         case "animation.movement.stiffness", "animation.movement.damping-ratio":
             return Scenes.translate.paced(by: Scenes.beat(config.moveSpring, over: 1200))
 
-        // The guide. Six settings over one long set and one motion loop, and what separates them is
-        // **where the camera stands** — which is the whole argument for a framing per setting.
-        case "guide.style", "guide.span":
-            // Close: `style` is a choice about what a tile draws, and `span` about how many of them
+        // The guides. Fifteen settings over one long set, separated by **where the camera stands** —
+        // the whole argument for a framing per setting, and now for one per *guide*: two can be up at
+        // once, and a lens framing "the guide" would push in on the minimap while the user was editing
+        // the row of names.
+        //
+        // **A close framing and a life cycle are exclusive.** A lens pushed in on a guide that is not
+        // up frames the wallpaper where one would be, so only the two settings whose subject *is* the
+        // life cycle play it, and they play it wide. Every other guide setting is geometry, and
+        // geometry re-derives under the hand with nothing playing.
+        case "guide.preview.enabled", "guide.preview.duration":
+            return Scenes.guideLife(config, .preview)
+        case "guide.preview.position", "guide.preview.width":
+            // Wide. A corner is only a corner against the whole screen, and the width is a fraction
+            // *of the working width* — the screen's own edges are the ruler.
+            return Take(scene: Scenes.guided)
+        case "guide.preview.content", "guide.preview.span":
+            // Close: `content` is a choice about what a tile draws, and `span` about how many of them
             // there are. Both are unreadable at a couple of points across.
-            return Scenes.guideLife(config, camera: .guidePanel)
-        case "guide.position", "guide.width":
-            // Wide, always. A corner is only a corner against the whole screen, and the width is a
-            // fraction *of the working width* — the screen's own edges are the ruler.
-            return Scenes.guideLife(config)
-        case "guide.gap":
-            return Scenes.guideLife(config, camera: .guideCorner)
-        case "guide.duration":
-            // The only setting in the window whose subject is **time**, so the loop is the value.
-            return Scenes.guideLife(config, camera: .guidePanel)
+            return Take(scene: Scenes.guided, camera: .guidePanel(.preview))
+        case "guide.preview.gap":
+            return Take(scene: Scenes.guided, camera: .guideCorner(.preview))
+
+        // The names guide, on the same set and the same rules. Everything but where it *sits* is read
+        // by the word, so everything but position is framed close — and close on the names guide is
+        // **life size**, because everything read on it is type.
+        case "guide.names.enabled", "guide.names.duration":
+            return Scenes.guideLife(config, .names)
+        case "guide.names.position", "guide.names.width":
+            // Wide, for the minimap's reason: a corner is only a corner against the whole screen, and
+            // the width is a fraction *of the working width* — the screen's own edges are the ruler.
+            return Take(scene: Scenes.guided)
+        case "guide.names.gap":
+            return Take(scene: Scenes.guided, camera: .guideCorner(.names))
+        case "guide.names.font-size", "guide.names.lowercase", "guide.names.max-columns":
+            return Take(scene: Scenes.guided, camera: .guidePanel(.names))
 
         default:
             return nil
@@ -377,10 +397,17 @@ public enum Scenes {
     ///
     /// It has to be long. `scale = min(width, 1) / span` shrinks the panel to a short strip, so on a
     /// set that fits on one screen both `width` and `span` read as broken rather than as settings.
+    ///
+    /// **One column is stacked**, which the minimap shows as a rule across it and the names guide as a
+    /// superscript — `terminal²` is that column's terminal and one other. A set of eight singletons
+    /// would leave the count with nothing to count.
     public static let guided = Scene(
-        columns: zip(101..., [MockRole.editor, .browser, .terminal, .chat,
-                              .notes, .music, .editor, .browser]).map {
-            MockColumn(id: ColumnId(UInt64($0.0)), windows: [window(UInt64($0.0), $0.1)],
+        columns: zip(101..., [[MockRole.editor], [.browser], [.terminal, .editor], [.chat],
+                              [.notes], [.music], [.editor], [.browser]]).map { id, stack in
+            MockColumn(id: ColumnId(UInt64(id)),
+                       windows: stack.enumerated().map {
+                           window(UInt64(id) + UInt64($0.offset) * 100, $0.element)
+                       },
                        widthPreset: 1)
         },
         focus: WindowId(101),
@@ -388,18 +415,19 @@ public enum Scenes {
 
     public static let guidedFirst = WindowId(101)
 
-    /// **The guide's whole life cycle, every few seconds.** A column moves, the guide arrives, it holds
+    /// **A guide's whole life cycle, every few seconds.** A column moves, the guide arrives, it holds
     /// for `duration`, it goes, and there is a beat of nothing before it happens again — which is what
-    /// the daemon does, and what makes picking `placeholder` from `off` a cause with an effect.
+    /// the daemon does, and what makes enabling one a cause with an effect.
     ///
-    /// The period is derived from the value, so at `duration = 4` the loop is six seconds rather than
-    /// restarting before the guide has ever gone away.
-    static func guideLife(_ config: Config, camera: Camera = .wide) -> Take {
+    /// The period is derived from **the value being edited**, so at `duration = 4` the loop is six
+    /// seconds rather than restarting before that guide has ever gone away. Wide, and only wide: for
+    /// most of it there is no guide on the desktop for a lens to be pushed in on.
+    static func guideLife(_ config: Config, _ style: GuideStyle) -> Take {
         // A beat of nothing before the first motion, so a loop opens on a desktop with no guide on it
         // and the arrival is something you watch happen rather than something already there.
         let raise = 0.6
-        let cycle = max(config.guide.duration, 0.3) + 1.1
-        return Take(scene: guided, camera: camera,
+        let cycle = max(config.guide.table(of: style).duration, 0.3) + 1.1
+        return Take(scene: guided,
                     beats: [(raise, .focusRight), (raise + cycle, .focus(guidedFirst))],
                     period: raise + cycle * 2)
     }

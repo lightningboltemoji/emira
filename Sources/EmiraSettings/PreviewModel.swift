@@ -44,8 +44,9 @@ public struct PreviewState: Sendable, Equatable {
     /// Whether the pointer is drawn. `mouse.hide` is what takes it away, and a pointer that vanished
     /// without travelling first would be showing the wrong setting.
     public let isPointerShown: Bool
-    /// The guide, drawn small on the mock — `nil` when the set carries none or the guide is off.
-    public let guide: GuidePreview?
+    /// The guides, drawn small on the mock, in drawing order — empty when the set carries none or
+    /// none is enabled.
+    public let guides: [GuideFrame]
     /// Where the mock is being looked at from. Resolved to a rect against the display by `Camera`,
     /// because only the AppKit half knows the display's shape.
     public let camera: Camera
@@ -66,6 +67,17 @@ public struct PreviewState: Sendable, Equatable {
     public let raised: WindowId?
 
     public var focus: WindowId { scene.focus }
+
+    /// Where each enabled guide's panel goes, by style — what the movement springs are keyed on.
+    public var panels: [GuideStyle: Rect] {
+        guides.reduce(into: [:]) { panels, guide in panels[guide.style] = guide.panel }
+    }
+
+    /// One style's guide this frame, or `nil` when it is not up. What a camera framing a particular
+    /// guide asks.
+    public func guide(_ style: GuideStyle) -> GuideFrame? {
+        guides.first { $0.style == style }
+    }
 
     /// The focused window's frame — the ring, when there is one to draw.
     public var focusFrame: Rect? { frames[scene.focus] }
@@ -282,12 +294,11 @@ public enum PreviewModel {
                             isPointerShown: scene.pointer.map {
                                 !($0.isHidden && config.hidesCursor)
                             } ?? false,
-                            guide: isRaised(scene, raisedAt: raisedAt, phase: phase, config: config,
-                                            isStatic: take.isStatic)
-                                ? GuidePreview.preview(config: config, workingArea: workingArea,
-                                                       frames: frames, focus: scene.focus,
-                                                       scrollOffset: offset)
-                                : nil,
+                            guides: GuideFrame.all(showing: raised(scene, raisedAt: raisedAt,
+                                                                   phase: phase, config: config,
+                                                                   isStatic: take.isStatic),
+                                                   config: config, scene: scene,
+                                                   workingArea: workingArea, frames: frames),
                             camera: take.camera(at: t),
                             mark: mark(of: take, scene: scene, config: config, metrics: metrics,
                                        offset: offset),
@@ -298,17 +309,16 @@ public enum PreviewModel {
                             })
     }
 
-    /// Whether the guide is up: a set that carries one, something having moved, and `guide.duration`
-    /// not yet run out since it did.
-    ///
-    /// A **static** take on a guided set keeps the guide up permanently — a section arriving on screen
-    /// has nothing to fade, and a guide that vanished the moment the tab opened would be a preview
-    /// hiding what it is about.
-    private static func isRaised(_ scene: Scene, raisedAt: Double?, phase: Double,
-                                 config: Config, isStatic: Bool) -> Bool {
-        guard scene.hasGuide else { return false }
-        guard let raisedAt else { return isStatic }
-        return phase - raisedAt <= config.guide.duration
+    /// Which guides are up: a set that carries one, something having moved, and that guide's own
+    /// `duration` not yet run out since it did — **each on its own clock, as the daemon arms them**. A
+    /// **static** take keeps them up for as long as the pointer is on the row, having nothing to fade.
+    private static func raised(_ scene: Scene, raisedAt: Double?, phase: Double,
+                               config: Config, isStatic: Bool) -> [GuideStyle] {
+        guard scene.hasGuide else { return [] }
+        guard let raisedAt else { return isStatic ? config.guide.enabledStyles : [] }
+        return config.guide.enabledStyles.filter {
+            phase - raisedAt <= config.guide.table(of: $0).duration
+        }
     }
 
     /// The pause `exact` pays: one capture round trip, long enough to be a wait rather than a stutter.

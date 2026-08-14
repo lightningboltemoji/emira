@@ -14,13 +14,13 @@ import EmiraMotion
 
     /// One full-width column per window, so a focus change genuinely scrolls and the two frames a ring
     /// is measured between are a screen apart.
-    static func config(_ style: GuideStyle) -> Config {
+    static func config(_ enabled: Bool) -> Config {
         Config(widthPresets: PresetCycle([.proportion(1.0)]),
-               guide: GuideSettings(style: style))
+               guide: GuideSettings(preview: PreviewGuideSettings(enabled: enabled)))
     }
 
-    static func world(_ count: UInt64, style: GuideStyle = .placeholder) -> State {
-        EngineFix.world(count, config: config(style))
+    static func world(_ count: UInt64, guided: Bool = true) -> State {
+        EngineFix.world(count, config: config(guided))
     }
 
     static func focus(_ s: State, _ direction: Direction) -> (State, [Effect]) {
@@ -135,7 +135,7 @@ import EmiraMotion
         // Two half-width columns share one screen, so focusing across them scrolls nothing and opens no
         // transition — the case the ring needs `needsFrames` for.
         let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
-                            guide: GuideSettings(style: .placeholder))
+                            guide: GuideSettings(preview: PreviewGuideSettings(enabled: true)))
         let s = EngineFix.world(2, config: config)
         let (moved, _) = Engine.reduce(s, .command(.focus(.left)))
         #expect(!moved.motion.isTransitioning)              // nothing scrolled
@@ -146,7 +146,7 @@ import EmiraMotion
         // Half-width columns share one screen, so this focus change opens no session at all — the tick
         // has nothing but the ring to move, and moves it.
         let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
-                            guide: GuideSettings(style: .placeholder))
+                            guide: GuideSettings(preview: PreviewGuideSettings(enabled: true)))
         let s = Self.settleRing(EngineFix.world(2, config: config))
         let (moved, _) = Engine.reduce(s, .command(.focus(.left)))
         #expect(!moved.motion.isCovered(on: moved.monitors.focused))
@@ -157,7 +157,7 @@ import EmiraMotion
     }
 
     @Test func theGuideOffCreatesNoRingAtAll() {
-        let (moved, _) = Self.focus(Self.world(2, style: .off), .left)
+        let (moved, _) = Self.focus(Self.world(2, guided: false), .left)
         #expect(moved.motion.focusRing == nil)
         #expect(moved.motion.needsFrames == moved.motion.isTransitioning)
     }
@@ -166,7 +166,7 @@ import EmiraMotion
         let (moved, _) = Self.focus(Self.world(2), .left)
         #expect(moved.motion.focusRing != nil)
         var off = moved.config
-        off.guide.style = .off
+        off.guide.preview.enabled = false
         let (reloaded, _) = Engine.reduce(moved, .configChanged(off))
         #expect(reloaded.motion.focusRing == nil)
     }

@@ -2,22 +2,21 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-// The guide's arithmetic, with no AppKit and no window server — the half of the guide that is worth
-// asserting, which is why it is a file of its own (`MenuBar`'s `StatusModel` split, again).
+// The guide's arithmetic, with no AppKit, no window server and no `State` — the half of the guide that
+// is worth asserting, which is why it is a file of its own (`MenuBar`'s `StatusModel` split, again).
+//
+// Everything here runs on a `GuideInput`, which is the point: the settings window builds one from a
+// mock desktop and the shell builds one from the truth plane, so what is asserted here is what both
+// hosts draw.
 
 @Suite struct GuideModelTests {
 
     /// A 1000×800 working area at the origin, which makes every projected number readable by eye.
     static let working = Rect(x: 0, y: 0, width: 1000, height: 800)
-    /// The one display every fixture here builds — the guide is per monitor now, so a projection has
-    /// to say which one it is of.
-    static let display = MonitorId(1)
 
-    static func settings(style: GuideStyle = .placeholder, position: GuidePosition = .topRight,
-                         width: Double = 0.3, span: Double = 3, gap: Double = 16,
-                         duration: Double = 1) -> GuideSettings {
-        GuideSettings(style: style, position: position, width: width, span: span, gap: gap,
-                      duration: duration)
+    static func settings(position: GuidePosition = .topRight, width: Double = 0.3,
+                         span: Double = 3, gap: Double = 16) -> PreviewGuideSettings {
+        PreviewGuideSettings(enabled: true, position: position, width: width, span: span, gap: gap)
     }
 
     /// A strip `screens` working-areas long, starting flush with the viewport's left edge.
@@ -25,7 +24,8 @@ import Testing
         Rect(x: x, y: 0, width: screens * working.width, height: working.height)
     }
 
-    static func projection(_ s: GuideSettings, strip: Rect = strip(3)) throws -> GuideModel.Projection {
+    static func projection(_ s: PreviewGuideSettings,
+                           strip: Rect = strip(3)) throws -> GuideModel.Projection {
         try #require(GuideModel.projection(settings: s, working: working, strip: strip))
     }
 
@@ -91,8 +91,8 @@ import Testing
 
     @Test func theIndicatorPinsToEitherEndOfALongStripAndCentresBetweenThem() throws {
         let settings = Self.settings(width: 0.3, span: 3)
-        // A nine-screen strip. `naturalFrames` gives screen-space frames, so scrolling to offset `o`
-        // puts the strip at `-o`; the viewport is always the working area, [0, 1000].
+        // A nine-screen strip. The frames are screen-space, so scrolling to offset `o` puts the strip
+        // at `-o`; the viewport is always the working area, [0, 1000].
         func indicator(scrolledTo offset: Double) throws -> Rect {
             let p = try Self.projection(settings, strip: Self.strip(9, from: -offset))
             return p.project(Self.working)
@@ -129,6 +129,8 @@ import Testing
         #expect(abs(under.width - over.width) < 2)
     }
 
+    // Where a panel goes, which every guide asks the same way
+
     @Test func everyAnchorPlacesThePanelInsideTheWorkingAreaWithItsGap() throws {
         // A 300×80 panel in a 1000×800 area with a 16 pt gap: the free travel is 1000−32−300 = 668
         // horizontally and 800−32−80 = 688 vertically.
@@ -148,6 +150,16 @@ import Testing
             #expect(Self.approx(panel, Rect(origin: try #require(expected[position]),
                                             size: Size(width: 300, height: 80))),
                     "\(position.rawValue) landed at \(panel)")
+        }
+    }
+
+    /// The anchor arithmetic is shared, so a panel whose size came from somewhere else entirely — text,
+    /// in the names guide's case — lands where the projected one would.
+    @Test func placeIsTheProjectionsOwnAnchoring() throws {
+        for position in GuidePosition.allCases {
+            let placed = GuideModel.place(size: Size(width: 300, height: 80), within: Self.working,
+                                          position: position, gap: 16)
+            #expect(Self.approx(placed, try Self.projection(Self.settings(position: position)).panel))
         }
     }
 
@@ -204,63 +216,153 @@ import Testing
         #expect(sliver.width == 1)                      // a quarter off each side, never more
     }
 
-    // Where the strip divides
+    // A layout over a strip
+    //
+    // At `width = 1, span = 1` the projection is the identity on a strip that fits one working area, so
+    // every number below is the arrangement's own and readable by eye.
 
-    /// A column of `windows`, and the frames a strip of such columns would resolve to: `width` wide,
-    /// full height, `gap` apart, each column's stack sharing its height equally.
-    static func arrangement(_ columns: [[UInt64]], width: Double = 400,
-                            gap: Double = 20) -> ([ColumnLayout], [WindowId: Rect]) {
+    /// Settings whose projection is the identity: the panel is the working area, and nothing is scaled.
+    static func lifeSize(position: GuidePosition = .topLeft) -> PreviewGuideSettings {
+        settings(position: position, width: 1, span: 1, gap: 0)
+    }
+
+    /// A strip of `columns`, each a stack of window ids: `width` wide, full height, `gap` apart, each
+    /// column's stack sharing its height equally.
+    static func input(_ columns: [[UInt64]], width: Double = 400, gap: Double = 20,
+                      focus: UInt64? = nil, displacement: Rect = .zero) -> GuideInput {
         var frames: [WindowId: Rect] = [:]
         var x = 0.0
-        let layouts = columns.enumerated().map { index, windows -> ColumnLayout in
+        let strip = columns.enumerated().map { index, windows -> GuideInput.Column in
             let share = working.height / Double(windows.count)
             for (row, id) in windows.enumerated() {
                 frames[WindowId(id)] = Rect(x: x, y: Double(row) * share, width: width, height: share)
             }
             x += width + gap
-            return ColumnLayout(id: ColumnId(UInt64(index + 1)), windowIds: windows.map(WindowId.init))
+            return GuideInput.Column(id: ColumnId(UInt64(index + 1)),
+                                     windows: windows.map {
+                                         GuideInput.Window(id: WindowId($0), bundleId: "com.test.app")
+                                     })
         }
-        return (layouts, frames)
+        return GuideInput(workingArea: working, columns: strip, frames: frames,
+                          focus: focus.map(WindowId.init), focusDisplacement: displacement)
     }
 
-    @Test func onlyOneTileMeansNothingToDivide() {
-        let (columns, frames) = Self.arrangement([[1]])
-        #expect(GuideModel.boundaries(of: columns, frames: frames).isEmpty)
+    static func layout(_ columns: [[UInt64]], width: Double = 400, gap: Double = 20,
+                       focus: UInt64? = nil, displacement: Rect = .zero,
+                       settings: PreviewGuideSettings = lifeSize()) throws -> GuideLayout {
+        try #require(GuideModel.layout(input(columns, width: width, gap: gap, focus: focus,
+                                             displacement: displacement),
+                                       settings: settings))
     }
 
-    @Test func adjacentColumnsAreDividedDownTheMiddleOfTheirGap() {
-        let (columns, frames) = Self.arrangement([[1], [2]])
+    @Test func onlyOneTileMeansNothingToDivide() throws {
+        #expect(try Self.layout([[1]]).separators.isEmpty)
+    }
+
+    @Test func adjacentColumnsAreDividedDownTheMiddleOfTheirGap() throws {
         // 400 wide with a 20 pt gap between them: the boundary is the gap's midpoint, not either edge,
         // so `column-gap = 0` would put it exactly on the shared edge instead.
-        #expect(GuideModel.boundaries(of: columns, frames: frames)
+        #expect(try Self.layout([[1], [2]]).separators
                 == [Rect(x: 410, y: 0, width: 0, height: 800)])
     }
 
-    @Test func windowsStackedInAColumnAreDividedAcrossIt() {
-        let (columns, frames) = Self.arrangement([[1, 2, 3]])
+    @Test func windowsStackedInAColumnAreDividedAcrossIt() throws {
         // Two boundaries for three windows, each spanning the column and nothing beyond it.
-        #expect(GuideModel.boundaries(of: columns, frames: frames)
+        #expect(try Self.layout([[1, 2, 3]]).separators
                 == [Rect(x: 0, y: 800.0 / 3, width: 400, height: 0),
                     Rect(x: 0, y: 1600.0 / 3, width: 400, height: 0)])
     }
 
-    @Test func aBoundaryRunsTheWholeLengthOfWhatItDivides() {
+    @Test func aBoundaryRunsTheWholeLengthOfWhatItDivides() throws {
         // A stacked column beside a single window: the column rule is full height whichever side is
         // stacked, and the stack rule stops at its own column's edge rather than crossing the strip.
-        let (columns, frames) = Self.arrangement([[1, 2], [3]])
-        let lines = GuideModel.boundaries(of: columns, frames: frames)
+        let lines = try Self.layout([[1, 2], [3]]).separators
         #expect(lines.count == 2)
         #expect(lines[0] == Rect(x: 0, y: 400, width: 400, height: 0))
         #expect(lines[1] == Rect(x: 410, y: 0, width: 0, height: 800))
     }
 
-    @Test func aRealStripCarriesItsBoundariesProjectedWithEverythingElse() throws {
-        // Two full-width columns, so the one boundary sits on the seam between them — at `k = 0.1`,
-        // 100 pt along a 200 pt ribbon, running its full height.
-        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
-        #expect(layout.separators.count == 1)
-        #expect(Self.approx(layout.separators[0], Rect(x: 100, y: 0, width: 0, height: 80)))
+    @Test func aColumnIsTheUnionOfItsStackAndTheTilesAreSeparatedInsideIt() throws {
+        let column = try #require(Self.layout([[1, 2]]).columns.first)
+        // The column itself is unseparated — it is what the rules are measured between.
+        #expect(Self.approx(column.rect, Rect(x: 0, y: 0, width: 400, height: 800)))
+        #expect(column.tiles.count == 2)
+        #expect(Self.approx(column.tiles[0].rect, Rect(x: 1.5, y: 1.5, width: 397, height: 397)))
     }
+
+    @Test func aTilePerWindowCarriesItsAppAndItsRectangle() throws {
+        let layout = try Self.layout([[1], [2]])
+        #expect(layout.tiles.count == 2)
+        #expect(layout.tiles.allSatisfy { $0.bundleId == "com.test.app" })
+        #expect(layout.tiles.map(\.window) == [WindowId(1), WindowId(2)])   // sorted, so the pool is stable
+    }
+
+    @Test func aWorkspaceSlidingThroughDrawsTilesAndDividesNothing() throws {
+        // A window on a neighbouring workspace: it is a tile like any other, and no rule is drawn for
+        // it, because the shown strip is what the guide is about.
+        var frames = Self.input([[1], [2]]).frames
+        frames[WindowId(9)] = Rect(x: 0, y: -800, width: 400, height: 800)
+        let base = Self.input([[1], [2]])
+        let input = GuideInput(workingArea: Self.working, columns: base.columns,
+                               passing: [GuideInput.Window(id: WindowId(9), bundleId: "com.other.app")],
+                               frames: frames)
+        let layout = try #require(GuideModel.layout(input, settings: Self.lifeSize()))
+        #expect(layout.tiles.count == 3)
+        #expect(layout.passing.map(\.window) == [WindowId(9)])
+        #expect(layout.separators.count == 1)
+        // …and it projects clear above the panel, which is what makes a switch slide through it.
+        #expect(try #require(layout.tiles.first { $0.window == WindowId(9) }).rect.maxY <= 0.001)
+    }
+
+    @Test func theViewportIndicatorIsTheWorkingAreaProjected() throws {
+        // Two full-width columns is two screens of strip at `span = 3`, so `k = 0.1` and the indicator
+        // is a third of the ribbon.
+        let layout = try Self.layout([[1], [2]], width: 1000, gap: 0,
+                                     settings: Self.settings(width: 0.3, span: 3))
+        #expect(Self.approx(layout.viewport, Rect(x: 0, y: 0, width: 100, height: 80)))
+        #expect(abs(layout.panel.width - 200) < 0.001)
+    }
+
+    @Test func theRingIsTheFocusedWindowPlusWhateverTravelIsLeft() throws {
+        let atRest = try Self.layout([[1], [2]], focus: 2)
+        #expect(Self.approx(try #require(atRest.ring), Rect(x: 420, y: 0, width: 400, height: 800)))
+
+        // Mid-flight the ring is still drawn over the window it is *leaving*, which is what makes the
+        // travel read as travel rather than as a jump-then-slide.
+        let travelling = try Self.layout([[1], [2]], focus: 1,
+                                         displacement: Rect(x: 420, y: 0, width: 0, height: 0))
+        #expect(Self.approx(try #require(travelling.ring),
+                            Rect(x: 420, y: 0, width: 400, height: 800)))
+    }
+
+    @Test func focusOnNothingLeavesNoRingToDraw() throws {
+        let layout = try Self.layout([[1], [2]])
+        #expect(layout.ring == nil)
+        #expect(layout.tiles.count == 2)                // the strip is still there
+    }
+
+    @Test func anEmptyStripDrawsAnEmptyRibbon() throws {
+        let input = GuideInput(workingArea: Self.working, columns: [], frames: [:])
+        let layout = try #require(GuideModel.layout(input, settings: Self.settings()))
+        #expect(layout.tiles.isEmpty)
+        #expect(layout.separators.isEmpty)
+        #expect(layout.ring == nil)
+        // One screen wide: there is nothing on the strip, and the screen you are on still fits in it.
+        #expect(abs(layout.panel.width - 100) < 0.001)
+    }
+
+    @Test func theGuideShrinksToWhatIsActuallyOnTheStrip() throws {
+        // Two full-width columns is two screens of strip, so at `span = 3` the ribbon is two thirds of
+        // `width` rather than `width` with a third of it empty.
+        let two = try Self.layout([[1], [2]], width: 1000, gap: 0,
+                                  settings: Self.settings(width: 0.3, span: 3))
+        #expect(abs(two.panel.width - 200) < 0.001)
+        let one = try Self.layout([[1]], width: 1000, gap: 0,
+                                  settings: Self.settings(width: 0.3, span: 3))
+        #expect(abs(one.panel.width - 100) < 0.001)
+    }
+
+    // The corner rule
 
     /// A ribbon-sized container with room for the rule to run in: a 4 pt tile inside a 19 pt curve, so
     /// the conformance is alive over the first 15 pt of approach.
@@ -358,175 +460,5 @@ import Testing
     @Test func aTileWithNoAreaHasNoIcon() {
         #expect(GuideModel.placeholder(in: .zero) == .zero)
         #expect(GuideModel.placeholder(in: Size(width: 40, height: 0)) == .zero)
-    }
-
-    @Test func theGuideOffHasNoLayoutAndNoTrigger() {
-        var state = State(config: Config(guide: Self.settings(style: .off)))
-        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: Self.working)])
-        #expect(GuideModel.layout(for: state, on: Self.display) == nil)
-        #expect(GuideModel.trigger(for: state, on: Self.display) == nil)
-    }
-
-    @Test func noDisplayYetMeansNothingToProjectOnto() {
-        let state = State(config: Config(guide: Self.settings()))
-        // No metrics *and* nothing to be about: a guide belongs to a display, and before the first
-        // `screensChanged` there is no display for it to belong to.
-        #expect(GuideModel.layout(for: state, on: Self.display) == nil)
-        #expect(GuideModel.trigger(for: state, on: Self.display) == nil)
-    }
-
-    // A layout over a real strip
-
-    /// Two windows on a strip, at rest, with the guide on.
-    static func world(_ style: GuideStyle = .placeholder) -> State {
-        var state = State(config: Config(widthPresets: PresetCycle([.proportion(1.0)]),
-                                         transitionMode: .off,
-                                         guide: settings(style: style)))
-        state.setMonitors([MonitorInfo(id: MonitorId(1), frame: working)])
-        for raw in UInt64(1)...2 {
-            let (next, _) = Engine.reduce(state, .windowCreated(
-                WindowSnapshot(id: WindowId(raw), bundleId: "com.test.app", title: "w",
-                               role: .standard, frame: Rect(x: 0, y: 0, width: 10, height: 10))))
-            state = next
-        }
-        return state
-    }
-
-    // One guide per display
-
-    /// `Self.world()`, plus a second display. Everything the core manages is still on the first, which
-    /// is what "N in the shell, one managed" means.
-    static func twoDisplays() -> State {
-        var state = world()
-        state.setMonitors([
-            MonitorInfo(id: display, frame: working),
-            MonitorInfo(id: MonitorId(2), frame: Rect(x: 1000, y: 0, width: 800, height: 600)),
-        ])
-        return state
-    }
-
-    /// A guide draws the strips **its own display holds** and no others. On a second screen showing an
-    /// empty address that is nothing at all — the panel is the bare viewport indicator, with none of
-    /// the managed display's windows leaking into a panel they have nothing to do with.
-    @Test func aSecondDisplayDrawsNoneOfTheFirstsWindows() throws {
-        let state = Self.twoDisplays()
-        let second = MonitorId(2)
-        #expect(state.monitors.shown(on: second) != state.monitors.shown(on: Self.display))
-        #expect(state.workspaces[state.monitors.shown(on: second)!].isEmpty)
-
-        #expect(try #require(GuideModel.layout(for: state, on: Self.display)).tiles.count == 2)
-        let empty = try #require(GuideModel.layout(for: state, on: second))
-        #expect(empty.tiles.isEmpty)
-        #expect(empty.separators.isEmpty)
-    }
-
-    /// …and each display's guide is *about* its own address, so two guides on one desktop diff
-    /// independently. `focused` is per display for the same reason: there is one focused window, and a
-    /// screen that does not hold it must not summon a HUD because focus moved on the other one.
-    @Test func eachDisplaysTriggerNamesItsOwnWorkspaceAndItsOwnFocus() throws {
-        let state = Self.twoDisplays()
-        let first = try #require(GuideModel.trigger(for: state, on: Self.display))
-        let second = try #require(GuideModel.trigger(for: state, on: MonitorId(2)))
-        #expect(first.workspace == state.monitors.shown(on: Self.display))
-        #expect(second.workspace == state.monitors.shown(on: MonitorId(2)))
-        #expect(first.focused == state.world.focusedWindow)
-        #expect(second.focused == nil)
-        #expect(first != second)
-        #expect(second.columns.isEmpty)
-    }
-
-    /// The ring follows focus, not the panel: only the display holding the focused window draws one.
-    @Test func onlyTheDisplayHoldingFocusDrawsARing() throws {
-        let state = Self.settled(Self.twoDisplays())
-        #expect(try #require(GuideModel.layout(for: state, on: Self.display)).ring != nil)
-        #expect(try #require(GuideModel.layout(for: state, on: MonitorId(2))).ring == nil)
-    }
-
-    /// A display that has left answers nothing at all, rather than projecting onto stale geometry.
-    @Test func aDetachedDisplayHasNeitherALayoutNorATrigger() {
-        var state = Self.twoDisplays()
-        state.setMonitors([MonitorInfo(id: Self.display, frame: Self.working)])
-        #expect(GuideModel.layout(for: state, on: MonitorId(2)) == nil)
-        #expect(GuideModel.trigger(for: state, on: MonitorId(2)) == nil)
-    }
-
-    /// …with the focus ring arrived, which the arrivals themselves set travelling.
-    static func settled(_ start: State) -> State {
-        var s = start
-        for _ in 0..<2000 where s.motion.needsFrames { s = Engine.reduce(s, .tick(dt: 1.0 / 120)).0 }
-        return s
-    }
-
-    @Test func aTilePerWindowCarriesItsAppAndItsRectangle() throws {
-        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
-        #expect(layout.tiles.count == 2)
-        #expect(layout.tiles.allSatisfy { $0.bundleId == "com.test.app" })
-        #expect(layout.tiles.map(\.window) == [WindowId(1), WindowId(2)])   // sorted, so the pool is stable
-    }
-
-    @Test func theViewportIndicatorIsTheWorkingAreaProjected() throws {
-        let layout = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
-        #expect(Self.approx(layout.viewport, Rect(x: 100, y: 0, width: 100, height: 80)))
-    }
-
-    @Test func theRingLeavesTheOldTileAndTravelsToTheNewOne() throws {
-        // Settled first: the second window's *arrival* is itself a focus change, so a freshly built
-        // world already has a ring in flight.
-        let state = Self.settled(Self.world())
-        let atRest = try #require(GuideModel.layout(for: state, on: Self.display))
-        // At rest the ring sits exactly on the focused window's tile.
-        #expect(Self.approx(try #require(atRest.ring),
-                            try #require(atRest.tiles.first { $0.window == WindowId(2) }?.rect),
-                            tol: GuideModel.separation * 2 + 0.001))
-
-        let (moved, _) = Engine.reduce(state, .command(.focus(.left)))
-        let seeded = try #require(GuideModel.layout(for: moved, on: Self.display))
-        // The instant focus moves, the ring is still drawn over the window it is *leaving* — that
-        // equality is what makes the travel read as travel rather than as a jump-then-slide.
-        let departed = try #require(seeded.tiles.first { $0.window == WindowId(2) }?.rect)
-        #expect(abs(try #require(seeded.ring).minX - departed.minX) < GuideModel.separation * 2 + 0.001)
-
-        // …and it arrives on the newly focused one.
-        let arrived = try #require(GuideModel.layout(for: Self.settled(moved), on: Self.display))
-        let target = try #require(arrived.tiles.first { $0.window == WindowId(1) }?.rect)
-        #expect(abs(try #require(arrived.ring).minX - target.minX) < GuideModel.separation * 2 + 0.5)
-    }
-
-    @Test func theGuideShrinksToWhatIsActuallyOnTheStrip() throws {
-        // Two full-width columns is two screens of strip, so at the default `span = 3` the ribbon is
-        // two thirds of `width` rather than `width` with a third of it empty.
-        let two = try #require(GuideModel.layout(for: Self.world(), on: Self.display))
-        #expect(abs(two.panel.width - 200) < 0.001)
-
-        // Close one, and it shrinks again.
-        let (one, _) = Engine.reduce(Self.world(), .windowDestroyed(WindowId(2)))
-        #expect(abs(try #require(GuideModel.layout(for: one, on: Self.display)).panel.width - 100) < 0.001)
-    }
-
-    @Test func focusOnNothingLeavesNoRingToDraw() throws {
-        let (blurred, _) = Engine.reduce(Self.world(), .focusChanged(nil, origin: .system))
-        let layout = try #require(GuideModel.layout(for: blurred, on: Self.display))
-        #expect(layout.ring == nil)
-        #expect(layout.tiles.count == 2)                // the strip is still there
-    }
-
-    @Test func theTriggerReportsAChangeInTheValueNotInTheThingCarryingIt() {
-        let state = Self.world()
-        // A title change, and an AX landing: neither is a reason to summon a HUD.
-        let (retitled, _) = Engine.reduce(state, .axLanded(WindowId(1)))
-        #expect(GuideModel.trigger(for: retitled, on: Self.display) == GuideModel.trigger(for: state, on: Self.display))
-
-        let (refocused, _) = Engine.reduce(state, .command(.focus(.left)))
-        #expect(GuideModel.trigger(for: refocused, on: Self.display) != GuideModel.trigger(for: state, on: Self.display))
-    }
-
-    @Test func theTriggerDoesNotMoveWithTheScrollsCurrentValue() {
-        // It carries the scroll's *target*: a target moves once per command, a current value 120 times
-        // a second — and a trigger that moved per frame would re-arm the dwell forever.
-        var state = Self.world()
-        let before = GuideModel.trigger(for: state, on: Self.display)
-        state.motion.advance(by: 1.0 / 120, on: [Self.display],
-                             holding: state.contents(of: Self.display))
-        #expect(GuideModel.trigger(for: state, on: Self.display) == before)
     }
 }

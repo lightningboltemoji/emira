@@ -788,7 +788,7 @@ import EmiraCore
     // Who wants a still kept
 
     /// `keepsStills` is the union of the two features that want them — `CoverMode.immediate` raises
-    /// over them, `GuideStyle.preview` draws from them — and neither is the other's, so the bit is
+    /// over them, a preview guide drawing `stills` draws from them — and neither is the other's, so the bit is
     /// settable rather than a second read of `mode`. Off, a cover's stills are simply freed.
     @Test func aCoverKeepsItsStillsOnlyWhenSomethingWantsThem() async throws {
         func kept(_ keepsStills: Bool) async throws -> Int {

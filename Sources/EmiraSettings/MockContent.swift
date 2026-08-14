@@ -8,7 +8,7 @@ import EmiraCore
 // It replaces a 512 px icon floating in a rectangle, and it earns its place three times over. The pane
 // stops reading as a diagram, because an editor has a sidebar and a browser has a URL bar and those are
 // what an app looks like from across a room. The guide can ask for the same picture at *tile* size,
-// which is the only thing that makes `guide.style = preview` differ from `placeholder`. And it is an
+// which is the only thing that makes the preview guide's `stills` differ from `icons`. And it is an
 // **image**, so a rect it no longer fits can stretch it or crop it — which is `animation.window`.
 //
 // **Suggestion, never simulation.** No text, no colour beyond a tint, no attempt at a particular app.

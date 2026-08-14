@@ -378,8 +378,7 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
                               showsPointer: state.isPointerShown,
                               animation: draft.config.windowAnimation, raised: state.raised,
                               showsFocus: state.showsFocus,
-                              guide: motion.guide(of: state), guideStyle: draft.config.guide.style,
-                              mark: state.mark)
+                              guides: motion.guides(of: state), mark: state.mark)
     }
 
     /// **Reduce Motion turns the springs off, not the demonstration.** A take still plays and its beats

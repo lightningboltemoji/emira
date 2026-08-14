@@ -80,6 +80,49 @@ import EmiraConfig
         }
     }
 
+    /// **A tab is a place you go and a heading is a label on a run of rows.** A section whose main
+    /// surface spans sub-tables is split into sub-tabs, because `Position` twice in one scrolling list
+    /// is two rows that cannot be told apart by looking; the advanced tables keep headings, because a
+    /// third level of tabs inside a disclosure would be a place you go to inside a place you went.
+    @Test func aSectionSpanningSubTablesIsSplitIntoSubTabs() throws {
+        func slab(of section: Setting.Section) throws -> ControlSlab {
+            let slab = ControlSlab()
+            slab.select(section: try #require(ControlSlab.sections.firstIndex(of: section)))
+            return slab
+        }
+        // Every Layout setting is written under `[layout]`, which is what the tab is called.
+        #expect(try slab(of: .layout).subtabTitles.isEmpty)
+        #expect(try slab(of: .layout).groups.isEmpty)
+
+        // The guide's are not: a guide is a complete thing with a table of its own.
+        let guide = try slab(of: .guide)
+        #expect(guide.subtabTitles == ["Preview", "Names"])
+        // The sub-tab carries the word, so no heading repeats it.
+        #expect(guide.groups.isEmpty)
+
+        // The four spring tables label themselves, behind the Advanced disclosure — and `animation`'s
+        // main surface is one table, so it gets no sub-tabs.
+        #expect(try slab(of: .animation).subtabTitles.isEmpty)
+        #expect(try slab(of: .animation).groups == ["Scroll", "Resize", "Movement", "Glide"])
+    }
+
+    /// **One guide at a time, whole.** The rows on screen are one table's, which is the thing the
+    /// section tab could not say and the reason the split exists.
+    @Test func aSubTabShowsItsOwnTablesRowsAndNoOthers() throws {
+        let slab = ControlSlab()
+        slab.select(section: try #require(ControlSlab.sections.firstIndex(of: .guide)))
+        let tables = ControlSlab.tables(of: .guide)
+        #expect(tables == ["guide.preview", "guide.names"])
+
+        for (index, table) in tables.enumerated() {
+            slab.select(table: index)
+            let keys = ConfigSchema.settings.filter { $0.section == .guide && $0.table == table }
+            #expect(slab.controls.count == keys.count)
+            #expect(slab.controls.allSatisfy { $0.key.hasPrefix(table + ".") },
+                    "the \(table) sub-tab is showing another guide's rows")
+        }
+    }
+
     /// A choice control switches shape at four words, so both branches have to be reachable from the
     /// schema as it stands — otherwise one of them is untested code that looks tested.
     @Test func theChoiceVocabulariesStraddleTheSegmentLimit() {

@@ -95,7 +95,8 @@ length; its movement is always smooth. Keep transitions short.
 
 **The reconstruction is drawn at three scales, and there is one of it.** The cover is the desktop at full size;
 the guide is the same projection small enough to answer *where am I*; the settings window's mock desktop is it
-smaller again, on a scrim over the real one. Each is the strip's own geometry through one scalar, so an
+smaller again, on a scrim over the real one — with the guide drawn on it by the very object the daemon hosts,
+one scalar smaller again. Each is the strip's own geometry through one scalar, so an
 off-screen column, an animated resize and a gap the user is dragging appear in all three without any of them
 being implemented twice — and a preview that reimplemented gap arithmetic would be a second opinion about where
 a window goes. What the third one does **not** get is the reducer: a preview has no truth plane, nothing to
@@ -126,12 +127,18 @@ happen on.
   macOS guessing, not the user asking, and emira has already decided where focus goes; and _how much_ of
   macOS's own focus you still want is a dial, with focus onto windows emira doesn't place always admitted, or
   a modal save sheet stops working.
-- **Where am I.** The strip is infinite and the screen is not, so the design owes an answer. The guide is it —
-  the strip's own extent drawn small, with a marker travelling to whichever end you are at, rather than a
-  fixed frame that can only ever show you the middle of itself. It is the cover's own projection at another
-  scale, so an off-screen column, a workspace switch and an animated resize all appear in it without any of
-  them being implemented twice. **Off by default**, because a window manager must not put a HUD on somebody's
-  screen they did not ask for.
+- **Where am I.** The strip is infinite and the screen is not, so the design owes an answer. A guide is it, and
+  there are two of them because the question has two honest answers. The **minimap** is the strip's own extent
+  drawn small, with a marker travelling to whichever end you are at rather than a fixed frame that can only
+  ever show you the middle of itself; it is the cover's own projection at another scale, so an off-screen
+  column, a workspace switch and an animated resize all appear in it without any of them being implemented
+  twice. The **names** guide answers the same question with words instead of geometry — one per column, the
+  focused one filled — for a strip you navigate by what is on it rather than by where it is. Neither may
+  outgrow the screen it is answering about, and each concedes in its own vocabulary: the minimap takes a
+  smaller scale, and the row of names crowds its words, then gives up the columns furthest from you once
+  crowding them further would stop them being words. Each is a complete thing with a table of its own, and
+  both are **off by default**, because a window manager must not put a HUD on somebody's screen they did
+  not ask for.
 - **The strip follows your hand, and where it stops is yours to choose.** A scrollable tiler's signature
   interaction is the strip tracking your fingers rather than a swipe firing a keystroke, so a three-finger
   scroll is direct manipulation: the offset is the reducer's own quantity and the hand writes it, frame by

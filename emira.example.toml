@@ -127,18 +127,21 @@ stiffness = 100
 # Must be at least 0.
 damping-ratio = 1
 
-[guide]
+[guide.preview]
 
-# What the guide draws for each window, or off.
-# One of "off", "placeholder", "preview".
-style = "off"
+# Show a minimap of the strip when the desktop changes.
+enabled = false
+
+# What each tile draws: window stills, or app icons.
+# One of "stills", "icons".
+content = "stills"
 
 # Which corner or edge of the working area the guide sits at.
 # One of "top-left", "top-center", "top-right", "center-left", "center", "center-right",
 # "bottom-left", "bottom-center", "bottom-right".
 position = "top-right"
 
-# How wide the guide is at its longest, as a fraction of the working width.
+# The most of the working width the guide may take, as a fraction.
 # Must be greater than 0.
 width = 0.2
 
@@ -153,6 +156,39 @@ gap = 24
 # Seconds the guide stays up after the last thing that moved.
 # In seconds, must be at least 0.
 duration = 0.7
+
+[guide.names]
+
+# Name the strip's columns when the desktop changes.
+enabled = false
+
+# Which corner or edge of the working area the guide sits at.
+# One of "top-left", "top-center", "top-right", "center-left", "center", "center-right",
+# "bottom-left", "bottom-center", "bottom-right".
+position = "top-center"
+
+# The most of the working width the guide may take, as a fraction.
+# Must be greater than 0.
+width = 1
+
+# Points held clear between the guide and the working area's edge.
+# In points, must be at least 0.
+gap = 24
+
+# Seconds the guide stays up after the last thing that moved.
+# In seconds, must be at least 0.
+duration = 0.7
+
+# The type size the names are set at, which is the guide's only length.
+# In points, must be greater than 0.
+font-size = 12
+
+# Lowercase each app's name.
+lowercase = true
+
+# The most columns named at once, the ends beyond them elided; 0 is the whole strip.
+# Must be at least 0.
+max-columns = 0
 
 # The one open table: its names are chords you invent, and its values are commands spelled exactly
 # as the CLI spells them. Nothing is bound by default — registering a hotkey takes that chord from

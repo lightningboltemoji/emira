@@ -61,6 +61,9 @@ final class ControlSlab: NSVisualEffectView {
     static let height: CGFloat = chrome + viewport
 
     private let tabs = NSSegmentedControl()
+    /// One segment per table the section spans, and the row it sits in — see `tables(of:)`.
+    private let subtabs = NSSegmentedControl()
+    private let subtabRow = NSView()
     private let scroll = NSScrollView()
     private let rows = NSStackView()
     private let disclosure = NSButton()
@@ -82,10 +85,35 @@ final class ControlSlab: NSVisualEffectView {
             }
     }
 
+    /// The sub-tables a section's **main surface** spans, in schema order, or empty where it is one
+    /// table and the tab above already names it. The advanced dials are not read: they are behind a
+    /// disclosure, which is a place you have already gone, and they take headings instead.
+    static func tables(of section: Setting.Section) -> [String] {
+        var tables: [String] = []
+        for setting in ConfigSchema.settings
+        where setting.section == section && !setting.isAdvanced && !tables.contains(setting.table) {
+            tables.append(setting.table)
+        }
+        return tables.count > 1 ? tables : []
+    }
+
+    /// What a table is called on a tab or a heading: its last segment, capitalized. Derived from the
+    /// key, so there is no second list to drift.
+    static func title(of table: String) -> String {
+        guard let name = table.split(separator: ".").last else { return table }
+        return name.prefix(1).uppercased() + name.dropFirst()
+    }
+
     private var section: Setting.Section
+    /// Which of `tables(of:)` is on screen, or `nil` where the section is one table.
+    private var table: String?
     /// The rows on screen, in the order they are stacked. Readable so a test can ask what the
     /// panel actually built rather than re-deriving what it should have.
     private(set) var controls: [any PanelRow] = []
+    /// The group headings between them, in the same order and for the same reason.
+    private(set) var groups: [String] = []
+    /// The sub-tabs on screen, likewise — empty for a section that is one table.
+    private(set) var subtabTitles: [String] = []
     private var showsAdvanced = false
     /// What was last shown. Held **only** to re-display it: switching section throws every control away
     /// and builds new ones, and a fresh control has no value until it is told one.
@@ -93,6 +121,7 @@ final class ControlSlab: NSVisualEffectView {
 
     init() {
         section = Self.sections.first ?? .layout
+        table = Self.tables(of: section).first
         super.init(frame: CGRect(x: 0, y: 0, width: Self.width, height: Self.height))
         material = SettingsStyle.backdropMaterial
         blendingMode = .withinWindow
@@ -128,6 +157,8 @@ final class ControlSlab: NSVisualEffectView {
         tabs.action = #selector(tabPicked)
         tabs.translatesAutoresizingMaskIntoConstraints = false
         addSubview(tabs)
+
+        buildSubtabs()
 
         rows.orientation = .vertical
         rows.alignment = .leading
@@ -187,7 +218,11 @@ final class ControlSlab: NSVisualEffectView {
             tabs.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
             tabs.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
 
-            banner.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 12),
+            subtabRow.topAnchor.constraint(equalTo: tabs.bottomAnchor),
+            subtabRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            subtabRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+
+            banner.topAnchor.constraint(equalTo: subtabRow.bottomAnchor, constant: 12),
             banner.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
             banner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
 
@@ -217,6 +252,38 @@ final class ControlSlab: NSVisualEffectView {
             discard.widthAnchor.constraint(equalToConstant: 86),
         ])
     }
+
+    /// The sub-tabs, and the row they sit in. **The row collapses to nothing** where a section is one
+    /// table, which is what keeps `chrome` a number about the tabs and the buttons. Centred and small,
+    /// because two full-width segmented controls stacked read as one confused tab bar.
+    private func buildSubtabs() {
+        subtabRow.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(subtabRow)
+
+        subtabs.trackingMode = .selectOne
+        subtabs.segmentDistribution = .fit
+        subtabs.controlSize = .small
+        subtabs.target = self
+        subtabs.action = #selector(subtabPicked)
+        subtabs.translatesAutoresizingMaskIntoConstraints = false
+        subtabRow.addSubview(subtabs)
+
+        subtabHeight = subtabRow.heightAnchor.constraint(equalToConstant: 0)
+        NSLayoutConstraint.activate([
+            subtabHeight,
+            subtabs.centerXAnchor.constraint(equalTo: subtabRow.centerXAnchor),
+            subtabs.centerYAnchor.constraint(equalTo: subtabRow.centerYAnchor),
+        ])
+        subtabRow.isHidden = true
+    }
+
+    private var subtabHeight: NSLayoutConstraint!
+
+    /// How much a section that has sub-tabs spends on them, off the scroller rather than off the slab:
+    /// the composition is a fixed stack, and a panel that grew on one tab would move the mock above it.
+    /// **Exactly one row pitch**, because the affordance is *where the fold cuts a row*, and any other
+    /// height slides that cut — into the gap between two rows, where the list looks like it ends.
+    static let subtabRowHeight: CGFloat = rowPitch
 
     /// The changed-underneath-you banner. Hidden by collapsing its height, so the rows above it take the
     /// space back rather than leaving a gap where it would have been.
@@ -265,10 +332,16 @@ final class ControlSlab: NSVisualEffectView {
         for view in rows.arrangedSubviews { view.removeFromSuperview() }
         for view in advanced.arrangedSubviews { view.removeFromSuperview() }
         controls = []
+        groups = []
+        rebuildSubtabs()
 
-        let entries = ConfigSchema.settings.filter { $0.section == section }
+        let entries = ConfigSchema.settings.filter {
+            $0.section == section && (table == nil || $0.table == table)
+        }
         let surfaces = ConfigSchema.bespoke.filter { $0.section == section }
+        var group: String?
         for setting in entries where !setting.isAdvanced {
+            groupBreak(into: rows, at: setting, from: &group)
             add(setting, to: rows)
             // A surface goes where the entry says it goes, which is where the generated document puts
             // it too — outer gaps under the two other gaps, not after the preset lists.
@@ -300,9 +373,39 @@ final class ControlSlab: NSVisualEffectView {
         advanced.isHidden = !showsAdvanced
         rows.addArrangedSubview(advanced)
         advanced.widthAnchor.constraint(equalTo: rows.widthAnchor).isActive = true
+        group = nil
         for setting in dials {
+            groupBreak(into: advanced, at: setting, from: &group)
             add(setting, to: advanced)
         }
+    }
+
+    /// Put the section's sub-tabs up, or take the row away where it has none.
+    private func rebuildSubtabs() {
+        let tables = Self.tables(of: section)
+        subtabTitles = tables.map(Self.title(of:))
+        subtabRow.isHidden = tables.isEmpty
+        subtabHeight.constant = tables.isEmpty ? 0 : Self.subtabRowHeight
+        subtabs.segmentCount = subtabTitles.count
+        for (i, title) in subtabTitles.enumerated() { subtabs.setLabel(title, forSegment: i) }
+        subtabs.selectedSegment = table.flatMap(tables.firstIndex(of:)) ?? -1
+    }
+
+    /// A titled break where a section's settings cross into a **sub**-table — the thing the tab above
+    /// cannot say. The table on screen gets none, whether that is the section's own or the one a sub-tab
+    /// has already named, so what is left is the advanced tables labelling themselves.
+    private func groupBreak(into stack: NSStackView, at setting: Setting,
+                            from group: inout String?) {
+        let table = setting.table
+        guard table != group else { return }
+        group = table
+        guard table != section.rawValue, table != self.table else { return }
+        let title = Self.title(of: table)
+        groups.append(title)
+        let caption = NSTextField(labelWithString: title)
+        caption.font = .systemFont(ofSize: 12, weight: .medium)
+        caption.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(caption)
     }
 
     /// Build the section's rows and put the draft's values in them. Every path that changes which
@@ -451,6 +554,22 @@ final class ControlSlab: NSVisualEffectView {
         tabs.selectedSegment = index
         section = Self.sections[index]
         showsAdvanced = false
+        table = Self.tables(of: section).first
+        rebuild()
+        onSection?(section)
+    }
+
+    @objc private func subtabPicked() {
+        select(table: subtabs.selectedSegment)
+    }
+
+    /// Show the `index`-th sub-tab. **The section's set goes back up**, exactly as picking a tab does:
+    /// the rows under the pointer changed wholesale, and leaving the previous row's take playing would
+    /// be the mock still demonstrating a setting that is no longer on screen.
+    func select(table index: Int) {
+        let tables = Self.tables(of: section)
+        guard tables.indices.contains(index) else { return }
+        table = tables[index]
         rebuild()
         onSection?(section)
     }

@@ -48,13 +48,15 @@ public enum Camera: Sendable, Equatable {
     /// A column of one has no seam, and the whole column is the honest answer there.
     case stackSeam
 
-    /// The guide's own panel, with a margin. Close enough to read a tile, which is what `style` and
-    /// `span` are choices about.
-    case guidePanel
+    /// One guide's own panel, and nothing around it — close enough to read a tile or a word.
+    /// **Per style**, because a lens that framed "the guide" would push in on the minimap while the user
+    /// was editing the names row. `maximumScale` decides how close the shot ends up; a margin here would
+    /// be a second framing rule overriding that one.
+    case guidePanel(GuideStyle)
 
-    /// The guide **and the two working-area edges it is inset from**, because those two edges are what
-    /// `guide.gap` is measured from and a frame that lost them would lose the setting.
-    case guideCorner
+    /// One guide **and the two working-area edges it is inset from**, because those two edges are what
+    /// its `gap` is measured from and a frame that lost them would lose the setting.
+    case guideCorner(GuideStyle)
 
     /// The rect the frame must contain, in true display points, or `nil` for the whole display.
     func subject(of state: PreviewState) -> Rect? {
@@ -74,14 +76,11 @@ public enum Camera: Sendable, Equatable {
             return Rect(x: column.minX, y: seam.midY - window.height / 2,
                         width: column.width, height: window.height)
 
-        case .guidePanel:
-            guard let panel = state.guide?.panel else { return nil }
-            let margin = max(panel.width, panel.height) * 0.35
-            return Rect(x: panel.minX - margin, y: panel.minY - margin,
-                        width: panel.width + margin * 2, height: panel.height + margin * 2)
+        case .guidePanel(let style):
+            return state.guide(style)?.panel
 
-        case .guideCorner:
-            guard let panel = state.guide?.panel else { return nil }
+        case .guideCorner(let style):
+            guard let panel = state.guide(style)?.panel else { return nil }
             let area = state.workingArea
             // The corner the panel is nearest — the two edges the gap is measured from. Stretched to
             // rather than unioned with, because `Rect.union` ignores an empty operand by design.
@@ -103,12 +102,16 @@ public enum Camera: Sendable, Equatable {
     /// the screen.
     var maximumScale: Double {
         switch self {
-        case .guidePanel:
+        case .guidePanel(.preview):
             // **The one framing allowed closer than life, and it is allowed because nothing read at it
-            // is a length.** `guide.style` is what a tile draws and `guide.span` is how many there are;
-            // a tile at life size is a few points across and neither choice is legible. `guide.gap` *is*
-            // points, and it is framed by `guideCorner`, which keeps the cap.
+            // is a length.** `content` is what a tile draws and `span` is how many there are; a tile at
+            // life size is a few points across and neither choice is legible. `gap` *is* points, and it
+            // is framed by `guideCorner`, which keeps the cap.
             return Self.readable
+        case .guidePanel(.names):
+            // …and the names guide is the reason that clause is not a licence. Everything read on it is
+            // **type**, and type is a length: at the cap `font-size = 12` draws twelve points.
+            return 1
         case .wide, .seams, .stack, .stackSeam, .guideCorner:
             return 1
         }

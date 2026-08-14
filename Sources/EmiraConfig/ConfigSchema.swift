@@ -185,8 +185,10 @@ extension Setting {
         }
     }
 
-    /// The dotted `[table]` the key is written under — everything before its last segment.
-    var table: String {
+    /// The dotted `[table]` the key is written under — everything before its last segment. Public
+    /// because it is what groups a settings panel's rows: a section that spans two tables is one the
+    /// tab's own title cannot describe.
+    public var table: String {
         let segments = key.split(separator: ".")
         return segments.dropLast().joined(separator: ".")
     }
@@ -286,6 +288,24 @@ extension Codec where Value == Double {
                   return number
               },
               write: { .number($0) })
+    }
+}
+
+extension Codec where Value == Int {
+    /// A count. Read through the same reader every other number goes through and then rounded, because
+    /// the grammar has one numeric type and a count of columns is not a fraction of one.
+    static func count(atLeast minimum: Int) -> Codec {
+        let bound = Setting.Bound.atLeast(Double(minimum))
+        return Codec(kind: .number(bound, unit: .bare),
+                     read: { value, key in
+                         let number = try TOMLTable.number(value, key: key)
+                         guard bound.admits(number) else {
+                             throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                                              message: bound.requirement)
+                         }
+                         return Int(number.rounded())
+                     },
+                     write: { .number(Double($0)) })
     }
 }
 
@@ -599,39 +619,95 @@ public enum ConfigSchema {
                 section: .animation),
     ]
 
-    /// The guide — six keys, of which the reducer reads one. `width` is a fraction and nothing else,
-    /// deliberately not `sizeList`'s dual "≤ 1 is a fraction, more is points" reading: a scalar version
-    /// of that unit would need a `Kind` case serving exactly one key, which the note on `Kind` names as
-    /// the sign the table has stopped paying for itself. `Bound` has floors and no ceilings, so a width
-    /// over 1 is clamped by the geometry rather than refused here — a stop, not a reversal.
+    /// The two guides, a table each, of which the reducer reads one key. Labels are short because the
+    /// group a row is written under says which guide it belongs to; `width` is a bare fraction, and one
+    /// over 1 is clamped by the geometry rather than refused — `Bound` has floors and no ceilings.
     private static let guide: [Setting] = [
-        Setting("guide.style", \.guide.style, .word,
-                label: "Guide style", help: "What the guide draws for each window, or off.",
+        Setting("guide.preview.enabled", \.guide.preview.enabled, .toggle,
+                label: "Enabled", help: "Show a minimap of the strip when the desktop changes.",
                 section: .guide),
 
-        Setting("guide.position", \.guide.position, .word,
-                label: "Guide position",
-                help: "Which corner or edge of the working area the guide sits at.", section: .guide),
-
-        Setting("guide.width", \.guide.width, .number(greaterThan: 0, unit: .bare),
-                label: "Guide width",
-                help: "How wide the guide is at its longest, as a fraction of the working width.",
+        Setting("guide.preview.content", \.guide.preview.content, .word,
+                label: "Content", help: "What each tile draws: window stills, or app icons.",
                 section: .guide),
 
-        Setting("guide.span", \.guide.span, .number(greaterThan: 0, unit: .bare),
-                label: "Guide span",
+        guide(.position, of: "preview", \.guide.preview),
+        guide(.width, of: "preview", \.guide.preview),
+
+        Setting("guide.preview.span", \.guide.preview.span, .number(greaterThan: 0, unit: .bare),
+                label: "Span",
                 help: "The most screens of strip it shows at once; a shorter strip shrinks it.",
                 section: .guide),
 
-        Setting("guide.gap", \.guide.gap, .number(atLeast: 0, unit: .points),
-                label: "Guide gap",
-                help: "Points held clear between the guide and the working area's edge.",
+        guide(.gap, of: "preview", \.guide.preview),
+        guide(.duration, of: "preview", \.guide.preview),
+
+        Setting("guide.names.enabled", \.guide.names.enabled, .toggle,
+                label: "Enabled", help: "Name the strip's columns when the desktop changes.",
                 section: .guide),
 
-        Setting("guide.duration", \.guide.duration, .number(atLeast: 0, unit: .seconds),
-                label: "Guide duration",
-                help: "Seconds the guide stays up after the last thing that moved.", section: .guide),
+        guide(.position, of: "names", \.guide.names),
+        guide(.width, of: "names", \.guide.names),
+        guide(.gap, of: "names", \.guide.names),
+        guide(.duration, of: "names", \.guide.names),
+
+        Setting("guide.names.font-size", \.guide.names.fontSize,
+                .number(greaterThan: 0, unit: .points),
+                label: "Font size",
+                help: "The type size the names are set at, which is the guide's only length.",
+                section: .guide),
+
+        Setting("guide.names.lowercase", \.guide.names.lowercase, .toggle,
+                label: "Lowercase", help: "Lowercase each app's name.", section: .guide),
+
+        Setting("guide.names.max-columns", \.guide.names.maxColumns, .count(atLeast: 0),
+                label: "Max columns",
+                help: "The most columns named at once, the ends beyond them elided; 0 is the whole strip.",
+                section: .guide),
     ]
+
+    /// The keys every guide answers with the same sentence — where it sits, how much of the screen it
+    /// may take, how far it is held off the edge, and how long it stays. `enabled` is not among them:
+    /// both guides carry the key, and what a reader needs to know about it is which guide it turns on.
+    private enum GuideKey: String {
+        case position, width, gap, duration
+    }
+
+    /// One of those keys, asked of one guide's table. Written once and asked twice, for the springs'
+    /// reason — and by key rather than by table, because the two guides are not the same shape: one
+    /// draws pictures and the other sets type, so only `GuideTable` is common to both.
+    private static func guide<Table: GuideTable>(
+        _ key: GuideKey, of name: String,
+        _ table: WritableKeyPath<Config, Table> & Sendable
+    ) -> Setting {
+        let dotted = "guide.\(name).\(key.rawValue)"
+        switch key {
+        case .position:
+            return Setting(dotted, .word, label: "Position",
+                           help: "Which corner or edge of the working area the guide sits at.",
+                           section: .guide,
+                           get: { $0[keyPath: table].position },
+                           set: { $0[keyPath: table].position = $1 })
+        case .width:
+            return Setting(dotted, .number(greaterThan: 0, unit: .bare), label: "Width",
+                           help: "The most of the working width the guide may take, as a fraction.",
+                           section: .guide,
+                           get: { $0[keyPath: table].width },
+                           set: { $0[keyPath: table].width = $1 })
+        case .gap:
+            return Setting(dotted, .number(atLeast: 0, unit: .points), label: "Gap",
+                           help: "Points held clear between the guide and the working area's edge.",
+                           section: .guide,
+                           get: { $0[keyPath: table].gap },
+                           set: { $0[keyPath: table].gap = $1 })
+        case .duration:
+            return Setting(dotted, .number(atLeast: 0, unit: .seconds), label: "Duration",
+                           help: "Seconds the guide stays up after the last thing that moved.",
+                           section: .guide,
+                           get: { $0[keyPath: table].duration },
+                           set: { $0[keyPath: table].duration = $1 })
+        }
+    }
 
     /// The four spring tables, one sub-schema: they differ in which motion they drive and in nothing
     /// else, so four special cases would be four chances to fix a bug twice.

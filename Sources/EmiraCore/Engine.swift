@@ -479,7 +479,7 @@ public enum Engine {
     /// two-reads-one-offset rule `finishStructuralEdit` runs on. The `!=` comparison comes first, so the
     /// two `naturalFrames` calls happen only when focus actually moved, never per tick.
     private static func trackFocusRing(from before: State, into after: inout State) {
-        guard after.config.guide.style != .off else { return after.motion.clearFocusRing() }
+        guard after.config.guide.preview.enabled else { return after.motion.clearFocusRing() }
         guard before.world.focusedWindow != after.world.focusedWindow else { return }
         guard after.world.focusedWindow != nil else { return after.motion.clearFocusRing() }
         // Each read is the acting monitor's own — its metrics, its address, its strips. When focus

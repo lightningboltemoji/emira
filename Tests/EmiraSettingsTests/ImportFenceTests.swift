@@ -1,10 +1,15 @@
 import Foundation
 import Testing
 
-// The fence around `EmiraSettings`, which the module graph cannot draw for us: `EmiraConfig` depends on
-// `EmiraCore`, so the reducer is one `import` away however the targets are arranged. The compiler can't
-// check that a name is *absent*, so this does — the same trick `ConfigSchemaTests` uses to check that
-// every field of `Config` is reachable from the file.
+// The fence around `EmiraSettings` and `EmiraGuide`, which the module graph cannot draw for us: both
+// depend on `EmiraCore`, so the reducer is one `import` away however the targets are arranged. The
+// compiler can't check that a name is *absent*, so this does — the same trick `ConfigSchemaTests` uses
+// to check that every field of `Config` is reachable from the file.
+//
+// **`EmiraGuide` is on the list for a reason of its own.** It draws the same guide for the settings
+// window and for the daemon, and it can only be the same object if it takes its input from the pure
+// model rather than from whichever plane happens to be handy. A renderer that could read a `State`
+// would be a renderer only one of the two hosts could use.
 
 @Suite struct ImportFenceTests {
 
@@ -24,8 +29,9 @@ import Testing
     /// the authority on what is legal and this module is only the authority on what is offerable.
     static let forbidden = ["Engine", "State", "Event", "Effect", "Command"]
 
-    @Test func settingsNeverNamesTheReducer() throws {
-        let sources = Self.root.appending(path: "Sources/EmiraSettings")
+    @Test(arguments: ["EmiraSettings", "EmiraGuide"])
+    func neitherModuleNamesTheReducer(_ module: String) throws {
+        let sources = Self.root.appending(path: "Sources/\(module)")
         let files = try FileManager.default
             .subpathsOfDirectory(atPath: sources.path)
             .filter { $0.hasSuffix(".swift") }
@@ -36,7 +42,7 @@ import Testing
             let code = Self.stripped(text)
             for name in Self.forbidden {
                 #expect(code.range(of: "\\b\(name)\\b", options: .regularExpression) == nil, """
-                EmiraSettings/\(file) names `\(name)`. This module sees the config and the geometry and \
+                \(module)/\(file) names `\(name)`. This module sees the config and the geometry and \
                 nothing else — see the boundary rule in EmiraSettings.swift.
                 """)
             }

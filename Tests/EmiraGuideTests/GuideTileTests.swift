@@ -3,10 +3,10 @@ import Foundation
 import QuartzCore
 import Testing
 import EmiraCore
-@testable import EmiraShell
+@testable import EmiraGuide
 
 // The tile's own state machine: what it carries, and how what it carries is fitted. No window server —
-// a `CALayer` off-screen answers all of this, which is why it is asserted here and the panel around it
+// a `CALayer` off-screen answers all of this, which is why it is asserted here and the window around it
 // (an `NSScreen`, an `NSWindow`) is not.
 //
 // The property under test is that **a tile outlives its content**. A window's still reaches
@@ -26,7 +26,9 @@ import EmiraCore
     }
 
     static func tile() -> RoundedLayer {
-        RoundedLayer(scale: 2, fill: CGColor(gray: 0, alpha: 1), edge: nil)
+        let tile = RoundedLayer(contentsScale: 2)
+        tile.style(fill: CGColor(gray: 0, alpha: 1), edge: nil)
+        return tile
     }
 
     static let square = CGRect(x: 10, y: 20, width: 100, height: 60)
@@ -41,7 +43,7 @@ import EmiraCore
         tile.place(Self.square, corners: .uniform(4))
         #expect(Self.picture(of: tile) == nil)
 
-        tile.carry(.preview(Self.image()))
+        tile.carry(.still(Self.image()))
 
         let picture = try #require(Self.picture(of: tile))
         #expect(picture.contents != nil)
@@ -53,7 +55,7 @@ import EmiraCore
 
     @Test func aStillReplacesThePlaceholderItStoodBehind() throws {
         let tile = Self.tile()
-        tile.carry(.placeholder(Self.image()))
+        tile.carry(.icon(Self.image()))
         tile.place(Self.square, corners: .uniform(4))
 
         let inscribed = try #require(Self.picture(of: tile))
@@ -64,7 +66,7 @@ import EmiraCore
         #expect(inscribed.frame.width < Self.square.width)
         #expect(inscribed.mask == nil)
 
-        tile.carry(.preview(Self.image()))
+        tile.carry(.still(Self.image()))
 
         // The same layer, refitted: a window that acquires a still is the window it already was, and
         // rebuilding its tile would throw away a path about to be drawn identically.
@@ -79,17 +81,17 @@ import EmiraCore
         let tile = Self.tile()
         tile.place(Self.square, corners: .uniform(4))
 
-        tile.carry(.preview(Self.image()))
+        tile.carry(.still(Self.image()))
         #expect(try #require(Self.picture(of: tile)).mask != nil)
         // An offscreen pass per tile that buys an inscribed icon nothing.
-        tile.carry(.placeholder(Self.image()))
+        tile.carry(.icon(Self.image()))
         #expect(try #require(Self.picture(of: tile)).mask == nil)
     }
 
     @Test func aTileThatLosesItsContentPaintsOnlyItself() {
         let tile = Self.tile()
         tile.place(Self.square, corners: .uniform(4))
-        tile.carry(.preview(Self.image()))
+        tile.carry(.still(Self.image()))
         #expect(Self.picture(of: tile) != nil)
 
         tile.carry(.blank)
@@ -103,13 +105,13 @@ import EmiraCore
         let tile = Self.tile()
         tile.place(Self.square, corners: .uniform(4))
         let still = Self.image()
-        tile.carry(.preview(still))
+        tile.carry(.still(still))
 
         let picture = try #require(Self.picture(of: tile))
         let mask = picture.mask
         picture.frame = .zero   // a sentinel no re-fit would leave standing
 
-        tile.carry(.preview(still))
+        tile.carry(.still(still))
 
         #expect(Self.picture(of: tile) === picture)
         #expect(picture.mask === mask)
@@ -121,7 +123,7 @@ import EmiraCore
     @Test func aResizedTileRefitsWhatItCarries() throws {
         let tile = Self.tile()
         tile.place(Self.square, corners: .uniform(4))
-        tile.carry(.preview(Self.image()))
+        tile.carry(.still(Self.image()))
 
         let wider = CGRect(x: 10, y: 20, width: 300, height: 60)
         tile.place(wider, corners: .uniform(4))

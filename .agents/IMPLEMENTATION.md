@@ -86,7 +86,7 @@ rather than nested in `Command`: a consumer of the _spellings_ is not a consumer
 the pump at the refresh rate that isn't a tick, and nothing that displays state may be an `Event`.
 
 The first has two instances, and the stated cost is the same in both — every dispatch drains
-`onStateChanged`, where the guide re-derives its whole projection. Raw pointer samples are filtered into one
+`onStateChanged`, where each guide re-derives its whole layout. Raw pointer samples are filtered into one
 `pointerEntered` crossing _outside_ the pump. Trackpad travel is **accumulated in the shell and drained on the
 frame boundary**, immediately ahead of the tick that will paint it (`DisplayLinkDriver.onFrame`): the pad
 samples at ~120 Hz and the screen may paint at 60, so dispatching per sample would write the viewport twice
@@ -112,13 +112,18 @@ EmiraCore       pure — geometry, ids, Command/Event/Effect, State, layout engi
    ├── EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.
    └── EmiraConfig     pure — the TOML grammar and the config schema; text ⇄ `Config`.
     ▲
+EmiraGuide      AppKit — the guides' layer tree, and no window. Hosted by both the settings
+    │           window and the daemon, which is what makes a preview the same object.
+    │           Sees the config and the geometry; may not name the reducer.
+    │                                     (deps: EmiraCore; imports AppKit/QuartzCore)
+    ▲
 EmiraSettings   AppKit — the settings window: the scrim, the mock desktop, the controls.
     │           Sees the config and the geometry; may not name the reducer.
-    │                        (deps: EmiraCore, EmiraConfig, EmiraMotion; imports AppKit/QuartzCore)
+    │             (deps: EmiraCore, EmiraConfig, EmiraMotion, EmiraGuide; imports AppKit/QuartzCore)
     ▲
 EmiraShell      imperative — Runtime, Executor, AX, Capture, Compositor, Guide, Pointer,
     │           Display, Hotkeys, ConfigLoader, IPC, MenuBar, Onboarding, Teardown.
-    │  (deps: EmiraCore, EmiraConfig, EmiraProtocol, EmiraSettings; imports AppKit/QuartzCore/SCK/AX/Carbon/CG)
+    │  (deps: EmiraCore, EmiraConfig, EmiraProtocol, EmiraSettings, EmiraGuide; imports AppKit/QuartzCore/SCK/AX/Carbon/CG)
     ▲
    ├── emira-daemon   executable — NSApplication accessory host that wires the Runtime.
    └── emira          executable — CLI; socket client, plus `emira config` over the file.
@@ -132,6 +137,17 @@ Each boundary buys one enforced property:
 - **`EmiraConfig` separate from `EmiraCore`** — the config _values_ stay in core because the reducer reads them;
   what moved out is the _format_. The target is what makes "the settings GUI sees the config and nothing else"
   enforced rather than intended, and it does the same for `emira config` in the other direction.
+- **`EmiraGuide` separate from both hosts** — the daemon and the settings window draw the guides with the
+  _same_ object, so a preview cannot be a second drawing that merely resembles one. Three things make that
+  hold rather than intend it: a renderer takes a `GuideInput` and never a `State` (`ImportFenceTests` scans
+  this target too), every cosmetic multiplies by `scale`, and what it is handed is a **`GuideDrawing` — the
+  model already run**, by whichever host needed the panel first. `GuideStyle` is the unit both hosts count
+  in, `allCases` is the drawing order and the only such list, and a `nil` drawing means _show nothing_ in
+  both — a guide left carrying its last frame would answer *where am I* with the place you just left.
+  What the core cannot answer about type it **takes as an argument**: `GuideFace` measures a word, both
+  hosts pass `GuideTypeface`'s one implementation, and the model stays a function of what it is handed.
+  Measuring inside a renderer is the shape that does not work — the settings window needs the panel
+  before it draws, so the answer would arrive a frame after the camera that framed it.
 - **`EmiraSettings` separate from `EmiraShell`** — a target rather than a folder, for `EmiraConfig`'s reason one
   rung further out: it sees the config and the geometry and nothing else, so a preview cannot reach the reducer.
   The graph does not enforce that on its own — `EmiraConfig` pulls in `EmiraCore` — so `ImportFenceTests` scans
@@ -149,6 +165,7 @@ Each boundary buys one enforced property:
 | decides _what should happen_ — geometry, policy, sequencing | `EmiraCore`               |
 | is scalar motion given `dt`                                 | `EmiraMotion`             |
 | is a fact about the config file's _text_                    | `EmiraConfig`             |
+| is how a *guide* is drawn, at any scale                     | `EmiraGuide`              |
 | is how a *setting* is shown, previewed or edited            | `EmiraSettings`           |
 | needs a framework, a thread, or a system answer             | `EmiraShell`              |
 | only wires things together                                  | `emira-daemon/main.swift` |
@@ -463,16 +480,18 @@ Never two authorities on one number.
    two different `Layout`s, with no number to interpolate. So what goes under a spring is each window's
    **displacement** from where the layout now says it belongs, decaying to zero (`Motion.windowAnimators`,
    `RectAnimator`). Destination stays derived; only the _lag_ is per-window.
-4. **The guide's focus ring** — a displacement from the focused window's own frame. The odd one out because
-   **nothing derives from it**, and three consequences are load-bearing: it is **not in `Motion.isSettled`** (a
-   decoration must not hold a cover up), it **never bumps `retargetGeneration`** (a focus change must not extend
-   a hung transition's hold), and it **survives `closeTransition()`** (the guide outlives the cover by design).
-   Hence `needsFrames = isTransitioning || !isFocusRingSettled`, while `syncHold` reads the first term alone.
+4. **The preview guide's focus ring** — a displacement from the focused window's own frame. The odd one out
+   because **nothing derives from it**, and three consequences are load-bearing: it is **not in
+   `Motion.isSettled`** (a decoration must not hold a cover up), it **never bumps `retargetGeneration`** (a
+   focus change must not extend a hung transition's hold), and it **survives `closeTransition()`** (the guide
+   outlives the cover by design). Hence `needsFrames = isTransitioning || !isFocusRingSettled`, while
+   `syncHold` reads the first term alone. Gated on `guide.preview.enabled` and not on "any guide is on": the
+   names guide has no travelling ring, so the animator must not exist for its sake.
 
 Every emitted layer frame is one expression: `naturalFrames` resolved at (1) and (2) — the live offset and the
-live widths — then `.displaced(by:)` (3). The guide draws the _same_ expression at another scale, which is why
-off-screen columns, vertical workspace slides and animated resizes all arrive there at no cost (`emitLayerFrames`,
-`GuideModel`).
+live widths — then `.displaced(by:)` (3). The preview guide draws the _same_ expression at another scale, which
+is why off-screen columns, vertical workspace slides and animated resizes all arrive there at no cost
+(`emitLayerFrames`, `GuideModel`).
 
 Departures, arrivals, close, minimize, hide, `move-window`, `consume-or-expel`, `cycle-height` and boot
 adoptions all ride the one structural-edit path. A departure simply lacks a _mover_; an arrival is seeded with
@@ -764,7 +783,7 @@ animated out like a close, position remembered.
 | `WorldWatcher.swift`      | the live world's _policy_: boot scan → adopt → watch → reconcile                                         | driven entirely through the three AX seams          |
 | `Capture/`                | SCK stills, the batch deadline, the `WindowId`-keyed store, `SurfaceCache`                               | `SurfaceCapturer`, `CaptureStore`                   |
 | `Compositor/`             | an overlay + reconstruction per display, the plane over them, the Y-flip, effect routing                 | `CoverSurface` / `CoverPlane`                        |
-| `Guide/`                  | one transient minimap per display; `GuideModel` is the arithmetic, `GuidePanel` the AppKit               | `GuideModel` is pure                                |
+| `Guide/`                  | one guide window per display: `GuideSubject` reads the truth plane into a `GuideInput`, `Guide` decides what is up and arms a dwell per guide, `GuidePanel` owns the window; the drawing is `EmiraGuide` | `GuideSurface`; `GuideInput` is pure |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
 | `Display/`                | `CADisplayLink` → `tick(dt)`, a hold deadline per cover, and the display set as a source                 | `FrameClock`, `HoldTimer`                           |
 | `Input/`                  | the two intent sources: chords → `Event.command` through Carbon `RegisterEventHotKey`, or a consuming `CGEventTap` for the fn ones; and a gesture `CGEventTap` → the three trackpad events | `HotkeyBinder`, `GestureTapper`   |
@@ -1052,7 +1071,10 @@ and a save leaves the window up.
   scalar, `k`, applied in `Projection.mock(_:)` and nowhere earlier: `LayoutMetrics` is built against the
   display's **true-point** working area and `naturalFrames` answers true-point rects, so an 8 pt gap is 8 pt of
   a real screen rather than 8 pt of a mock. A window's corner, its title bar and its stoplights are real
-  dimensions projected the same way, or the chrome drifts from the layout at every other `k`.
+  dimensions projected the same way, or the chrome drifts from the layout at every other `k`. **A guide on the
+  mock is the daemon's own renderer**, handed that same `k` as its `scale` and the mock's own pictures and
+  words through `GuideSources` — so the preview is the guide seen smaller rather than a second drawing of it,
+  and `GuideFrame` is only what a host owns: the drawing it was handed, and where the panel goes.
 - **A `Scene` is the set and a `Take` is the script over it**, keyed per **setting** rather than per section.
   The script is empty for most of them: a setting that *is* geometry re-derives with nothing playing, and a
   script is for behaviour — `focus right` has to happen for `focus.system-events` to mean anything. Several
@@ -1105,9 +1127,20 @@ and a save leaves the window up.
   ceiling**, and `Camera.maximumScale` is where the rule stops being a resolution and becomes arithmetic:
   no camera may draw one real point as more than one mock point. A gap is a length judged by eye — that
   *is* the demonstration — so at the cap a 40 pt gap is drawn at 40 points and the number in the field is
-  the thing on the screen. The one framing allowed closer is the guide's own panel, and it is allowed
-  because nothing read at it is a length: `style` is what a tile draws and `span` is how many there are.
-  `guide.gap` is points, and it is framed by `guideCorner`, which keeps the cap.
+  the thing on the screen. The one framing allowed closer is the *minimap's* own panel, and it is allowed
+  because nothing read at it is a length: `content` is what a tile draws and `span` is how many there are. A
+  gap is points, and it is framed by `guideCorner`, which keeps the cap — and so is the whole names guide,
+  every part of which is type, so its close shot *lands* at life size and `font-size = 12` draws twelve
+  points. `guidePanel` frames the panel and nothing around it: the ceiling is what decides how close a shot
+  ends up, and a margin would be a second framing rule quietly overriding that one.
+- **A close framing and a life cycle are exclusive.** A lens pushed in on a guide that is not up frames the
+  wallpaper where one would be, so a loop under it pulls the shot out and back every few seconds with the
+  setting off screen for most of its own demonstration. The two settings whose subject *is* the life cycle —
+  `enabled` and `duration` — play it wide; every other guide setting is geometry, so it is a still take with
+  the guide up for as long as the pointer is on the row, re-deriving under the hand. A life-cycle loop is
+  paced by the *guide it is about*, and lowered by that same number, so it always ends with that guide gone.
+  The exit is the daemon's own `GuideFade` and not a second opinion about it: instant up, 350 ms down, run
+  on the renderer root's opacity in both hosts.
 - **The camera is a `Rect` inside the monitor's clip**, and a property of the *setting* rather than the
   section. `Projection.camera` is what `mock(_:)` maps through, so one number carries a push-in through a
   title bar, a corner radius and a shadow together; the bezel never moves, because a slab that grew would
@@ -1130,8 +1163,8 @@ and a save leaves the window up.
   paints that still into whatever rect it now occupies. The still is taken **on arrival and never in
   flight**, which is what the compositor does with a screenshot and what makes `animation.window` a
   `contentsGravity` rather than a second mechanism; the 80 ms cross-fade when it is taken again is the app
-  catching up. The guide borrows the same image for `guide.style = preview`, which is the relationship the
-  real guide has with the real cover rather than an imitation of it.
+  catching up. The guide borrows the same image where `guide.preview.content = stills`, which is the
+  relationship the real guide has with the real cover rather than an imitation of it.
 - **The panel is a fold, and the exception is a list rather than an omission.** Rows come off
   `ConfigSchema.settings` filtered by section; a bespoke surface has no `kind` for `ControlFactory` to switch
   on, so each editor it gets is written — `OuterGapsControl` is four edges on one row because the file spells
@@ -1179,11 +1212,19 @@ and a save leaves the window up.
   `keys` carries no setting at all and is a tab entirely on the strength of its editor; `windowRules` has
   neither and is not one. There is no springs section either: the four spring tables are eight advanced dials
   of `animation`, because a tab whose every row is behind the disclosure opens on a triangle and nothing else.
+- **A section whose main surface spans sub-tables is split into sub-tabs**, derived from the keys by
+  `ControlSlab.tables(of:)` so there is no second list to drift. A tab is a place you go and a heading is a
+  label on a run of rows: `Position` twice in one scrolling list is two rows that cannot be told apart by
+  looking, which a heading does not fix, so the two guides get a tab each and the rows on screen are one
+  guide's. The advanced tables keep headings instead — they arrive already inside a disclosure, and a third
+  level of tabs under one would be a place you go to inside a place you went. The row costs the scroller
+  exactly one row pitch, because the fold's affordance is *where it cuts a row* and only a whole pitch leaves
+  that where it was.
 - **The scroll offset is a fold over the beats**, not a function of the final set: `offsetToReveal` is relative
   to where the strip already is, so a take that focuses right twice reveals from the offset the first one left
   — which is what the reducer does, one command at a time.
-- **`PreviewMotion` is `Motion` with the sessions removed** — a `RectAnimator` per window and one for the
-  guide's panel, and nothing else. Which spring carries a displacement follows the schema's own sentences: a
+- **`PreviewMotion` is `Motion` with the sessions removed** — a `RectAnimator` per window and one per
+  enabled guide's panel, and nothing else. Which spring carries a displacement follows the schema's own sentences: a
   coast after a trackpad lift is the glide spring, a size that changed is a resize, a pure translation is the
   viewport's if the viewport moved and the strip's own rearrangement if it did not. **The cursor is not here
   at all** — `PreviewModel` owns the whole of where one is, because a hand traces its own path and a
@@ -1278,6 +1319,15 @@ legal values, and a codec that moves the value between file and `Config` field. 
 example document is a render of it; `emira config explain` prints it; the settings window **lays it out**. Four
 consumers off one list, so nothing describing a setting is written down twice — and `Setting.Kind` carries the
 rule that makes the fourth cheap: one case per shape of control, never per setting.
+
+**A key two tables ask the same question with is written once.** The four spring tables are one sub-schema;
+the guides' `position`, `width`, `gap` and `duration` are one generator over `GuideTable`, which is also what
+a host reads a guide's table through — so `GuideSettings` switches on the style in exactly one place, and a
+third guide is a table rather than a sweep. `width` is on that list because both guides mean the same thing
+by it — the most of the working width this one may take — and differ only in how each concedes past it, which
+is `span`'s sentence and the row's own truncation rather than the width's. What a factory handed the whole
+sentence would state is nothing, so `enabled`, whose sentence is which guide it turns on, stays written per
+guide.
 
 **Setting something to its default unsets it.** An absent key already means the default, and a file that writes
 it down pins it against ever changing. The fork lives on `ConfigDocument.set(_ setting:to:)` rather than at a
@@ -1377,17 +1427,22 @@ emira/
 └── Sources/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
-    │                    Event · Effect · Config · Rules · Engine · GuideModel (pure)
+    │                    Event · Effect · Config · Rules · Engine
+    │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
+    │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
     │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
+    ├── EmiraGuide/      GuideRenderer (the seam: a drawing · scale · palette · sources) · GuideFade
+    │                    RoundedLayer · GuideTypeface (the face, and the one thing that measures it)
+    │                    PreviewGuideRenderer (the minimap) · NamesGuideRenderer (the row of words)
     ├── EmiraSettings/   Draft · Scene · Take · Catalog · PreviewModel · PreviewMotion (pure)
-    │                    Camera (the lens + the marks) · Cue (the input badge) · GuidePreview
+    │                    Camera (the lens + the marks) · Cue (the input badge) · GuideFrame
     │                    Projection (the one number) · Wallpaper
     │                    SettingsWindow (the scrim) · Stage · DesktopView · MockContent · CueLayer
-    │                    MockMenuBar · MockIcons
+    │                    MockMenuBar · MockIcons · MockNames
     │                    ControlSlab (+ ScrollFade) · Controls · Bespoke · PreviewClock
     │                    KeysEditor (the [keys] list + both bubbles) · ChordRecorder · Keycap
     │                    SettingsStyle · Environment
@@ -1398,7 +1453,8 @@ emira/
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
-    │   ├── Guide/       GuidePanel · RoundedLayer · GuideIcons · Guide
+    │   ├── Guide/       GuideSubject (State → GuideInput) · Guide · GuidePanel · GuideIcons
+    │   │                GuideNames
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples
     │   ├── Display/     FrameClock · DisplayLinkDriver · HoldTimer · ScreenWatcher
     │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · FunctionKeyTap · Gestures (policy) · GestureTap
@@ -1414,7 +1470,7 @@ emira/
 
 Two spellings that recur and are worth recognising: `X` / `XSyntax` separates a value from its surface
 spelling (`Command`/`CommandSyntax`, `Config`/`ConfigSyntax`), and every framework-touching subsystem is a pure
-_model_ plus an AppKit _panel_ (`GuideModel`/`GuidePanel`, `StatusModel`/`MenuBarItem`,
+_model_ plus an AppKit _panel_ (`GuideModel`/`PreviewGuideRenderer`, `StatusModel`/`MenuBarItem`,
 `OnboardingModel`/`OnboardingWindow`), so the interesting half is testable with no window server.
 
 ---
@@ -1461,13 +1517,14 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
 - **`EmiraSettingsTests`** — the draft (an edit as text, unset-on-default, a refusal that does not land), the
   preview's geometry against `Layout`'s own, a take's arrangement at a given `t`, which spring drives which
-  quantity, the wallpaper's luminance under the menu bar, the guide preview's panel, and — for each take that
+  quantity, the wallpaper's luminance under the menu bar, that the mock hands the guides' own models a real
+  input, and — for each take that
   is a *demonstration* rather than geometry — the assertion the setting turns on: that the focus ring
   transfers on the frame the cursor crosses the seam, that the three `system-events` rungs answer three
   different patterns of taken and declined, that a magnet settles flush and `free` plainly does not, that a
   detent catches on the second growth and lets the third past, that a drag's neighbours do not move and the
   last 500 ms are opposite between the two rungs, that `snap`, `smooth` and `off` are three different
-  pictures, and that the guide is raised by motion and lowered by `duration`. Plus the five claims that
+  pictures, and that a guide is raised by motion and lowered by `duration`. Plus the five claims that
   are really about the schema and the vocabulary: every setting builds a control, every setting is demonstrated
   by a take or named on `Catalog.notDemonstrable`, every bespoke surface builds an editor or is named on
   `BespokeEditors.notEditable`, every **verb** builds a control, and every verb is demonstrated or named on
@@ -1485,11 +1542,22 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   backing layer carries, a corner travels its own distance from it, the stack is the stage's own bounds, and
   the gap between the monitor and the slab still answers the scrim. Plus `ImportFenceTests`, which is what makes the target's boundary a fact rather
   than an intention. No window server anywhere — a control is a view tree, and building one is free.
+- **`EmiraGuideTests`** — the two claims a renderer alone can make. `CosmeticScaleTests` renders one input at
+  `1` and at `k` and requires every frame, radius, stroke and path box in the tree to differ by exactly `k`,
+  which is what makes a preview the same object rather than a second drawing — every guide, since a second
+  renderer is a second place to write a number down. `NamesTypeTests` is where the packing meets the real
+  face: that `GuideTypeface` never measures a word short of what it will set, in Kana and Hangul and an
+  emoji as well as in Latin, and that a name in any script gets a cell it fits in. `GuideTileTests` drives
+  `RoundedLayer` against a detached `CALayer`. No window server: a layer tree needs none.
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
   identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display
-  raise fence in `CompositorTests`), the pointer plane, the guide's tile (`GuideTileTests` drives
-  `RoundedLayer` against a detached `CALayer`), hotkeys — including that `suspend`/`resume` hands every chord
+  raise fence in `CompositorTests`), the pointer plane, the read that turns a `State` into a `GuideInput`
+  (`GuideSubjectTests`, which also pins that an input built by hand lands on the same layout) and what the
+  guides' controller does with it (`GuideShowTests`, over a recording `GuideSurface`: which styles are drawn,
+  that one with nothing to draw is taken down rather than left carrying its last frame, and that each guide is
+  armed for its own `duration` and leaves over `GuideFade` while the other stays up), hotkeys —
+  including that `suspend`/`resume` hands every chord
   back while the settings window is up, and **the keycode table pinned entry by entry against `kVK_*`** —
   config loading, onboarding, teardown. The table lives in `EmiraCore`, which may not import Carbon, so this
   suite is where it meets Apple's header, and it checks injectivity too: a transposition is invisible at every

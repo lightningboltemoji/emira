@@ -470,7 +470,8 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     pointer.recentres = config.mouseFollowsFocus.recentres
     // Two features want the stills a cover leaves behind and neither is the other's: `immediate` raises
     // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
-    let keepsStills = config.coverMode == .immediate || config.guide.style == .preview
+    let keepsStills = config.coverMode == .immediate
+        || (config.guide.preview.enabled && config.guide.preview.content == .stills)
     capture.keepsStills = keepsStills
     // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte
     // budget collects them. A no-op at boot, where there is nothing kept yet.
@@ -505,7 +506,7 @@ applyShellConfig(config)
                              in geometry: ScreenGeometry) -> DisplayParts {
     let overlay = Overlay(screen: screen, geometry: geometry, insets: info.struts)
     let panel = GuidePanel(screen: screen, geometry: geometry, insets: info.struts)
-    let guide = Guide(panel: panel, monitor: info.id, icons: GuideIcons(),
+    let guide = Guide(panel: panel, monitor: info.id, icons: GuideIcons(), names: GuideNames(),
                       scheduler: DispatchScheduler(),
                       // A `preview` tile draws whatever a cover last left behind, at any size — see
                       // `SurfaceCache.anySurface(for:)`. A window nothing has filmed falls back to

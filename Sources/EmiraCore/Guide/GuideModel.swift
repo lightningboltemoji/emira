@@ -1,13 +1,13 @@
 import Foundation
 
-// The guide's arithmetic, stated once and with no AppKit in it — `GuidePanel` is the wiring, this is
-// the policy, the same split `MenuBar` keeps between `StatusModel` and `MenuBarItem`.
+// The guide's arithmetic, stated once and with no AppKit in it — the renderer is the wiring, this is the
+// policy, the same split `MenuBar` keeps between `StatusModel` and `MenuBarItem`.
 //
-// The whole projection is one dimensionless number, `GuideSettings.scale`, and one window of screen
-// space:
+// The whole projection is one dimensionless number, `PreviewGuideSettings.scale`, and one window of
+// screen space:
 //
 //     k          = min(width, 1) / span             (clamped so the ribbon fits one working area)
-//     content    = the focused strip's extent, never less than the screen you are on
+//     content    = the shown strip's extent, never less than the screen you are on
 //     shown      = content, or a `span`-screens-wide window following the viewport inside it
 //     panel.size = (k · shown.width, k · working.height)
 //     project(r) = panel.origin + (r.origin − shown.origin) · k,  size: r.size · k
@@ -22,10 +22,13 @@ import Foundation
 // The panel's **height is derived, never configured**: the ribbon is exactly as tall as one desktop at
 // scale `k`.
 //
-// The content is the one expression the cover uses, unmodified, which is where three things come from
-// at no cost: off-screen columns (it is un-parked geometry), workspace switches sliding vertically
-// through the panel (`verticalOffset` is already in there), and animated resizes and structural edits
-// moving in lockstep with the real ones.
+// The input is the one expression the cover uses, unmodified, which is where three things come from at
+// no cost: off-screen columns (it is un-parked geometry), workspace switches sliding vertically through
+// the panel, and animated resizes and structural edits moving in lockstep with the real ones.
+//
+// **The layout is column-structured**, and that is what makes a second style cheap: the preview guide
+// reads window rects, the names guide reads column rects and stack depths, and the separators fall out
+// of the same structure rather than being a second derivation from the same frames.
 
 /// One window's rectangle in the guide: where to draw it, and the two identities the drawing needs —
 /// the window (its still, and the layer pool's key) and its app (the icon placeholder).
@@ -34,19 +37,39 @@ public struct GuideTile: Equatable, Sendable {
     public let bundleId: String
     /// Panel-local, in guide points, with the separation inset already applied.
     public let rect: Rect
+
+    public init(window: WindowId, bundleId: String, rect: Rect) {
+        self.window = window
+        self.bundleId = bundleId
+        self.rect = rect
+    }
+}
+
+/// One column of the shown strip, projected: what divides, and what a names cell stands for.
+public struct GuideColumn: Equatable, Sendable {
+    public let id: ColumnId
+    /// The whole column, panel-local and **unseparated** — the union of its stack. What the separators
+    /// are measured between, so a rule lands on the boundary rather than a separation inset in from it.
+    public let rect: Rect
+    /// Its windows, top to bottom, each with the separation already taken out.
+    public let tiles: [GuideTile]
 }
 
 /// One frame of the guide: where the panel is, and everything drawn inside it.
 public struct GuideLayout: Equatable, Sendable {
     /// The panel itself, in core (top-left, global) screen coordinates.
     public let panel: Rect
-    /// Every window on every materialized workspace. The ones a screen up or down project outside the
-    /// panel and clip, which is what makes a workspace switch slide through it.
+    /// The shown strip, in strip order.
+    public let columns: [GuideColumn]
+    /// Tiles the shown strip does not place: a workspace a screen up or down, which projects outside the
+    /// panel and clips — which is what makes a workspace switch slide through it.
+    public let passing: [GuideTile]
+    /// Every tile the panel draws, sorted by window, so a rebuild of the layer pool is driven by the id
+    /// *set* changing and never by dictionary iteration order.
     public let tiles: [GuideTile]
     /// Where the strip divides, panel-local: a line down each boundary between adjacent columns and one
     /// across each boundary between windows stacked in a column. **Degenerate by construction** — a
-    /// boundary is a line, so a column's has no width and a stack's no height — which is what lets the
-    /// one projection place them alongside everything else.
+    /// boundary is a line, so a column's has no width and a stack's no height.
     public let separators: [Rect]
     /// The focused window's rectangle plus the ring's in-flight travel, panel-local — or `nil` when
     /// focus is on nothing the strip places.
@@ -54,6 +77,19 @@ public struct GuideLayout: Equatable, Sendable {
     /// The live viewport, panel-local: one working area at scale `k`, so it is the panel's full height
     /// and a `span`-th of its width.
     public let viewport: Rect
+
+    /// Derives the tile order and the separators from the columns, so neither can be a second opinion
+    /// about the structure they come from.
+    public init(panel: Rect, columns: [GuideColumn], passing: [GuideTile] = [],
+                ring: Rect? = nil, viewport: Rect) {
+        self.panel = panel
+        self.columns = columns
+        self.passing = passing
+        self.tiles = (columns.flatMap(\.tiles) + passing).sorted { $0.window < $1.window }
+        self.separators = GuideModel.boundaries(of: columns)
+        self.ring = ring
+        self.viewport = viewport
+    }
 }
 
 /// Four corner radii, in `Rect`'s own top-left orientation: `topLeft` is the corner at `(minX, minY)`.
@@ -84,24 +120,6 @@ public struct Corners: Equatable, Sendable {
     }
 }
 
-/// What a *change* in the guide's subject looks like — a small diffed projection of `State` rather than
-/// the whole of it, so an `axLanded` or a title change cannot summon a HUD. `MenuBarItem`'s rule:
-/// report a change in the value, not in the thing carrying it.
-public struct GuideTrigger: Equatable, Sendable {
-    /// One column's identity and its stack, which together say "the strip was rearranged".
-    public struct Column: Equatable, Sendable {
-        public let id: ColumnId
-        public let windows: [WindowId]
-    }
-
-    public let focused: WindowId?
-    public let workspace: WorkspaceName
-    public let columns: [Column]
-    /// Where the scroll is *aimed*, not where it is — a target moves once per command, a current value
-    /// moves 120 times a second.
-    public let offset: Double
-}
-
 /// The guide's geometry: what the panel shows, and where it sits.
 public enum GuideModel {
 
@@ -111,76 +129,39 @@ public enum GuideModel {
     /// different gaps, because there is one geometry authority.
     static let separation = 1.5
 
-    /// A frame of `monitor`'s guide, or `nil` when there is nothing to draw — the guide is off, the
-    /// display is not attached, or the strip it is showing is empty.
+    /// A frame of the guide over `input`, or `nil` when its numbers are degenerate — a span of zero, or
+    /// a display with no working area.
     ///
-    /// **Everything is asked of `monitor`**: its metrics, the address it is showing, and that strip's
-    /// extent. A display showing an empty workspace projects nothing and so draws no guide, which is
-    /// the right answer and not a special case.
-    public static func layout(for state: State, on monitor: MonitorId) -> GuideLayout? {
-        let settings = state.config.guide
-        guard settings.style != .off, let metrics = state.metrics(of: monitor),
-              let shown = state.monitors.shown(on: monitor) else { return nil }
+    /// A display showing an empty workspace projects one screen's worth of nothing and so draws an empty
+    /// ribbon, which is the right answer and not a special case: the host is what decides whether a
+    /// guide goes up at all.
+    public static func layout(_ input: GuideInput, settings: PreviewGuideSettings) -> GuideLayout? {
+        guard let projection = projection(settings: settings, working: input.workingArea,
+                                          strip: input.strip) else { return nil }
 
-        let frames = state.workspaces.naturalFrames(shown: shown, among: state.monitors.owned(of: monitor),
-                                                    scrollOffset: state.motion.offset(of: monitor).current,
-                                                    metrics: metrics,
-                                                    widths: state.motion.currentColumnWidths)
-        // The **shown** strip's extent, not every workspace's: a long strip on a workspace you cannot
-        // see would otherwise size the guide for one you can. During a switch this is already the strip
-        // being switched *to*, which is the one the guide should be sizing itself for.
-        let strip = state.workspaces[shown].columns.flatMap(\.windowIds)
-            .compactMap { frames[$0] }
-            .reduce(Rect.zero) { $0.union($1) }
-        guard let projection = projection(settings: settings, working: metrics.workingArea,
-                                          strip: strip) else { return nil }
-
-        // **This display's workspaces only**, which `naturalFrames` is already asked for: the neighbours
-        // that slide through the panel during a switch are the ones *this* monitor holds, and another
-        // display's strips have nothing to do with this panel.
-        let mine = windows(of: state, on: monitor)
-        // Sorted, so a rebuild of the layer pool is driven by the id *set* changing and never by
-        // dictionary iteration order.
-        let tiles = frames.keys.sorted().compactMap { id -> GuideTile? in
-            guard let window = state.world.windows[id] else { return nil }
-            guard let frame = frames[id] else { return nil }
-            return GuideTile(window: id, bundleId: window.bundleId,
-                             rect: separated(projection.project(frame)))
+        let columns = input.columns.compactMap { column -> GuideColumn? in
+            let stack = column.windows.compactMap { window in
+                input.frames[window.id].map { (window, projection.project($0)) }
+            }
+            guard !stack.isEmpty else { return nil }
+            return GuideColumn(id: column.id,
+                               rect: stack.reduce(Rect.zero) { $0.union($1.1) },
+                               tiles: stack.map {
+                                   GuideTile(window: $0.0.id, bundleId: $0.0.bundleId,
+                                             rect: separated($0.1))
+                               })
         }
+        let passing = input.passing.compactMap { window in
+            input.frames[window.id].map {
+                GuideTile(window: window.id, bundleId: window.bundleId,
+                          rect: separated(projection.project($0)))
+            }
+        }
+        let ring = input.focus.flatMap { input.frames[$0] }
+            .map { projection.project($0.displaced(by: input.focusDisplacement)) }
 
-        let ring = focusedWindow(of: state, among: mine)
-            .flatMap { frames[$0] }
-            .map { projection.project($0.displaced(by: state.motion.focusRingDisplacement)) }
-
-        return GuideLayout(panel: projection.panel, tiles: tiles,
-                           separators: boundaries(of: state.workspaces[shown].columns, frames: frames)
-                               .map(projection.project),
-                           ring: ring, viewport: projection.project(metrics.workingArea))
-    }
-
-    /// What `monitor`'s guide is *about* right now, or `nil` when it is off or the display has left.
-    ///
-    /// Every field is this display's, `focused` included: there is one focused window on the desktop,
-    /// and a display that does not hold it must not summon a HUD because focus moved on another screen.
-    public static func trigger(for state: State, on monitor: MonitorId) -> GuideTrigger? {
-        guard state.config.guide.style != .off,
-              let shown = state.monitors.shown(on: monitor) else { return nil }
-        return GuideTrigger(
-            focused: focusedWindow(of: state, among: windows(of: state, on: monitor)),
-            workspace: shown,
-            columns: state.workspaces[shown].columns.map { .init(id: $0.id, windows: $0.windowIds) },
-            offset: state.motion.offset(of: monitor).target)
-    }
-
-    /// Every window on a strip `monitor` holds — the set both the tiles and the ring are drawn from.
-    private static func windows(of state: State, on monitor: MonitorId) -> Set<WindowId> {
-        Set(state.monitors.owned(of: monitor).flatMap { state.workspaces[$0].allWindowIds })
-    }
-
-    /// The focused window if this display holds it, else `nil`. The ring is single because focus is;
-    /// only the monitor holding it draws one.
-    private static func focusedWindow(of state: State, among mine: Set<WindowId>) -> WindowId? {
-        state.world.focusedWindow.flatMap { mine.contains($0) ? $0 : nil }
+        return GuideLayout(panel: projection.panel, columns: columns, passing: passing,
+                           ring: ring, viewport: projection.project(input.workingArea))
     }
 
     /// A tile with its separation taken out of it. Never more than a quarter of an extent, so a tile at
@@ -191,41 +172,38 @@ public enum GuideModel {
 
     // Where the strip divides
 
-    /// The boundaries between adjacent tiles, in screen space, to be projected with everything else: a
-    /// line down the middle of every gap between columns, and one across every gap between windows
-    /// stacked in a column.
+    /// The boundaries between adjacent tiles, panel-local: a line down the middle of every gap between
+    /// columns, and one across every gap between windows stacked in a column.
     ///
     /// A separator is the **boundary** rather than either edge of it, so `column-gap = 0` puts it on the
     /// shared edge and a wide gap centres it in the space. Each spans the whole of what it divides — a
     /// column boundary runs the full height of the two columns it parts, a stack boundary the full width
-    /// of its column — which is what makes the set read as a grid rather than as a row of ticks. They
-    /// come from the *focused* strip's columns, like the extent does, and from the same `frames`, so a
-    /// workspace sliding in brings its own with it.
-    static func boundaries(of columns: [ColumnLayout], frames: [WindowId: Rect]) -> [Rect] {
+    /// of its column — which is what makes the set read as a grid rather than as a row of ticks.
+    ///
+    /// Measured between the columns' **unseparated** rects, which is why a `GuideColumn` carries one:
+    /// derived from the tiles it would be a boundary between two insets rather than between two windows.
+    static func boundaries(of columns: [GuideColumn]) -> [Rect] {
         var lines: [Rect] = []
-        var extents: [Rect] = []
         for column in columns {
-            // `windowIds` is the stack top→bottom, so consecutive pairs are exactly the boundaries.
-            let stack = column.windowIds.compactMap { frames[$0] }
-            let extent = stack.reduce(Rect.zero) { $0.union($1) }
-            guard !extent.isEmpty else { continue }
-            extents.append(extent)
-            for (upper, lower) in zip(stack, stack.dropFirst()) {
-                lines.append(Rect(x: extent.minX, y: (upper.maxY + lower.minY) / 2,
-                                  width: extent.width, height: 0))
+            // `tiles` is the stack top→bottom, so consecutive pairs are exactly the boundaries — and
+            // the midpoint of the band actually left empty, which is the gap's own for any tile tall
+            // enough for the separation to be the full 1.5 at both ends.
+            for (upper, lower) in zip(column.tiles, column.tiles.dropFirst()) {
+                lines.append(Rect(x: column.rect.minX, y: (upper.rect.maxY + lower.rect.minY) / 2,
+                                  width: column.rect.width, height: 0))
             }
         }
-        for (left, right) in zip(extents, extents.dropFirst()) {
-            let top = min(left.minY, right.minY)
-            lines.append(Rect(x: (left.maxX + right.minX) / 2, y: top, width: 0,
-                              height: max(left.maxY, right.maxY) - top))
+        for (left, right) in zip(columns, columns.dropFirst()) {
+            let top = min(left.rect.minY, right.rect.minY)
+            lines.append(Rect(x: (left.rect.maxX + right.rect.minX) / 2, y: top, width: 0,
+                              height: max(left.rect.maxY, right.rect.maxY) - top))
         }
         return lines
     }
 
     //
-    // Paint-time, like the separation: it changes no frame, and it is here rather than in `GuidePanel`
-    // because it is arithmetic and the panel is wiring. The radii themselves are cosmetics and stay
+    // Paint-time, like the separation: it changes no frame, and it is here rather than in the renderer
+    // because it is arithmetic and the renderer is wiring. The radii themselves are cosmetics and stay
     // with the rest of the look, which is why both of these take them rather than knowing them.
 
     /// A rect's corners: its own `radius` everywhere, except where one approaches a corner of
@@ -278,6 +256,22 @@ public enum GuideModel {
                     width: side, height: side)
     }
 
+    /// Where a panel of `size` sits in `area`: the nine-anchor arithmetic, one gap, and nothing else.
+    ///
+    /// The gap is measured from the area's edges and is the first thing to give: a panel with no room
+    /// for one is clamped back inside the area rather than pushed off the display. Shared, because every
+    /// guide answers the same question about where it goes and only differs in how it got its size.
+    public static func place(size: Size, within area: Rect, position: GuidePosition,
+                             gap: Double) -> Rect {
+        let free = area.inset(by: EdgeInsets(uniform: gap))
+        let (fx, fy) = position.fractions
+        let x = min(max(free.minX + max(free.width - size.width, 0) * fx, area.minX),
+                    area.maxX - size.width)
+        let y = min(max(free.minY + max(free.height - size.height, 0) * fy, area.minY),
+                    area.maxY - size.height)
+        return Rect(origin: Point(x: x, y: y), size: size)
+    }
+
     /// Where the panel sits and how screen geometry maps into it. Pure, and the whole of the placement
     /// policy: nine anchors, one gap, one scale.
     public struct Projection: Equatable, Sendable {
@@ -297,27 +291,18 @@ public enum GuideModel {
 
     /// The panel's size and placement, or `nil` for a degenerate scale or an empty display.
     ///
-    /// `strip` is the focused strip's bounding box in screen space — empty for a strip with no windows,
+    /// `strip` is the shown strip's bounding box in screen space — empty for a strip with no windows,
     /// which is why it defaults to nothing rather than being demanded.
-    ///
-    /// The gap is measured from the working area's edges and is the first thing to give: a panel with
-    /// no room for one is clamped back inside the working area rather than pushed off the display.
-    public static func projection(settings: GuideSettings, working: Rect,
+    public static func projection(settings: PreviewGuideSettings, working: Rect,
                                   strip: Rect = .zero) -> Projection? {
         let k = settings.scale
         guard k > 0, !working.isEmpty else { return nil }
 
         let shown = shownWindow(settings: settings, working: working, strip: strip)
         let size = Size(width: k * shown.width, height: k * working.height)
-        let free = working.inset(by: EdgeInsets(uniform: settings.gap))
-        let (fx, fy) = settings.position.fractions
-        let x = min(max(free.minX + max(free.width - size.width, 0) * fx, working.minX),
-                    working.maxX - size.width)
-        let y = min(max(free.minY + max(free.height - size.height, 0) * fy, working.minY),
-                    working.maxY - size.height)
-
-        return Projection(panel: Rect(origin: Point(x: x, y: y), size: size), scale: k,
-                          origin: Point(x: shown.minX, y: working.minY))
+        return Projection(panel: place(size: size, within: working, position: settings.position,
+                                       gap: settings.gap),
+                          scale: k, origin: Point(x: shown.minX, y: working.minY))
     }
 
     /// The horizontal window of screen space the guide draws, given what is actually on the strip.
@@ -328,7 +313,7 @@ public enum GuideModel {
     /// the panel containing it is not an indicator. If that exceeds `span` screens the window becomes
     /// exactly `span` screens, positioned to centre the viewport and **clamped inside the content**, so
     /// the ends of a long strip pin the window and let the indicator travel to them instead.
-    static func shownWindow(settings: GuideSettings, working: Rect, strip: Rect) -> (minX: Double,
+    static func shownWindow(settings: PreviewGuideSettings, working: Rect, strip: Rect) -> (minX: Double,
                                                                                       width: Double) {
         let minX = strip.isEmpty ? working.minX : Swift.min(strip.minX, working.minX)
         let maxX = strip.isEmpty ? working.maxX : Swift.max(strip.maxX, working.maxX)

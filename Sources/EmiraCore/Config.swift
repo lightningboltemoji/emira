@@ -162,17 +162,16 @@ public enum TrackpadScrollDirection: String, Sendable, Equatable, Codable, CaseI
     public var sign: Double { self == .natural ? -1 : 1 }
 }
 
-/// What the guide draws for each window on the strip, or nothing at all. A ladder like
-/// `TransitionMode`'s: each rung asks the machine for strictly more, and the top one asks for the same
-/// thing a cover does — captured pixels — at a cost of zero extra captures, since it only keeps what a
-/// cover was going to discard.
-public enum GuideStyle: String, Sendable, Equatable, Codable, CaseIterable {
-    /// No guide. Nothing is drawn, no panel is shown, and no focus ring is ever created.
-    case off
-    /// A rectangle per window carrying its app's icon — the arrangement, with no window content.
-    case placeholder
-    /// The window's own last still where there is one, the icon placeholder where there isn't.
-    case preview
+/// What the preview guide draws inside each tile. Not a ladder with an off rung on it: whether a guide
+/// exists at all is its table's `enabled`, and this is only the choice between two pictures.
+///
+/// `stills` asks the machine for the same thing a cover does — captured pixels — at a cost of zero
+/// extra captures, since it only keeps what a cover was going to discard.
+public enum GuideContent: String, Sendable, Equatable, Codable, CaseIterable {
+    /// The window's own last still where there is one, the app's icon where there isn't.
+    case stills
+    /// The app's icon, always — the arrangement, with no window content.
+    case icons
 }
 
 /// Which corner or edge of the working area the guide sits at. Nine anchors rather than four corners:
@@ -198,17 +197,105 @@ public enum GuidePosition: String, Sendable, Equatable, Codable, CaseIterable {
     }
 }
 
-/// The guide's settings. Pure data, read by the shell — the reducer reads exactly one field of it,
-/// `style != .off`, which decides whether a focus ring is created at all; the other five never enter
-/// `reduce`, so no setting here can change a frame of emitted geometry.
+/// The five questions every guide's table answers, whatever else it carries. Both consumers of a guide
+/// *as a guide* ask them here rather than switching on the style again: the schema writes each key once,
+/// and a host reads one without knowing which guide it has.
+public protocol GuideTable: Sendable {
+    /// Whether this guide exists at all.
+    var enabled: Bool { get set }
+    /// Which corner or edge of the working area it sits at.
+    var position: GuidePosition { get set }
+    /// The most of the working width it may take, as a fraction. Each guide concedes past it in its own
+    /// vocabulary — the minimap by taking a smaller scale, the row of names by crowding its words.
+    var width: Double { get set }
+    /// Points held clear between it and the working area's edge.
+    var gap: Double { get set }
+    /// Seconds it stays up after the last thing that moved.
+    var duration: Double { get set }
+}
+
+/// The guides. **A guide is a complete thing**, so every setting one has is inside its own table and
+/// `[guide]` itself holds nothing: two guides enabled at once cannot share a position without
+/// overlapping, and once position is per-guide, splitting the rest across two levels is arbitrary.
 public struct GuideSettings: Sendable, Equatable, Codable {
-    /// What the guide draws for each window, or off.
-    public var style: GuideStyle
+    /// The minimap of the strip — the strip's own geometry, small.
+    public var preview: PreviewGuideSettings
+    /// The strip as a row of app names.
+    public var names: NamesGuideSettings
+
+    public init(preview: PreviewGuideSettings = PreviewGuideSettings(),
+                names: NamesGuideSettings = NamesGuideSettings()) {
+        self.preview = preview
+        self.names = names
+    }
+
+    /// `style`'s own table — **the one place a style becomes a field**, so what every guide carries is
+    /// reached through `GuideTable` rather than switched on once per key.
+    public func table(of style: GuideStyle) -> any GuideTable {
+        switch style {
+        case .preview: return preview
+        case .names:   return names
+        }
+    }
+
+    /// The guides that are on, in drawing order. What a host builds a frame out of.
+    public var enabledStyles: [GuideStyle] { GuideStyle.allCases.filter { table(of: $0).enabled } }
+}
+
+/// The names guide's settings. **No `span`**, and that is the point: this guide is a text row rather
+/// than a scaled projection of screen geometry, so there is no scale for a span to divide —
+/// `max-columns` is span's replacement, counted in columns.
+public struct NamesGuideSettings: GuideTable, Sendable, Equatable, Codable {
+    /// Whether this guide exists at all.
+    public var enabled: Bool
     /// Which corner or edge of the working area it sits at.
     public var position: GuidePosition
-    /// How wide the guide is when it is showing its full `span`, as a fraction of the working width. A
-    /// shorter strip draws a proportionally narrower ribbon. Its *height* is derived, never configured
-    /// — the ribbon is exactly as tall as one desktop at the scale `width`/`span` implies.
+    /// The most of the working width the row may take, as a fraction. Its natural width is the words it
+    /// is setting; this is the **ceiling** on that, past which the cells share what there is and the
+    /// names truncate. Clamped to one working area, and never past the `gap`.
+    public var width: Double
+    /// Points held clear between the guide and the working area's edge.
+    public var gap: Double
+    /// Seconds it stays up after the last thing that moved.
+    public var duration: Double
+    /// The type size the row is set at — and **the only length the guide has**, since every padding and
+    /// every gap in it is a fraction of this.
+    public var fontSize: Double
+    /// Whether an app's name is lowercased. A row of words reads as a row rather than as a list of
+    /// proper nouns, which is what the guide is for.
+    public var lowercase: Bool
+    /// The most columns named at once, the window following focus and the ends beyond it elided. `0` is
+    /// the whole strip.
+    public var maxColumns: Int
+
+    public init(enabled: Bool = false, position: GuidePosition = .topCenter, width: Double = 1,
+                gap: Double = 24, duration: Double = 0.7, fontSize: Double = 12,
+                lowercase: Bool = true, maxColumns: Int = 0) {
+        self.enabled = enabled
+        self.position = position
+        self.width = width
+        self.gap = gap
+        self.duration = duration
+        self.fontSize = fontSize
+        self.lowercase = lowercase
+        self.maxColumns = maxColumns
+    }
+}
+
+/// The preview guide's settings. Pure data, read by the shell — the reducer reads exactly one field of
+/// it, `enabled`, which decides whether a focus ring is created at all; the other six never enter
+/// `reduce`, so no setting here can change a frame of emitted geometry.
+public struct PreviewGuideSettings: GuideTable, Sendable, Equatable, Codable {
+    /// Whether this guide exists at all. Off, nothing is drawn, no panel is shown, and no focus ring is
+    /// ever created.
+    public var enabled: Bool
+    /// What each tile draws.
+    public var content: GuideContent
+    /// Which corner or edge of the working area it sits at.
+    public var position: GuidePosition
+    /// The most of the working width the ribbon may take, as a fraction — reached when it is showing its
+    /// full `span`, a shorter strip drawing proportionally narrower. Its *height* is derived, never
+    /// configured: the ribbon is exactly as tall as one desktop at the scale `width`/`span` implies.
     public var width: Double
     /// The most screens of strip the guide shows at once — a ceiling, not a frame. A strip shorter than
     /// this is drawn whole and the guide shrinks to it; a longer one is followed, the viewport
@@ -219,9 +306,11 @@ public struct GuideSettings: Sendable, Equatable, Codable {
     /// Seconds the guide stays up after the last thing that moved.
     public var duration: Double
 
-    public init(style: GuideStyle = .off, position: GuidePosition = .topRight, width: Double = 0.2,
+    public init(enabled: Bool = false, content: GuideContent = .stills,
+                position: GuidePosition = .topRight, width: Double = 0.2,
                 span: Double = 3, gap: Double = 24, duration: Double = 0.7) {
-        self.style = style
+        self.enabled = enabled
+        self.content = content
         self.position = position
         self.width = width
         self.span = span
@@ -324,8 +413,8 @@ public struct Config: Sendable, Equatable, Codable {
     /// Which way that swipe carries the strip. Not a capability — nothing can clamp a sign — and read
     /// only where normalized travel becomes points, which is the one conversion the gesture has.
     public var trackpadScrollDirection: TrackpadScrollDirection
-    /// The transient minimap of the strip. The reducer reads `style != .off` and nothing else: that one
-    /// bit decides whether a focus change seeds `Motion.focusRing`, and the rest is the shell's.
+    /// The transient guides over the strip. The reducer reads `preview.enabled` and nothing else: that
+    /// one bit decides whether a focus change seeds `Motion.focusRing`, and the rest is the shell's.
     public var guide: GuideSettings
     /// The key combinations bound to commands (`[keys]` in the file). Read by the shell's hotkey
     /// source, not the reducer; what reaches the core is `Event.command`, identical to the CLI's.

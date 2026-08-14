@@ -269,8 +269,8 @@ public final class CaptureService: CaptureStore {
     public var mode: CoverMode
 
     /// Whether a cover's stills are reduced and kept when it comes down. Two features want them and
-    /// neither is the other's: `CoverMode.immediate` raises over them, and `GuideStyle.preview` draws
-    /// its tiles from them. A settable bit rather than a second read of `mode`, so the daemon can name
+    /// neither is the other's: `CoverMode.immediate` raises over them, and a preview guide drawing
+    /// `stills` draws its tiles from them. A settable bit rather than a second read of `mode`, so the daemon can name
     /// the union of the two conditions in one place (`applyShellConfig`).
     ///
     /// Costs no captures either way — what it changes is whether a still is reduced on its way to being

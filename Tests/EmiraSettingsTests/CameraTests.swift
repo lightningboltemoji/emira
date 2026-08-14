@@ -71,14 +71,16 @@ import EmiraCore
         #expect(abs(Self.projection.looking(at: frame).scale - 1) < 1e-9)
     }
 
-    @Test func onlyTheGuidesOwnPanelIsMagnifiedPastIt() throws {
+    @Test func onlyTheMinimapsOwnPanelIsMagnifiedPastIt() throws {
         // And it is allowed because nothing read at that framing is a length: a tile is a picture, and
-        // `span` is a count. Everything measured in points keeps the cap — including `guide.gap`, which
-        // is framed against the working area's own edges.
-        for camera in [Camera.wide, .seams(slack: 0.25), .stack, .stackSeam, .guideCorner] {
+        // `span` is a count. Everything measured in points keeps the cap — including the gap, which is
+        // framed against the working area's own edges, and **the whole of the names guide**, every part
+        // of which is type.
+        for camera in [Camera.wide, .seams(slack: 0.25), .stack, .stackSeam,
+                       .guideCorner(.preview), .guideCorner(.names), .guidePanel(.names)] {
             #expect(camera.maximumScale == 1, "\(camera) frames a length and may not magnify it")
         }
-        #expect(Camera.guidePanel.maximumScale > 1)
+        #expect(Camera.guidePanel(.preview).maximumScale > 1)
 
         let tiny = Rect(x: 900, y: 580, width: 2, height: 2)
         #expect(Self.frame(tiny, maximumScale: Camera.readable).width

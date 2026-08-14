@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import EmiraCore
+import EmiraGuide
 
 // The mock monitor: a floating slab holding the user's own wallpaper, a menu-bar band at the real
 // height, and one pooled `CALayer` per mock window — the guide's tile pool at another scale.
@@ -29,11 +30,9 @@ final class DesktopView: NSView {
     private let menuBar: MockMenuBar
     /// The mock pointer, above every pane. Hidden unless the set carries one.
     private let pointer = CAShapeLayer()
-    /// The guide, above the panes and under the pointer — the order the real one keeps.
-    private let ribbon = CALayer()
-    private let viewport = CALayer()
-    private let ring = CALayer()
-    private var guideTiles: [CALayer] = []
+    /// The guides, above the panes and under the pointer — the order the real ones keep. **The real
+    /// renderers**, drawn at the mock's own scale rather than a second drawing of the same thing.
+    private var guides: [GuideStyle: any GuideRenderer]
     /// The one non-geometric mark: the gutter under the hand, or the tick where a column edge landed.
     private let mark = CALayer()
     /// The rect the band's ink was last measured against, and what it came out. A wallpaper sample per
@@ -55,6 +54,9 @@ final class DesktopView: NSView {
     /// a frame.
     private var pointerShown: Float?
     private var cueShown: Float?
+    /// The same, per guide: two can be on their way out at once, and a shared memory would let one
+    /// answer for the other.
+    private var guideOpacity: [GuideStyle: Float] = [:]
     private var backingScale: CGFloat
     /// The desktop picture and how it is fitted — also what the menu bar asks how bright it is.
     private var wallpaper = Wallpaper(image: nil, gravity: .resizeAspectFill, fill: .windowBackgroundColor)
@@ -65,6 +67,7 @@ final class DesktopView: NSView {
         self.backingScale = backingScale
         self.menuBar = MockMenuBar(scale: backingScale)
         self.cue = CueLayer(scale: backingScale)
+        self.guides = Self.renderers(contentsScale: backingScale)
         super.init(frame: CGRect(origin: .zero, size: projection.mockSize))
         wantsLayer = true
         build()
@@ -130,29 +133,12 @@ final class DesktopView: NSView {
         // window first appears, so anything added at build time is underneath every window that arrives
         // later — which for the guide and the pointer means never being seen at all.
         mark.zPosition = 5
-        ribbon.zPosition = 10
         pointer.zPosition = 20
 
         mark.isHidden = true
         ground.addSublayer(mark)
         ground.addSublayer(cue.layer)
-        ribbon.contentsScale = backingScale
-        ribbon.masksToBounds = true
-        ribbon.backgroundColor = SettingsStyle.guideFill
-        ribbon.borderWidth = 1
-        ribbon.borderColor = SettingsStyle.guideEdge
-        ribbon.isHidden = true
-        ground.addSublayer(ribbon)
-
-        viewport.contentsScale = backingScale
-        viewport.borderWidth = 1
-        viewport.borderColor = SettingsStyle.guideViewportEdge
-        ribbon.addSublayer(viewport)
-
-        ring.contentsScale = backingScale
-        ring.borderWidth = 1.5
-        ring.borderColor = SettingsStyle.paneFocusEdge
-        ribbon.addSublayer(ring)
+        adoptGuides()
 
         pointer.contentsScale = backingScale
         pointer.fillColor = NSColor.white.cgColor
@@ -182,14 +168,10 @@ final class DesktopView: NSView {
     /// second copy of `PaneLayer.init` to keep in step.
     func restyle() {
         monitor.borderColor = SettingsStyle.monitorEdge
-        ribbon.backgroundColor = SettingsStyle.guideFill
-        ribbon.borderColor = SettingsStyle.guideEdge
-        viewport.borderColor = SettingsStyle.guideViewportEdge
-        ring.borderColor = SettingsStyle.paneFocusEdge
         mark.backgroundColor = SettingsStyle.markInk
         cue.reproject(scale: backingScale)
         cueShown = nil
-        for tile in guideTiles { tile.backgroundColor = SettingsStyle.guideTileFill }
+        // The guide takes its colours as an argument every frame, so the next one restyles it.
         for pane in panes.values { pane.layer.removeFromSuperlayer() }
         panes.removeAll()
         placedBand = .zero
@@ -212,7 +194,13 @@ final class DesktopView: NSView {
         // a 1× one without this leaves the mock rendered at the wrong resolution until its next rebuild.
         for pane in panes.values { pane.layer.removeFromSuperlayer() }
         panes.removeAll()
-        for layer in [monitor, ground, paper, ribbon, viewport, ring, mark, pointer as CALayer] {
+        // Rebuilt rather than adjusted, like a pane: a renderer's whole tree carries the old display's
+        // `contentsScale`, and moving between a Retina panel and a 1× one would otherwise leave a guide
+        // rendered at the wrong resolution until its next rebuild.
+        for renderer in guides.values { renderer.layer.removeFromSuperlayer() }
+        guides = Self.renderers(contentsScale: backingScale)
+        adoptGuides()
+        for layer in [monitor, ground, paper, mark, pointer as CALayer] {
             layer.contentsScale = backingScale
         }
         placedBand = .zero
@@ -269,8 +257,7 @@ final class DesktopView: NSView {
                 camera: Rect, pointer location: Point? = nil, cursor: MockPointer? = nil,
                 showsPointer: Bool = true, animation: WindowAnimation = .stretch,
                 raised: WindowId? = nil, showsFocus: Bool = true,
-                guide: GuidePreview? = nil, guideStyle: GuideStyle = .placeholder,
-                mark drawn: Mark.Drawn? = nil) {
+                guides: [GuideFrame] = [], mark drawn: Mark.Drawn? = nil) {
         CATransaction.begin()
         // The geometry comes from the preview's own animators, frame by frame; without this each
         // assignment would start an implicit quarter-second animation of its own.
@@ -294,7 +281,7 @@ final class DesktopView: NSView {
         }
         place(cue: scene.cue)
         place(mark: drawn)
-        place(guide: guide, scene: scene, style: guideStyle)
+        place(guides: guides)
         place(pointer: location, cursor: cursor, shown: showsPointer)
 
         CATransaction.commit()
@@ -383,16 +370,22 @@ final class DesktopView: NSView {
     /// animation, since the frame is drawn inside a transaction with implicit ones turned off. `was`
     /// remembers what is already on screen: re-adding the same animation every frame would restart it
     /// every frame, which is a fade that never finishes.
-    private func fade(_ layer: CALayer, to opacity: Float, from was: inout Float?) {
+    private func fade(_ layer: CALayer, to opacity: Float, from was: inout Float?,
+                      rising: CFTimeInterval = SettingsStyle.fadeIn,
+                      falling: CFTimeInterval = SettingsStyle.fadeOut) {
         guard was != opacity else { return }
         let from = was ?? opacity
         was = opacity
         layer.opacity = opacity
         guard from != opacity else { return }
+        let rises = opacity > from
+        let duration = rises ? rising : falling
+        // A zero duration is a cut asked for, which is what a guide's arrival is.
+        guard duration > 0 else { return }
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = from
-        fade.duration = opacity > from ? SettingsStyle.fadeIn : SettingsStyle.fadeOut
-        fade.timingFunction = CAMediaTimingFunction(name: opacity > from ? .easeOut : .easeIn)
+        fade.duration = duration
+        fade.timingFunction = CAMediaTimingFunction(name: rises ? .easeOut : .easeIn)
         layer.add(fade, forKey: "fade")
     }
 
@@ -412,58 +405,60 @@ final class DesktopView: NSView {
     /// epsilon, so a pruned animator and a re-taken still are the same moment.
     private static let arrivalEpsilon: Double = 0.5
 
-    /// The guide, at the mock's scale. Its panel arrives in true screen points and everything inside it
-    /// in panel-local *guide* points — `GuideLayout`'s own convention — so the inner rects take `k`
-    /// alone while the panel takes the whole projection.
-    private func place(guide: GuidePreview?, scene: Scene, style: GuideStyle) {
-        guard let guide else { return ribbon.isHidden = true }
-        ribbon.isHidden = false
-        let panel = framing.mock(guide.panel)
-        ribbon.frame = panel
-        ribbon.cornerRadius = min(SettingsStyle.guideRadius, min(panel.width, panel.height) / 4)
-
-        while guideTiles.count > guide.tiles.count {
-            guideTiles.removeLast().removeFromSuperlayer()
+    /// The guides, at the mock's scale — **the same renderers the daemon hosts**. A panel is the
+    /// *sprung* one rather than the one the model placed, and the two agree in size because both are the
+    /// same panel at the same scale.
+    private func place(guides frames: [GuideFrame]) {
+        // **Instant up and gentle down, which is the daemon's own pair** — and `duration` is a setting
+        // whose whole subject is that exit, so a preview that cut it away would be wrong about the one
+        // number beside it. A guide on the way out keeps the panel and the picture it went away with.
+        let live = Set(frames.map(\.style))
+        for (style, renderer) in guides {
+            var shown = guideOpacity[style]
+            fade(renderer.layer, to: live.contains(style) ? 1 : 0, from: &shown,
+                 rising: GuideFade.up, falling: GuideFade.down)
+            guideOpacity[style] = shown
         }
-        while guideTiles.count < guide.tiles.count {
-            let tile = CALayer()
-            tile.contentsScale = backingScale
-            tile.contentsGravity = .resizeAspect
-            tile.minificationFilter = .trilinear
-            tile.backgroundColor = SettingsStyle.guideTileFill
-            guideTiles.append(tile)
-            ribbon.insertSublayer(tile, below: ring)
+        for frame in frames {
+            guard let renderer = guides[frame.style] else { continue }
+            renderer.draw(frame.drawing, settings: frame.settings, scale: framing.scale,
+                          palette: SettingsStyle.guidePalette, sources: mockSources)
+            renderer.layer.frame = framing.mock(frame.panel)
         }
-        // **`preview` draws the mock window's own still**, which is the same relationship the real guide
-        // has with the real cover rather than an imitation of it; `placeholder` inscribes the app's
-        // icon. Two rungs, two pictures.
-        for (tile, entry) in zip(guideTiles, guide.tiles) {
-            tile.frame = local(entry.rect, in: panel.size)
-            guard let role = scene.role(of: entry.id) else { continue }
-            switch style {
-            case .off:
-                tile.contents = nil
-            case .placeholder:
-                tile.contents = MockIcons.icon(for: role)
-                tile.contentsGravity = .resizeAspect
-            case .preview:
-                // The pane's own still, scaled down — never a fresh drawing at tile size, which would
-                // put a 28 pt title bar across half of a 25 pt tile.
-                tile.contents = panes[entry.id]?.image
-                tile.contentsGravity = .resize
-            }
-        }
-        viewport.frame = local(guide.viewport, in: panel.size)
-        ring.isHidden = guide.ring == nil
-        if let rect = guide.ring { ring.frame = local(rect, in: panel.size) }
     }
 
-    /// A panel-local guide rect as a layer frame inside the ribbon: scaled by `k`, and reflected about
-    /// the ribbon's own mid-line because Core Animation counts up from the bottom.
-    private func local(_ rect: Rect, in size: CGSize) -> CGRect {
-        let k = framing.scale
-        return CGRect(x: rect.minX * k, y: size.height - rect.maxY * k,
-                      width: rect.width * k, height: rect.height * k)
+    /// One guide's root layer — what the fade is carried on, readable so a test can ask what the view
+    /// actually did rather than re-deriving what it should have.
+    func guideLayer(_ style: GuideStyle) -> CALayer? { guides[style]?.layer }
+
+    /// One renderer per style, from the same list the daemon builds its set from — so which class draws
+    /// which guide, and in what order, is stated once.
+    private static func renderers(contentsScale: CGFloat) -> [GuideStyle: any GuideRenderer] {
+        GuideStyle.renderers(contentsScale: contentsScale)
+            .reduce(into: [:]) { set, renderer in set[renderer.style] = renderer }
+    }
+
+    /// Put the guides' roots in the tree, above the panes by **rank rather than insertion order**: a
+    /// pane is pooled and added whenever its window first appears, so a layer added at build time would
+    /// otherwise be underneath every window that arrives later.
+    private func adoptGuides() {
+        guideOpacity = [:]
+        for (index, style) in GuideStyle.allCases.enumerated() {
+            guard let renderer = guides[style] else { continue }
+            renderer.layer.zPosition = 10 + CGFloat(index)
+            renderer.layer.opacity = 0
+            guideOpacity[style] = 0
+            ground.addSublayer(renderer.layer)
+        }
+    }
+
+    /// Where a guide's pictures and words come from on a mock desktop. **The pane's own still rather
+    /// than a fresh drawing at tile size**, which would put a 28 pt title bar across half of a 25 pt
+    /// tile.
+    private var mockSources: GuideSources {
+        GuideSources(still: { [weak self] id in self?.panes[id]?.image },
+                     icon: { MockRole(rawValue: $0).flatMap { MockIcons.icon(for: $0) } },
+                     name: MockNames.name(for:))
     }
 
     /// The pointer, drawn at true scale like everything else: `k` applied once, here.
@@ -584,8 +579,8 @@ final class PaneLayer {
     /// the picture on screen is the window's own size or a stand-in being stretched.
     private(set) var capturedSize: Size?
 
-    /// The still itself. **The guide borrows it** rather than drawing its own: `guide.style = preview`
-    /// showing the window's last still is the relationship the real guide has with the real cover, and
+    /// The still itself. **The guide borrows it** rather than drawing its own: a guide drawing
+    /// `stills` showing the window's last still is the relationship the real one has with the cover, and
     /// a tile that re-drew the furniture at tile size would be a different picture of the same app.
     var image: CGImage? { still.contents as! CGImage? }
 

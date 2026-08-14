@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import EmiraCore
+import EmiraGuide
 
 // The composition's numbers, in one place because they are a design and not a scattering of literals.
 //
@@ -200,17 +201,23 @@ public enum SettingsStyle {
 
     // The guide, drawn on the mock.
     //
-    // **Higher contrast than `GuidePanel`'s own**, and that is not a disagreement with it. The real
-    // guide is already a small thing on a full display; this is that same object at the mock's scale
-    // again, so a tile is a couple of points across. `GuidePanel`'s separator-grey on
-    // window-background — legible at its size — is one flat rectangle at this one. What the preview
-    // owes the user is the guide's *shape and placement*, which are exactly what these settings change.
+    // **Higher contrast than the daemon's own palette**, and that is not a disagreement with it. The
+    // real guide is already a small thing on a full display; this is that same object at the mock's
+    // scale again, so a tile is a couple of points across. Separator-grey on window-background —
+    // legible at its size — is one flat rectangle at this one. The *shape and placement* are the
+    // renderer's and identical either way; what changes here is only what carries at that size.
 
-    public static let guideRadius: CGFloat = 10
-    public static var guideFill: CGColor { NSColor.black.withAlphaComponent(0.55).cgColor }
-    public static var guideEdge: CGColor { NSColor.white.withAlphaComponent(0.28).cgColor }
-    public static var guideTileFill: CGColor { NSColor.white.withAlphaComponent(0.38).cgColor }
-    public static var guideViewportEdge: CGColor { NSColor.white.withAlphaComponent(0.55).cgColor }
+    public static var guidePalette: GuidePalette {
+        GuidePalette(panelFill: NSColor.black.withAlphaComponent(0.55).cgColor,
+                     panelEdge: NSColor.white.withAlphaComponent(0.28).cgColor,
+                     tileFill: NSColor.white.withAlphaComponent(0.38).cgColor,
+                     separator: NSColor.white.withAlphaComponent(0.30).cgColor,
+                     viewportEdge: NSColor.white.withAlphaComponent(0.55).cgColor,
+                     ring: paneFocusEdge,
+                     label: NSColor.white.withAlphaComponent(0.72).cgColor,
+                     labelFocused: NSColor.white.cgColor,
+                     focusFill: paneFocusEdge)
+    }
 
     // The control slab
 

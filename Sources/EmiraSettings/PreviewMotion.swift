@@ -76,11 +76,14 @@ public struct PreviewMotion: Sendable, Equatable {
     /// as latency, and latency that reshuffles reads as noise.
     public static let stagger: [Double] = [0, 0.06, 0.14, 0.21]
 
-    /// The guide's panel, travelling. **A `RectAnimator` on the panel rect, the same one a window gets**
-    /// — which is what makes picking `bottom-left` send the ribbon gliding across the desktop rather
+    /// Each guide's panel, travelling. **A `RectAnimator` on the panel rect, the same one a window
+    /// gets** — which is what makes picking `bottom-left` send a guide gliding across the desktop rather
     /// than cutting to it, and a nine-way menu feel like putting something down.
-    public private(set) var panel: RectAnimator?
-    private var placedPanel: Rect?
+    ///
+    /// One per style, because two guides in flight at once are two travels: enabling the second while
+    /// the first is still moving must not hand the newcomer the incumbent's ground.
+    public private(set) var panels: [GuideStyle: RectAnimator] = [:]
+    private var placedPanels: [GuideStyle: Rect] = [:]
 
     public init() {}
 
@@ -90,9 +93,9 @@ public struct PreviewMotion: Sendable, Equatable {
     public mutating func snap(to state: PreviewState) {
         windows = [:]
         pending = [:]
-        panel = nil
+        panels = [:]
         placed = state.frames
-        placedPanel = state.guide?.panel
+        placedPanels = state.panels
         placedOffset = state.scrollOffset
     }
 
@@ -143,19 +146,21 @@ public struct PreviewMotion: Sendable, Equatable {
         windows = windows.filter { state.frames[$0.key] != nil }
         placed = state.frames
 
-        // The panel, on the same terms — but only while it is up either side of the change. A guide
+        // Each panel, on the same terms — but only while its guide is up either side of the change. One
         // that has just been raised has nowhere to travel from, and one that has gone has nothing left
         // to carry.
-        if let after = state.guide?.panel, let before = placedPanel, before != after {
-            let delta = before.delta(from: after)
-            if panel != nil {
-                panel?.nudge(by: delta)
+        let after = state.panels
+        for (style, moved) in after {
+            guard let before = placedPanels[style], before != moved else { continue }
+            let delta = before.delta(from: moved)
+            if panels[style] != nil {
+                panels[style]?.nudge(by: delta)
             } else {
-                panel = RectAnimator(displacement: delta, params: springs.movement)
+                panels[style] = RectAnimator(displacement: delta, params: springs.movement)
             }
         }
-        if state.guide == nil { panel = nil }
-        placedPanel = state.guide?.panel
+        panels = panels.filter { after[$0.key] != nil }
+        placedPanels = after
         placedOffset = state.scrollOffset
     }
 
@@ -192,14 +197,15 @@ public struct PreviewMotion: Sendable, Equatable {
             pending[id]?.wait -= dt
             if pending[id]!.wait <= 0 { pending.removeValue(forKey: id) }
         }
-        panel?.advance(by: dt)
+        for style in panels.keys { panels[style]?.advance(by: dt) }
     }
 
-    /// The guide with its panel where the spring has got to — `nil` when there is no guide up.
-    public func guide(of state: PreviewState) -> GuidePreview? {
-        guard let guide = state.guide else { return nil }
-        guard let travel = panel?.current else { return guide }
-        return guide.on(panel: guide.panel.displaced(by: travel))
+    /// The guides with their panels where the springs have got to.
+    public func guides(of state: PreviewState) -> [GuideFrame] {
+        state.guides.map { guide in
+            guard let travel = panels[guide.style]?.current else { return guide }
+            return guide.on(panel: guide.panel.displaced(by: travel))
+        }
     }
 
     /// `state`'s frames with the live displacements added — what the view actually draws. The same
@@ -219,7 +225,8 @@ public struct PreviewMotion: Sendable, Equatable {
         pending.isEmpty
             && windows.values.allSatisfy { $0.isSettled(epsilon: epsilon,
                                                         velocityEpsilon: velocityEpsilon) }
-            && panel?.isSettled(epsilon: epsilon, velocityEpsilon: velocityEpsilon) != false
+            && panels.values.allSatisfy { $0.isSettled(epsilon: epsilon,
+                                                      velocityEpsilon: velocityEpsilon) }
     }
 
     /// Drop every settled animator. Housekeeping, so a long-running take does not accumulate one entry

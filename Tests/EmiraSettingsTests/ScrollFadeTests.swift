@@ -146,6 +146,26 @@ import Testing
         """)
     }
 
+    /// **A section that spends a row on sub-tabs spends exactly one**, so the fold still cuts a row
+    /// rather than landing in the gap between two — which would end the list on a whole row with
+    /// nothing under it, the one reading the peek exists to prevent.
+    @Test func aSubTabbedSectionKeepsTheHalfRowPeek() throws {
+        let slab = ControlSlab()
+        slab.show(try Draft(""))
+        slab.select(section: try #require(ControlSlab.sections.firstIndex(of: .guide)))
+        slab.layoutSubtreeIfNeeded()
+
+        let viewport = try #require(Self.scroller(in: slab)).frame.height
+        #expect(abs(viewport - (ControlSlab.viewport - ControlSlab.subtabRowHeight)) < 1.5)
+
+        let rows = viewport / ControlSlab.rowPitch
+        #expect(abs(rows - rows.rounded()) > 0.3,
+                "the guide's scroller is \(rows) rows tall, which cuts nothing")
+        // …and the sub-tab still leaves more than fits, or there is no peek to describe.
+        let content = try #require(Self.scroller(in: slab)?.documentView).frame.height
+        #expect(content > viewport, "a guide's seven rows no longer overflow")
+    }
+
     /// The section that actually overflows does overflow, or the peek is describing nothing.
     @Test func theLayoutSectionHasMoreThanFits() throws {
         let slab = ControlSlab()
