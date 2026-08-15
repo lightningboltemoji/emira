@@ -554,10 +554,13 @@ public enum Engine {
             let before = strandedGeometry(&s)
             // Read before focus moves: the new column opens beside whatever had focus.
             let beside = stripAnchor(s)
+            // Two anchors on purpose. A column opens beside a column; the rules read the window the
+            // arrival came *out of*, which is often in no column at all.
+            let anchor = arrivalAnchor(s, of: snapshot)
             s.world.insert(snapshot)
             // Read once, and *before* the guard below: `float` decides that guard's answer in both
             // directions — it can take a standard window off the strip and put a dialog on it.
-            let rule = WindowRules.outcome(bundleId: snapshot.bundleId, title: snapshot.title,
+            let rule = WindowRules.outcome(for: WindowArrival(snapshot, from: anchor),
                                            in: s.config.windowRules)
             if let float = rule.float { s.world.setFloating(snapshot.id, float) }
             // A non-tiling window (dialog/panel/sheet/float) is the app's to position.
@@ -2232,6 +2235,22 @@ public enum Engine {
             if let candidate, s.layout.columnIndex(ofWindow: candidate) != nil { return candidate }
         }
         return nil
+    }
+
+    /// The window an arrival opened out of — the scale and the app the relational rules read it against
+    /// (`Rules.swift`). `World.lastFocus` rather than `stripAnchor`: this needs a window on screen, not a
+    /// place on the strip. Nothing at all for the launch scan, whose order is no window a user chose.
+    ///
+    /// **On screen is the whole of the constraint, so it is asked rather than assumed.** `lastFocus`
+    /// outlives its window being minimized, `Cmd-H` hidden, or parked on a workspace the user has since
+    /// left — and in each of those, dividing by its frame measures an arrival against something nobody
+    /// can see. `isOnScreen` is exactly the line the widening was drawn for: it keeps the two anchors
+    /// `lastStripFocus` was losing (a float and a full-screen window are both unplaced and both in
+    /// view) and drops those three, the last of which is the first window on a workspace switched to.
+    private static func arrivalAnchor(_ s: State, of snapshot: WindowSnapshot) -> WindowArrival.Anchor? {
+        guard !snapshot.wasAlreadyOpen, let id = s.world.lastFocus, s.world.isOnScreen(id),
+              let anchor = s.world.windows[id] else { return nil }
+        return WindowArrival.Anchor(bundleId: anchor.bundleId, frame: anchor.frame)
     }
 
     /// The strip's geometry as it stands right now, reconciled first — what an arrival is about to

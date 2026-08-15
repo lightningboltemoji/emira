@@ -401,7 +401,8 @@ import EmiraCore
     @Test func aRuleMustBothMatchSomethingAndDoSomething() {
         #expect(Self.diagnostic("[[window-rules]]\nworkspace = \"3\"\n")?.description
                 == "line 1: 'window-rules' must match something — "
-                 + "set app-id, app-id-regex, title or title-regex")
+                 + "set app-id, app-id-regex, title, title-regex, smaller-than-focused "
+                 + "or from-focused-app")
         #expect(Self.diagnostic("[[window-rules]]\napp-id = \"com.apple.Safari\"\n")?.description
                 == "line 1: 'window-rules' must do something — set workspace, float or width")
     }
@@ -441,6 +442,36 @@ import EmiraCore
         // …but `float = false` alongside a placement is the ordinary combination.
         #expect(Self.diagnostic("[[window-rules]]\napp-id = \"x\"\nfloat = false\nwidth = 0.5\n")
                 == nil)
+    }
+
+    /// The two relational matchers, and the fact that they alone are enough to make a legal rule —
+    /// which is the whole shape of the thing they are for.
+    @Test func theRelationalMatchersParseOnTheirOwn() throws {
+        let config = try Self.parse("""
+        [[window-rules]]
+        smaller-than-focused = 0.2
+        from-focused-app = true
+        float = true
+
+        [[window-rules]]
+        app-id = "com.jetbrains.intellij"
+        smaller-than-focused = 0.25
+        float = true
+        """)
+        #expect(config.windowRules[0] == WindowRule(smallerThanFocused: 0.2, fromFocusedApp: true,
+                                                    float: true))
+        #expect(config.windowRules[1] == WindowRule(appId: "com.jetbrains.intellij",
+                                                    smallerThanFocused: 0.25, float: true))
+    }
+
+    @Test func aFractionIsANumberOverZero() {
+        #expect(Self.diagnostic("[[window-rules]]\nsmaller-than-focused = 0\nfloat = true\n")?
+                .description == "line 2: 'window-rules.smaller-than-focused' must be greater than 0")
+        #expect(Self.diagnostic("[[window-rules]]\nsmaller-than-focused = \"a fifth\"\nfloat = true\n")?
+                .description
+                == "line 2: 'window-rules.smaller-than-focused' must be a number, not a string")
+        #expect(Self.diagnostic("[[window-rules]]\nfrom-focused-app = 1\nfloat = true\n")?.description
+                == "line 2: 'window-rules.from-focused-app' must be true or false, not a number")
     }
 
     @Test func aRuleWidthIsBoundedLikeAPreset() {

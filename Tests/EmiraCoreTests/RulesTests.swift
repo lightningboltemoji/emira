@@ -10,36 +10,41 @@ import Testing
 
     private func name(_ c: Character) -> WorkspaceName { WorkspaceName(c)! }
 
+    /// A window with no anchor — the four metadata matchers never read one.
+    private func window(_ bundleId: String, _ title: String = "") -> WindowArrival {
+        WindowArrival(bundleId: bundleId, title: title)
+    }
+
     /// Every matcher a rule sets has to agree — the rule is an AND, not a "sounds about right".
     @Test func everySetMatcherMustAgree() {
         let rule = WindowRule(appId: "com.tinyspeck.slackmacgap", title: "Slack", workspace: name("3"))
-        #expect(rule.matches(bundleId: "com.tinyspeck.slackmacgap", title: "Slack"))
-        #expect(!rule.matches(bundleId: "com.tinyspeck.slackmacgap", title: "Huddle"))
-        #expect(!rule.matches(bundleId: "com.apple.Safari", title: "Slack"))
+        #expect(rule.matches(window("com.tinyspeck.slackmacgap", "Slack")))
+        #expect(!rule.matches(window("com.tinyspeck.slackmacgap", "Huddle")))
+        #expect(!rule.matches(window("com.apple.Safari", "Slack")))
     }
 
     /// An unset matcher abstains rather than failing, which is what makes a one-line rule the common
     /// case: `app-id` alone is every window of that app.
     @Test func anUnsetMatcherSaysNothing() {
         let rule = WindowRule(appId: "com.apple.Safari", workspace: name("2"))
-        #expect(rule.matches(bundleId: "com.apple.Safari", title: ""))
-        #expect(rule.matches(bundleId: "com.apple.Safari", title: "anything at all"))
+        #expect(rule.matches(window("com.apple.Safari")))
+        #expect(rule.matches(window("com.apple.Safari", "anything at all")))
     }
 
     /// `title` is exact and `title-regex` is not anchored, so the substring test people actually want
     /// is spelled in the notation everyone already reads that way.
     @Test func theExactMatchersAreExactAndTheRegexesAreNot() {
         let exact = WindowRule(title: "Huddle", workspace: name("4"))
-        #expect(exact.matches(bundleId: "x", title: "Huddle"))
-        #expect(!exact.matches(bundleId: "x", title: "Huddle — general"))
+        #expect(exact.matches(window("x", "Huddle")))
+        #expect(!exact.matches(window("x", "Huddle — general")))
 
         let loose = WindowRule(titleRegex: "Huddle", workspace: name("4"))
-        #expect(loose.matches(bundleId: "x", title: "Huddle — general"))
-        #expect(loose.matches(bundleId: "x", title: "in a Huddle"))
+        #expect(loose.matches(window("x", "Huddle — general")))
+        #expect(loose.matches(window("x", "in a Huddle")))
 
         let anchored = WindowRule(appIdRegex: #"^com\.apple\."#, workspace: name("4"))
-        #expect(anchored.matches(bundleId: "com.apple.Safari", title: ""))
-        #expect(!anchored.matches(bundleId: "org.com.apple.fake", title: ""))
+        #expect(anchored.matches(window("com.apple.Safari")))
+        #expect(!anchored.matches(window("org.com.apple.fake")))
     }
 
     /// A rule with no matcher is refused by the config reader, so this can only be reached by building
@@ -47,14 +52,14 @@ import Testing
     @Test func aRuleThatConstrainsNothingMatchesNothing() {
         let empty = WindowRule(workspace: name("3"))
         #expect(!empty.hasMatcher)
-        #expect(!empty.matches(bundleId: "com.apple.Safari", title: "anything"))
+        #expect(!empty.matches(window("com.apple.Safari", "anything")))
     }
 
     /// Same reasoning one level down: a pattern that will not compile is refused at parse time, and if
     /// one arrives anyway it matches nothing rather than everything.
     @Test func anUncompilablePatternMatchesNothing() {
         let broken = WindowRule(appIdRegex: "com.(apple", workspace: name("3"))
-        #expect(!broken.matches(bundleId: "com.apple.Safari", title: ""))
+        #expect(!broken.matches(window("com.apple.Safari")))
     }
 
     /// File order is precedence order, and it applies field by field: a later match overrides an
@@ -64,11 +69,9 @@ import Testing
             WindowRule(appIdRegex: "^com\\.apple\\.", workspace: name("2")),
             WindowRule(appId: "com.apple.Safari", workspace: name("5")),
         ]
-        #expect(WindowRules.outcome(bundleId: "com.apple.Safari", title: "", in: rules).workspace
-                == name("5"))
-        #expect(WindowRules.outcome(bundleId: "com.apple.Mail", title: "", in: rules).workspace
-                == name("2"))
-        #expect(WindowRules.outcome(bundleId: "com.tinyspeck.slackmacgap", title: "", in: rules)
+        #expect(WindowRules.outcome(for: window("com.apple.Safari"), in: rules).workspace == name("5"))
+        #expect(WindowRules.outcome(for: window("com.apple.Mail"), in: rules).workspace == name("2"))
+        #expect(WindowRules.outcome(for: window("com.tinyspeck.slackmacgap"), in: rules)
                 .workspace == nil)
     }
 
@@ -80,15 +83,15 @@ import Testing
             WindowRule(appId: "com.apple.Safari", workspace: name("5")),
             WindowRule(titleRegex: "^Inspector", float: true),
         ]
-        let safari = WindowRules.outcome(bundleId: "com.apple.Safari", title: "emira", in: rules)
+        let safari = WindowRules.outcome(for: window("com.apple.Safari", "emira"), in: rules)
         #expect(safari == RuleOutcome(workspace: name("5"), width: .proportion(0.5)))
 
         // Two rules, two different fields, both applied — the apple-wide width and the title's float.
-        let inspector = WindowRules.outcome(bundleId: "com.apple.Mail", title: "Inspector", in: rules)
+        let inspector = WindowRules.outcome(for: window("com.apple.Mail", "Inspector"), in: rules)
         #expect(inspector == RuleOutcome(float: true, width: .proportion(0.5)))
 
         // …and a window matching only the last one carries only its field.
-        let other = WindowRules.outcome(bundleId: "com.test.app", title: "Inspector", in: rules)
+        let other = WindowRules.outcome(for: window("com.test.app", "Inspector"), in: rules)
         #expect(other == RuleOutcome(float: true))
     }
 
@@ -99,8 +102,107 @@ import Testing
             WindowRule(appId: "com.apple.Safari", workspace: name("5")),
             WindowRule(appIdRegex: "^com\\.apple\\.", workspace: name("2")),
         ]
-        #expect(WindowRules.outcome(bundleId: "com.apple.Safari", title: "", in: rules).workspace
-                == name("2"))
+        #expect(WindowRules.outcome(for: window("com.apple.Safari"), in: rules).workspace == name("2"))
+    }
+}
+
+// The two relational matchers: predicates over how the arriving window sits against the one it opened
+// out of, rather than over anything the window alone could say.
+
+@Suite struct WindowRuleRelativeMatchingTests {
+
+    /// A full-screen editor on a 2560×1440 display — the anchor everything here is measured against.
+    private static let editor = WindowArrival.Anchor(
+        bundleId: "com.jetbrains.intellij", frame: Rect(x: 0, y: 0, width: 2560, height: 1440))
+
+    /// A window of `size`, opened by `bundleId`, out of `anchor`.
+    private func opening(_ width: Double, _ height: Double,
+                         by bundleId: String = "com.jetbrains.intellij",
+                         from anchor: WindowArrival.Anchor? = editor) -> WindowArrival {
+        WindowArrival(bundleId: bundleId, title: "",
+                      frame: Rect(x: 0, y: 0, width: width, height: height), from: anchor)
+    }
+
+    /// The headline: a go-to-line prompt is a fraction of the window that spawned it in both directions,
+    /// and a second project window is not.
+    @Test func smallerThanFocusedSeparatesAPromptFromASecondWindow() {
+        let rule = WindowRule(smallerThanFocused: 0.2, float: true)
+        #expect(rule.matches(opening(400, 120)))            // 0.156 × 0.083
+        #expect(!rule.matches(opening(1100, 900)))          // 0.43  × 0.63
+    }
+
+    /// **Both** dimensions, not area: a shape the strip can already hold is not a shape a column has to
+    /// invent size for, however little of the screen it covers.
+    @Test func bothDimensionsAreRequired() {
+        let rule = WindowRule(smallerThanFocused: 0.2, float: true)
+        #expect(!rule.matches(opening(200, 1400)))          // narrow, but full height
+        #expect(!rule.matches(opening(2400, 100)))          // short, but full width
+    }
+
+    /// The threshold is read against the anchor and not the screen, which is what makes it mean
+    /// "how violently would tiling distort this" rather than "how big is it".
+    @Test func theSameWindowMatchesOrNotDependingOnWhatItOpenedBeside() {
+        let rule = WindowRule(smallerThanFocused: 0.2, float: true)
+        let third = WindowArrival.Anchor(bundleId: "com.jetbrains.intellij",
+                                         frame: Rect(x: 0, y: 0, width: 853, height: 1440))
+        #expect(rule.matches(opening(400, 120)))
+        // 400 of 853 is 0.47 — with that much screen unclaimed, a column beside it costs nothing.
+        #expect(!rule.matches(opening(400, 120, from: third)))
+    }
+
+    /// A float is not placed and a foreign window is never re-levelled, so a surprise window from a
+    /// background app is exactly the one emira must leave on the strip.
+    @Test func fromFocusedAppSeparatesTheAppsOwnWindowFromASurprise() {
+        let rule = WindowRule(fromFocusedApp: true, float: true)
+        #expect(rule.matches(opening(400, 120)))
+        #expect(!rule.matches(opening(400, 120, by: "com.apple.Console")))
+
+        // …and `false` is the other half of the tri-state, not a synonym for unset.
+        let inverted = WindowRule(fromFocusedApp: false, float: true)
+        #expect(!inverted.matches(opening(400, 120)))
+        #expect(inverted.matches(opening(400, 120, by: "com.apple.Console")))
+    }
+
+    /// The two AND together, and each ANDs with the metadata matchers above them — a rule can be as
+    /// narrow as one app's small windows.
+    @Test func theRelationalMatchersAndWithEachOtherAndWithTheOthers() {
+        let both = WindowRule(smallerThanFocused: 0.2, fromFocusedApp: true, float: true)
+        #expect(both.matches(opening(400, 120)))
+        #expect(!both.matches(opening(1100, 900)))                          // right app, too big
+        #expect(!both.matches(opening(400, 120, by: "com.apple.Console")))  // small enough, wrong app
+
+        let scoped = WindowRule(appId: "com.jetbrains.intellij", smallerThanFocused: 0.2, float: true)
+        #expect(scoped.matches(opening(400, 120)))
+        #expect(!scoped.matches(opening(400, 120, by: "com.apple.Console",
+                                        from: WindowArrival.Anchor(bundleId: "com.apple.Console",
+                                                                     frame: Self.editor.frame))))
+
+        let titled = WindowRule(titleRegex: "Preferences", smallerThanFocused: 0.2, float: true)
+        var prompt = opening(400, 120)
+        #expect(!titled.matches(prompt))
+        prompt.title = "Preferences"
+        #expect(titled.matches(prompt))
+    }
+
+    /// With nothing to compare against — the first window on an empty workspace, or a window the launch
+    /// scan adopted — a relational matcher fails rather than guessing at a scale.
+    @Test func noAnchorMatchesNothing() {
+        let smaller = WindowRule(smallerThanFocused: 0.2, float: true)
+        let app = WindowRule(fromFocusedApp: true, float: true)
+        #expect(!smaller.matches(opening(400, 120, from: nil)))
+        #expect(!app.matches(opening(400, 120, from: nil)))
+
+        // …and it fails the whole rule, not just its own clause.
+        let scoped = WindowRule(appId: "com.jetbrains.intellij", smallerThanFocused: 0.2, float: true)
+        #expect(!scoped.matches(opening(400, 120, from: nil)))
+    }
+
+    /// A rule carrying only these is a rule about a narrow slice of the desktop, so it is legal — the
+    /// parse-time refusal is for a rule that constrains nothing at all.
+    @Test func aRuleCarryingOnlyTheseHasAMatcher() {
+        #expect(WindowRule(smallerThanFocused: 0.2, float: true).hasMatcher)
+        #expect(WindowRule(fromFocusedApp: true, float: true).hasMatcher)
+        #expect(!WindowRule(float: true).hasMatcher)
     }
 }
 
@@ -348,5 +450,202 @@ import Testing
 
         #expect(after.workspaces[name("3")].allWindowIds == [WindowId(1), WindowId(2)])
         #expect(after.workspaces[name("3")].columns.count == 2)
+    }
+}
+
+/// The relational matchers through the reducer: what the anchor actually is at the moment a window
+/// arrives, and what floating one costs the window that spawned it.
+@Suite struct WindowRuleAnchorArrivalTests {
+
+    /// One full-width preset, so the editor below fills the 1000×800 display it opened on.
+    private static func config(_ rules: [WindowRule]) -> Config {
+        Config(widthPresets: PresetCycle([.proportion(1.0)]), transitionMode: .off, windowRules: rules)
+    }
+
+    private static let floatSmallOnes = config([
+        WindowRule(smallerThanFocused: 0.2, fromFocusedApp: true, float: true)
+    ])
+
+    /// The window that was already there, filling the screen.
+    private func editor(_ raw: UInt64, alreadyOpen: Bool = false) -> Event {
+        .windowCreated(EngineFix.snapshot(raw, bundle: "com.jetbrains.intellij",
+                                          frame: EngineFix.displayFrame, wasAlreadyOpen: alreadyOpen))
+    }
+
+    /// A window opening at `size`, from `bundle` — the thing the rule is deciding about.
+    private func opens(_ raw: UInt64, _ width: Double, _ height: Double,
+                       bundle: String = "com.jetbrains.intellij", alreadyOpen: Bool = false) -> Event {
+        .windowCreated(EngineFix.snapshot(raw, bundle: bundle,
+                                          frame: Rect(x: 400, y: 300, width: width, height: height),
+                                          wasAlreadyOpen: alreadyOpen))
+    }
+
+    /// The headline: the prompt floats, and the window that spawned it keeps its column and its width
+    /// rather than being pushed aside to make room for one.
+    @Test func aPromptFloatsAndCostsTheWindowThatSpawnedItNothing() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        let before = EngineFix.width(after)
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+
+        #expect(after.world.isFloating(WindowId(2)))
+        #expect(!after.world.participatesInStrip(WindowId(2)))
+        #expect(after.workspaces.workspace(of: WindowId(2)) == nil)
+
+        #expect(after.workspaces[.first].allWindowIds == [WindowId(1)])
+        #expect(after.workspaces[.first].columns.count == 1)
+        #expect(EngineFix.width(after) == before)
+    }
+
+    /// …and the window the same rule must not touch: a second project window is barely distorted by a
+    /// column, so it takes one.
+    @Test func aSecondProjectWindowStillTiles() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [opens(2, 600, 700)])
+
+        #expect(!after.world.isFloating(WindowId(2)))
+        #expect(after.workspaces[.first].columns.count == 2)
+    }
+
+    /// A surprise window from a background app is the one emira must leave on the strip: a float is not
+    /// placed, and a foreign window is never re-levelled, so floating one can strand it behind a tile.
+    @Test func aSmallWindowFromABackgroundAppStillTiles() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100, bundle: "com.apple.Console")])
+
+        #expect(!after.world.isFloating(WindowId(2)))
+        #expect(after.workspaces[.first].columns.count == 2)
+    }
+
+    /// A window the user floated is still the window they are working in. It has no column — nothing
+    /// opens beside it — and it is still the thing a prompt from its app opened out of.
+    @Test func aFloatedWindowIsStillAnAnchor() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [.command(.float(.on))])
+        #expect(after.world.isFloating(WindowId(1)))
+        #expect(after.workspaces[.first].columns.isEmpty)
+
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(after.world.isFloating(WindowId(2)))
+    }
+
+    /// Live focus reads `nil` at exactly the moment a window arrives — an app focuses its new window
+    /// before emira has adopted it — so what the rules read is the *last* window focus rested on, and
+    /// `lastStripFocus` is not that: here it names a window that no longer has a column.
+    @Test func theAnchorSurvivesTheFocusRace() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [.command(.float(.on)),
+                                           .focusChanged(nil, origin: .system)])
+        #expect(after.world.focusedWindow == nil)
+        #expect(after.world.lastStripFocus == WindowId(1))
+
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(after.world.isFloating(WindowId(2)))
+    }
+
+    /// Native full screen is the same shape of window: `WindowRole` classes it `.other`, so it is on no
+    /// strip and in no column, and a prompt beside it is measured against the screen it fills.
+    @Test func aFullScreenWindowIsStillAnAnchor() {
+        var s = EngineFix.booted(config: Self.floatSmallOnes)
+        (s, _) = EngineFix.run(s, [.windowCreated(
+            EngineFix.snapshot(1, bundle: "com.jetbrains.intellij", role: .other,
+                               frame: EngineFix.displayFrame))])
+        s.world.setFocus(WindowId(1))
+        #expect(s.workspaces[.first].columns.isEmpty)
+
+        let (after, _) = EngineFix.run(s, [opens(2, 150, 100)])
+        #expect(after.world.isFloating(WindowId(2)))
+    }
+
+    /// The anchor is read from live truth, so a window resized since it arrived is measured at the size
+    /// it is now — the ratio is about the desktop in front of the user, not about first sight.
+    @Test func theAnchorIsMeasuredAtItsCurrentSize() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        // Shrunk to a quarter of the screen: 150×100 is no longer small against it.
+        (after, _) = EngineFix.run(
+            after, [.windowFrameChanged(WindowId(1), Rect(x: 0, y: 0, width: 500, height: 400))])
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+
+        #expect(!after.world.isFloating(WindowId(2)))
+    }
+
+    /// At boot there is no app that "already had focus" — `lastStripFocus` is whichever window the scan
+    /// reached first — so both matchers abstain rather than comparing against noise.
+    @Test func theLaunchScanNeverFloatsOnTheseMatchers() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        let (after, _) = EngineFix.run(s, [editor(1, alreadyOpen: true),
+                                           opens(2, 150, 100, alreadyOpen: true)])
+
+        #expect(!after.world.isFloating(WindowId(2)))
+        #expect(after.workspaces[.first].allWindowIds == [WindowId(1), WindowId(2)])
+    }
+
+    /// The first window on an empty workspace has nothing to be smaller than, so it tiles however small
+    /// it opened — the alternative is a desktop whose first window is unreachable.
+    @Test func theFirstWindowOnAWorkspaceHasNoAnchorAndTiles() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        let (after, _) = EngineFix.run(s, [opens(1, 150, 100)])
+
+        #expect(!after.world.isFloating(WindowId(1)))
+        #expect(after.workspaces.workspace(of: WindowId(1)) == .first)
+    }
+
+    /// …and that holds for a workspace *switched to*, not just the first one of a session. `lastFocus`
+    /// outlives the switch — nothing clears it, which is the whole point of it — so the constraint that
+    /// makes this window anchorless is that the editor is parked, not that focus moved off it.
+    @Test func theFirstWindowOnAWorkspaceSwitchedToHasNoAnchorEither() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [.command(.focusWorkspace(.name(WorkspaceName("5")!)))])
+        #expect(after.world.lastFocus == WindowId(1))
+        #expect(!after.world.isOnScreen(WindowId(1)))
+
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(!after.world.isFloating(WindowId(2)))
+    }
+
+    /// A window in the Dock is a scale nobody can see. `lastFocus` still names it — minimizing the
+    /// focused window clears focus and nothing else — so this is the case that proves the anchor is
+    /// gated on being *on screen* rather than merely on still existing.
+    @Test func aMinimizedAnchorIsNoAnchor() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [.windowMinimized(WindowId(1))])
+        #expect(after.world.lastFocus == WindowId(1))
+
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(!after.world.isFloating(WindowId(2)))
+    }
+
+    /// `Cmd-H` is the same fact one level up: the app's windows are nowhere on the screen, so its last
+    /// focused window is no more a scale than a minimized one is.
+    @Test func aHiddenAppsWindowIsNoAnchor() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        after.world.setAppHidden("com.jetbrains.intellij", true)
+        #expect(after.world.lastFocus == WindowId(1))
+
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(!after.world.isFloating(WindowId(2)))
+    }
+
+    /// The float is a seed and not a leash: the first `emira float` hands the window back to the strip,
+    /// and nothing re-floats it.
+    @Test func aFloatedPromptIsTiledByHand() {
+        let s = EngineFix.booted(config: Self.floatSmallOnes)
+        var (after, _) = EngineFix.run(s, [editor(1)])
+        (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
+        #expect(after.workspaces.workspace(of: WindowId(2)) == nil)
+
+        after.world.setFocus(WindowId(2))
+        (after, _) = EngineFix.run(after, [.command(.float(.off))])
+
+        #expect(!after.world.isFloating(WindowId(2)))
+        #expect(after.workspaces[.first].allWindowIds == [WindowId(1), WindowId(2)])
     }
 }

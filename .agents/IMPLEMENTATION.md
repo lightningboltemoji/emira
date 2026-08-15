@@ -753,9 +753,27 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
 
 ### Window rules
 
-Pure predicates over a window's metadata at **first sight** (`Rules.swift`): `WindowRule` — four AND'd matchers
-(app id and title, each exact or regex) → `RuleOutcome` (workspace / float / width). Matching rules apply top to
-bottom, later overriding earlier, field by field.
+Pure predicates over an arriving window at **first sight** (`Rules.swift`): `WindowRule` — six AND'd matchers
+→ `RuleOutcome` (workspace / float / width). Matching rules apply top to bottom, later overriding earlier,
+field by field.
+
+The matchers come in two kinds. Four read the window's **own metadata** — app id and title, each exact or
+regex — and nothing else on the desktop can change their answer. Two read its **relation to the desktop it
+arrived on**, against the window it opened out of (`WindowArrival.Anchor`): `smaller-than-focused` matches when
+both dimensions of the arriving frame are under that fraction of the anchor's, and `from-focused-app` when the
+arriving app is the anchor's. That relation is the only signal for the small window an app opens beside the one
+you were working in — a go-to-line prompt, a find sheet — since nothing emira can read identifies a dialog, and
+a ratio measures how violently a column would have to distort it. Both fail rather than abstain with no anchor
+to read: the first window on a workspace, and every window the launch scan adopted, where the anchor would be
+whichever window the scan reached first rather than anything a user chose.
+
+**An arrival has two anchors, and they answer different questions.** `Engine.stripAnchor` answers "which
+column does this open beside", so it insists on a column, and reads `World.lastStripFocus`.
+`Engine.arrivalAnchor` answers "what did this window open out of", which needs a window on screen and nothing
+more, so it reads `World.lastFocus` — the same shelter from the transient `nil`, without the column. Sharing
+the first would make the mechanism silent in exactly the states where a small window is most likely: neither a
+float nor a full-screen window is ever `lastStripFocus`, so working in either leaves the ratio measured
+against a window the user left behind, or against nothing at all.
 
 All three actions are **seeds into somewhere the user can already reach**: `workspace` is the move
 `move-to-workspace` performs, `float` writes the tri-state `Command.float` toggles, `width` is the override

@@ -161,6 +161,10 @@ public struct World: Sendable, Equatable, Codable {
     /// a new window *before* we adopt it. A new column opens beside *this*: without it, ⌘N raced that
     /// transient `nil` and appended at the far end of the strip.
     public private(set) var lastStripFocus: WindowId?
+    /// The last window focus rested on, **whatever kind of window it was** — the same shelter from that
+    /// transient `nil`, one constraint looser, because a float and a full-screen window are both windows
+    /// a user works in and neither is ever `lastStripFocus`. What an arrival is measured against.
+    public private(set) var lastFocus: WindowId?
 
     public init() {
         self.windows = [:]
@@ -173,6 +177,7 @@ public struct World: Sendable, Equatable, Codable {
         self.placedOnScreen = []
         self.floating = [:]
         self.lastStripFocus = nil
+        self.lastFocus = nil
     }
 
     // Mutators (each folds exactly one truth-plane Event; all are total)
@@ -200,6 +205,7 @@ public struct World: Sendable, Equatable, Codable {
         placedOnScreen.remove(id)
         floating[id] = nil
         if lastStripFocus == id { lastStripFocus = nil }
+        if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
         }
@@ -253,6 +259,7 @@ public struct World: Sendable, Equatable, Codable {
     /// contract; World only *enforces* the destroy-clears-focus invariant (see `remove`).
     public mutating func setFocus(_ id: WindowId?) {
         focusedWindow = id
+        if let id { lastFocus = id }
         if let id, participatesInStrip(id) { lastStripFocus = id }
     }
 

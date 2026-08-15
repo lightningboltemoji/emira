@@ -226,3 +226,14 @@ width = 0.5
 title-regex = 'Inspector'
 # Off the strip entirely, overriding whatever emira made of the window's role.
 float = true
+
+# A rule can also match on the shape of an arriving window rather than on anything it is called.
+# Here: a window both small relative to the focused one and opened by the same app.
+[[window-rules]]
+
+# Both dimensions must be smaller than this fraction of the focused window — if the focused window
+# is 2000x1000, an arriving window needs a width under 400 and a height under 200 to match.
+smaller-than-focused = 0.2
+# …and opened by the app that already had focus, so background apps don't count.
+from-focused-app = true
+float = true

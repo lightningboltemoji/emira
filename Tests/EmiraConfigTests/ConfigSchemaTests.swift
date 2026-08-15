@@ -57,7 +57,7 @@ import EmiraCore
         #expect(parsed == expected)
 
         #expect(parsed.keys.count == 5)
-        #expect(parsed.windowRules.count == 2)
+        #expect(parsed.windowRules.count == 3)
     }
 
     /// Every setting reaches the document, so a new entry cannot be added without being documented.

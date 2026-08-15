@@ -327,6 +327,8 @@ extension TOMLTable {
                 rule.appIdRegex = try body.pattern("app-id-regex")
                 rule.title = try body.string("title")
                 rule.titleRegex = try body.pattern("title-regex")
+                rule.smallerThanFocused = try body.number("smaller-than-focused", greaterThan: 0)
+                rule.fromFocusedApp = try body.bool("from-focused-app")
                 rule.workspace = try body.workspaceName("workspace")
                 rule.float = try body.bool("float")
                 rule.width = try body.presetSize("width")
@@ -339,7 +341,8 @@ extension TOMLTable {
             guard rule.hasMatcher else {
                 throw ConfigSyntaxError.badValue(
                     line: element.line, key: prefix,
-                    message: "must match something — set app-id, app-id-regex, title or title-regex")
+                    message: "must match something — set app-id, app-id-regex, title, title-regex, "
+                           + "smaller-than-focused or from-focused-app")
             }
             guard rule.hasAction else {
                 throw ConfigSyntaxError.badValue(

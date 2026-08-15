@@ -160,8 +160,10 @@ happen on.
   workspace, a float and a width — then are **never consulted again**. Every action seeds something a verb
   already owns, so the first press of anything hands the window straight back, and a rule holds no state of
   its own to go stale. A standing rule would be a second authority over a fact §1 says the strip already
-  holds. The same asymmetry decides focus: emira sorting a desktop at boot places quietly, while a window
-  opened _now_ is one you opened, and going there is already what a Dock click does.
+  holds. Boot is where the asymmetry shows: emira sorting a desktop nobody just asked it to sort places
+  quietly and assumes as little as it can — a matcher that reads a window against the one it opened out of
+  has nothing a user chose to compare against, so it matches nothing — while a window opened _now_ is one
+  you opened, and going there is already what a Dock click does.
 - **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the
   temptation is to read a hand on the frame as a mistake to correct. It isn't: the handle is the most direct
   thing the user can say about a size, and it says exactly what `grow` says by another route — so the size a
