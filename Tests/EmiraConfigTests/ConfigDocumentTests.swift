@@ -351,7 +351,7 @@ import EmiraCore
         ]
         for value in values {
             let table = try TOMLTable.parse("key = " + value.spelled + "\n")
-            let read = table.values["key"]
+            let read = table.value(at: "key")
             #expect(read?.spelled == value.spelled, "\(value.spelled)")
         }
     }

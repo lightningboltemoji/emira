@@ -171,16 +171,15 @@ public struct ConfigDocument {
         return (path.joined(separator: "."), name)
     }
 
-    /// Unset `key`, taking its whole line with it — **its trailing comment included**, since a comment
-    /// on a value line describes that value and would be left describing nothing. A key the file
-    /// doesn't set is left alone.
+    /// Unset `key`, taking its whole statement with it — **its trailing comment included**, and every
+    /// line of a multi-line value. A key the file doesn't set is left alone.
     ///
     /// - Throws: as `set` does. Dropping a key restores its default, which the schema accepts on its
     ///   own; a rule that loses its last matcher is the case that doesn't.
     public mutating func remove(_ key: String) throws {
         guard let span = table.span(of: key) else { return }
         var edited = text
-        edited.removeSubrange(withTerminator(span.line))
+        edited.removeSubrange(withTerminator(span.statement))
         try commit(edited)
     }
 
@@ -233,15 +232,15 @@ public struct ConfigDocument {
         edited += block + terminator
     }
 
-    /// A line's range grown to swallow the terminator that ends it — or, on a last line that has none,
-    /// the terminator before it, so removing the line doesn't leave a blank one in its place.
-    private func withTerminator(_ line: Range<String.Index>) -> Range<String.Index> {
-        if line.upperBound < text.endIndex, text[line.upperBound].isNewline {
-            return line.lowerBound..<text.index(after: line.upperBound)
+    /// A statement's range grown to swallow the terminator that ends it — or, on a last line that has
+    /// none, the terminator before it, so removing it doesn't leave a blank line in its place.
+    private func withTerminator(_ statement: Range<String.Index>) -> Range<String.Index> {
+        if statement.upperBound < text.endIndex, text[statement.upperBound].isNewline {
+            return statement.lowerBound..<text.index(after: statement.upperBound)
         }
-        if line.lowerBound > text.startIndex {
-            return text.index(before: line.lowerBound)..<line.upperBound
+        if statement.lowerBound > text.startIndex {
+            return text.index(before: statement.lowerBound)..<statement.upperBound
         }
-        return line
+        return statement
     }
 }

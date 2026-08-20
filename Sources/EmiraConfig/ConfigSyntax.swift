@@ -194,9 +194,17 @@ extension TOMLTable {
         _ value: TOMLValue, key: String, atLeast minimum: Double? = nil,
         greaterThan exclusive: Double? = nil
     ) throws -> Double {
-        guard case .number(let number) = value.payload else {
+        // Either numeric kind: a setting's range is what decides whether `8` and `8.0` differ, and none
+        // of them says they do.
+        guard let number = value.asDouble else {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,
                                              message: "must be a number, not \(value.kindName)")
+        }
+        // `inf` and `nan` are numbers the grammar admits and no setting has a use for: they pass every
+        // bound below — `inf` is at least anything — so the range checks cannot be what refuses them.
+        guard number.isFinite else {
+            throw ConfigSyntaxError.badValue(line: value.line, key: key,
+                                             message: "must be a finite number")
         }
         if let minimum, number < minimum {
             throw ConfigSyntaxError.badValue(line: value.line, key: key,

@@ -301,7 +301,7 @@ import EmiraCore
     /// reason every scan in the reader is quote-aware.
     @Test func aHashInsideAStringIsNotAComment() throws {
         let table = try TOMLTable.parse("key = \"a # b\"\n")
-        #expect(table.values["key"]?.payload == .string("a # b"))
+        #expect(table.value(at: "key")?.payload == .string("a # b"))
     }
 
     /// Quoted keys parse: the `[keys]` table needs `"cmd-alt-h"` to be a key, and the grammar is where
@@ -312,8 +312,8 @@ import EmiraCore
         "cmd-alt-h" = "focus left"
         bare.dotted = 1
         """)
-        #expect(table.values["keys.cmd-alt-h"]?.payload == .string("focus left"))
-        #expect(table.values["keys.bare.dotted"]?.payload == .number(1))
+        #expect(table.value(at: "keys.cmd-alt-h")?.payload == .string("focus left"))
+        #expect(table.value(at: "keys.bare.dotted")?.payload == .integer(1))
     }
 
     @Test func windowsLineEndingsAreNotASyntaxError() throws {
@@ -323,7 +323,7 @@ import EmiraCore
 
     @Test func escapesInStringsAreRead() throws {
         let table = try TOMLTable.parse(#"key = "a\"b\\c\td""#)
-        #expect(table.values["key"]?.payload == .string("a\"b\\c\td"))
+        #expect(table.value(at: "key")?.payload == .string("a\"b\\c\td"))
     }
 
     @Test func aTrailingCommaInAnArrayIsTolerated() throws {
@@ -331,40 +331,366 @@ import EmiraCore
         #expect(config.widthPresets.presets == [.proportion(0.5), .proportion(0.75)])
     }
 
-    /// Everything the subset deliberately does not implement says so, on its line, instead of being
-    /// read as something else. A partial parser that quietly accepts what it can't represent is worse
-    /// than one that refuses.
-    @Test func unsupportedTOMLIsRefusedByName() {
-        #expect(Self.diagnostic("[layout]\nx = { a = 1 }\n")?.description
-                == "line 2: inline tables are not supported")
-        #expect(Self.diagnostic("[layout]\nx = [[1]]\n")?.description
-                == "line 2: nested arrays are not supported")
-        #expect(Self.diagnostic("[layout]\nwidth-presets = [0.5,\n0.75]\n")?.description
-                == "line 2: unterminated array — it must open and close on one line")
+    /// The production a line-at-a-time reader cannot express: line endings and comments are legal
+    /// anywhere inside an array, and a `width-presets` long enough to want wrapping is the config that
+    /// asks for it.
+    @Test func anArrayMaySpanLinesAndCarryCommentsInside() throws {
+        let config = try Self.parse("""
+        [layout]
+        width-presets = [
+            0.5,     # half
+            0.75,
+        ]
+        """)
+        #expect(config.widthPresets.presets == [.proportion(0.5), .proportion(0.75)])
+    }
+
+    @Test func arraysNest() throws {
+        let table = try TOMLTable.parse("key = [[1, 2], [3]]\n")
+        // By shape rather than by value: a parsed element carries the span it was read from, which no
+        // expectation can spell and none of this is about.
+        guard case .array(let outer)? = table.value(at: "key")?.payload else {
+            Issue.record("not an array"); return
+        }
+        let numbers = outer.map { element -> [Double] in
+            guard case .array(let inner) = element.payload else { return [] }
+            return inner.compactMap(\.asDouble)
+        }
+        #expect(numbers == [[1, 2], [3]])
+    }
+
+    /// A newline straight after the opening delimiter is dropped, and a `\` that ends a line eats that
+    /// line ending and the indentation after it — the two rules that let a long string be laid out.
+    @Test func multilineStringsAreRead() throws {
+        let basic = try TOMLTable.parse("key = \"\"\"\nroses\nviolets\"\"\"\n")
+        #expect(basic.value(at: "key")?.payload == .string("roses\nviolets"))
+
+        let folded = try TOMLTable.parse("key = \"\"\"\\\n    one \\\n    two\\\n    \"\"\"\n")
+        #expect(folded.value(at: "key")?.payload == .string("one two"))
+
+        let literal = try TOMLTable.parse("key = '''\na\\d\nb'''\n")
+        #expect(literal.value(at: "key")?.payload == .string("a\\d\nb"))
+
+        // Up to two of the delimiter's own quote may end the body: `""""` is one quote and a close.
+        let quoted = try TOMLTable.parse("key = \"\"\"a\"\"\"\"\n")
+        #expect(quoted.value(at: "key")?.payload == .string("a\""))
+    }
+
+    /// A multi-line value is one statement over several lines, which is what the span model has to
+    /// carry: an unset takes the whole thing, not the line the key was written on.
+    @Test func unsettingAMultilineValueTakesEveryLineOfIt() throws {
+        var document = try ConfigDocument("""
+        [layout]
+        column-gap = 4
+        width-presets = [
+            0.5,
+        ]
+        window-gap = 2
+
+        """)
+        try document.remove("layout.width-presets")
+        #expect(document.rendered == "[layout]\ncolumn-gap = 4\nwindow-gap = 2\n")
+    }
+
+    /// The full escape set, including the two Unicode forms — without them there is no way to write a
+    /// character you cannot type. A reserved escape stays a syntax error rather than the bare letter.
+    @Test func everyEscapeTheSpecDefinesIsRead() throws {
+        let table = try TOMLTable.parse(#"key = "\b\fé\U0001F600""#)
+        #expect(table.value(at: "key")?.payload == .string("\u{08}\u{0C}é\u{1F600}"))
+
+        #expect(Self.diagnostic(#"[layout]"# + "\n" + #"x = "\e""# + "\n")?.description
+                == #"line 2: unknown escape '\e'"#)
+        #expect(Self.diagnostic(#"[layout]"# + "\n" + #"x = "\u00g0""# + "\n")?.description
+                == "line 2: an escape needs 4 hexadecimal digits")
+        // A surrogate half is four hexadecimal digits that no character corresponds to.
+        #expect(Self.diagnostic(#"[layout]"# + "\n" + #"x = "\ud800""# + "\n")?.description
+                == #"line 2: '\ud800' is not a Unicode character"#)
+    }
+
+    /// `ws` is space and tab, `newline` is LF or CRLF, and a bare key is ASCII. Swift's `isWhitespace`,
+    /// `isNewline`, `isLetter` and `isNumber` each answer a Unicode-wide question instead, and every one
+    /// of them is the wrong question here.
+    @Test func theCharacterClassesAreTheSpecsAndNotSwifts() throws {
+        // U+2028 is `basic-unescaped`, so it is content — not a line ending that cuts the string in two.
+        let separator = try TOMLTable.parse("key = \"a\u{2028}b\"\n")
+        #expect(separator.value(at: "key")?.payload == .string("a\u{2028}b"))
+
+        // A bare key is ASCII, and the scalar that ends one early is what the diagnostic names — a
+        // non-breaking space or hyphen pasted from a web page is otherwise invisible in an editor.
+        #expect(Self.diagnostic("[layout]\ncafé = 8\n")?.description == "line 2: invalid key 'café'")
+        #expect(Self.diagnostic("[layout]\ncolumn\u{2011}gap = 8\n")?.description
+                == "line 2: invalid key 'column\u{2011}gap'")
+        #expect(Self.diagnostic("[layout]\ncolumn-gap\u{00A0}=\u{00A0}8\n")?.description
+                == "line 2: invalid key 'column-gap\u{00A0}'")
+    }
+
+    /// A control character is not content in a string or a comment, and a byte-order mark is not a key.
+    @Test func controlCharactersAreRefusedAndAByteOrderMarkIsNot() throws {
+        #expect(Self.diagnostic("[layout]\nx = \"a\u{07}b\"\n")?.description
+                == "line 2: a string cannot contain the control character U+0007")
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = 8 # \u{7F}\n")?.description
+                == "line 2: a comment cannot contain the control character U+007F")
+
+        let marked = try Self.parse("\u{FEFF}[layout]\ncolumn-gap = 8\n")
+        #expect(marked.columnGap == 8)
+    }
+
+    /// Keys are spelled like values, both notations included — a `'…'` key is the one the reader used
+    /// to refuse while accepting the very same string on the right of the `=`.
+    @Test func aLiteralStringIsAKeyToo() throws {
+        let table = try TOMLTable.parse("[keys]\n'cmd-alt-h' = \"focus left\"\n")
+        #expect(table.value(at: "keys.cmd-alt-h")?.payload == .string("focus left"))
+    }
+
+    /// The two halves have to agree: whatever the writer spells, the reader reads back unchanged. The
+    /// cases that matter are the ones the grammar refuses raw — a control character has to leave as an
+    /// escape, or `emira config set` writes a file emira cannot open.
+    @Test func everythingTheWriterSpellsTheReaderReadsBack() throws {
+        let values: [TOMLValue] = [
+            .string("plain"), .string("a \"b\" \\c"), .string("a\nb"), .string("a\tb"),
+            .string("bell\u{07}here"), .string("del\u{7F}here"), .string("a\u{08}b"),
+            .string("a\u{0C}b"), .string("\u{1F600}"), .literalString(#"^com\.apple\."#),
+            .literalString("it's"), .literalString("ctrl\u{01}x"),
+        ]
+        for value in values {
+            let table = try TOMLTable.parse("k = " + value.spelled + "\n")
+            #expect(table.value(at: "k")?.payload == value.payload, "\(value.spelled) did not round-trip")
+        }
+        for key in ["column-gap", "café", "π", "a b", "", "a.b", "a\u{07}b"] {
+            let table = try TOMLTable.parse(TOMLTable.spell(key: key) + " = 1\n")
+            #expect(table.entries[key] != nil, "\(TOMLTable.spell(key: key)) did not round-trip")
+        }
+    }
+
+    /// The numeric grammar, which `Double(_:)` is far looser than: digits are required on both sides of
+    /// a decimal point, a leading zero is not an integer, and `_` may only sit between digits.
+    @Test func theNumericGrammarIsTheSpecsAndNotSwifts() throws {
+        let table = try TOMLTable.parse("a = 1_000\nb = 9_224.1\nc = 5e+22\n")
+        #expect(table.value(at: "a")?.payload == .integer(1000))
+        #expect(table.value(at: "b")?.payload == .float(9224.1))
+        #expect(table.value(at: "c")?.payload == .float(5e22))
+
+        for bad in [".5", "5.", "007", "1__0", "1_", "+.5", "1.e5"] {
+            #expect(Self.diagnostic("[layout]\ncolumn-gap = \(bad)\n")?.description
+                    == "line 2: cannot read '\(bad)' as a value", "\(bad) should not parse")
+        }
+    }
+
+    /// `a = { b = 1 }` and `[a]` + `b = 1` say the same thing, so the schema reaches `a.b` either way —
+    /// an inline table written as a whole statement is a table of the document, not a value standing
+    /// in one.
+    @Test func anInlineTableIsATable() throws {
+        let config = try Self.parse("layout = { column-gap = 8, window-gap = 4 }\n")
+        #expect(config.columnGap == 8)
+        #expect(config.windowGap == 4)
+
+        // …and a key inside one is named the same way when it is wrong.
+        #expect(Self.diagnostic("layout = { colum-gap = 8 }\n")?.description
+                == "line 1: unknown setting 'layout.colum-gap'")
+    }
+
+    /// Nested, dotted, and as an array element — the three places an inline table stands where a value
+    /// goes rather than where a statement does.
+    @Test func inlineTablesNestAndCarryDottedKeys() throws {
+        let table = try TOMLTable.parse("a = { b.c = 1, b.d = 2, e = { f = 3 } }\n")
+        #expect(table.value(at: "a.b.c")?.payload == .integer(1))
+        #expect(table.value(at: "a.b.d")?.payload == .integer(2))
+        #expect(table.value(at: "a.e.f")?.payload == .integer(3))
+
+        let inArray = try TOMLTable.parse("a = [{ b = 1 }, { b = 2 }]\n")
+        guard case .array(let elements)? = inArray.value(at: "a")?.payload else {
+            Issue.record("not an array"); return
+        }
+        #expect(elements.count == 2)
+        #expect(elements[0].spelled == "{ b = 1 }")
+    }
+
+    /// An inline table states its contents in one breath: it closes on its own line, takes no trailing
+    /// comma, and nothing written later may add to it.
+    @Test func anInlineTableIsClosed() {
+        #expect(Self.diagnostic("[layout]\nx = { a = 1,\n b = 2 }\n")?.description
+                == "line 2: unterminated inline table — it must open and close on one line")
+        #expect(Self.diagnostic("[layout]\nx = { a = 1, }\n")?.line == 2)
+        #expect(Self.diagnostic("a = { b = 1 }\n[a]\nc = 2\n")?.description
+                == "line 2: 'a' is set twice")
+        #expect(Self.diagnostic("a = { b = 1 }\na.c = 2\n")?.description == "line 2: 'a.c' is set twice")
+        #expect(Self.diagnostic("a = { b = 1, b = 2 }\n")?.description == "line 1: 'b' is set twice")
+    }
+
+    /// The three radix notations, read as the integers they are rather than rounded through a `Double`
+    /// that cannot hold every one of them.
+    @Test func radixIntegersAreRead() throws {
+        let table = try TOMLTable.parse("a = 0xDEADBEEF\nb = 0o755\nc = 0b1010\nd = 0xdead_beef\n")
+        #expect(table.value(at: "a")?.payload == .integer(0xDEADBEEF))
+        #expect(table.value(at: "b")?.payload == .integer(0o755))
+        #expect(table.value(at: "c")?.payload == .integer(0b1010))
+        #expect(table.value(at: "d")?.payload == .integer(0xDEADBEEF))
+
+        for bad in ["0x", "0xg", "0o8", "0b2", "-0x1", "0x1.5"] {
+            #expect(Self.diagnostic("[layout]\ncolumn-gap = \(bad)\n")?.line == 2, "\(bad) should not parse")
+        }
+    }
+
+    /// A 64-bit integer, which is the range the spec requires and the range a `Double` does not have.
+    @Test func integersKeepEveryBitOfTheirRange() throws {
+        let table = try TOMLTable.parse("a = 9223372036854775807\nb = -9223372036854775808\n")
+        #expect(table.value(at: "a")?.payload == .integer(.max))
+        #expect(table.value(at: "b")?.payload == .integer(.min))
+        #expect(table.value(at: "a")?.spelled == "9223372036854775807")
+
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = 9223372036854775808\n")?.description
+                == "line 2: '9223372036854775808' is too large for a 64-bit integer")
+    }
+
+    /// Integer and float are two types, and the file's choice survives a rewrite: `1.0` re-spelled as
+    /// `1` would be a different type on the same line.
+    @Test func anIntegerAndAFloatAreNotTheSameValue() throws {
+        let table = try TOMLTable.parse("a = 1\nb = 1.0\n")
+        #expect(table.value(at: "a")?.payload == .integer(1))
+        #expect(table.value(at: "b")?.payload == .float(1))
+        #expect(table.value(at: "a")?.spelled == "1")
+        #expect(table.value(at: "b")?.spelled == "1.0")
+        // Both are read as the `Double` every setting wants — no schema asks which was written.
+        #expect(table.value(at: "a")?.asDouble == 1)
+        #expect(table.value(at: "b")?.asDouble == 1)
+    }
+
+    /// The four date-time types, validated to the calendar and kept as the text they were written as.
+    /// Nothing emira has is a date; a file that says one is still a file emira opens.
+    @Test func dateTimesAreReadAndKeptAsWritten() throws {
+        let written = ["1979-05-27T07:32:00Z", "1979-05-27T00:32:00-07:00", "1979-05-27 07:32:00",
+                       "1979-05-27T07:32:00.999999", "1979-05-27", "07:32:00", "00:32:00.999999",
+                       "2024-02-29"]
+        for text in written {
+            let table = try TOMLTable.parse("a = \(text)\n")
+            #expect(table.value(at: "a")?.payload == .dateTime(text), "\(text) should parse")
+            #expect(table.value(at: "a")?.spelled == text)
+        }
+        // A shape that is nearly one is a mistake worth naming, not a number.
+        for bad in ["1979-02-30", "1979-13-01", "2023-02-29", "1979-05-27T25:00:00Z", "07:60:00"] {
+            #expect(Self.diagnostic("[layout]\nx = \(bad)\n")?.description
+                    == "line 2: '\(bad)' is not a valid date or time", "\(bad) should not parse")
+        }
     }
 
     /// The two the grammar *did* refuse until `[[window-rules]]` needed them, and they arrived
     /// together for one reason: a rule matches on regular expressions, and a regex in a `"…"` string
     /// has to double its backslashes. An unknown table is still an unknown table.
     @Test func arraysOfTablesAndLiteralStringsAreRead() throws {
-        let table = try TOMLTable.parse("[[workspace]]\nx = 1\n[[workspace]]\nx = 2\n")
-        #expect(table.values["workspace.0.x"]?.payload == .number(1))
-        #expect(table.values["workspace.1.x"]?.payload == .number(2))
+        var table = try TOMLTable.parse("[[workspace]]\nx = 1\n[[workspace]]\nx = 2\n")
+        let taken = table.takeArray(of: "workspace")
+        let elements = try #require(taken)
+        #expect(elements.map(\.line) == [1, 3])
+        #expect(elements.map { $0.table.value(at: "x")?.payload } == [.integer(1), .integer(2)])
+        // An element has no address of its own — the index it is reached by is a position in a list,
+        // never a name in the document — so the unknown table is the array.
         #expect(Self.diagnostic("[[workspace]]\n")?.description
-                == "line 1: unknown setting 'workspace.0'")
+                == "line 1: unknown setting 'workspace'")
 
         let literal = try TOMLTable.parse(#"key = 'a\d"b'"#)
-        #expect(literal.values["key"]?.payload == .string(#"a\d"b"#))
+        #expect(literal.value(at: "key")?.payload == .string(#"a\d"b"#))
+    }
+
+    /// `[a.b]` written after `[[a]]` is a subtable of the array's **last element**, not a table at the
+    /// top level. The flat model filed it at `a.b`, so the schema reported a correctly written key as
+    /// unknown.
+    @Test func aSubtableAfterAnArrayOfTablesBelongsToItsLastElement() throws {
+        var table = try TOMLTable.parse("""
+        [[server]]
+        ip = "1"
+        [server.opts]
+        fast = true
+        [[server]]
+        ip = "2"
+        [server.opts]
+        fast = false
+        """)
+        let taken = table.takeArray(of: "server")
+        let elements = try #require(taken)
+        #expect(elements.count == 2)
+        #expect(elements[0].table.value(at: "opts.fast")?.payload == .bool(true))
+        #expect(elements[1].table.value(at: "opts.fast")?.payload == .bool(false))
+        #expect(elements[0].table.value(at: "ip")?.payload == .string("1"))
+    }
+
+    /// An element index is a position, not a name, so an all-digit key cannot collide with one. TOML
+    /// permits `1234 = "x"`, and the flat model made `[[a]]` and `[a] 0 = 1` the same path.
+    @Test func anAllDigitKeyIsNotAnArrayIndex() throws {
+        var table = try TOMLTable.parse("[[rules]]\nname = \"first\"\n[other]\n0 = 99\n")
+        #expect(table.value(at: "other.0")?.payload == .integer(99))
+        let taken = table.takeArray(of: "rules")
+        let elements = try #require(taken)
+        #expect(elements.count == 1)
+        #expect(elements[0].table.value(at: "name")?.payload == .string("first"))
+    }
+
+    /// TOML: "defining a key multiple times is invalid" — and a table declared twice, a name that is
+    /// both a value and a table, and a dotted key reaching into a declared table are all that.
+    @Test func redefiningATableIsRefused() {
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = 1\n[layout]\nwindow-gap = 2\n")?.description
+                == "line 3: 'layout' is set twice")
+        #expect(Self.diagnostic("[layout]\n[layout]\n")?.description == "line 2: 'layout' is set twice")
+        #expect(Self.diagnostic("layout = 1\n[layout]\n")?.description
+                == "line 2: 'layout' is set twice")
+        #expect(Self.diagnostic("[[layout]]\n[layout]\n")?.description
+                == "line 2: 'layout' is set twice")
+        #expect(Self.diagnostic("[a]\nb.c = 1\n[a.b]\nd = 2\n")?.description
+                == "line 3: 'a.b' is set twice")
+
+        // `[a.b.c]` before `[a]` is the one redefinition TOML allows: the first only said `a` exists.
+        #expect(Self.diagnostic("[animation.scroll]\nstiffness = 1\n[animation]\nwindow = \"crop\"\n")
+                == nil)
+    }
+
+    /// A header may *pass through* a table a dotted key made, and only may not be one: after
+    /// `apple.color = "red"`, `[fruit.apple.texture]` adds a sub-table and `[fruit.apple]` redefines.
+    @Test func aHeaderMayAddASubtableToADottedKeysTable() throws {
+        let table = try TOMLTable.parse("""
+        [fruit]
+        apple.color = "red"
+
+        [fruit.apple.texture]
+        smooth = true
+        """)
+        #expect(table.value(at: "fruit.apple.color")?.payload == .string("red"))
+        #expect(table.value(at: "fruit.apple.texture.smooth")?.payload == .bool(true))
+
+        #expect(Self.diagnostic("[fruit]\napple.color = \"red\"\n[fruit.apple]\n")?.description
+                == "line 3: 'fruit.apple' is set twice")
+    }
+
+    /// Quotes at the end of a multi-line string belong to the body before they belong to the
+    /// delimiter: `""""` is one quote and a close, and `"""""` is two.
+    @Test func aMultilineStringMayEndInItsOwnQuotes() throws {
+        let table = try TOMLTable.parse("""
+        one = \"\"\"\"one quote\"\"\"\"
+        two = \"\"\"\"\"two quotes\"\"\"\"\"
+        lit = ''''one quote''''
+        five = \"\"\"
+        text
+        \"\"\"\"\"
+        """)
+        #expect(table.value(at: "one")?.payload == .string("\"one quote\""))
+        #expect(table.value(at: "two")?.payload == .string("\"\"two quotes\"\""))
+        #expect(table.value(at: "lit")?.payload == .string("'one quote'"))
+        #expect(table.value(at: "five")?.payload == .string("text\n\"\""))
+    }
+
+    /// A radix integer takes no sign at all — `+0x1` is not a positive hexadecimal, it is a mistake.
+    @Test func aRadixIntegerTakesNoSign() {
+        for bad in ["+0x1", "+0o1", "+0b1", "-0x1"] {
+            #expect(Self.diagnostic("[layout]\ncolumn-gap = \(bad)\n")?.line == 2, "\(bad) should not parse")
+        }
     }
 
     /// A `'…'` opens a string too, so the comment stripper and the `=` scanner have to see it — and a
     /// `'` inside a `"…"` is just an apostrophe, not the start of one.
     @Test func literalStringsAreQuotesForEveryScannerThatCares() throws {
         let commented = try TOMLTable.parse("key = 'a # b'   # the real comment\n")
-        #expect(commented.values["key"]?.payload == .string("a # b"))
+        #expect(commented.value(at: "key")?.payload == .string("a # b"))
 
         let apostrophe = try TOMLTable.parse(#"key = "it's fine""#)
-        #expect(apostrophe.values["key"]?.payload == .string("it's fine"))
+        #expect(apostrophe.value(at: "key")?.payload == .string("it's fine"))
 
         #expect(Self.diagnostic("[layout]\nx = 'unterminated\n")?.description
                 == "line 2: unterminated string")
@@ -535,9 +861,13 @@ import EmiraCore
     /// `Double("inf")`, `Double("nan")` and `Double("0x1p3")` all succeed, and none of them is
     /// something a config file should be able to say — so the charset is checked before the parse.
     @Test func numbersThatOnlySwiftWouldAcceptAreRefused() {
-        #expect(Self.diagnostic("[layout]\ncolumn-gap = inf\n")?.line == 2)
-        #expect(Self.diagnostic("[layout]\ncolumn-gap = nan\n")?.line == 2)
-        #expect(Self.diagnostic("[layout]\ncolumn-gap = 0x10\n")?.line == 2)
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = 0x1p3\n")?.line == 2)
+        // `inf` and `nan` *are* TOML floats, so the grammar takes them and the schema is what refuses:
+        // they pass every bound it has, since `inf` is at least anything.
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = inf\n")?.description
+                == "line 2: 'layout.column-gap' must be a finite number")
+        #expect(Self.diagnostic("[layout]\ncolumn-gap = nan\n")?.description
+                == "line 2: 'layout.column-gap' must be a finite number")
     }
 
     // The diagnostic is the product

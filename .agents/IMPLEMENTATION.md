@@ -1323,6 +1323,22 @@ and a save leaves the window up.
 
 **TOML**, at `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`).
 
+**TOML 1.0.0 is the target, and the reader is measured against it rather than against emira's own file.** A
+config a conformant parser accepts is one emira accepts; a file emira writes is one a conformant parser reads.
+The measure is `toml-test`, the format's own suite: 703 of its 709 TOML 1.0.0 cases pass, and the six that do
+not are malformed *UTF-8* — byte sequences no Swift `String` can hold, refused where the file is decoded
+(`ConfigLoader.swift`) rather than where it is parsed.
+
+Two decisions carry that. `TOML.swift` scans Unicode **scalars**, because that is the unit the spec's ABNF is
+written in and every Swift property that looks like the right question — `isWhitespace`, `isNewline`,
+`isLetter` — answers a Unicode-wide one instead. And a document is a **tree**, because a name means a value, a
+subtable or an array of tables, and each table remembers whether it was declared, implied, made by a dotted
+key or written inline — which is what the redefinition rules are stated in terms of.
+
+A date-time is kept as the text it was written as, checked against the calendar and no further: nothing emira
+has is one. Integers are `Int64` and floats are `Double`, so a 64-bit integer round-trips and a `1.0` rewritten
+by `config set` is still a float.
+
 The split is the one §3 states: the **values** are a pure `Config` struct in `EmiraCore` because the reducer
 reads them; the **format** — grammar, schema, path — is `EmiraConfig`, and `String → Config` is pure by
 construction. The shell owns only reading and watching.
@@ -1355,7 +1371,7 @@ per-side outer gap defaults to whatever `outer-gap` says two lines up, so what a
 found by taking it out and reading again rather than by asking the key.
 
 **A key can also be renamed, and it is one splice.** `rename(_:to:)` writes over the key's own text —
-`TOMLSpan` carries where that is, alongside the value and the line — so the value, the spacing and the trailing
+`TOMLSpan` carries where that is, alongside the value and the whole statement — so the value, the spacing and the trailing
 comment stay where the author left them and the line keeps its place in the table. A `remove` and a `set` would
 not: a refused second half deletes the binding, and the insert moves the line to the end of its table's run.
 
