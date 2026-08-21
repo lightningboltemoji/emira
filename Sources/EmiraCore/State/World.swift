@@ -105,11 +105,16 @@ public struct MonitorState: Sendable, Equatable, Codable {
     /// The chrome this display reserves. Per display and live — the Dock moves between them — which is
     /// why it is refreshed here rather than read once into `Config`.
     public var struts: EdgeInsets
+    /// Whether macOS calls this the main display. Here rather than in `Monitors` because observation
+    /// refreshes it — which is also what lets `setMonitors` read the *previous* main out of `World`
+    /// before folding the new report over it, rather than remembering one separately.
+    public var isMain: Bool
 
-    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false) {
         self.id = id
         self.frame = frame
         self.struts = struts
+        self.isMain = isMain
     }
 
     /// Where the strip is laid out on this display: its bounds minus its own chrome.
@@ -281,9 +286,15 @@ public struct World: Sendable, Equatable, Codable {
             var record = existing[info.id] ?? MonitorState(id: info.id, frame: info.frame)
             record.frame = info.frame
             record.struts = info.struts
+            record.isMain = info.isMain
             return record
         }
     }
+
+    /// The display macOS calls **main** — the one with the menu bar — or `nil` with none attached.
+    /// Read *before* `setMonitors` folds a new report to learn which display held the role last, which
+    /// is the whole of how a main change is detected.
+    public var mainMonitor: MonitorId? { monitors.first(where: \.isMain)?.id }
 
     /// The display `id` names, or `nil` — what `State.metrics(of:)` asks before it can lay anything out.
     public func monitor(_ id: MonitorId) -> MonitorState? {

@@ -428,9 +428,12 @@ walks, and the mutators that mint a `ColumnId`.
 touches two of them, the pair is not something a caller may be trusted to remember:
 
 - **`setMonitors`** folds `Event.screensChanged`. `World` takes the geometry observation reports, `Monitors`
-  re-homes the workspaces around whatever arrived or left, and every address a display ends up showing is
-  materialized. A `World` that knows about a display `Monitors` does not is a desktop with geometry, no acting
-  monitor and therefore no metrics at all.
+  re-homes the workspaces around whatever arrived or left, the main display's move is followed, and every
+  address a display ends up showing is materialized. A `World` that knows about a display `Monitors` does not
+  is a desktop with geometry, no acting monitor and therefore no metrics at all.
+- **`exchange`** trades what two displays are showing, in one step — what `followMainDisplay` reaches for. Two
+  `show`s cannot do it: the first strands the donor, and the fallback repairing it claims a third address the
+  second then makes pointless, so a dock would leave a spare workspace materialized behind it.
 - **`show`** switches a monitor's address — the acting one unless a verb names another
   (`move-workspace-to-monitor`). Not one strip per call: the claim dispossesses whichever display held that
   address, and _that_ display falls back to one nothing may ever have materialized, so what the switch owes a
@@ -668,8 +671,10 @@ displays by a name, rather than a second opinion about which display is looking 
 Displays as **containers of workspaces**: a workspace lives on exactly one monitor, and a verb naming a
 workspace works whichever monitor holds it. Its own container beside `Workspaces`, joined to it by a
 `WorkspaceName` exactly as `World` and `Workspaces` are joined by a `WindowId`. Geometry is _not_ here —
-`World.monitors` holds each display's frame and struts, because those are what observation refreshes, and
-`State.metrics(of:)` is where the two meet.
+`World.monitors` holds each display's frame, struts and whether macOS calls it **main**, because those are
+what observation refreshes — and keeping the last there is also what lets `setMonitors` read the *previous*
+main before folding the new report over it, rather than remembering one separately. `State.metrics(of:)` is
+where the two meet.
 
 Four invariants, the first two kept structurally rather than checked:
 
@@ -713,6 +718,22 @@ Four invariants, the first two kept structurally rather than checked:
    choose never survives the lid close it exists for. A display whose address it really was takes it back in
    the same pass.
 
+**Two rules decide what a reconfiguration leaves on screen, and they are deliberately not one rule.**
+
+- **The main display carries the user's workspace** (`State.followMainDisplay`). macOS reports `SET-MAIN` in
+  the same flag word as the `added`/`removed` that caused it, so the role and the hardware move in one
+  report and there is no window in which they disagree. It fires **only when the user was on the display
+  that held the role** — the rule is _from one main to another main_, and a menu bar arriving on a screen
+  nobody is working on says nothing about the screen they are. The pair **trade** (`Monitors.exchange`)
+  rather than the loser falling back, so a dock cannot strand the strip the other screen was on; a departed
+  old main has nothing to trade with and takes the plain `show`. Silent with no previous main, which is boot
+  and the far side of a zero-display gap, where `unattached`'s adoption already answers.
+- **A reconfiguration may not leave focus on a strip nobody is showing** (`Engine.revealAcrossDisplays`).
+  Total where the first is narrow, and what covers a display departing that never held the role: the
+  survivor takes its addresses as `owned`, which parks them, so without this the strip the user was working
+  on goes to a nub. The same switch a Cmd-Tab across workspaces gets, snapped via the empty before-geometry.
+  Silent with **no display attached** — nothing is visible, and `unattached` is the sole authority there.
+
 **A viewport does not survive its display; the address it was showing does.** A reconfiguration is a workspace
 switch on every screen at once — each may come out showing a different address — so it runs the same two halves
 a switch does: every display banks its scroll against the address it is showing before the containers move, and
@@ -749,6 +770,10 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   rules stop the runaway and neither is an optimisation: it fires on **pointer motion only, never window
   motion** (that is the termination argument), and it is **suspended while a cover is up** while still
   _tracking_, so a cover coming down leaves the baseline under the hand rather than reporting a phantom crossing.
+  **The acting monitor comes with the pointer**: a hand crossing onto a window on another screen is the user
+  moving there, and leaving `Monitors.focused` behind would aim the next verb at the display just left and read
+  the window against the wrong strip. Only onto a display already _showing_ that strip — the pointer had to
+  reach the window somehow.
 - `[mouse] follows-focus` — the pointer is owed a visit (`Pointer.pendingWarp`), and **it is paid the instant
   the arriving window's stand-in covers the point the cursor will land on** (`Engine.revealHasReached`). That
   is the earliest moment at which the cursor cannot arrive anywhere but on its own window, and the destination

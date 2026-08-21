@@ -237,9 +237,15 @@ public struct State: Sendable, Equatable, Codable {
         defer { dropStrandedLatch() }
         let moved = !describesSameDisplays(as: infos)
         if moved { bankViewports() }
+        // Both read before the report is folded, the one moment either can still be asked: after it
+        // `World` holds the new main, and a departed display cannot say what it was showing. The same
+        // ordering `bankViewports` runs on, for the same reason.
+        let wasMain = world.mainMonitor
+        let wasActing = (monitors.focused, monitors.shown)
         world.setMonitors(infos)
         monitors.reconcile(materialized: workspaces.materialized, occupied: workspaces.occupied,
                            infos: infos)
+        followMainDisplay(from: wasMain, acting: wasActing)
         materializeShown()
         let departed = motion.reconcile(infos.map(\.id))
         guard moved else { return departed }
@@ -247,6 +253,27 @@ public struct State: Sendable, Equatable, Codable {
         for monitor in surviving { motion.closeTransition(on: monitor) }
         resumeViewports()
         return departed + surviving
+    }
+
+    /// **The main display carries the user's workspace**, and only when the user was on the display
+    /// that held the role — the rule is *from one main to another main*. The pair **trade**, so a dock
+    /// cannot strand the strip the other screen was on; a departed old main has nothing to trade with
+    /// and takes the plain `show`. What this leaves uncovered is `revealAcrossDisplays`, total where
+    /// this is deliberately not.
+    private mutating func followMainDisplay(from wasMain: MonitorId?,
+                                            acting: (monitor: MonitorId?, shown: WorkspaceName)) {
+        // No previous main is boot, and the far side of a zero-display gap, where `unattached`'s
+        // adoption is already the answer and this would be a second opinion about it.
+        guard let wasMain, let main = world.mainMonitor, main != wasMain,
+              acting.monitor == wasMain else { return }
+        // The menu bar moved onto the screen the user was already on: nothing travels.
+        guard monitors.shown(on: main) != acting.shown else { monitors.focus(main); return }
+        if monitors.record(wasMain) != nil {
+            monitors.exchange(acting.shown, to: main, with: wasMain)
+        } else {
+            show(acting.shown, on: main)
+        }
+        monitors.focus(main)
     }
 
     // Tearing a session down (where the cover and the hand on it come apart)
@@ -316,6 +343,7 @@ public struct State: Sendable, Equatable, Codable {
         world.monitors.count == infos.count
             && zip(world.monitors, infos).allSatisfy {
                 $0.id == $1.id && $0.frame == $1.frame && $0.struts == $1.struts
+                    && $0.isMain == $1.isMain
             }
     }
 
@@ -692,7 +720,10 @@ public enum Engine {
             // has to be told — a dismissal is the one call that is safe for a screen that is gone.
             let abandoned = s.setMonitors(infos).map { Effect.endTransition($0) }
             if let focused = s.world.focusedWindow {
-                let effects = reveal(&s, focused, center: s.config.centerFocusedColumn)
+                // **A reconfiguration may not leave focus on a strip nobody is showing** (§4): a
+                // display leaving hands its workspaces to a survivor as *owned*, which parks them.
+                let effects = revealAcrossDisplays(&s, focused) ?? reveal(&s, focused,
+                                                                         center: s.config.centerFocusedColumn)
                 return (s, abandoned + effects)
             }
             let effects = reassertTruthPlane(&s)
@@ -1531,11 +1562,33 @@ public enum Engine {
         guard s.config.focusFollowsMouse, s.world.focusedWindow != id,
               s.world.windows[id] != nil else { return [] }
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        // **The pointer crossing onto another screen is the user moving to it** — otherwise focus lands
+        // on the far screen while the acting monitor stays behind, and the window is read against the
+        // wrong strip. Only onto a display already *showing* that strip: the pointer had to get there.
+        if let home = s.workspaces.workspace(of: id), let owner = s.monitors.monitor(of: home),
+           s.monitors.shown(on: owner) == home {
+            s.monitors.focus(owner)
+        }
         s.world.setFocus(id)
         // Off the strip — a float, a dialog, a sheet — there is no column to frame on and nothing to
         // scroll: the window is already exactly where its app put it.
         guard s.layout.columnIndex(ofWindow: id) != nil else { return [.focus(id)] }
         return scrollReveal(&s, to: id, center: s.config.centerFocusedColumn) + [.focus(id)]
+    }
+
+    /// A reconfiguration's answer to a focused window whose strip nobody is showing: the display that
+    /// holds that strip shows it, and the acting monitor moves there — the same switch a Cmd-Tab onto
+    /// another workspace gets, snapped via the empty before-geometry. `nil` when there is nothing to
+    /// do, which is every ordinary report and leaves `reveal`'s bare snap as the whole response.
+    private static func revealAcrossDisplays(_ s: inout State, _ focused: WindowId) -> [Effect]? {
+        // No screen for a reveal to happen on, and `unattached` is the sole authority on what the
+        // desktop shows while nothing is attached — a switch here would overwrite it.
+        guard !s.monitors.ids.isEmpty else { return nil }
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let home = s.workspaces.workspace(of: focused),
+              !s.monitors.shownWorkspaces.contains(home) else { return nil }
+        return switchWorkspace(&s, to: home, focusing: focused, animatingFrom: [],
+                               announcingFocus: false)
     }
 
     /// Reveal an externally-focused window (Cmd-Tab, a Dock click, an app raising itself), switching

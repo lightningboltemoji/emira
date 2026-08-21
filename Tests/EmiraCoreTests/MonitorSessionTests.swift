@@ -528,9 +528,14 @@ import Testing
         var s = Self.sendToRight(Self.desktop(4))
         s = Self.sendToRight(s)
         let address = Self.shownOnRight(s)
+        // Through the verb rather than `Monitors.focus`: the bare mutator moves the acting monitor
+        // without emira's focus, which no reducer path produces and `revealAcrossDisplays` is obliged
+        // to repair. It re-seats the destination's viewport, so it lands before the offset is staged.
+        let (moved, fx) = Engine.reduce(s, .command(.focusMonitor(.index(2))))
+        s = EngineFix.settle(moved, fx)
         let offset = Self.scrolledToTheEnd(&s)
         s.motion.snapViewport(to: 0, on: Self.left)      // the other display, deliberately elsewhere
-        s.monitors.focus(Self.right)
+        #expect(s.monitors.focused == Self.right)
         #expect(offset > 0)
 
         (s, _) = Engine.reduce(s, .screensChanged([]))   // everything goes

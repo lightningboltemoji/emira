@@ -122,13 +122,24 @@ happen on.
   grant collapses the whole cover ladder to `off` and disables window animation, a cover that outstays
   its welcome is dismissed on a bounded timeout, and a write an app refuses is recorded as _unknown_ rather
   than assumed. Animation is a layer over correct placement and is never a precondition for it.
-- **You are never focused on something you cannot see.** Cmd-Tab, a Dock click or an app raising itself can
-  land focus on a parked window, and the strip reveals it under the same motion a `focus` command gets — not
-  because the motion is owed, but because a strip that jumps for one kind and glides for the other reads as
-  two window managers. Two qualifications keep it honest: an app backfilling focus after a window closes is
-  macOS guessing, not the user asking, and emira has already decided where focus goes; and _how much_ of
-  macOS's own focus you still want is a dial, with focus onto windows emira doesn't place always admitted, or
-  a modal save sheet stops working.
+- **You are never focused on something you cannot see.** Cmd-Tab, a Dock click, an app raising itself or a
+  display being plugged in can land focus on a parked window, and the strip reveals it under the same motion
+  a `focus` command gets — not because the motion is owed, but because a strip that jumps for one kind and
+  glides for the other reads as two window managers. **A reconfiguration is the sharpest case**, because the
+  strip can go off screen without anything on it moving: a display that leaves hands its workspaces to a
+  survivor, which holds them without showing them, so the promise is what stops a lid close ending on a
+  desktop whose owner is focused on a nub in the corner. Two qualifications keep it honest: an app
+  backfilling focus after a window closes is macOS guessing, not the user asking, and emira has already
+  decided where focus goes; and _how much_ of macOS's own focus you still want is a dial, with focus onto
+  windows emira doesn't place always admitted, or a modal save sheet stops working.
+- **The main display is macOS's to name, and emira follows it.** Which screen holds the menu bar is a
+  setting the user already has, in Displays settings, and a second opinion about which screen is theirs is
+  the same mistake as a second opinion about where a window is. So the role moving carries the workspace
+  the user was on with it, and the acting display follows — a laptop docked to a monitor that becomes main
+  puts the work on the monitor, and the lid then closing changes nothing, because it already moved. What
+  emira does **not** read into it is a display merely arriving: a second screen is more screen, not a
+  relocation, and taking the strip off the screen you are looking at is the one thing plugging something
+  in must not do.
 - **Where am I.** The strip is infinite and the screen is not, so the design owes an answer. A guide is it, and
   there are two of them because the question has two honest answers. The **minimap** is the strip's own extent
   drawn small, with a marker travelling to whichever end you are at rather than a fixed frame that can only

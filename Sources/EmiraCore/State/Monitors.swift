@@ -149,6 +149,22 @@ public struct Monitors: Sendable, Equatable, Codable {
         repairShown(except: index, occupied: Set(occupied))
     }
 
+    /// Hand `name` to `id` and `id`'s address to `donor`, in one step — two displays **trading** rather
+    /// than one dispossessing the other, which is what the main display moving does here. Not two
+    /// `show`s: those strand `donor` between them, and the fallback repairing it claims a *third*
+    /// address. Silent unless both are attached and the address is moving.
+    public mutating func exchange(_ name: WorkspaceName, to id: MonitorId, with donor: MonitorId) {
+        guard id != donor,
+              let index = records.firstIndex(where: { $0.id == id }),
+              let other = records.firstIndex(where: { $0.id == donor }),
+              records[index].shown != name else { return }
+        let vacated = records[index].shown
+        claim(name, by: index)
+        records[index].shown = name
+        claim(vacated, by: other)
+        records[other].shown = vacated
+    }
+
     /// Give `name` a home on the acting monitor if no display holds it — **invariant 2 at the one
     /// moment it can break.** `show` claims what a display *shows*; this claims what a verb merely
     /// materializes, and between them every address with a strip has an owner the instant it gets one.

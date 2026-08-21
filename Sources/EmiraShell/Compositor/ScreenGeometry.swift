@@ -114,11 +114,18 @@ public struct ScreenGeometry: Sendable, Equatable {
     ///
     /// Each display carries its own struts, so the core and that display's overlay lay out against the
     /// same working area — the invariant that licenses an unpainted chrome band, stated per monitor.
+    ///
+    /// `isMain` is `CGMainDisplayID()` rather than `screens.first`, for the reason `current()` picks
+    /// the primary by its origin. Read here so it rides the one observation: the window server flips
+    /// main a beat *before* `NSScreen.screens` catches up, and a later read can name a display this
+    /// list does not hold.
     public func monitors(_ screens: [NSScreen]) -> [MonitorInfo] {
-        screens.enumerated().map { index, screen in
+        let main = CGMainDisplayID()
+        return screens.enumerated().map { index, screen in
             MonitorInfo(id: Self.monitorId(of: screen, at: index),
                         frame: core(screen.frame),
-                        struts: Self.struts(of: screen))
+                        struts: Self.struts(of: screen),
+                        isMain: Self.displayId(of: screen, at: index) == main)
         }
     }
 }

@@ -239,11 +239,16 @@ public struct MonitorInfo: Sendable, Equatable, Codable {
     /// display and live: the Dock moves between them, so it rides on the observation rather than on
     /// the config, which is also why it is the one geometry value a file may not decide.
     public let struts: EdgeInsets
+    /// Whether macOS calls this the **main display** — the one holding the menu bar, which Displays
+    /// settings lets the user drag between screens. A third fact observation refreshes, beside the two
+    /// above. Exactly one attached display carries it, and none when nothing is attached.
+    public let isMain: Bool
 
-    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false) {
         self.id = id
         self.frame = frame
         self.struts = struts
+        self.isMain = isMain
     }
 }
 
