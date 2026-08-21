@@ -115,6 +115,10 @@ public final class Compositor: CoverPlane {
         surface(of: layer)?.setLayerFrame(layer, to: rect)
     }
 
+    public func hideLayer(_ layer: LayerId) {
+        surface(of: layer)?.hideLayer(layer)
+    }
+
     public func refreshLayer(_ layer: LayerId) {
         surface(of: layer)?.refreshLayer(layer)
     }

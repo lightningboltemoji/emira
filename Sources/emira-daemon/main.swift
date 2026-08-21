@@ -571,6 +571,9 @@ syncDisplays(bootDisplays)
 screenWatcher.onChange = { displays in
     log("displays: \(displays.monitors.map { "\($0.id.raw)" }.joined(separator: ", "))")
     runtime.dispatch(.screensChanged(displays.monitors))
+    // Kept stills describe the desktop that just stopped existing, and the only thing standing between
+    // one and the next cover is a size match against a working area that has now moved.
+    capture.forgetKeptStills()
     syncDisplays(displays)
 }
 screenWatcher.start()

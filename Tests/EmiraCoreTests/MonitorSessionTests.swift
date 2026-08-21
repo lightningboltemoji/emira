@@ -302,6 +302,142 @@ import Testing
         #expect(settled.motion.windowAnimator(moved) == nil, "and the displacement is retired with it")
     }
 
+    // What a cover draws when the desktop moves under it (`Effect.hideLayer`)
+    //
+    // A session's bindings are fixed when it opens; ownership of a workspace is not. Handing one to
+    // another display leaves the cover on the display it left holding stand-ins that display can no
+    // longer place — so the per-frame pass is **total over its bindings**, the alternative to an answer
+    // being a layer left standing at the frame its capture was filmed at.
+
+    /// The left holding a second occupied address, so a hand-over leaves it something of its own to show.
+    static func twoAddressesOnTheLeft(config: Config = fullWidth) -> State {
+        var s = desktop(2, config: config)
+        let here = s.monitors.shown
+        let spare = WorkspaceName("3")!               // neither display is showing it
+        s = run(s, .focusWorkspace(.name(spare)))
+        let (next, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3)))
+        s = EngineFix.settle(next, fx)
+        return run(s, .focusWorkspace(.name(here)))
+    }
+
+    static func run(_ s: State, _ command: Command) -> State {
+        let (next, fx) = Engine.reduce(s, .command(command))
+        return EngineFix.settle(next, fx)
+    }
+
+    /// Which layers a batch spoke for, and how — the whole of what a binding is owed each pass.
+    static func addressed(_ effects: [Effect]) -> [LayerId: Bool] {
+        var placed: [LayerId: Bool] = [:]
+        for effect in effects {
+            switch effect {
+            case .setLayerFrame(let layer, _): placed[layer] = true
+            case .hideLayer(let layer): placed[layer] = false
+            default: continue
+            }
+        }
+        return placed
+    }
+
+    /// A cover up on the left, and then the address it is showing is handed to the right. Its stand-ins
+    /// are still bound — a scope grows and never shrinks — but the geometry behind them is the other
+    /// display's now, so the left says so rather than leaving them where their captures were filmed.
+    ///
+    /// **In the edit's own batch**, not on the next tick: an edit can change what a raised cover draws
+    /// while giving that screen nothing to animate, and ticks skip a settled display. Here the left's
+    /// viewport does not move and every window it was showing has left, so the tick that would have
+    /// corrected this never comes.
+    @Test func aCoverHidesTheStandInsItCanNoLongerPlace() {
+        var s = Self.desktop(3)
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        for w in s.motion.transition(of: Self.left)?.windows ?? [] {
+            (s, _) = Engine.reduce(s, .captureReady(w))
+        }
+        (s, _) = Engine.reduce(s, .coverOnScreen(Self.left))
+        let bindings = try! #require(s.motion.transition(of: Self.left)?.bindings)
+        #expect(!bindings.isEmpty, "the left is covering the strip it is about to lose")
+
+        let (after, fx) = Engine.reduce(s, .command(.moveWorkspaceToMonitor(.direction(.right))))
+        let addressed = Self.addressed(fx)
+        for binding in bindings {
+            guard let placed = addressed[binding.layer] else {
+                Issue.record("\(binding.window) is bound and the pass said nothing about it")
+                continue
+            }
+            #expect(placed == false, "\(binding.window) left with the address, so its stand-in is hidden")
+        }
+        #expect(after.monitors.monitor(of: Self.shownOnRight(s)) == Self.right)
+    }
+
+    /// The same claim as a rule rather than a case: **no binding on a raised cover goes unspoken for** —
+    /// asked of both screens, across the raise and the frame after it. Which of the two answers a layer
+    /// gets is geometry's business; that it gets one is the invariant, since the alternative is a
+    /// stand-in nobody positioned.
+    @Test func everyBindingOnARaisedCoverIsPlacedOrHidden() {
+        var s = Self.twoAddressesOnTheLeft()
+        // A cover already up on the left, so the hand-over meets a scope that was decided before it —
+        // the case scoping cannot filter, since a session grows and never shrinks.
+        (s, _) = Engine.reduce(s, .command(.focus(.left)))
+        for w in s.motion.transition(of: Self.left)?.windows ?? [] {
+            (s, _) = Engine.reduce(s, .captureReady(w))
+        }
+        (s, _) = Engine.reduce(s, .coverOnScreen(Self.left))
+
+        var effects: [Effect] = []
+        (s, effects) = Engine.reduce(s, .command(.moveWorkspaceToMonitor(.direction(.right))))
+        for monitor in s.motion.transitioningMonitors {
+            for w in s.motion.transition(of: monitor)?.windows ?? [] {
+                let (next, fx) = Engine.reduce(s, .captureReady(w))   // the last one raises that cover
+                s = next
+                effects += fx
+            }
+        }
+        let (_, tick) = Engine.reduce(s, .tick(dt: 1.0 / 120))
+        let addressed = Self.addressed(effects + tick)
+
+        var seen = 0
+        for monitor in s.motion.transitioningMonitors {
+            for binding in s.motion.transition(of: monitor)?.bindings ?? [] {
+                #expect(addressed[binding.layer] != nil,
+                        "\(binding.window) on \(monitor) is bound and unaddressed")
+                seen += 1
+            }
+        }
+        #expect(seen > 0, "both covers are up and bound")
+    }
+
+    /// **A cover scopes only what its display can draw.** The windows leaving with the address are the
+    /// destination's to picture; scoping them here would film them for a cover that can only hide them,
+    /// and would hold this session's landing wait on sets the other screen is writing.
+    @Test func aCoverDoesNotScopeWhatItsDisplayCannotDraw() {
+        var s = Self.twoAddressesOnTheLeft()
+        let leaving = Set(s.workspaces[s.monitors.shown].allWindowIds)
+        #expect(!leaving.isEmpty)
+
+        (s, _) = Engine.reduce(s, .command(.moveWorkspaceToMonitor(.direction(.right))))
+        let scoped = Set(try! #require(s.motion.transition(of: Self.left)?.windows))
+        #expect(!scoped.isEmpty, "the left is covering the address it fell back to")
+        #expect(scoped.isDisjoint(with: leaving),
+                "…and not the one it handed away, which it has no geometry for")
+    }
+
+    /// The arrival is a vertical slide, so its seed is vertical. The destination's *before* geometry
+    /// draws the arriving address as one it does not yet show — placed at that strip's remembered
+    /// scroll — so the memory has to be the live number before it is read, or the difference against
+    /// where the strip actually lands carries a horizontal term and the workspace comes in diagonally.
+    @Test func anArrivingWorkspaceSlidesStraightIn() {
+        var s = Self.desktop(3)
+        s = Self.run(s, .focus(.right))                     // scroll away from the strip's origin
+        let arriving = s.workspaces[s.monitors.shown].allWindowIds
+
+        (s, _) = Engine.reduce(s, .command(.moveWorkspaceToMonitor(.direction(.right))))
+        for id in arriving {
+            let seed = s.motion.displacement(of: id)
+            #expect(EngineFix.approxScalar(seed.minX, 0),
+                    "\(id) is seeded across the desktop as well as down it")
+            #expect(!EngineFix.approxScalar(seed.minY, 0), "…where the slide it owes is vertical")
+        }
+    }
+
     // What a display leaving takes with it
 
     /// A session on a display that has gone has no overlay to drive and no glass to reach, so it is

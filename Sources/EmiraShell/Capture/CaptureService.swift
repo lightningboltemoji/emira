@@ -627,6 +627,13 @@ public final class CaptureService: CaptureStore {
         baseImages[monitor] = nil
     }
 
+    /// Drop every kept still — the desktop they were filmed on is gone. `SurfaceCache`'s rule 2 holds
+    /// only while the geometry a size was computed against does, and a display change moves every working
+    /// area at once. Live covers' stills stay: `Event.screensChanged` takes those transitions down itself.
+    public func forgetKeptStills() {
+        cache.removeAll()
+    }
+
     /// Reduce these captures and keep them for a later `.immediate` cover to stand in with.
     ///
     /// Detached: the reduction is Core Graphics work proportional to the scope, and a cover comes down

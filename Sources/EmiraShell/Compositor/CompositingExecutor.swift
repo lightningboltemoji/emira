@@ -27,6 +27,10 @@ public protocol CoverSurface: AnyObject {
     /// Move one reconstruction layer to `rect` (core top-left coordinates) for this frame.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
 
+    /// Take one layer off the screen without dropping it — the core has no rect for it this frame. The
+    /// next `setLayerFrame` brings it back. No-op for an absent layer.
+    func hideLayer(_ layer: LayerId)
+
     /// Cross-fade one layer's contents to the window's own still, which has landed since the cover was
     /// built over a stand-in. Geometry is untouched: wherever the last tick put the layer is where it
     /// stays. No-op for an absent layer, or one whose window still has nothing better to show.
@@ -68,6 +72,9 @@ public protocol CoverPlane: AnyObject {
 
     /// Move one reconstruction layer to `rect` this frame, on whichever display holds it.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
+
+    /// Take one layer off the screen until it is placed again, on whichever display holds it.
+    func hideLayer(_ layer: LayerId)
 
     /// Cross-fade one layer's contents to the window's own still, which has landed since the cover was
     /// built over a stand-in.
@@ -202,7 +209,7 @@ public final class CompositingExecutor: Executor {
     /// Exhaustive on purpose: a new `Effect` case must be assigned a plane, never default into one.
     static func plane(of effect: Effect) -> Plane {
         switch effect {
-        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer,
+        case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer,
              .endTransition:
             return .presentation
         case .capture:
@@ -242,6 +249,10 @@ public final class CompositingExecutor: Executor {
             case .setLayerFrame(let layer, let rect):
                 surface.setLayerFrame(layer, to: rect)
                 blitted = true
+            case .hideLayer(let layer):
+                // Not counted as a blit: a stand-in leaving the screen is a correction, not a frame of
+                // motion, and the pass that emits it emits the moving layers' frames in the same run.
+                surface.hideLayer(layer)
             case .refreshLayer(let layer):
                 // Not counted as a blit either: a layer sharpening in place is not a frame of motion,
                 // and counting it would inflate the one smoothness measurement there is.

@@ -1170,7 +1170,8 @@ public enum Engine {
             let start = s.motion.offset(of: monitor).current
 
             let scope = scopeUnion(s, old.departing,
-                                   strip.sweptWindowIds(from: start, to: end, metrics: metrics))
+                                   strip.sweptWindowIds(from: start, to: end, metrics: metrics),
+                                   drawnBy: monitor, carrying: crossed?.window)
 
             guard s.motion.isTransitioning(on: monitor)
                     || (s.config.transitionMode.covers && !scope.isEmpty) else {
@@ -1222,6 +1223,10 @@ public enum Engine {
             if carries, let crossed { s.motion.carry(crossed.window, on: monitor) }
             // Emits nothing for a session still capturing, nor for a mover just pulled into scope.
             effects += elevationEffects(s, on: monitor)
+            // **The edit owes this display a frame**: ticks skip a settled display, and an edit can
+            // change what a raised cover draws while leaving that screen nothing to animate. Last in the
+            // pass, so it reads the elevation and the carry above; idempotent where a tick does follow.
+            effects += emitLayerFrames(s, on: monitor)
         }
         // One pass for however many displays landed their share at once; a display that opened a cover
         // is held back by the gate inside it and teleports at `coverOnScreen` instead.
@@ -1352,15 +1357,19 @@ public enum Engine {
         guard let source = s.monitors.focused, let target = s.resolve(ref),
               target != source else { return [] }
         let travelling = s.monitors.shown
-        let old = snapshots(s, of: [source, target], travelling: travelling)
 
         // The live authority for the travelling address is the source's viewport, and the destination
         // reads it back out of the strip's own memory — which is how a workspace keeps its scroll and
         // its focus across the desktop (§8).
+        //
+        // **Before the snapshot**, which places the arriving address at its *remembered* scroll: written
+        // a beat later, the difference against the live number becomes a sideways term in a slide that
+        // is vertical.
         s.workspaces[scrollOffsetOf: travelling] = s.motion.offset(of: source).current
         s.workspaces[lastFocusOf: travelling] = s.world.focusedWindow.flatMap {
             s.workspaces[travelling].columnIndex(ofWindow: $0) == nil ? nil : $0
         }
+        let old = snapshots(s, of: [source, target], travelling: travelling)
         // One call for both halves: the claim moves `owned` with `shown`, and the source falls back to
         // an address it can have — which may be one nothing has ever materialized, hence `State.show`.
         s.show(travelling, on: target)
@@ -2127,7 +2136,8 @@ public enum Engine {
         let end = framedAt ?? revealed ?? start
 
         let scope = scopeUnion(s, departing,
-                               s.layout.sweptWindowIds(from: start, to: end, metrics: asked))
+                               s.layout.sweptWindowIds(from: start, to: end, metrics: asked),
+                               drawnBy: monitor)
 
         // No cover to make, or an empty scope: resize at once, on the same final width.
         guard s.motion.isTransitioning(on: monitor)
@@ -2149,10 +2159,22 @@ public enum Engine {
     /// Sorted across the whole set rather than by one strip, so a scope spanning two workspaces keeps
     /// every member — a switch's outgoing set is on a strip `layout` no longer projects — and in
     /// *placement* order, so the strips on screen sit under the parked ones sliding away.
-    private static func scopeUnion(_ s: State, _ a: [WindowId], _ b: [WindowId]) -> [WindowId] {
+    ///
+    /// **A cover scopes only what its display can draw** — `monitor`'s own workspaces, which are exactly
+    /// what `emitLayerFrames` derives frames from. Anything outside them would be filmed for a cover that
+    /// can only hide it, and would hold this session's landing wait on sets another screen is writing.
+    /// `carrying` is the exception: a window handed across the desktop is drawn by the display it left,
+    /// from the geometry of the one it reached.
+    private static func scopeUnion(_ s: State, _ a: [WindowId], _ b: [WindowId],
+                                   drawnBy monitor: MonitorId,
+                                   carrying crossing: WindowId? = nil) -> [WindowId] {
         let wanted = Set(a).union(b)
+        let owned = Set(s.monitors.owned(of: monitor))
         return s.workspaces.windowIds(inPlacementOrder: s.monitors.shownWorkspaces)
             .filter { wanted.contains($0) }
+            .filter { id in
+                id == crossing || s.workspaces.workspace(of: id).map(owned.contains) == true
+            }
     }
 
     /// Teleport the real windows behind `monitor`'s newly-raised cover, *replacing* that session's
@@ -2170,6 +2192,10 @@ public enum Engine {
     /// sliver. A pure read, in z-order, over the strips this display holds. Each frame is one derived
     /// rect plus three independent animated quantities: scroll offset, column widths (resize only),
     /// displacement (structural edit).
+    ///
+    /// **One effect per binding, always** — the invariant `Effect.extendCover` asserts. A scope is fixed
+    /// when its session opens and ownership can move underneath it, so a binding this display has no
+    /// geometry for is hidden, never skipped.
     private static func emitLayerFrames(_ s: State, on monitor: MonitorId) -> [Effect] {
         guard let metrics = s.metrics(of: monitor), let shown = s.monitors.shown(on: monitor),
               let session = s.motion.transition(of: monitor) else { return [] }
@@ -2187,10 +2213,10 @@ public enum Engine {
                                            widths: s.motion.currentColumnWidths) else { continue }
             frames[id] = frame
         }
-        return session.bindings.compactMap { binding in
-            frames[binding.window].map {
-                .setLayerFrame(binding.layer, $0.displaced(by: s.motion.displacement(of: binding.window)))
-            }
+        return session.bindings.map { binding in
+            guard let frame = frames[binding.window] else { return .hideLayer(binding.layer) }
+            return .setLayerFrame(binding.layer,
+                                  frame.displaced(by: s.motion.displacement(of: binding.window)))
         }
     }
 

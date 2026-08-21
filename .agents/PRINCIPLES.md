@@ -77,7 +77,9 @@ hide. A full, opaque, layered cover has neither flaw — it covers everything _a
 Four consequences, and they are the whole design:
 
 - **The cover is made of real pixels, never placeholders.** A coloured rectangle sliding where a window should
-  be is worse than no animation at all, which is why there is no placeholder fallback anywhere in emira.
+  be is worse than no animation at all, which is why there is no placeholder fallback anywhere in emira. Real
+  pixels at a position nobody derived are the same lie in a better disguise, so a stand-in the core cannot
+  place leaves the screen rather than standing where it was last put.
 - **Behind a cover, teleporting is free** — no per-window flight problem, no ordering dance. But "hides
   everything" is a claim about the _display_, not about our own call stack, so nothing may move until the
   display itself says the cover is up. A cover is one display's, so the claim is quantified with it: a

@@ -80,6 +80,13 @@ public final class Reconstruction: CoverSurface {
         place(target, at: rect)
     }
 
+    public func hideLayer(_ layer: LayerId) {
+        // Total, as `setLayerFrame` is. Hidden rather than removed: the core may place it again on any
+        // later frame — a workspace can come back to this display while the cover it left is still up —
+        // and rebuilding the layer would take a second still and lose its z-order.
+        layers[layer]?.root.isHidden = true
+    }
+
     public func refreshLayer(_ layer: LayerId) {
         // Total, for the same reasons `setLayerFrame` is, plus one of its own: the still may have been
         // freed with its cover between the ack and this call.
@@ -191,6 +198,9 @@ public final class Reconstruction: CoverSurface {
     private func place(_ cover: CoverLayer, at rect: Rect) {
         let frame = overlay.localRect(rect)
         cover.root.frame = frame
+        // A placed layer is a shown one: `hideLayer` says "the core has no rect for this right now", so
+        // being handed one is the whole of the answer coming back.
+        cover.root.isHidden = false
         guard let clip = cover.clip, let still = cover.still else { return }   // `.stretch`: that's all
         clip.frame = CGRect(origin: .zero, size: frame.size)
         // Always the still's own size, pinned to the window's top-left, overflowing a shrunk clip.

@@ -647,6 +647,25 @@ import EmiraCore
         #expect(Self.refreshed(log).isEmpty)
     }
 
+    /// **A display change is the one thing rule 2 cannot see.** Size is the whole of freshness only
+    /// while the geometry a size was computed against holds; a reconfiguration moves every working area
+    /// at once, so a window that comes back at the size it left at would stand in with pixels from a
+    /// desktop that no longer exists. Dropping them costs the next cover a round trip, which is the
+    /// cold-cache latency this suite's `anEmptyCacheIsSimplyTheOldLatency` already prices.
+    @Test func aDisplayChangeDropsEveryKeptStill() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                     cache: cache)
+        service.forgetKeptStills()
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+
+        capturer.sendBase()
+        #expect(log.events.isEmpty, "nothing stood in, so the base alone acks nobody")
+        capturer.send(WindowId(1), size: Self.size)
+        #expect(log.capturedIds == [WindowId(1)])
+        #expect(Self.refreshed(log).isEmpty, "…and a window that never stood in never refreshes")
+    }
+
     /// A cold cache is the first transition of a session, and it costs exactly what it always did.
     @Test func anEmptyCacheIsSimplyTheOldLatency() {
         let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate)

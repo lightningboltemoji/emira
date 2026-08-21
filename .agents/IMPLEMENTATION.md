@@ -275,7 +275,7 @@ screen, so `beginTransition` / `extendCover` / `endTransition` name theirs, and 
 answer them. `capture` names one too, for the one thing the store cannot otherwise know: which display's desktop
 *base* a batch opening a cover owes. Everything else stays untagged, and deliberately: `captureReady` and
 `axLanded` are facts about a **window**, marked in every session waiting on them, so one still and one landing
-settle both covers that show it; `setLayerFrame`, `elevateLayer` and `refreshLayer` are facts about a **layer**,
+settle both covers that show it; `setLayerFrame`, `hideLayer`, `elevateLayer` and `refreshLayer` are facts about a **layer**,
 which already names one layer on one screen, so the hottest path in the reducer carries nothing extra and the
 compositor routes on a dictionary read.
 
@@ -345,10 +345,18 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
   only thing an otherwise-still destination has to animate, so it is asked separately from `moves` when
   deciding whether that screen covers at all.
 - **A cover names what it draws from elsewhere** (`TransitionSession.carried`). Its own strips cannot place a
-  window that has left them, so without this the departing layer freezes at the frame it was captured at
-  while the strip it left closes behind it. Set by the edit that hands the window over, read per frame by
-  `emitLayerFrames`, and answered from the display that holds it now — the same global number that display's
-  own cover draws it at.
+  window that has left them, so without this the departing layer has no rect while the strip it left closes
+  behind it. Set by the edit that hands the window over, read per frame by `emitLayerFrames`, and answered
+  from the display that holds it now — the same global number that display's own cover draws it at.
+- **A cover scopes only what its display can draw**, plus whatever it is carrying. Anything else would be
+  filmed for a cover that can only hide it, and would hold that session's landing wait on sets another
+  screen is writing.
+- **The per-frame pass is total over its bindings.** Scope is decided when a session opens and ownership is
+  not: a workspace handed to another display leaves the cover it left holding stand-ins with no geometry
+  behind them. Each gets `Effect.hideLayer` rather than nothing, because nothing is not "no layer" — it is a
+  layer standing at its capture-time frame, which under `immediate` is an origin from an older desktop. The
+  edit that moves ownership emits that frame itself: a tick skips a settled display, and an edit can change
+  what a raised cover draws while leaving that screen nothing to animate.
 
 ### Degradation — every exit owes a placement
 
@@ -393,7 +401,9 @@ that went stale under the cover, never geometry. The numbers live in `Compositin
 
 `CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept still fits is acked at
 once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one layer's
-_contents_ that settles no gate. `SurfaceCache` holds what a cover leaves behind, at quarter scale.
+_contents_ that settles no gate. `SurfaceCache` holds what a cover leaves behind, at quarter scale, and matches
+on **size alone** — which is freshness only while the geometry a size was computed against holds, so a display
+change drops the lot (`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
 
 ---
 
@@ -506,7 +516,9 @@ recognising: a window that changed displays appears in one side of the differenc
 seeded for it and both covers simply draw it where their own strip says it belongs; and an address changing
 displays is read as **each screen's own** in the before-geometry, which is invariant 4's implementation — the
 hand-over is two independent workspace switches, and the destination's is a slide *in* from one screen away,
-which it can only be if the geometry it is leaving already places it there.
+which it can only be if the geometry it is leaving already places it there — at the scroll the address is
+travelling with, since a strip a display does not yet show is placed at its remembered offset and a memory
+written after the snapshot puts a sideways term into a slide that is vertical.
 
 ### Layout
 

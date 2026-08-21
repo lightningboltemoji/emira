@@ -116,8 +116,8 @@ public final class MockExecutor: Executor {
         // the pointer plane for a fourth: what answers a hide is the user moving the mouse, which no
         // system, however fast, can be made to do — and a warp posts no event at all, which is a fact
         // about the window server this mock could only misrepresent.
-        case .extendCover, .elevateLayer, .setLayerFrame, .refreshLayer, .raise, .closeWindow,
-             .setCursorHidden, .warpPointer, .exec:
+        case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .raise,
+             .closeWindow, .setCursorHidden, .warpPointer, .exec:
             break
         }
     }

@@ -123,6 +123,9 @@ import EmiraCore
         func setLayerFrame(_ layer: LayerId, to rect: Rect) {
             timeline.record("blit(\(layer.raw)@\(Int(rect.minX)))")
         }
+        func hideLayer(_ layer: LayerId) {
+            timeline.record("hide(\(layer.raw))")
+        }
         func refreshLayer(_ layer: LayerId) {
             timeline.record("refresh(\(layer.raw))")
         }
@@ -292,6 +295,7 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .capture(MonitorId(1), WindowId(1), size: .zero)) == .capture)
         #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
+        #expect(CompositingExecutor.plane(of: .hideLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .setCursorHidden(true)) == .pointer)
         #expect(CompositingExecutor.plane(of: .warpPointer(into: .zero)) == .pointer)
         #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
@@ -552,6 +556,26 @@ import EmiraCore
         #expect(counter.frames == 3)            // three frames, six blits
     }
 
+    /// A stand-in the core has no rect for leaves the screen inside the frame, like every other
+    /// presentation write — and is not counted, for `aRefreshIsNotCountedAsAFrame`'s reason: it is a
+    /// correction, not motion, and the layers that *are* moving blit in the same run.
+    @Test func aHideReachesTheSurfaceAndIsNotCountedAsAFrame() {
+        let (executor, surface, _, _, log) = Self.harness()
+        let counter = Counter()
+        executor.onCoverDismissed = { _, frames, _ in counter.frames = frames }
+
+        executor.execute([.beginTransition(MonitorId(1), Self.bindings)], feedback: log.sink)
+        executor.execute([.setLayerFrame(LayerId(1), Self.rect(0)),
+                          .hideLayer(LayerId(2))], feedback: log.sink)
+        executor.execute([.endTransition(MonitorId(1))], feedback: log.sink)
+
+        #expect(counter.frames == 1)
+        #expect(surface.timeline.entries.contains("hide(2)"))
+        #expect(surface.timeline.entries.firstIndex(of: "hide(2)")
+                    .map { $0 < (surface.timeline.entries.lastIndex(of: "endFrame") ?? 0) } == true,
+                "inside the frame, not after it")
+    }
+
     /// A layer sharpening in place is not a frame of motion, and counting it would inflate the one
     /// smoothness number there is — a transition whose stand-ins all resolved would read as smoother
     /// than the identical one that never needed to.
@@ -648,6 +672,7 @@ import EmiraCore
         func setLayerFrame(_ layer: LayerId, to rect: Rect) {
             timeline.record("blit\(name)(\(layer.raw)@\(Int(rect.minX)))")
         }
+        func hideLayer(_ layer: LayerId) { timeline.record("hide\(name)(\(layer.raw))") }
         func refreshLayer(_ layer: LayerId) { timeline.record("refresh\(name)(\(layer.raw))") }
         func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
             dismissedOver = duration
@@ -686,8 +711,10 @@ import EmiraCore
         compositor.setLayerFrame(LayerId(3), to: Rect(x: 20, y: 0, width: 1, height: 1))
         compositor.elevate(LayerId(3))
         compositor.refreshLayer(LayerId(1))
+        compositor.hideLayer(LayerId(2))
         #expect(timeline.entries == ["raise@1(1,2)", "raise@2(3)",
-                                     "blit@1(1@10)", "blit@2(3@20)", "elevate@2(3)", "refresh@1(1)"])
+                                     "blit@1(1@10)", "blit@2(3@20)", "elevate@2(3)", "refresh@1(1)",
+                                     "hide@1(2)"])
     }
 
     /// A layer whose cover has come down is routable by nobody — total, rather than fanned out to

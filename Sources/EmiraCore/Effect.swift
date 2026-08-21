@@ -31,6 +31,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// surface it built it on and the hottest path in the reducer carries nothing extra.
     case setLayerFrame(LayerId, Rect)
 
+    /// Take one reconstruction layer off the screen, until a `setLayerFrame` puts it back — what a
+    /// display says about a stand-in it can no longer place. Emitting nothing instead is not "no layer":
+    /// it leaves that one at its capture-time frame, which is not a position (`SurfaceCache`).
+    case hideLayer(LayerId)
+
     // Capture — ScreenCaptureKit
 
     /// Grab a still of `win`'s surface (SCK captures it even when occluded), acked by
