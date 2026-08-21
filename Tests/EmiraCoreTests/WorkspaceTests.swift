@@ -221,12 +221,12 @@ import Testing
         #expect(frames[w1]?.minX == metrics.contentArea.minX)
         // …and `b` at the second screen's, scrolled by its *own* viewport, not the first's.
         #expect(frames[w2]?.minX == second.contentArea.minX - 200)
-        // Only `c` parks, and it parks in the lot of the display that holds it.
+        // Only `c` parks, and it parks in the lot its own supply carries.
         #expect(frames[w3]?.minX ?? 0 > metrics.workingArea.maxX - 10)
     }
 
-    /// **One park-ordinal run across every lot** (D5). Mirrored displays report the *same* frame, so
-    /// per-lot cursors would hand two parked windows one nub — breaking both the ±2 pt first-sight
+    /// **One park-ordinal run across every lot** (D5). Every display's metrics carry the same lot, so
+    /// a cursor per strip would hand two parked windows one nub — breaking both the ±2 pt first-sight
     /// identity join a daemon restart depends on and the no-overlap invariant, silently.
     @Test func theParkRunIsOneCursorAcrossEveryDisplaysLot() {
         var ws = Workspaces()
@@ -237,8 +237,7 @@ import Testing
             ws[name] = strip
         }
 
-        // Two displays reporting one frame — what mirroring looks like from here — with `b` and `c`
-        // parked on different ones.
+        // Two strips parked against one lot, which is what every display's metrics carry.
         let frames = ws.targetFrames([
             StripPlacement(name: a, metrics: metrics, scrollOffset: 0),
             StripPlacement(name: b, metrics: metrics, scrollOffset: nil),

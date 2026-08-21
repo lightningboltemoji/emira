@@ -147,3 +147,119 @@ import Testing
                     - lot.slot(ordinal: second, size: size).minY) > 2)
     }
 }
+
+/// Which corner of the display arrangement the desktop parks in. Provably inert with one display
+/// attached — there is one corner and it is that display's — and a wrong answer is silent in the
+/// worst way available: a window that is meant to be parked, sitting in view on another screen.
+@Suite struct DesktopParkingTests {
+
+    private func display(_ raw: UInt64, _ frame: Rect, struts: EdgeInsets = .zero,
+                         main: Bool = false) -> MonitorState {
+        MonitorState(id: MonitorId(raw), frame: frame, struts: struts, isMain: main)
+    }
+
+    @Test func oneDisplayParksInItsOwnWorkingArea() {
+        let laptop = display(1, Rect(x: 0, y: 0, width: 1440, height: 900),
+                             struts: EdgeInsets(top: 25, bottom: 70), main: true)
+        let lot = try! #require(ParkingLot(among: [laptop]))
+        #expect(lot.frame == laptop.workingArea)
+        // The working area, so the nub stays above the Dock where a hand can reach it.
+        #expect(lot.slot(ordinal: 0, size: Size(width: 400, height: 300)).minY == 790)
+    }
+
+    @Test func noDisplayIsNoLot() {
+        #expect(ParkingLot(among: []) == nil)
+    }
+
+    @Test func aDisplayBesideOneTakesTheLotOffIt() {
+        // At the laptop's own corner a parked body lands in the middle of the screen next to it, so
+        // the lot is the monitor's — clearance outranks main, and the laptop is main here.
+        let laptop = display(1, Rect(x: 0, y: 0, width: 1440, height: 900), main: true)
+        let monitor = display(2, Rect(x: 1440, y: 0, width: 2560, height: 1440))
+        #expect(ParkingLot(among: [laptop, monitor])?.frame == monitor.workingArea)
+    }
+
+    @Test func aParkedBodyReachesNoOtherScreen() {
+        // The property the corner is chosen for, at the size a window actually is: on the display
+        // that holds the lot, the nub; on every other display, nothing.
+        let laptop = display(1, Rect(x: 0, y: 0, width: 1440, height: 900), main: true)
+        let monitor = display(2, Rect(x: 1440, y: 0, width: 2560, height: 1440))
+        let lot = try! #require(ParkingLot(among: [laptop, monitor]))
+        let slot = lot.slot(ordinal: 0, size: Size(width: 1200, height: 800))
+        #expect(slot.intersection(laptop.frame) == nil)
+        #expect(slot.intersection(monitor.frame) == Rect(x: 3999, y: 1400, width: 1, height: 40))
+    }
+
+    @Test func aDisplayBelowDisqualifiesTheOneAboveEvenSharingARightEdge() {
+        // Nothing is to the *right* of the upper display, and its bodies still run down the shared
+        // edge onto the lower one — a sliver-wide line of window, the full height of a screen.
+        let upper = display(1, Rect(x: 0, y: 0, width: 1000, height: 800), main: true)
+        let lower = display(2, Rect(x: 0, y: 800, width: 1000, height: 800))
+        #expect(ParkingLot(among: [upper, lower])?.frame == lower.workingArea)
+    }
+
+    @Test func aDisplayAboveAndToTheRightIsNoObstacle() {
+        // A body only ever hangs *down*, so a screen whose bottom edge is above the lot's top edge
+        // cannot catch one, however far right it sits.
+        let desk = display(1, Rect(x: 0, y: 0, width: 1000, height: 800), main: true)
+        let shelf = display(2, Rect(x: 1000, y: -1000, width: 1000, height: 900))
+        #expect(ParkingLot(among: [desk, shelf])?.frame == desk.workingArea)
+    }
+
+    @Test func theMainDisplayKeepsTheNubsWhenBothCornersAreClear() {
+        // A monitor with the laptop centred below it: neither corner has anything beyond it, and
+        // macOS's own answer to which screen is the user's breaks the tie.
+        let monitor = display(1, Rect(x: 0, y: 0, width: 2560, height: 1440), main: true)
+        let laptop = display(2, Rect(x: 524, y: 1440, width: 1512, height: 982))
+        #expect(ParkingLot(among: [monitor, laptop])?.frame == monitor.workingArea)
+        // …and with the role on the laptop, the nubs go with it.
+        let docked = display(2, laptop.frame, main: true)
+        #expect(ParkingLot(among: [display(1, monitor.frame), docked])?.frame == docked.workingArea)
+    }
+
+    @Test func mirroredDisplaysDoNotDisqualifyEachOther() {
+        // Two displays reporting one frame is what mirroring looks like from here: the second one's
+        // pixels *are* the first one's, so there is nothing beyond the corner for a body to land on.
+        let frame = Rect(x: 0, y: 0, width: 1440, height: 900)
+        #expect(ParkingLot(among: [display(1, frame, main: true), display(2, frame)])?.frame == frame)
+    }
+
+    // The join: every display's metrics carry the one lot
+
+    private static let left = MonitorInfo(id: MonitorId(1), frame: Rect(x: 0, y: 0, width: 1000, height: 800),
+                                          isMain: true)
+    private static let right = MonitorInfo(id: MonitorId(2),
+                                           frame: Rect(x: 1000, y: 0, width: 1200, height: 900))
+
+    /// Two displays side by side and three ½-width windows on the left one's strip: two columns fill
+    /// its viewport and the third is scrolled off, which is a window parked.
+    private static func desktop() -> (State, WindowId) {
+        var s = State(config: EngineFix.halfWidthSnap)
+        (s, _) = Engine.reduce(s, .screensChanged([left, right]))
+        for raw in UInt64(1)...3 {
+            let (next, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(raw)))
+            s = EngineFix.settle(next, fx)
+        }
+        let parked = s.workspaces.allWindowIds.first { !s.world.isOnScreen($0) }
+        return (s, try! #require(parked, "the fixture is meant to leave a window parked"))
+    }
+
+    @Test func aStripParksInTheDesktopsLotAndNotItsOwnDisplays() {
+        let (s, parked) = Self.desktop()
+        let frame = try! #require(s.world.windows[parked]?.frame)
+        #expect(frame.minX == 2199 && frame.minY == 860)      // the right display's corner
+        #expect(frame.intersection(Self.left.frame) == nil,   // …and nothing of it on the left one
+                "a nub at the left display's corner would hang its body across the right one")
+    }
+
+    @Test func aParkFloorIsMeasuredFromTheLotTheWindowIsParkedIn() {
+        // The window is on the left display's strip and parked at the right one's corner, so the
+        // chrome it keeps is a distance from *that* bottom edge. Measured from its own display's, a
+        // 56 pt answer reads as −44 and the slot the app refused is asked for again.
+        let (s, parked) = Self.desktop()
+        let slot = try! #require(s.world.windows[parked]?.frame)
+        let kept = Rect(x: slot.minX, y: 900 - 56, width: slot.width, height: slot.height)
+        let (after, _) = Engine.reduce(s, .parkCorrected(parked, requested: slot, actual: kept))
+        #expect(after.world.parkFloors[parked] == 56)
+    }
+}

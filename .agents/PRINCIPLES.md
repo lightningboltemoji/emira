@@ -220,10 +220,13 @@ happen on.
   All masking is done with covers made of our own windows. This is _the_ constraint that shapes §3.
 - **macOS will not let a window go fully off-screen.** Extreme coordinates clamp to a ~40 px sliver; a
   _precise_ position leaving as little as ~1 px is honoured, and how little is per app and only observable by
-  asking. So a parked window is a small nub at a screen corner, positioned as a **grab handle** — the window's
-  own title bar, where a user rescuing one by hand will throw the pointer. The compensation is large: **a
-  window that cannot hide cannot be throttled for being hidden**, so parked windows stay warm and revealing
-  one does not flash.
+  asking. So a parked window is a small nub at a corner, positioned as a **grab handle** — the window's own
+  title bar, where a user rescuing one by hand will throw the pointer. **Which corner is the desktop's
+  question, not a display's**: the rest of the window hangs off the corner it hugs, so a screen sitting
+  beyond that corner catches the body, and a window that is meant to be parked is instead sitting in view on
+  another display. There is one corner with nothing beyond it, and the arrangement says which. The
+  compensation is large: **a window that cannot hide cannot be throttled for being hidden**, so parked
+  windows stay warm and revealing one does not flash.
 - **Only the owning app can produce resized pixels, and AX latency is its main thread's, not ours.** A busy
   Chrome or JVM window services us when it gets around to it. We can mask that; we cannot fix it.
 - **The pointer composites above everything, including our cover**, and the public API will not let a

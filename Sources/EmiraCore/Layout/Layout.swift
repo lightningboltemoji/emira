@@ -86,7 +86,7 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
 /// The monitor + config inputs a `Layout` resolves against — passed per call, never stored.
 public struct LayoutMetrics: Sendable, Equatable {
     /// The monitor's **physical** working area — screen-space, top-left, already inset past the menu
-    /// bar/Dock by the shell. The corner a parked nub hugs; the strip itself lives in `contentArea`.
+    /// bar/Dock by the shell. What is on screen here; the strip itself lives in `contentArea`.
     public var workingArea: Rect
     /// The width presets a column cycles through (`cycleWidth`). A column's `widthPreset` indexes it.
     public var widthPresets: PresetCycle
@@ -125,6 +125,10 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// `corrections` does, and for a sharper version of it: a park slot allocated without the floors
     /// would be a slot the app refuses, and the refusal would be re-issued on every placement pass.
     public var parkFloors: [WindowId: Double]
+    /// Where a parked window's nub goes — **the desktop's lot, not this display's** (`ParkingLot`).
+    /// Rides here for the reason the two above do: a call site building its own would be a second
+    /// opinion about where a parked window sits. Defaults to this display's own corner.
+    public var parkingLot: ParkingLot
 
     public init(
         workingArea: Rect,
@@ -136,7 +140,8 @@ public struct LayoutMetrics: Sendable, Equatable {
         windowGap: Double = 0,
         outerGaps: EdgeInsets = .zero,
         corrections: [WindowId: SizeCorrection] = [:],
-        parkFloors: [WindowId: Double] = [:]
+        parkFloors: [WindowId: Double] = [:],
+        parkingLot: ParkingLot? = nil
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
@@ -148,13 +153,14 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.outerGaps = outerGaps
         self.corrections = corrections
         self.parkFloors = parkFloors
+        self.parkingLot = parkingLot ?? ParkingLot(frame: workingArea)
     }
 
     //
     // Outer gaps split one number in two. *Where does the strip live?* is `contentArea`, the logical
     // viewport — width proportions, column placement and every scroll target frame against it, and
     // "100%" means this. *What is on screen?* is `workingArea`, the physical extent — the tile-vs-park
-    // decision, the capture scope, the edge a sliver parks against. Answering the second with the
+    // decision, the capture scope, and the area a lot hugs the corner of. Answering the second with the
     // logical viewport parks any column whose leading edge sits in the outer-gap band.
 
     /// The **logical** viewport: the working area inset by the outer gaps. Where the strip is laid out.
@@ -583,8 +589,7 @@ public struct Layout: Sendable, Equatable, Codable {
         // the outer-gap margin.
         let view = metrics.physicalViewport(at: scrollOffset)
         let visible = Set(s.visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
-        // Also physical — a park slot inset by the outer gap would poke a window a margin's width in.
-        let lot = ParkingLot(frame: metrics.workingArea)
+        let lot = metrics.parkingLot
         let dx = area.minX - scrollOffset      // strip x → screen x for on-viewport columns
         let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
 
@@ -614,7 +619,7 @@ public struct Layout: Sendable, Equatable, Codable {
     /// changes address, not shape.
     public func parkedFrames(metrics: LayoutMetrics, parkingFrom cursor: inout Int) -> [WindowId: Rect] {
         let s = strip(metrics: metrics)
-        let lot = ParkingLot(frame: metrics.workingArea)
+        let lot = metrics.parkingLot
         let stripFrames = columnStripFrames(s, area: metrics.contentArea, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]

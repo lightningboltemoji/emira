@@ -540,7 +540,8 @@ viewport (the working area inset by the outer gaps); `workingArea` is the **phys
 - **Logical** is where the strip lives: widths resolve against it, column 0 starts at its left edge, and every
   scroll target frames against it.
 - **Physical** is what is on screen: `visibleWindowIds` (the reducer's `setFrame`-vs-`park` switch), the capture
-  scope, and the edge a park sliver hugs.
+  scope, and the area the park lot hugs the corner of — a lot inset by the outer gap would poke a nub a
+  margin's width in.
 
 Asking `visibleWindowIds` of the _logical_ viewport parks any column whose leading edge sits in the margin —
 enforcing the margin by teleporting windows out of it, which is the clipping this design exists to avoid, and it
@@ -593,6 +594,16 @@ reach all of them, or `targetFrames` and the visibility/sweep/scroll queries acc
 `World.parkFloors` is the same shape on the park path, and deliberately separate: a park answer says nothing
 about _size_ (a window refuses at a sliver what it accepts in view) and one thing about the window's _chrome_.
 
+**There is one `ParkingLot` for the whole desktop, and the display arrangement picks it.** A nub is the corner
+of a window whose body hangs off the bottom right of the lot, so a screen sitting beyond that corner catches
+the body — the window is not parked, it is in view on another display. `ParkingLot.init(among:)` ranks the
+displays: it `clears` every one of them (nothing ends right of the nub's left edge that is not entirely above
+the lot), then macOS calls it **main** (a nub is a grab handle, so it belongs on the screen the user is on),
+then its corner is furthest bottom-right. The lot rides in `LayoutMetrics` beside the corrections, so every
+display's metrics carry the same one and no call site can form a second opinion — which is also what makes
+the ordinal run's single cursor unconditional. A learned park floor is measured from the lot's own bottom edge
+rather than from the window's display, or a window parked on the far screen states a floor that is nonsense.
+
 **A window resized by its own handle keeps that size, and `Drag` is the whole of what makes that safe.** AX
 reports a resize identically whoever asked for it and our own placements provoke one every time, so a frame
 change is evidence only inside the mouse-down/up bracket — and only for the **first** window to move inside it,
@@ -644,15 +655,15 @@ displays by a name, rather than a second opinion about which display is looking 
   is parked" was already what `targetFrames` meant, so the verbs needed no new `Effect` and nothing in
   `EmiraShell`. What they needed was _memory_: each strip's scroll offset and last-focused window. Neither
   container can do the other's half of a switch, which is the join working.
-- **The supply is per display; the park run is not.** `targetFrames` and `uncorrectedSizes` take a
-  `StripPlacement` per materialized address — the metrics it is laid out against, and, for an address on
+- **The supply is per display; the lot and the park run are not.** `targetFrames` and `uncorrectedSizes` take
+  a `StripPlacement` per materialized address — the metrics it is laid out against, and, for an address on
   screen, the offset its display's viewport is at — so each screen tiles its own strip and every other strip
-  parks in the lot of the display that holds it. `State.placements()` is where `Monitors` and `Motion` are
-  joined into that list, which is what lets this container lay out a desktop of several displays without
-  knowing displays exist. The **ordinals are one run across every lot**, threaded as a cursor: mirrored
-  displays report the same frame, so per-lot cursors would give two windows the same nub and break the
-  identity join and the no-overlap invariant silently. The run and the placement walk take the same list, so
-  there is one answer to what is on screen rather than two that agree by coincidence.
+  parks. `State.placements()` is where `Monitors` and `Motion` are joined into that list, which is what lets
+  this container lay out a desktop of several displays without knowing displays exist. Where they park is
+  **one lot for the whole desktop** (`ParkingLot`), so the **ordinals are one run across it**, as a cursor:
+  a cursor per strip would give two windows the same nub and break the identity join and the no-overlap
+  invariant silently. The run and the placement walk take the same list, so there is one answer to what is on
+  screen rather than two that agree by coincidence.
 - **The vertical term is a _sign_, not a distance** (`Workspaces.verticalOffset`): every off-screen workspace
   sits exactly one screen away, so `1 → z` animates the same screen as `1 → 2`. Presentation-plane only — on the
   truth plane an off-workspace window is simply parked.
@@ -1557,15 +1568,16 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraMotionTests`** — `SpringTests`, `AnimatorTests`, `EasingTests`: feed synthetic `dt`, assert
   convergence, no overshoot past tolerance, and that `retarget()` preserves velocity.
 - **`EmiraCoreTests` / layout** — `StripTests` (scroll math, visibility, detents), `PresetTests`, `ColumnTests`
-  (height water-fill and its bounds), `ParkTests`, `LayoutTests`, `WorkspaceTests`, `MonitorTests`,
-  `OuterGapTests`, `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast, exhaustive.
+  (height water-fill and its bounds), `ParkTests`, `DesktopParkingTests`, `LayoutTests`, `WorkspaceTests`,
+  `MonitorTests`, `OuterGapTests`, `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast,
+  exhaustive.
 
-  `MonitorTests`, `MonitorCommandTests` and the reducer's `MonitorSessionTests` earn their place the way
-  `WorkspaceTests` does: everything they assert — an address orphaned by a departure, the assignments a lid
-  close and a replug have to survive, a cover that stays on its own screen, a window held back while *its*
-  display is mid-capture, a `MonitorRef` with more than one answer, a `next` that steps over another
-  screen's addresses — is a **silent** failure while there is one display, so this is the only place any of
-  it can be proved at all.
+  `MonitorTests`, `MonitorCommandTests`, `DesktopParkingTests` and the reducer's `MonitorSessionTests` earn
+  their place the way `WorkspaceTests` does: everything they assert — an address orphaned by a departure, the
+  assignments a lid close and a replug have to survive, a cover that stays on its own screen, a window held
+  back while *its* display is mid-capture, a `MonitorRef` with more than one answer, a `next` that steps over
+  another screen's addresses, a parked body landing on the screen next door — is a **silent** failure while
+  there is one display, so this is the only place any of it can be proved at all.
 - **`EmiraCoreTests` / the reducer** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`,
   `EngineTransitionTests`, `EngineResizeTests`, `EngineHandResizeTests`, `EngineFullscreenTests`,
   `EngineRefusalTests`,

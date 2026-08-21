@@ -328,10 +328,11 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// metrics, everything else parks in full against the metrics of the display that holds it.
     ///
     /// **The supply is per display and the run is not.** The ordinals form **one run** across the whole
-    /// set, in the order handed in, so no two parked windows anywhere share a nub — mirrored displays
-    /// report the same frame, so per-lot cursors would silently break both the ±2 pt first-sight
-    /// identity join a daemon restart depends on and the no-overlap invariant. One cursor makes
-    /// uniqueness unconditional; the cost is that a later display's nubs start in a higher lane.
+    /// set, in the order handed in, so no two parked windows anywhere share a nub — every display's
+    /// metrics carry the *same* lot (`ParkingLot.init(among:)`), so a cursor per strip would hand two
+    /// windows one slot outright, breaking both the ±2 pt first-sight identity join a daemon restart
+    /// depends on and the no-overlap invariant. One cursor makes uniqueness unconditional; the cost is
+    /// that a later strip's nubs start in a higher lane.
     ///
     /// The cursor is carried *through* each strip rather than advanced by counting windows out here: a
     /// window with a park floor takes the first slot tall enough for it and leaves the skipped ones

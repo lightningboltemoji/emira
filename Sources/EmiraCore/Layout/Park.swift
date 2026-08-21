@@ -5,8 +5,15 @@ import Foundation
 // sliver stays on-screen, so a parked window is shoved almost entirely off the bottom-right corner
 // with its top-left corner — the title bar — poking back in, grabbable by hand and, since occlusion is
 // binary, still rendering. Slots are pure geometry, top-left points (Geometry.swift).
+//
+// **The corner is the desktop's, not a display's.** A body hangs off the bottom right of the lot it
+// is parked in, so a display sitting beyond that corner catches it: the window is not parked but
+// sitting in view on another screen. There is one lot for the whole desktop, and the arrangement
+// picks it — `init(among:)`.
 public struct ParkingLot: Sendable, Equatable {
-    /// The monitor working area nubs live against — already Dock/menu-bar inset by the shell.
+    /// The working area nubs live against — already Dock/menu-bar inset by the shell, and the
+    /// *working* area rather than the content one: a slot inset by the outer gap would poke a window
+    /// a margin's width in.
     public let frame: Rect
     /// Points of a parked window's left edge that stay on-screen. ~1 pt is enough for macOS to honor
     /// the position and to keep the window warm.
@@ -31,6 +38,33 @@ public struct ParkingLot: Sendable, Equatable {
         self.visibleChrome = visibleChrome
         self.stagger = stagger
         self.laneStep = laneStep
+    }
+
+    /// The lot the whole desktop parks in: the working area of the display no other display lies
+    /// beyond, so a body hangs off the *arrangement* rather than onto a neighbour's screen. Ranked, not
+    /// filtered: it `clears` every display, then main, then furthest bottom-right. `nil` with none.
+    public init?(among monitors: [MonitorState]) {
+        // A display this one *covers* is this one — mirrored displays report the same frame — so its
+        // pixels are nowhere a body can land. Which disposes of `monitor` itself, too.
+        func isClear(_ monitor: MonitorState) -> Bool {
+            let lot = ParkingLot(frame: monitor.workingArea)
+            return monitors.allSatisfy { monitor.frame.covers($0.frame) || lot.clears($0.frame) }
+        }
+        func rank(_ monitor: MonitorState) -> (Int, Int, Double, Double) {
+            (isClear(monitor) ? 1 : 0, monitor.isMain ? 1 : 0,
+             monitor.workingArea.maxX, monitor.workingArea.maxY)
+        }
+        // First of equal ranks wins (`max(by:)` replaces only on a strict increase), so enumeration
+        // order breaks the last tie and the answer is stable across a re-report.
+        guard let best = monitors.max(by: { rank($0) < rank($1) }) else { return nil }
+        self.init(frame: best.workingArea)
+    }
+
+    /// Whether a nub in this lot keeps its body off `display`. A body hangs off the bottom right, and
+    /// the tallest row starts at the lot's own top edge, so it can reach anything right of the nub's
+    /// left edge that is not entirely above the lot.
+    public func clears(_ display: Rect) -> Bool {
+        display.maxX <= frame.maxX - visibleSliver || display.maxY <= frame.minY
     }
 
     /// How many staggered rows a lane holds: as many as fit before the nub would outgrow the working
@@ -71,5 +105,13 @@ public struct ParkingLot: Sendable, Equatable {
         let pokeY = visibleChrome + Double(row) * stagger
         let y = frame.maxY - pokeY
         return Rect(x: x, y: y, width: size.width, height: size.height)
+    }
+}
+
+private extension Rect {
+    /// Whether `other` lies entirely within this rect, edges included — two displays are disjoint
+    /// unless they are mirrors of each other, which report the same frame.
+    func covers(_ other: Rect) -> Bool {
+        other.minX >= minX && other.minY >= minY && other.maxX <= maxX && other.maxY <= maxY
     }
 }

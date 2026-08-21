@@ -87,7 +87,8 @@ public struct State: Sendable, Equatable, Codable {
     ///
     /// The corrections and park floors are the *whole* desktop's, not the display's: they are keyed by
     /// `WindowId` and a window carries what it answered across a monitor exactly as it carries it
-    /// across a workspace.
+    /// across a workspace. So is the parking lot, for a reason of its own: a nub's body hangs off the
+    /// corner it is parked at, and only one corner of the arrangement has nothing beyond it.
     public func metrics(of id: MonitorId) -> LayoutMetrics? {
         guard let monitor = world.monitor(id) else { return nil }
         return LayoutMetrics(
@@ -96,7 +97,8 @@ public struct State: Sendable, Equatable, Codable {
             heightSelections: workspaces.heightSelections,
             heightOverrides: workspaces.heightOverrides,
             corrections: world.corrections,
-            parkFloors: world.parkFloors)
+            parkFloors: world.parkFloors,
+            parkingLot: ParkingLot(among: world.monitors))
     }
 
     /// The **acting** monitor's metrics — the display the user is on, which is what a verb naming no
@@ -2674,7 +2676,9 @@ public enum Engine {
               actual.minY < requested.minY - 0.5
         else { return [] }
 
-        let chrome = metrics.workingArea.maxY - actual.minY
+        // Measured against the lot's own bottom edge, which is the desktop's parking corner rather
+        // than this window's display.
+        let chrome = metrics.parkingLot.frame.maxY - actual.minY
         // Nothing new: the floor is already recorded and the slot it produced was refused anyway. Placing
         // again would ask the identical question, so stop here rather than trade writes with the app.
         if let known = s.world.parkFloors[id], approximatelyEqualScalar(known, chrome) { return [] }
@@ -2796,7 +2800,7 @@ public enum Engine {
     /// Write the truth plane: the `setFrame`/`park` sets that bring every managed window to the frame it
     /// has under `State.placements()`, and the record of which of them that put on the glass. A window
     /// whose column overlaps its display's viewport is `setFrame`d to its tiled frame; one scrolled
-    /// off-view is `park`ed at its sliver slot in its own display's lot. Only windows that need to move
+    /// off-view is `park`ed at its sliver slot in the desktop's lot. Only windows that need to move
     /// are emitted, diffed within a sub-pixel tolerance, and they are what `moved` returns. `World`
     /// frames are updated optimistically — a failure comes back as `axFailed` — which keeps a repeated
     /// idle event from re-emitting forever.

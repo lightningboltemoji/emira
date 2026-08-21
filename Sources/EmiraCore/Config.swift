@@ -500,7 +500,8 @@ extension LayoutMetrics {
                 heightSelections: [WindowId: Int] = [:],
                 heightOverrides: [WindowId: PresetSize] = [:],
                 corrections: [WindowId: SizeCorrection] = [:],
-                parkFloors: [WindowId: Double] = [:]) {
+                parkFloors: [WindowId: Double] = [:],
+                parkingLot: ParkingLot? = nil) {
         self.init(workingArea: workingArea,
                   widthPresets: config.widthPresets,
                   heightPresets: config.heightPresets,
@@ -510,6 +511,7 @@ extension LayoutMetrics {
                   windowGap: config.windowGap,
                   outerGaps: config.outerGaps,
                   corrections: corrections,
-                  parkFloors: parkFloors)
+                  parkFloors: parkFloors,
+                  parkingLot: parkingLot)
     }
 }
