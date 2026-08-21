@@ -798,6 +798,15 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   `World.lastStripFocus` rather than live focus, because an app focuses its brand-new window before emira has
   adopted it, so a `focusChanged(nil)` lands a moment _before_ the creation; anchoring on live focus passes a
   unit test and appends in reality every time.
+- **A departure hands focus to the place it vacated** (`Engine.successor`): a surviving stackmate in the same
+  column, else whichever column now stands at the departed one's index, else — for a window that was already
+  off the strip, a float or a dialog — `stripAnchor`, and only then the strip's front. The first two clauses
+  are positional and a window with no column has neither, so the anchor is the whole of its answer.
+- **`World.lastStripFocus` is a place, not a window that once held focus.** It is dropped the moment its
+  window leaves the strip (`pruneStripFocus`, on destroy, float, minimize and `Cmd-H`) and moved onto the
+  place a departing window vacated (`noteStripFocus`, from `departFromStrip`, which is the only moment the
+  vacated column and index are still known). Without both halves the memory dangles on a window that has
+  floated away, and the departure clause above has nothing to reach for.
 
 ### Window rules
 

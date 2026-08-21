@@ -165,6 +165,9 @@ public struct World: Sendable, Equatable, Codable {
     /// `focusedWindow`'s "what is focused", which goes `nil` routinely for a moment because an app focuses
     /// a new window *before* we adopt it. A new column opens beside *this*: without it, ⌘N raced that
     /// transient `nil` and appended at the far end of the strip.
+    ///
+    /// It names a *place* the user can be handed back to, not merely a window that once had focus:
+    /// `pruneStripFocus` drops it when its window leaves the strip, `noteStripFocus` moves it on.
     public private(set) var lastStripFocus: WindowId?
     /// The last window focus rested on, **whatever kind of window it was** — the same shelter from that
     /// transient `nil`, one constraint looser, because a float and a full-screen window are both windows
@@ -209,7 +212,7 @@ public struct World: Sendable, Equatable, Codable {
         unverified.remove(id)
         placedOnScreen.remove(id)
         floating[id] = nil
-        if lastStripFocus == id { lastStripFocus = nil }
+        pruneStripFocus()
         if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
@@ -268,14 +271,32 @@ public struct World: Sendable, Equatable, Codable {
         if let id, participatesInStrip(id) { lastStripFocus = id }
     }
 
+    /// Move the strip memory without moving focus — what `setFocus` cannot say, for a window that carries
+    /// focus *off* the strip and leaves a place behind it. Refuses a window that is not on the strip,
+    /// which is `setFocus`'s own guard and the invariant `pruneStripFocus` keeps.
+    public mutating func noteStripFocus(_ id: WindowId) {
+        guard participatesInStrip(id) else { return }
+        lastStripFocus = id
+    }
+
+    /// Drop the strip memory when it names a window that is no longer on the strip — the invariant that
+    /// separates `lastStripFocus` from `lastFocus`, kept here rather than re-argued at every read. Called
+    /// by each of the four mutators that can break it: destroy, float, minimize, `Cmd-H`.
+    private mutating func pruneStripFocus() {
+        guard let id = lastStripFocus, !participatesInStrip(id) else { return }
+        lastStripFocus = nil
+    }
+
     /// Fold `Event.windowMinimized` / `Event.windowDeminimized`.
     public mutating func setMinimized(_ id: WindowId, _ minimized: Bool) {
         windows[id]?.isMinimized = minimized
+        pruneStripFocus()
     }
 
     /// Fold an app-level hide/unhide (`Cmd-H`): every window of the app leaves / rejoins the strip at once.
     public mutating func setAppHidden(_ bundleId: String, _ hidden: Bool) {
         apps[bundleId]?.isHidden = hidden
+        pruneStripFocus()
     }
 
     /// Fold `Event.screensChanged`. Order follows `infos` (authoritative); persisting ids carry their
@@ -389,6 +410,7 @@ public struct World: Sendable, Equatable, Codable {
     public mutating func setFloating(_ id: WindowId, _ isFloating: Bool) {
         guard windows[id] != nil else { return }
         floating[id] = isFloating
+        pruneStripFocus()
     }
 
     /// The windows currently on the strip, sorted by id for deterministic layout and replay.

@@ -534,14 +534,16 @@ import Testing
 
     /// Live focus reads `nil` at exactly the moment a window arrives — an app focuses its new window
     /// before emira has adopted it — so what the rules read is the *last* window focus rested on, and
-    /// `lastStripFocus` is not that: here it names a window that no longer has a column.
+    /// `lastStripFocus` is not that: floating w1 emptied the strip, so there is no place left for it to
+    /// name and it holds nothing at all. `lastFocus` is what still remembers the window.
     @Test func theAnchorSurvivesTheFocusRace() {
         let s = EngineFix.booted(config: Self.floatSmallOnes)
         var (after, _) = EngineFix.run(s, [editor(1)])
         (after, _) = EngineFix.run(after, [.command(.float(.on)),
                                            .focusChanged(nil, origin: .system)])
         #expect(after.world.focusedWindow == nil)
-        #expect(after.world.lastStripFocus == WindowId(1))
+        #expect(after.world.lastStripFocus == nil)
+        #expect(after.world.lastFocus == WindowId(1))
 
         (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
         #expect(after.world.isFloating(WindowId(2)))

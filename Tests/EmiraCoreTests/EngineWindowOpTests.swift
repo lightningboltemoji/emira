@@ -264,6 +264,74 @@ import EmiraMotion
         #expect(fx.contains(.focus(WindowId(2))))
     }
 
+    // Where focus goes when a window with no *place* on the strip leaves it. The strip's own answer is
+    // positional — a stackmate, then whatever stands at the departed column's index — and a float has
+    // neither, so these pin the third clause: the last place focus held on this strip.
+
+    /// Floating w3 takes it off the strip while it keeps focus, so the memory of where the user was
+    /// working moves to the place w3 vacated — w2 — rather than dangling on a window that is no longer
+    /// on the strip. Closing the float then hands focus back to it, not to the strip's front.
+    @Test func closingAFloatFocusesTheStripPlaceItLeftRatherThanTheStripsFront() {
+        var s = EngineFix.world(3)                          // w1 | w2 | w3, w3 focused
+        (s, _) = Engine.reduce(s, .command(.float(.on)))    // w3 floats, still focused
+        s = EngineFix.settle(s)
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2)])
+        #expect(s.world.lastStripFocus == WindowId(2))      // the place it vacated, not the window that left
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
+        #expect(s.world.focusedWindow == WindowId(2))       // *not* w1
+        #expect(fx.contains(.focus(WindowId(2))))
+    }
+
+    /// The commoner case, and the one macOS sometimes backfills for us: a dialog opens over w2, the app
+    /// focuses it, and dismissing it comes back to w2. Nothing off the strip is ever `lastStripFocus`,
+    /// so the memory was never the dialog and this needs only the placeless clause.
+    @Test func closingADialogFocusesTheWindowItOpenedOver() {
+        var s = EngineFix.world(2)                          // w1 | w2, w2 focused
+        (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3, role: .dialog)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
+        s = EngineFix.settle(s)
+        #expect(s.world.focusedWindow == WindowId(3))
+        #expect(s.layout.columns.count == 2)                // the dialog holds no column
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(fx.contains(.focus(WindowId(2))))
+    }
+
+    /// The memory follows the *place*, not the window: with focus parked on a float, closing the strip
+    /// window it points at moves it to that window's own successor instead of going blank.
+    @Test func theStripMemoryWalksToTheSuccessorWhenItsWindowCloses() {
+        var s = EngineFix.world(3)                          // w1 | w2 | w3
+        (s, _) = Engine.reduce(s, .command(.float(.on)))    // w3 floats; the memory becomes w2
+        s = EngineFix.settle(s)
+
+        (s, _) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
+        #expect(s.world.focusedWindow == WindowId(3))       // the float still holds focus
+        #expect(s.world.lastStripFocus == WindowId(1))      // w2's place, now w1's
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
+        #expect(s.world.focusedWindow == WindowId(1))
+        #expect(fx.contains(.focus(WindowId(1))))
+    }
+
+    /// Totality: a float closing over an empty strip focuses nothing. Focus on nothing is a resting
+    /// state (§4), and the last resort has nothing to reach for.
+    @Test func closingTheLastFloatLeavesFocusNowhere() {
+        var s = EngineFix.world(1)
+        (s, _) = Engine.reduce(s, .command(.float(.on)))
+        s = EngineFix.settle(s)
+        #expect(s.layout.columns.isEmpty)
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(1)))
+        #expect(s.world.focusedWindow == nil)
+        #expect(!fx.contains { if case .focus = $0 { return true }; return false })
+    }
+
     @Test func geometryCommandsNoOpWithNoDisplay() {
         // No `screensChanged` yet: truth still folds, but nothing can be placed.
         var s = State()

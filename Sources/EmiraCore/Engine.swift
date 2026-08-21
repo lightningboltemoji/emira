@@ -1371,7 +1371,7 @@ public enum Engine {
 
         // Staying: focus left with the window, so it lands on the neighbour — or, on an emptied strip, off
         // the strip entirely, which `handleFocus`'s entry condition recovers from.
-        let heir = successor(s.layout, column: column, at: index)
+        let heir = successor(s.layout, column: column, at: index, anchor: stripAnchor(s))
         s.world.setFocus(heir)
         let effects = finishStructuralEdit(&s, edit, focused: heir, mover: moved, animatingFrom: old,
                                            travelling: moved)
@@ -1664,8 +1664,8 @@ public enum Engine {
         }
 
         // Tiled → floating: a departure, like a minimize — except focus stays put, because the window is
-        // still there. `departFromStrip` only picks a successor when focus was actually lost, and the
-        // viewport holds, since a window with no column reveals to nowhere.
+        // still there. What moves instead is the strip memory, onto the place being vacated, so closing
+        // the float later has somewhere to come back to. The viewport holds: no column reveals to nowhere.
         return departFromStrip(&s, focused) { $0.world.setFloating(focused, true) }
     }
 
@@ -2427,13 +2427,17 @@ public enum Engine {
     }
 
     /// Where focus lands when the window holding it leaves the strip: a surviving stackmate in the same
-    /// column, else whichever column now occupies the departed one's place, else anything at all. `nil`
-    /// only for an empty strip.
-    private static func successor(_ layout: Layout, column: ColumnId?, at index: Int?) -> WindowId? {
+    /// column, else whichever column now occupies the departed one's place, else — for a window that had
+    /// no place at all — `anchor`, the last place focus held on this strip. `nil` only for an empty strip.
+    ///
+    /// The first two clauses are positional, and a window off the strip has neither a column nor an
+    /// index, so the third is the whole of a float's answer.
+    private static func successor(_ layout: Layout, column: ColumnId?, at index: Int?,
+                                  anchor: WindowId?) -> WindowId? {
         if let column, let i = layout.columnIndex(withId: column) {
             return layout.columns[i].windowIds.first   // the column outlived the window: stay in it
         }
-        guard let index, !layout.columns.isEmpty else { return layout.allWindowIds.first }
+        guard let index, !layout.columns.isEmpty else { return anchor ?? layout.allWindowIds.first }
         return layout.columns[Swift.min(index, layout.columns.count - 1)].windowIds.first
     }
 
@@ -2462,9 +2466,15 @@ public enum Engine {
         // Focus may have gone with it. Choose the successor *before* framing the strip, since that is
         // what the viewport aims at, and take the neighbour — the front of the strip would scroll home.
         var refocus: [Effect] = []
-        if s.world.focusedWindow == nil, let next = successor(s.layout, column: column, at: index) {
-            s.world.setFocus(next)
-            refocus = [.focus(next)]
+        if let next = successor(s.layout, column: column, at: index, anchor: stripAnchor(s)) {
+            if s.world.focusedWindow == nil {
+                s.world.setFocus(next)
+                refocus = [.focus(next)]
+            } else if s.world.lastStripFocus == nil {
+                // Focus went off the strip *with* the window — a float stays focused, so `setFocus` would
+                // be a lie. The memory moves instead, and this is the only moment the vacated place is known.
+                s.world.noteStripFocus(next)
+            }
         }
 
         guard !old.isEmpty, let column, let focused = s.world.focusedWindow else {
