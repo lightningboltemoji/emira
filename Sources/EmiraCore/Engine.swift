@@ -2049,8 +2049,8 @@ public enum Engine {
             // Stored in the unit the user typed: a percentage leaves a proportion, points leave points.
             let intent: PresetSize
             switch delta {
-            case .percent where available > 0: intent = metrics.widthExtent.proportion(of: width)
-            case .percent, .points:            intent = .fixed(width)
+            case .percent: intent = metrics.widthExtent.proportion(of: width) ?? .fixed(width)
+            case .points:  intent = .fixed(width)
             }
             layout.setWidthOverride(intent, ofColumn: column.id)
         }
@@ -2562,6 +2562,10 @@ public enum Engine {
     /// `grow`/`shrink` write, so the first `cycle-width` afterwards puts the column back on the ladder —
     /// and clamped the same way, which can stop the adoption short but never reverse it.
     ///
+    /// **Recorded as a proportion of the viewport it was drawn against**: the same rectangle on another
+    /// display is the same share of it. The clamp lands a drag at or past the edge exactly on the content
+    /// width, so full-width is `.proportion(1.0)`.
+    ///
     /// One width for the whole column, since that is what a column is. A stackmate that will not be
     /// that wide needs nothing here: `Layout.resolvedWidth` already holds the column at the widest
     /// width its windows can actually achieve.
@@ -2572,7 +2576,8 @@ public enum Engine {
         let clamped = Swift.min(Swift.max(width, Swift.min(minimumColumnWidth, from)),
                                 Swift.max(available, from))
         var strip = s.workspaces[name]
-        strip.setWidthOverride(.fixed(clamped), ofColumn: column.id)
+        strip.setWidthOverride(metrics.widthExtent.proportion(of: clamped) ?? .fixed(clamped),
+                               ofColumn: column.id)
         s.workspaces[name] = strip
     }
 
@@ -2587,6 +2592,10 @@ public enum Engine {
     ///
     /// Losing the neighbour's stored height is the point rather than a cost: what the user just drew is
     /// where that divider goes, and the height it displaces is the thing being replaced.
+    ///
+    /// **Recorded as a proportion of the column box**, for the reason `adoptWidth` records one. The auto
+    /// rung already re-divides the leftover, so this is the only rung that did not follow the display,
+    /// and a whole stack keeps its shares across one once it does.
     private static func adoptHeight(_ s: inout State, _ observed: Rect, _ target: Rect,
                                     _ id: WindowId, _ column: ColumnLayout,
                                     _ metrics: LayoutMetrics, on name: WorkspaceName) {
@@ -2606,7 +2615,8 @@ public enum Engine {
         let room = metrics.contentArea.height - others * (metrics.windowGap + minimumWindowHeight)
         let height = Swift.min(Swift.max(observed.height, minimumWindowHeight),
                                Swift.max(room, minimumWindowHeight))
-        s.workspaces.setHeightOverride(.fixed(height), of: id)
+        s.workspaces.setHeightOverride(metrics.heightExtent.proportion(of: height) ?? .fixed(height),
+                                       of: id)
     }
 
     // Windows that refuse the size we ask for

@@ -171,6 +171,11 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// `Column`'s own, built from the column box and `windowGap`.
     public var widthExtent: Extent { Extent(span: contentArea.width, gap: columnGap) }
 
+    /// What a pinned **height** is a share of — the column box and the gap it stacks with, the vertical
+    /// twin of `widthExtent`. Equal to `Column.extent` by construction: a column's box is the content
+    /// area's height (`columnStripFrames`).
+    public var heightExtent: Extent { Extent(span: contentArea.height, gap: windowGap) }
+
     /// The **physical** viewport in strip space, for a strip scrolled to `offset`.
     ///
     /// `widenedBy` carries a sweep's travel distance, so the swept query composes with this one rather

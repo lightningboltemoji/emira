@@ -28,9 +28,11 @@ public struct Extent: Sendable, Equatable {
     }
 
     /// The proportion `resolve` would turn back into `points` — the inverse, for the callers that record
-    /// a resolved size as an intent. Stated beside the formula it inverts so the two cannot drift.
-    public func proportion(of points: Double) -> PresetSize {
-        .proportion((points + gap) / (span + gap))
+    /// a resolved size as an intent. Stated beside the formula it inverts so the two cannot drift. `nil`
+    /// where there is no extent to be a share of, leaving the caller the points it measured.
+    public func proportion(of points: Double) -> PresetSize? {
+        guard span + gap > 0 else { return nil }
+        return .proportion((points + gap) / (span + gap))
     }
 }
 

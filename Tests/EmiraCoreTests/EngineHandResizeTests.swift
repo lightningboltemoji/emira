@@ -39,6 +39,13 @@ import EmiraMotion
         return (stack[0], stack[1])
     }
 
+    /// The intent a drag to `points` wide records — a share of the fixture's 1000 pt content width, since
+    /// a hand names a size by drawing it on the screen in front of it and not by counting points.
+    static func widthShare(_ points: Double) -> PresetSize { .proportion(points / 1000) }
+
+    /// The same for a drag to `points` tall: a share of the 800 pt column box the windows stack in.
+    static func heightShare(_ points: Double) -> PresetSize { .proportion(points / 800) }
+
     // The gate: a frame change is intent only under a hand
 
     /// The echo guard, and the reason `Drag` exists at all. Our own `setFrame` provokes the identical
@@ -70,7 +77,7 @@ import EmiraMotion
         #expect(s.drag == .subject(WindowId(1)))
         (s, _) = Engine.reduce(s, .dragEnded)
 
-        #expect(s.layout.columns[0].widthOverride == .fixed(620))
+        #expect(s.layout.columns[0].widthOverride == Self.widthShare(620))
         #expect(s.layout.columns[1].widthOverride == nil)      // the clamp, not a second drag
     }
 
@@ -117,7 +124,7 @@ import EmiraMotion
         var fx: [Effect] = []
         (s, fx) = Self.drag(s, WindowId(2), to: Rect(x: 500, y: 0, width: 620, height: 800))
 
-        #expect(s.layout.columns[1].widthOverride == .fixed(620))
+        #expect(s.layout.columns[1].widthOverride == Self.widthShare(620))
         #expect(EngineFix.approxScalar(Self.placed(s)[WindowId(2)]!.width, 620))
         // No `setFrame` for the subject: it is already the size the layout now wants, which is the
         // adoption working rather than a placement missed.
@@ -134,7 +141,7 @@ import EmiraMotion
         let (top, bottom) = Self.rows(s)
         (s, _) = Self.drag(s, bottom, to: Rect(x: 0, y: 400, width: 700, height: 400))
 
-        #expect(s.layout.columns[0].widthOverride == .fixed(700))
+        #expect(s.layout.columns[0].widthOverride == Self.widthShare(700))
         #expect(EngineFix.approxScalar(Self.placed(s)[top]!.width, 700))
     }
 
@@ -145,7 +152,7 @@ import EmiraMotion
         var s = Self.stack()
         let (top, bottom) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 200, height: 400))
-        #expect(s.layout.columns[0].widthOverride == .fixed(200))
+        #expect(s.layout.columns[0].widthOverride == Self.widthShare(200))
 
         // The stackmate answers the 200 it was asked for with 340 — the question `forgetCorrections`
         // left it free to be asked afresh.
@@ -188,7 +195,7 @@ import EmiraMotion
         let (top, bottom) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 500, height: 500))
 
-        #expect(s.workspaces.heightOverrides[top] == .fixed(500))
+        #expect(s.workspaces.heightOverrides[top] == Self.heightShare(500))
         #expect(EngineFix.approxScalar(Self.placed(s)[top]!.height, 500))
         let below = Self.placed(s)[bottom]!
         #expect(EngineFix.approxScalar(below.height, 300))               // 800 − 500
@@ -223,7 +230,7 @@ import EmiraMotion
         let (top, bottom) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 500, height: 900))
 
-        #expect(s.workspaces.heightOverrides[top] == .fixed(800 - Engine.minimumWindowHeight))
+        #expect(s.workspaces.heightOverrides[top] == Self.heightShare(800 - Engine.minimumWindowHeight))
         #expect(EngineFix.approxScalar(Self.placed(s)[bottom]!.height, Engine.minimumWindowHeight))
     }
 
@@ -234,7 +241,7 @@ import EmiraMotion
         var s = Self.columns(1)
         (s, _) = Self.drag(s, WindowId(1), to: Rect(x: 0, y: 0, width: 500, height: 500))
 
-        #expect(s.workspaces.heightOverrides[WindowId(1)] == .fixed(500))
+        #expect(s.workspaces.heightOverrides[WindowId(1)] == Self.heightShare(500))
         #expect(EngineFix.approxScalar(Self.placed(s)[WindowId(1)]!.height, 500))
     }
 
@@ -244,7 +251,7 @@ import EmiraMotion
         var s = Self.stack()
         let (top, _) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 500, height: 500))
-        #expect(s.workspaces.heightOverrides[top] == .fixed(500))
+        #expect(s.workspaces.heightOverrides[top] == Self.heightShare(500))
 
         (s, _) = Engine.reduce(s, .focusChanged(top, origin: .system))
         (s, _) = Engine.reduce(s, .command(.cycleHeight))
@@ -258,8 +265,8 @@ import EmiraMotion
         let (top, _) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 640, height: 520))
 
-        #expect(s.layout.columns[0].widthOverride == .fixed(640))
-        #expect(s.workspaces.heightOverrides[top] == .fixed(520))
+        #expect(s.layout.columns[0].widthOverride == Self.widthShare(640))
+        #expect(s.workspaces.heightOverrides[top] == Self.heightShare(520))
     }
 
     /// A dragged height goes with its window when the window leaves the strip, on the same reconcile
@@ -268,9 +275,87 @@ import EmiraMotion
         var s = Self.stack()
         let (top, _) = Self.rows(s)
         (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 500, height: 500))
-        #expect(s.workspaces.heightOverrides[top] == .fixed(500))
+        #expect(s.workspaces.heightOverrides[top] == Self.heightShare(500))
 
         (s, _) = Engine.reduce(s, .windowDestroyed(top))
         #expect(s.workspaces.heightOverrides[top] == nil)
+    }
+
+    // Across displays
+    //
+    // What the unit buys. A drag is drawn against one screen and the workspace it lands on is portable,
+    // so the intent has to mean the same thing on the next one — and the clamps already land a drag at or
+    // past an edge exactly on the extent, which is what makes "full" resolve to `1.0` with nothing here
+    // recognizing it.
+
+    /// The fixture's second display, half again as large on both axes, so a share and a point count
+    /// cannot be confused for one another.
+    static let tallerFrame = Rect(x: 1000, y: 0, width: 1600, height: 1200)
+
+    /// The 1000×800 fixture with `tallerFrame` beside it, `count` windows on the first one's strip.
+    static func twoDisplays(_ count: UInt64, config: Config = EngineFix.halfWidthSnap) -> State {
+        var s = State(config: config)
+        (s, _) = Engine.reduce(s, .screensChanged([
+            MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame),
+            MonitorInfo(id: MonitorId(2), frame: tallerFrame),
+        ]))
+        return EngineFix.run(s, (1...count).map { .windowCreated(EngineFix.snapshot($0)) }).0
+    }
+
+    /// Send the shown workspace to the second display and drive everything to rest.
+    static func moveToTaller(_ s: State) -> State {
+        let (next, fx) = Engine.reduce(s, .command(.moveWorkspaceToMonitorAndFocus(.index(2))))
+        return EngineFix.settle(next, fx)
+    }
+
+    /// Shortened by hand and drawn back to the full height the display offers, a window is at 100% —
+    /// so it is full height on the next display too, rather than at the point count the last one was.
+    @Test func aWindowDrawnBackToFullHeightIsFullHeightOnEveryDisplay() {
+        var s = Self.twoDisplays(1)
+        let w = WindowId(1)
+        (s, _) = Self.drag(s, w, to: Rect(x: 0, y: 0, width: 500, height: 400))
+        #expect(s.workspaces.heightOverrides[w] == .proportion(0.5))
+
+        (s, _) = Self.drag(s, w, to: Rect(x: 0, y: 0, width: 500, height: 800))
+        #expect(s.workspaces.heightOverrides[w] == .proportion(1.0))
+
+        s = Self.moveToTaller(s)
+        #expect(EngineFix.approxScalar(Self.placed(s)[w]!.height, 1200))
+    }
+
+    /// The width half of the same fact.
+    @Test func aColumnDrawnToFullWidthIsFullWidthOnEveryDisplay() {
+        var s = Self.twoDisplays(1)
+        (s, _) = Self.drag(s, WindowId(1), to: Rect(x: 0, y: 0, width: 1000, height: 800))
+        #expect(s.layout.columns[0].widthOverride == .proportion(1.0))
+
+        s = Self.moveToTaller(s)
+        #expect(EngineFix.approxScalar(Self.placed(s)[WindowId(1)]!.width, 1600))
+    }
+
+    /// A whole stack travels: the pinned window keeps its share and the auto beneath it re-divides what
+    /// is left, so the divider the hand drew sits at the same place on a display half again as tall.
+    @Test func aStacksDraggedDividerKeepsItsPlaceOnTheNextDisplay() {
+        var s = Self.twoDisplays(2)
+        (s, _) = Engine.reduce(s, .command(.consumeOrExpel(.left)))
+        let (top, bottom) = Self.rows(s)
+        (s, _) = Self.drag(s, top, to: Rect(x: 0, y: 0, width: 500, height: 600))
+        #expect(s.workspaces.heightOverrides[top] == .proportion(0.75))
+
+        s = Self.moveToTaller(s)
+        #expect(EngineFix.approxScalar(Self.placed(s)[top]!.height, 900))
+        #expect(EngineFix.approxScalar(Self.placed(s)[bottom]!.height, 300))
+    }
+
+    /// A drag *past* the edge lands on 1.0 exactly, gaps and all — the clamps stop it at the extent and
+    /// the inverse is the extent's own, so neither axis needs a tolerance to recognize "full".
+    @Test func aDragPastTheEdgeIsExactlyOneHundredPercent() {
+        let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
+                            columnGap: 12, windowGap: 8, transitionMode: .off)
+        var s = Self.twoDisplays(1, config: config)
+        (s, _) = Self.drag(s, WindowId(1), to: Rect(x: 0, y: 0, width: 1400, height: 1100))
+
+        #expect(s.layout.columns[0].widthOverride == .proportion(1.0))
+        #expect(s.workspaces.heightOverrides[WindowId(1)] == .proportion(1.0))
     }
 }

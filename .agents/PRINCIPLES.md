@@ -180,7 +180,9 @@ happen on.
 - **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the
   temptation is to read a hand on the frame as a mistake to correct. It isn't: the handle is the most direct
   thing the user can say about a size, and it says exactly what `grow` says by another route — so the size a
-  drag leaves behind becomes the layout's own intent rather than something snapped away on release. What
+  drag leaves behind becomes the layout's own intent rather than something snapped away on release. It is kept
+  as a share of the screen it was drawn on, so a window drawn back to the full height one display offers is
+  full height on the next one too, rather than short by the difference between them. What
   cannot be honoured is honoured as far as it goes, on the same terms every other resize gets: a column is as
   wide as its windows will actually be. The asymmetry with a _move_ drag is deliberate and not an oversight —
   a size is a number the strip already holds, while dragging a window somewhere would have to mean _insert

@@ -574,8 +574,9 @@ Three consequences worth stating, because each is the sort of thing a reader che
 - **At `gap = 0` the fold vanishes**, so a zero-gap layout is the plain share it always was.
 
 `Extent` has an inverse, `proportion(of:)`, for the callers that record a resolved size back as an intent
-(`grow`/`shrink` at a `.percent`, and the settings preview's mirror of it). It is stated beside the formula it
-inverts so the two cannot drift.
+(`grow`/`shrink` at a `.percent`, a hand resize on either axis, and the settings preview's mirror of them). It is
+stated beside the formula it inverts so the two cannot drift, and answers `nil` at a zero extent — every share of
+nothing is nothing — which is the one guard those callers need rather than each carrying its own.
 
 **Height resolves the same way, one container over**: a `heightOverride` (a hand resize) shadows a preset index
 (`cycle-height`) shadows **auto**, which shares the column's leftover height with the other autos. Both rungs
@@ -627,6 +628,13 @@ also what makes it total over a window that was already refusing its target. Thr
 - **A height drag sends the neighbour on that edge back to auto**, which is what makes it a divider rather than a
   window growing into its stackmates. Without it a column whose windows are every one of them pinned has nobody
   to hand the difference to, and repeated drags walk the last window off the bottom of the screen.
+- **What is recorded is a proportion, not the points measured.** A hand draws a rectangle on one screen and the
+  workspace it drew on is portable, so the intent is a share of the extent it was drawn against — of the content
+  area for a width, of the column box for a height. Both adoptions are already clamped to their extent, so a drag
+  at or past an edge lands on it exactly and resolves to `.proportion(1.0)`: "full" is a number the clamp
+  produces rather than a case anything recognizes. The auto rung has always divided the leftover, so this was the
+  one rung that did not follow a display, and a whole stack keeps its shares across one once it does. `grow
+  100px` still leaves points — the typed unit is the user's, and only a drag carries none of its own.
 
 "They cannot comply" needs almost nothing new: a stackmate that will not be that narrow is `resolvedWidth`'s
 `max`, a stackmate that will not be that short is the water-fill's floor, and both learn through the same

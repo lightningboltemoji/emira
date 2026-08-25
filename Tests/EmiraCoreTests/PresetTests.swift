@@ -51,8 +51,15 @@ import Testing
     func proportionOfIsTheInverseOfResolve(gap: Double) {
         let extent = Extent(span: 1472, gap: gap)
         for points in [100.0, 353.0, 726.0, 1472.0] {
-            #expect(abs(extent.resolve(extent.proportion(of: points)) - points) < 1e-9)
+            #expect(abs(extent.resolve(extent.proportion(of: points)!) - points) < 1e-9)
         }
+    }
+
+    /// A display with no content area at all has no proportion to record: every share of nothing is
+    /// nothing, so the inverse declines rather than dividing by zero, and the caller keeps its points.
+    @Test func anEmptyExtentHasNoInverse() {
+        #expect(Extent(span: 0, gap: 0).proportion(of: 400) == nil)
+        #expect(Extent(span: 0, gap: 10).proportion(of: 400) != nil)
     }
 
     /// At zero gap the fold vanishes and a proportion is the plain share it always was — which is what
