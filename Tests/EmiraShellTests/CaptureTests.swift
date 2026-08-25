@@ -519,10 +519,15 @@ import EmiraCore
     typealias Capturer = CaptureServiceTests.ManualCapturer
     typealias Log = CaptureServiceTests.EventLog
 
-    /// A cache already holding a still for `id` at `size` — a previous cover's, reduced and kept.
+    /// A cache already holding a photograph of `id` filmed at `size` and pinned by nobody — what a
+    /// previous cover left behind. Big enough to reduce, since a photograph that cannot is not kept.
+    ///
+    /// Minted at 0, which is *below* every batch the service will run — `generation` is pre-incremented,
+    /// so its first batch is 1. A fixture film is older than anything the service takes, and a stand-in
+    /// that did not sort below its own refresh would never be overtaken by it.
     static func warm(_ id: WindowId, _ size: Size) -> SurfaceCache {
-        let cache = SurfaceCache()
-        cache.keep([id: Capturer.surface(id, size)])
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Capturer.surface(id, size, pixels: 40), mintedAt: 0, for: id, pinnedBy: nil)
         return cache
     }
 
@@ -768,6 +773,148 @@ import EmiraCore
         #expect(reports[0].timedOut)
     }
 
+    // The seam between a cover's own pixels and the ones the next cover raises over
+
+    /// A photograph is reduced by the cover that releases it, and **only once**. A stand-in raised over
+    /// one and then let go is not a second film of the window, and reducing again would fade a window
+    /// that never re-enters a cold scope to nothing, one transition at a time.
+    @Test func aPhotographStoodInAndReleasedAgainIsNotReducedTwice() {
+        let cache = Self.warm(WindowId(1), Self.size)       // filmed at 40, kept at 10
+        let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                     cache: cache)
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 10)
+
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        capturer.sendBase()                                 // raised over the stand-in, never re-filmed
+        service.discard(service.closeCover())
+
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 10)
+    }
+
+    /// **Which film a stand-in raises over must not depend on when the fade landed.** A cover's
+    /// photographs are released either by its own `discard` or — when a key is pressed inside the 0.22 s
+    /// cross-fade — by the head batch of the transition that overtook it, which reads this store a few
+    /// lines later. Both orders answer the film taken by the cover before this one.
+    @Test func theNextCoverStandsInWithTheFilmBeforeItOnEitherPath() {
+        /// Two covers film the window, at 80 pixels and then 40, and a third raises over what they
+        /// left. A store one film behind answers 20 where 10 is right.
+        func standIn(fadingLate: Bool) -> Int? {
+            let cache = SurfaceCache(keepsStills: true)
+            let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                          cache: cache)
+            var fading: CoverToken?
+            for (batch, pixels) in [80, 40].enumerated() {
+                service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+                // The previous cross-fade lands *after* the press that overtook it, so its `discard` is
+                // refused by the generation guard and the release that counted was the head batch's own.
+                if let fading { service.discard(fading) }
+                capturer.sendBase(batch: batch)
+                capturer.send(WindowId(1), size: Self.size, pixels: pixels, batch: batch)
+                capturer.close(batch: batch)
+                let token = service.closeCover()
+                if fadingLate { fading = token } else { service.discard(token) }
+            }
+            service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+            return service.surface(for: WindowId(1))?.image.width
+        }
+
+        #expect(standIn(fadingLate: false) == 10)       // the fade landed before the next press
+        #expect(standIn(fadingLate: true) == 10)        // …and inside it
+    }
+
+    /// A stand-in is an entitlement, not a film: raising a cover over a photograph must not write one.
+    /// A window pinned at capture resolution by one display's cover and stood in by another's is
+    /// otherwise released as though the stand-in were a fresh capture, and re-reduced — 400 to 100 to 25
+    /// while the first display is still showing it.
+    @Test func aStandInDoesNotWriteTheStore() {
+        let left = MonitorId(1), right = MonitorId(2)
+        let cache = SurfaceCache(keepsStills: true)
+        let a = Capturer(), b = Capturer(), log = Log()
+        let service = CaptureService(registry: CaptureServiceTests.registry([1]),
+                                     capturers: [(left, a), (right, b)],
+                                     scheduler: CaptureServiceTests.ManualScheduler(),
+                                     cache: cache, mode: .immediate, deadline: 0.25)
+
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], on: left, feedback: log.sink)
+        a.sendBase()
+        a.send(WindowId(1), size: Self.size, pixels: 40)         // the left cover's own film
+        #expect(service.surface(for: WindowId(1))?.image.width == 40)
+
+        // The right display's cover stands the same photograph in — and never films it, so nothing
+        // overtakes the stand-in.
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], on: right, feedback: log.sink)
+        b.sendBase()
+        #expect(service.surface(for: WindowId(1))?.image.width == 40)
+
+        service.discard(service.closeCover(on: left))
+        #expect(service.surface(for: WindowId(1))?.image.width == 40, "the right cover is still showing it")
+
+        service.discard(service.closeCover(on: right))
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 10, "reduced once, by the last holder")
+    }
+
+    /// A piece that arrives after its batch stopped owing acks was paid for and reached us. Nothing may
+    /// paint it — the cover it belonged to has been resolved without it — but forgetting it costs the
+    /// next transition a capture it need not pay.
+    @Test func aPieceArrivingAfterItsBatchIsStillAPhotograph() {
+        let cache = SurfaceCache(keepsStills: true)
+        let (service, capturer, scheduler, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                             cache: cache)
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        scheduler.fire()                                        // the deadline closed the batch
+        capturer.send(WindowId(1), size: Self.size, pixels: 40)  // …and the still lands after it
+
+        #expect(service.surface(for: WindowId(1)) == nil)       // no cover may paint it
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        #expect(service.surface(for: WindowId(1))?.image.width == 10)   // the next one raises over it
+    }
+
+    /// The same for a piece whose cover was superseded while it was in flight. Its pixels are somebody
+    /// else's desktop *to paint*, and a perfectly good photograph of the window to keep.
+    @Test func aPieceArrivingAfterItsCoverWasSupersededIsStillAPhotograph() {
+        let cache = SurfaceCache(keepsStills: true)
+        let (service, capturer, _, log) = CaptureServiceTests.service([1, 2], mode: .immediate,
+                                                                     cache: cache)
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        _ = service.closeCover()
+        service.capture([CaptureTarget(id: WindowId(2), size: Self.size)], feedback: log.sink)
+        capturer.answer(with: [WindowId(2)], batch: 1)          // a whole new cover claims the display
+        capturer.send(WindowId(1), size: Self.size, pixels: 40, batch: 0)   // …and batch 0 answers
+
+        #expect(service.surface(for: WindowId(1)) == nil)       // not this cover's to paint
+        service.discard(service.closeCover())
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        #expect(service.surface(for: WindowId(1))?.image.width == 10)   // the next one raises over it
+    }
+
+    /// **A film is dated by the batch that took it, not by the moment it landed.** A slow batch answers
+    /// after the one that superseded it, and its piece would otherwise inherit the pin its successor had
+    /// established and replace the film under a cover that has not raised yet — `Reconstruction`
+    /// `.addLayers` reads this store *at* the raise, so the layer would be built from the window as it
+    /// was a transition ago and stretched into the geometry it has now.
+    @Test func aSupersededFilmDoesNotReplaceTheOneTheCoverIsShowing() {
+        let cache = SurfaceCache(keepsStills: true)
+        let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                     cache: cache)
+        // A cover opens and its capturer goes slow: the film of the window is still out.
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        capturer.sendBase(batch: 0)
+        _ = service.closeCover()
+
+        // A press inside the cross-fade opens the next cover, which films the window itself.
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        capturer.sendBase(batch: 1)
+        capturer.send(WindowId(1), size: Self.size, pixels: 40, batch: 1)
+        #expect(service.surface(for: WindowId(1))?.image.width == 40)
+
+        // …and only now does the first batch answer, with the window at the size it has left behind.
+        capturer.send(WindowId(1), size: Size(width: 123, height: 45), pixels: 80, batch: 0)
+
+        #expect(service.surface(for: WindowId(1))?.image.width == 40, "the newer film stands")
+        #expect(service.surface(for: WindowId(1))?.frame.width == Self.size.width,
+                "…so the raise builds its layer at the geometry it is placing")
+    }
+
     /// The read-out says how much of the head latency was actually removed.
     @Test func theReportCountsTheStandIns() {
         let cache = Self.warm(WindowId(1), Self.size)
@@ -806,37 +953,39 @@ import EmiraCore
 
     // Who wants a still kept
 
-    /// `keepsStills` is the union of the two features that want them — `CoverMode.immediate` raises
-    /// over them, a preview guide drawing `stills` draws from them — and neither is the other's, so the bit is
-    /// settable rather than a second read of `mode`. Off, a cover's stills are simply freed.
-    @Test func aCoverKeepsItsStillsOnlyWhenSomethingWantsThem() async throws {
-        func kept(_ keepsStills: Bool) async throws -> Int {
-            let cache = SurfaceCache()
+    /// A cache holding one photograph of `id` filmed at `size` that no cover is showing.
+    static func kept(_ id: WindowId, at size: Size) -> SurfaceCache {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Capturer.surface(id, size, pixels: 40), mintedAt: 0, for: id, pinnedBy: nil)
+        return cache
+    }
+
+    /// `keepsStills` is the union of the two features that want a photograph to outlive its cover —
+    /// `CoverMode.immediate` raises over one, a preview guide drawing `stills` draws from them — and
+    /// neither is the other's, so the bit is settable rather than a second read of `mode`. Off, the last
+    /// cover to let go forgets the photograph instead of reducing it.
+    @Test func aCoverKeepsItsPhotographOnlyWhenSomethingWantsIt() {
+        func kept(_ keepsStills: Bool) -> Int {
+            let cache = SurfaceCache(keepsStills: keepsStills)
             let (service, capturer, _, log) = CaptureServiceTests.service([1], cache: cache)
-            service.keepsStills = keepsStills
             service.capture(windows: [WindowId(1)], feedback: log.sink)
             capturer.sendBase()
             capturer.send(WindowId(1), pixels: 40)       // big enough to survive the reduction
             capturer.close()
-            service.discard(service.closeCover())        // the cross-fade landed; the pixels are freed
-            // The reduction is detached Core Graphics work, so this is the one wait in the suite: poll
-            // until the still lands, and give the negative case its own grace before concluding that
-            // nothing ever will.
-            for _ in 0..<(keepsStills ? 200 : 20) where cache.count == 0 {
-                try await Task.sleep(for: .milliseconds(5))
-            }
+            // The cross-fade landed, so nothing is entitled to it any more. The demotion is synchronous:
+            // the next transition's head batch reads this store immediately after releasing it.
+            service.discard(service.closeCover())
             return cache.count
         }
-        #expect(try await kept(true) == 1)
-        #expect(try await kept(false) == 0)
+        #expect(kept(true) == 1)
+        #expect(kept(false) == 0)
     }
 
     /// The guide asks for a still *whatever* size it was filmed at, where a cover may not. At a few
     /// percent of scale staleness is invisible and a hole is not, so the trade the size match makes for
     /// `CoverMode.immediate` reverses.
     @Test func theSizeAgnosticReadIgnoresAMatchTheCoverWouldRefuse() {
-        let cache = SurfaceCache()
-        cache.keep([WindowId(1): Capturer.surface(WindowId(1), Size(width: 800, height: 600))])
+        let cache = Self.kept(WindowId(1), at: Size(width: 800, height: 600))
 
         #expect(cache.surface(for: WindowId(1), at: Size(width: 400, height: 600)) == nil)
         #expect(cache.anySurface(for: WindowId(1)) != nil)
@@ -844,8 +993,7 @@ import EmiraCore
     }
 
     @Test func aStillIsReturnedOnlyAtTheSizeItWasFilmedAt() {
-        let cache = SurfaceCache()
-        cache.keep([WindowId(1): Capturer.surface(WindowId(1), Size(width: 800, height: 600))])
+        let cache = Self.kept(WindowId(1), at: Size(width: 800, height: 600))
 
         #expect(cache.surface(for: WindowId(1), at: Size(width: 800, height: 600)) != nil)
         #expect(cache.surface(for: WindowId(1), at: Size(width: 400, height: 600)) == nil)
@@ -856,8 +1004,7 @@ import EmiraCore
     /// AX and ScreenCaptureKit describe one rectangle to different precisions, so an exact comparison
     /// would miss on windows that never changed. The same slack the identity join allows.
     @Test func roundingBetweenTheTwoSubsystemsStillMatches() {
-        let cache = SurfaceCache()
-        cache.keep([WindowId(1): Capturer.surface(WindowId(1), Size(width: 800, height: 600))])
+        let cache = Self.kept(WindowId(1), at: Size(width: 800, height: 600))
 
         #expect(cache.surface(for: WindowId(1), at: Size(width: 801, height: 599)) != nil)
         #expect(cache.surface(for: WindowId(1), at: Size(width: 805, height: 600)) == nil)
@@ -866,11 +1013,11 @@ import EmiraCore
     /// A window that only moved is showing the pixels it was filmed with, and the kept still's own
     /// origin is stale by construction — the caller places every layer from the core's geometry.
     @Test func positionIsNotPartOfTheMatch() {
-        let cache = SurfaceCache()
-        var moved = Capturer.surface(WindowId(1), Size(width: 800, height: 600))
-        moved = CapturedSurface(image: moved.image,
-                                frame: Rect(x: 4000, y: 12, width: 800, height: 600))
-        cache.keep([WindowId(1): moved])
+        let cache = SurfaceCache(keepsStills: true)
+        let filmed = Capturer.surface(WindowId(1), Size(width: 800, height: 600), pixels: 40)
+        cache.record(CapturedSurface(image: filmed.image,
+                                     frame: Rect(x: 4000, y: 12, width: 800, height: 600)),
+                     mintedAt: 1, for: WindowId(1), pinnedBy: nil)
 
         #expect(cache.surface(for: WindowId(1), at: Size(width: 800, height: 600)) != nil)
     }
@@ -908,40 +1055,95 @@ import EmiraCore
     }
 
     /// A desktop of many large windows must not grow the cache without bound. Oldest-first, because the
-    /// still that has been *read* most is the one most likely to be stale.
+    /// photograph that has been *read* most is the one most likely to be stale.
     @Test func theOldestStillsAreDroppedAtTheBudget() throws {
         let one = try #require(SurfaceCache.reduced(Self.surface(1)))
-        let cache = SurfaceCache(budget: 2 * one.image.height * one.image.bytesPerRow)
+        let cache = SurfaceCache(budget: 2 * one.image.height * one.image.bytesPerRow,
+                                 keepsStills: true)
 
-        cache.keep([WindowId(1): one])
-        cache.keep([WindowId(2): one])
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
+        cache.record(Self.surface(2), mintedAt: 2, for: WindowId(2), pinnedBy: nil)
         #expect(cache.count == 2)
 
-        cache.keep([WindowId(3): one])
+        cache.record(Self.surface(3), mintedAt: 3, for: WindowId(3), pinnedBy: nil)
         #expect(cache.count == 2)
         #expect(cache.surface(for: WindowId(1), at: one.frame.size) == nil)   // the oldest went
         #expect(cache.surface(for: WindowId(2), at: one.frame.size) != nil)
         #expect(cache.surface(for: WindowId(3), at: one.frame.size) != nil)
     }
 
-    /// Re-filming a window replaces its entry rather than adding a second, and its bytes with it.
-    @Test func keepingAWindowTwiceDoesNotDoubleCountIt() throws {
-        let one = try #require(SurfaceCache.reduced(Self.surface(1)))
-        let cache = SurfaceCache()
-        cache.keep([WindowId(1): one])
+    /// Re-filming a window replaces its photograph rather than adding a second, and its bytes with it.
+    @Test func keepingAWindowTwiceDoesNotDoubleCountIt() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
         let after = cache.byteCount
 
-        cache.keep([WindowId(1): one])
+        cache.record(Self.surface(1), mintedAt: 2, for: WindowId(1), pinnedBy: nil)
         #expect(cache.count == 1)
         #expect(cache.byteCount == after)
     }
 
-    @Test func clearingDropsEverything() throws {
-        let cache = SurfaceCache()
-        cache.keep([WindowId(1): try #require(SurfaceCache.reduced(Self.surface(1)))])
+    /// **A pinned photograph is never evicted**, however far past the budget the rest of the desk drives
+    /// it: it is on screen, and dropping it would blank a layer in a live cover. It costs the budget
+    /// nothing to leave there, because the budget is over what may be dropped.
+    @Test func evictionSkipsThePhotographsACoverIsShowing() throws {
+        let one = try #require(SurfaceCache.reduced(Self.surface(1)))
+        let budget = one.image.height * one.image.bytesPerRow
+        let cache = SurfaceCache(budget: budget, keepsStills: true)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))  // a cover's own
+
+        for id in UInt64(2)...4 {
+            cache.record(Self.surface(id), mintedAt: Int(id), for: WindowId(id), pinnedBy: nil)
+        }
+
+        #expect(cache.pinnedSurface(for: WindowId(1)) != nil)     // the cover still has its pixels…
+        #expect(cache.pinnedSurface(for: WindowId(1))?.image.width == 400)   // …at capture resolution
+        #expect(cache.count == 2)                                 // …and one released photograph beside it
+        #expect(cache.byteCount == budget)                        // the pinned one is not the budget's
+    }
+
+    /// Two slow batches, both superseded, answering in the wrong order. No cover is watching either
+    /// film — but the one the store keeps is the one a later stand-in raises over, so it has to be the
+    /// newer of the two whichever way round they land.
+    @Test func theOlderOfTwoLateFilmsLosesWhicheverOrderTheyLandIn() {
+        func held(newerFirst: Bool) -> Double? {
+            let cache = SurfaceCache(keepsStills: true)
+            let older = (Self.surface(1, width: 400, height: 300), 7)
+            let newer = (Self.surface(1, width: 800, height: 600), 9)
+            for (surface, mint) in newerFirst ? [newer, older] : [older, newer] {
+                cache.record(surface, mintedAt: mint, for: WindowId(1), pinnedBy: nil)
+            }
+            return cache.anySurface(for: WindowId(1))?.frame.width
+        }
+
+        #expect(held(newerFirst: false) == 800)
+        #expect(held(newerFirst: true) == 800)
+    }
+
+    /// An overtaken film still carries an entitlement, and `record` decides the two separately. A cover
+    /// that asked for a window and was answered late may paint what the store holds — a *better*
+    /// photograph than the one it arrived with — so the pin lands even where the pixels do not.
+    @Test func anOvertakenFilmStillRecordsItsEntitlement() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1, width: 800, height: 600), mintedAt: 9, for: WindowId(1),
+                     pinnedBy: nil)
+        #expect(cache.pinnedSurface(for: WindowId(1)) == nil)     // nothing is showing it yet
+
+        cache.record(Self.surface(1, width: 400, height: 300), mintedAt: 7, for: WindowId(1),
+                     pinnedBy: MonitorId(1))
+
+        #expect(cache.pinnedSurface(for: WindowId(1))?.frame.width == 800, "the newer film, and painted")
+        #expect(cache.byteCount == 0, "…pinned, so the budget is no longer about it")
+    }
+
+    @Test func clearingDropsEverythingNoCoverIsShowing() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
+        cache.record(Self.surface(2), mintedAt: 2, for: WindowId(2), pinnedBy: MonitorId(1))
         cache.removeAll()
 
-        #expect(cache.count == 0)
+        #expect(cache.count == 1)                                 // the live cover's own stays
+        #expect(cache.pinnedSurface(for: WindowId(2)) != nil)
         #expect(cache.byteCount == 0)
     }
 }

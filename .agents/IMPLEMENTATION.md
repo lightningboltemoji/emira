@@ -399,11 +399,24 @@ Every exit length is safe for one reason: a cover is dismissed only once its ani
 reals have landed, so it always comes off a desktop that already matches it. What a dissolve hides is content
 that went stale under the cover, never geometry. The numbers live in `CompositingExecutor`, above the test seam.
 
-`CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept still fits is acked at
-once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one layer's
-_contents_ that settles no gate. `SurfaceCache` holds what a cover leaves behind, at quarter scale, and matches
-on **size alone** — which is freshness only while the geometry a size was computed against holds, so a display
-change drops the lot (`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
+`CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept photograph fits is acked
+at once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one
+layer's _contents_ that settles no gate. `SurfaceCache` holds **one photograph per window** — the most recent
+taken of it, whether or not a cover is showing it — and matches on **size alone**, which is freshness only while
+the geometry a size was computed against holds, so a display change drops the lot
+(`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
+
+Capture resolution is an entitlement rather than a lifetime. A live cover _pins_ every photograph it paints;
+the last release reduces one to quarter scale in place rather than dropping it, and the reduction is both the
+memory budget (16× at rest) and the disclosure that keeps a photograph filmed minutes ago from passing for the
+window as it is now. Three things follow. A photograph outlives the batch that produced it, so a piece arriving
+after its ack deadline or after its cover was superseded is still recorded — those guards are about the right to
+_paint_ pixels, never a reason to forget them. The release is **synchronous**, because the head batch of the
+next transition releases the outgoing cover a few lines before it reads the store for its own stand-ins: a
+demotion landing a turn later would hand a keypress inside the cross-fade the film before last. And every
+photograph carries the batch that took it, because those recordings reach the store in _arrival_ order and a
+batch that runs long answers after the one that superseded it — a film is replaced only by a later film, while
+the entitlement an overtaken piece carries is recorded regardless, over whatever the store already holds.
 
 ---
 
@@ -864,7 +877,7 @@ animated out like a close, position remembered.
 | `AX/`                     | the truth plane, in three directions: read (`AXEnumerator`), write (`AXExecutor`), watch (`AXObservers`) | `WindowSource`, `WindowWriter`, `ObservationSource` |
 | `WindowRegistry.swift`    | window identity: mints `WindowId`, binds AX ↔ `CGWindowID`                                               | — (pure joins live in `WindowIdentity`)             |
 | `WorldWatcher.swift`      | the live world's _policy_: boot scan → adopt → watch → reconcile                                         | driven entirely through the three AX seams          |
-| `Capture/`                | SCK stills, the batch deadline, the `WindowId`-keyed store, `SurfaceCache`                               | `SurfaceCapturer`, `CaptureStore`                   |
+| `Capture/`                | SCK stills, the batch deadline, the one `WindowId`-keyed photograph store (`SurfaceCache`)               | `SurfaceCapturer`, `CaptureStore`                   |
 | `Compositor/`             | an overlay + reconstruction per display, the plane over them, the Y-flip, effect routing                 | `CoverSurface` / `CoverPlane`                        |
 | `Guide/`                  | one guide window per display: `GuideSubject` reads the truth plane into a `GuideInput`, `Guide` decides what is up and arms a dwell per guide, `GuidePanel` owns the window; the drawing is `EmiraGuide` | `GuideSurface`; `GuideInput` is pure |
 | `Pointer/`                | hide/show, warp, and the two sample readers                                                              | `CursorSurface`                                     |
@@ -1024,10 +1037,10 @@ carry the plural:
   2× shown on a 1× overlay pops on the cross-fade. Photographing and cutting out of the base are one list
   again for the same reason: the windows a cover shows and the windows its own base must not contain are the
   same set.
-- **The stills are one store with per-cover ownership.** A window two covers show is released by the last of
-  them, so one cover coming down cannot blank a layer still on screen on the other display. A head batch that
-  ends without its base abandons **its own** cover — `coverUnavailable(m)` — and the other screen's keeps
-  running.
+- **The photographs are one store, and a cover's hold on one is an entitlement.** A window two covers show is
+  released by the last of them, so one cover coming down cannot blank a layer still on screen on the other
+  display — and what that last release drops is the entitlement, not the photograph. A head batch that ends
+  without its base abandons **its own** cover — `coverUnavailable(m)` — and the other screen's keeps running.
 
 A surface builds a layer for every binding it is handed, and every binding it is handed is its own: a cover
 belongs to one display, so the session that minted them named its monitor. A guide draws only the strips its

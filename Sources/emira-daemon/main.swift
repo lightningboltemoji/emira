@@ -472,7 +472,7 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
     let keepsStills = config.coverMode == .immediate
         || (config.guide.preview.enabled && config.guide.preview.content == .stills)
-    capture.keepsStills = keepsStills
+    surfaceCache.keepsStills = keepsStills
     // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte
     // budget collects them. A no-op at boot, where there is nothing kept yet.
     if !keepsStills { surfaceCache.removeAll() }

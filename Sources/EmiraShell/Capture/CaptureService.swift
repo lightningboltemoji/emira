@@ -15,8 +15,11 @@ import EmiraCore
 //     display-independent.
 //  3. The store is written before the acks go out: the last `captureReady` re-enters the pump
 //     synchronously and comes back out as `raiseCover`, which reads this store.
-//  4. Stills live exactly as long as the cover — at capture resolution. A window image at 2× is several
-//     megabytes, so what outlives one is the reduced copy `SurfaceCache` keeps, under `.immediate` only.
+//  4. A photograph outlives the cover it was taken for. Capture resolution is an entitlement a live
+//     cover holds — a window image at 2× is several megabytes — so releasing the last of them reduces
+//     the photograph in place rather than dropping it. One store, `SurfaceCache`, holds both, and the
+//     batch a piece came from goes with it — pieces reach the store in arrival order, which is not the
+//     order they were filmed in.
 //
 // `CoverMode` is the only policy here the core does not decide, and it changes one thing: whether a
 // window whose kept still fits is ready *now*, its own capture following as a `captureRefreshed`, or
@@ -268,31 +271,13 @@ public final class CaptureService: CaptureStore {
     /// applies to `WindowAnimation`.
     public var mode: CoverMode
 
-    /// Whether a cover's stills are reduced and kept when it comes down. Two features want them and
-    /// neither is the other's: `CoverMode.immediate` raises over them, and a preview guide drawing
-    /// `stills` draws its tiles from them. A settable bit rather than a second read of `mode`, so the daemon can name
-    /// the union of the two conditions in one place (`applyShellConfig`).
-    ///
-    /// Costs no captures either way — what it changes is whether a still is reduced on its way to being
-    /// freed, or simply freed.
-    public var keepsStills: Bool
-
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
 
-    /// The live covers' stills, keyed by window. Written before the acks, released when the cover that
-    /// owns them comes down — or, for a window two covers show, when the last of them does.
-    private var surfaces: [WindowId: CapturedSurface] = [:]
-    /// Which cover each still belongs to. A window owed by two sessions is filmed for each, so the
-    /// answer is a set, and one cover's release must not free pixels the other is still showing.
-    private var owners: [WindowId: Set<MonitorId>] = [:]
     /// One base per covered display. Absent means that display's overlay would raise onto its own black
-    /// fill, which is why a head batch that ends with one missing abandons that cover instead.
+    /// fill, which is why a head batch that ends with one missing abandons that cover instead. Not in
+    /// the cache: a base is a photograph of a screen, not of a window, and has no second lifetime.
     private var baseImages: [MonitorId: CGImage] = [:]
-    /// Which of `surfaces` are a live cover's *own* captures, as against stand-ins it inherited. Only
-    /// these are worth keeping: reducing an already-reduced still would degrade it once per transition
-    /// it survives, until a window that is never re-filmed fades to nothing.
-    private var freshlyCaptured: Set<WindowId> = []
 
     /// Which displays have a cover session open: whether the next batch for one *grows* its cover
     /// (merge, no new base) or *opens* one (clear its stills, take its base).
@@ -337,6 +322,8 @@ public final class CaptureService: CaptureStore {
         /// whether `.immediate` did anything. Both relative to `startedAt`, both recorded once.
         var baseAt: TimeInterval?
         var gateAt: TimeInterval?
+        /// Windows this batch's own captures reached the store for — what a stand-in is overtaken by.
+        var refreshed: Set<WindowId> = []
         /// Stand-ins whose own capture had not yet overtaken them at `gateAt`.
         var standingAtGate = 0
     }
@@ -350,7 +337,6 @@ public final class CaptureService: CaptureStore {
                 scheduler: any DelayScheduler,
                 cache: SurfaceCache = SurfaceCache(),
                 mode: CoverMode = .exact,
-                keepsStills: Bool = false,
                 deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.registry = registry
         self.capturers = Dictionary(capturers.map { ($0.monitor, $0.capturer) },
@@ -358,7 +344,6 @@ public final class CaptureService: CaptureStore {
         self.scheduler = scheduler
         self.cache = cache
         self.mode = mode
-        self.keepsStills = keepsStills
         self.deadline = deadline
     }
 
@@ -369,10 +354,9 @@ public final class CaptureService: CaptureStore {
                             scheduler: any DelayScheduler,
                             cache: SurfaceCache = SurfaceCache(),
                             mode: CoverMode = .exact,
-                            keepsStills: Bool = false,
                             deadline: TimeInterval = CaptureService.defaultDeadline) {
         self.init(registry: registry, capturers: [(monitor, capturer)], scheduler: scheduler,
-                  cache: cache, mode: mode, keepsStills: keepsStills, deadline: deadline)
+                  cache: cache, mode: mode, deadline: deadline)
     }
 
     /// Replace the capturers — hot-plug, and a display whose backing scale changed under it. A
@@ -393,7 +377,7 @@ public final class CaptureService: CaptureStore {
         }
     }
 
-    public func surface(for window: WindowId) -> CapturedSurface? { surfaces[window] }
+    public func surface(for window: WindowId) -> CapturedSurface? { cache.pinnedSurface(for: window) }
 
     public func base(of monitor: MonitorId) -> CGImage? { baseImages[monitor] }
 
@@ -421,14 +405,13 @@ public final class CaptureService: CaptureStore {
             clearStore(of: monitor)
         }
 
-        // Which windows a kept still can already answer for. Written into the store *before* any ack
-        // goes out (rule 3) — and before the batch is even on the wire, since a synchronous capturer
-        // could otherwise land a fresh still on top of a stand-in that had not been installed yet.
+        // Which windows a photograph can already answer for. Pinned *before* any ack goes out (rule 3),
+        // and before the batch is even on the wire: a synchronous capturer could otherwise film a window
+        // whose stand-in had not been claimed yet, and its own photograph would then read as a match.
         var stoodIn: Set<WindowId> = []
         if mode == .immediate {
-            for target in targets {
-                guard let kept = cache.surface(for: target.id, at: target.size) else { continue }
-                install(kept, for: target.id, on: monitor, fresh: false)
+            for target in targets where cache.surface(for: target.id, at: target.size) != nil {
+                cache.pin(target.id, to: monitor)
                 stoodIn.insert(target.id)
             }
         }
@@ -491,12 +474,24 @@ public final class CaptureService: CaptureStore {
 
     /// Take one piece of the batch `generation` names, from `monitor`'s capturer: store it, then say so.
     private func receive(generation: Int, from monitor: MonitorId, piece: CapturePiece) {
-        guard let batch = pending[generation] else { return }   // already finished; nothing owes an ack
-
+        let batch = pending[generation]
         // Whether this batch's cover still exists: a session can be abandoned, or a whole further
         // transition can start, while a slow batch is out, and its pixels would then be somebody else's
-        // desktop. The acks are still owed; the images stop here.
-        let isCurrent = batch.cover == coverGeneration[batch.monitor] ?? 0
+        // desktop. The acks are still owed; the entitlement to paint stops here.
+        let isCurrent = batch.map { $0.cover == coverGeneration[$0.monitor] ?? 0 } ?? false
+
+        // The one write, and it precedes both guards below. A piece arriving after its batch stopped
+        // owing acks, or after its cover was superseded, is a photograph that was paid for and reached
+        // us: entitlement is about painting it, and neither guard is a reason to forget it.
+        //
+        // The batch is the mint: this line runs in arrival order, and one that ran long reaches it after
+        // the batch that superseded it.
+        if case .window(let id, let surface) = piece {
+            cache.record(surface, mintedAt: generation, for: id,
+                         pinnedBy: isCurrent ? batch?.monitor : nil)
+        }
+
+        guard let batch else { return }         // already finished; nothing owes an ack
 
         switch piece {
         case .base(let image):
@@ -510,12 +505,12 @@ public final class CaptureService: CaptureStore {
             }
             release(generation: generation)
 
-        case .window(let id, let surface):
-            if isCurrent { install(surface, for: id, on: batch.monitor, fresh: true) }
+        case .window(let id, _):
+            if isCurrent { pending[generation]?.refreshed.insert(id) }
             guard batch.stoodIn.contains(id) else { return ready(generation: generation, id) }
             // A stand-in has spent its `captureReady`, so this asks for a repaint instead, which settles
             // no gate. Only once that ack has gone out — before it there is no layer, and the raise finds
-            // these pixels in the store anyway — and only if they reached the store at all.
+            // these pixels in the store anyway — and only if the cover they belong to is still up.
             guard isCurrent, pending[generation]?.owed.contains(id) == false else { return }
             batch.feedback(.captureRefreshed(id))
         }
@@ -556,7 +551,7 @@ public final class CaptureService: CaptureStore {
     private func noteGate(_ generation: Int) {
         guard var batch = pending[generation], batch.gateAt == nil, batch.owed.isEmpty else { return }
         batch.gateAt = Date().timeIntervalSince(batch.startedAt)
-        batch.standingAtGate = batch.stoodIn.subtracting(freshlyCaptured).count
+        batch.standingAtGate = batch.stoodIn.subtracting(batch.refreshed).count
         pending[generation] = batch
     }
 
@@ -568,7 +563,7 @@ public final class CaptureService: CaptureStore {
 
         onBatchResolved?(CaptureReport(
             windows: batch.windows.count,
-            missing: batch.windows.filter { surfaces[$0] == nil }.count,
+            missing: batch.windows.filter { cache.pinnedSurface(for: $0) == nil }.count,
             stoodIn: batch.stoodIn.count,
             standing: batch.standingAtGate,
             gate: batch.gateAt,
@@ -596,55 +591,18 @@ public final class CaptureService: CaptureStore {
         }
     }
 
-    /// Write one still into the store and record which cover it belongs to. A window two covers show is
-    /// owned by both, so neither release alone can free it.
-    private func install(_ surface: CapturedSurface, for id: WindowId, on monitor: MonitorId,
-                         fresh: Bool) {
-        surfaces[id] = surface
-        owners[id, default: []].insert(monitor)
-        if fresh { freshlyCaptured.insert(id) }
-    }
-
-    /// Drop one display's cover's pixels — and, on the way out, hand its own captures to the cache. The
-    /// single point every still passes through on its way to being freed, which is why the hand-off is
-    /// here and not in `discard`: a cover can also lose its stills to the *next* transition on that
-    /// display claiming them.
-    ///
-    /// **A still another live cover is showing stays**, which is what keeps two displays independent:
-    /// one screen's transition ending must not blank a layer on the other.
+    /// One display's cover is over: it stops being entitled to the photographs it was showing, and its
+    /// base — the one thing that cannot outlive it — goes. The single point every cover passes through
+    /// on its way down, which is why the release is here and not in `discard`.
     private func clearStore(of monitor: MonitorId) {
-        var released: [WindowId: CapturedSurface] = [:]
-        for (id, holders) in owners where holders.contains(monitor) {
-            var holders = holders
-            holders.remove(monitor)
-            guard holders.isEmpty else { owners[id] = holders; continue }
-            owners[id] = nil
-            if let surface = surfaces.removeValue(forKey: id) {
-                if freshlyCaptured.remove(id) != nil { released[id] = surface }
-            }
-        }
-        keep(released)
+        cache.unpin(monitor)
         baseImages[monitor] = nil
     }
 
-    /// Drop every kept still — the desktop they were filmed on is gone. `SurfaceCache`'s rule 2 holds
-    /// only while the geometry a size was computed against does, and a display change moves every working
-    /// area at once. Live covers' stills stay: `Event.screensChanged` takes those transitions down itself.
+    /// Drop every photograph no cover is showing — the desktop they were filmed on is gone, and
+    /// `SurfaceCache`'s rule 2 holds only while the geometry a size was computed against does. Live
+    /// covers' own stay: `Event.screensChanged` takes those transitions down itself.
     public func forgetKeptStills() {
         cache.removeAll()
-    }
-
-    /// Reduce these captures and keep them for a later `.immediate` cover to stand in with.
-    ///
-    /// Detached: the reduction is Core Graphics work proportional to the scope, and a cover comes down
-    /// during the next transition's animation whenever a key is held.
-    private func keep(_ captures: [WindowId: CapturedSurface]) {
-        guard keepsStills, !captures.isEmpty else { return }
-        let cache = self.cache
-        Task.detached(priority: .utility) {
-            let reduced = captures.compactMapValues { SurfaceCache.reduced($0) }
-            guard !reduced.isEmpty else { return }
-            await MainActor.run { cache.keep(reduced) }
-        }
     }
 }
