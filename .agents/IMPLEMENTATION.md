@@ -981,6 +981,16 @@ death as surely as a close does — and nothing a managed window goes through ch
 Control, App Exposé and a Space switch included**, which matter more than full screen because they last as
 long as the user holds them.
 
+**Which apps get asked is two questions, and the wider one needs evidence.** `WindowSource.applications()`
+sweeps `.regular` apps only: accessory and prohibited processes outnumber them by an order of magnitude, most
+never own a window, and several are a browser's renderers — whose trees are what "touch as little of the tree
+as possible" is about. But an accessory app may still put up an ordinary window, and that window is tileable
+like any other. So `target(for:)` resolves a *single pid* and admits `.accessory`, and only reconciliation's
+stray path calls it — where the window server has already named the pid, which is the evidence that makes the
+wider question affordable. `.prohibited` stays out of both (it can never be activated, so its column could
+never take focus), as does the daemon's own pid: emira is itself an accessory app. An app reached this way
+lands in `apps` and is observed from then on, so the route is paid once rather than every interval.
+
 **`alreadyOpen` is provenance, and every seam a scan request crosses has to carry it.** A window emira
 watched open is snapped onto the first preset and followed to the workspace a rule sends it to; one it met
 mid-life keeps the width it already has and moves nobody's desktop. Only a birth notification says the

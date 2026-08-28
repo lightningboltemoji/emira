@@ -52,10 +52,11 @@ public struct ScanAnswer: Sendable {
 }
 
 /// Everything `AXEnumerator` needs from a live macOS. `windows(of:then:)` is asynchronous because the
-/// real one crosses a thread and must not block the pump; the other two are cheap local reads.
+/// real one crosses a thread and must not block the pump; the other three are cheap local reads.
 @MainActor
 public protocol WindowSource {
-    /// The apps worth asking about windows, right now.
+    /// The apps worth asking about windows *unprompted* — the sweep, with nothing pointing at any one of
+    /// them. Deliberately narrower than `target(for:)`; see there.
     func applications() -> [ScanTarget]
     /// One app's windows *and the window list read alongside them* (`ScanAnswer`), delivered on the main
     /// actor. Must call `completion` exactly once — including when the app answers with nothing, the
@@ -64,6 +65,18 @@ public protocol WindowSource {
     /// The public window list on its own — what reconciliation re-reads to find windows no notification
     /// accounted for. Touches no app's run loop, so it costs nothing an app can slow down.
     func windowList() -> [WindowListEntry]
+    /// One app by pid, asked *because a window of it is already evidenced*. The wider question: the
+    /// sweep has to guess which apps are worth the footprint, this one already has a window on screen.
+    /// `nil` for a pid that is no app we could manage.
+    func target(for pid: pid_t) -> ScanTarget?
+}
+
+public extension WindowSource {
+    /// By default the same population as the sweep — correct for any source whose app list *is* its
+    /// whole world. Only a source with a notion of apps it declines to sweep needs to widen it.
+    func target(for pid: pid_t) -> ScanTarget? {
+        applications().first { $0.pid == pid }
+    }
 }
 
 /// Scans every running app, binds each window to its public window number, takes the bound ones into
@@ -190,6 +203,10 @@ public final class AXEnumerator {
 
     /// The window list on its own, for reconciliation.
     public func windowList() -> [WindowListEntry] { source.windowList() }
+
+    /// One app by pid, for a window reconciliation found and nothing accounts for. Not `applications()`
+    /// filtered: that sweep answers a narrower question. See `WindowSource.target(for:)`.
+    public func target(for pid: pid_t) -> ScanTarget? { source.target(for: pid) }
 
     /// Join, adopt, and describe — one app at a time, against the list that app answered with.
     ///
@@ -387,7 +404,10 @@ public final class AXWindowSource: WindowSource {
 
     /// The ordinary, user-facing apps — `.regular` activation policy, still alive, not us. `.accessory`
     /// and `.prohibited` processes are menu-bar agents and background helpers whose AX trees cost
-    /// footprint for nothing tileable. Apps with no bundle identifier are skipped: the core groups by it.
+    /// footprint for nothing tileable, and they outnumber the regular apps by an order of magnitude.
+    /// Apps with no bundle identifier are skipped: the core groups by it.
+    ///
+    /// Narrow because it asks *speculatively*; `target(for:)` is the same question with evidence.
     public func applications() -> [ScanTarget] {
         let me = ProcessInfo.processInfo.processIdentifier
         return NSWorkspace.shared.runningApplications.compactMap { app in
@@ -397,6 +417,18 @@ public final class AXWindowSource: WindowSource {
             else { return nil }
             return ScanTarget(pid: app.processIdentifier, bundleId: bundleId)
         }
+    }
+
+    /// One app by pid, admitting `.accessory` — a menu-bar agent that also puts up an ordinary window.
+    /// `.prohibited` stays out: such a process cannot be activated, so its column could never take focus.
+    /// Excluding *us* is load-bearing, not tidiness — the daemon is itself `.accessory`.
+    public func target(for pid: pid_t) -> ScanTarget? {
+        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier,
+              let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+              app.activationPolicy != .prohibited,
+              let bundleId = app.bundleIdentifier
+        else { return nil }
+        return ScanTarget(pid: pid, bundleId: bundleId)
     }
 
     /// Read one app's windows on its own lane, and the window list with them. A window whose frame is

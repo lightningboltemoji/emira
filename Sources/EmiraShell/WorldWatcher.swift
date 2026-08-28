@@ -363,7 +363,6 @@ public final class WorldWatcher {
         unaccounted = unaccounted.filter { number, _ in strays.contains { $0.number == number } }
 
         var targets: [pid_t: ScanTarget] = [:]
-        var known: [pid_t: ScanTarget]?
         for stray in strays {
             let round = (unaccounted[stray.number] ?? 0) + 1
             unaccounted[stray.number] = round
@@ -375,10 +374,11 @@ public final class WorldWatcher {
             // An app absent from `apps` is invisible to every notification we hold: it was running
             // before the daemon, so `appLaunched` never fires for it, and `windowAppeared` is gated on
             // already knowing it. The one question the retry chain deliberately never asks.
-            if known == nil {
-                known = Dictionary(enumerator.applications().map { ($0.pid, $0) }) { first, _ in first }
-            }
-            if let target = known?[stray.pid] { targets[stray.pid] = target }
+            //
+            // Per pid rather than against the sweep, which is the whole of what admits an accessory
+            // app: here the window server has already named it. It lands in `apps` once scanned, so
+            // this route is paid once rather than every interval.
+            if let target = enumerator.target(for: stray.pid) { targets[stray.pid] = target }
         }
 
         guard !targets.isEmpty else { return }

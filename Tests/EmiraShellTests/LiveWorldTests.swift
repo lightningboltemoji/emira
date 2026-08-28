@@ -31,6 +31,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 /// A `WindowSource` answering from arrays, scoped to whatever app set it is asked about.
 @MainActor private final class StubWindowSource: WindowSource {
     var targets: [ScanTarget] = []
+    /// Apps that exist and answer AX perfectly well, but that `applications()` declines to offer — the
+    /// stand-in for an `.accessory` menu-bar agent, which the real sweep leaves out on footprint
+    /// grounds. Reachable only by pid, which is exactly the asymmetry `target(for:)` exists for.
+    var unswept: [ScanTarget] = []
     var windowsByPid: [pid_t: [ScannedWindow]] = [:]
     var entries: [WindowListEntry] = []
 
@@ -49,6 +53,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     private(set) var windowListCalls = 0
 
     func applications() -> [ScanTarget] { targets }
+
+    func target(for pid: pid_t) -> ScanTarget? { (targets + unswept).first { $0.pid == pid } }
 
     func windows(of target: ScanTarget,
                  then completion: @escaping @MainActor (ScanAnswer) -> Void) {
@@ -1285,6 +1291,46 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(world.created.map(\.title) == ["term", "one", "two", "web"])
         #expect(world.source.watchedApps.contains(300))   // and it is observed from now on
+    }
+
+    @Test func anAppTheSweepNeverOffersIsStillAdoptedOnceItsWindowIsSeen() {
+        // A menu-bar agent that also puts up an ordinary window. The sweep cannot go looking for it —
+        // forty-odd accessory processes to the one that has a window, several of them a browser's
+        // renderers — so the window server naming its pid is the only thing that gets it managed.
+        let world = LiveWorld()
+        world.watcher.start()
+
+        world.windows.unswept.append(ScanTarget(pid: 400, bundleId: "zip.tanner.ping"))
+        world.windows.windowsByPid[400] = [
+            scanned(pid: 400, seed: 6, bundle: "zip.tanner.ping", title: "General", frame: rect(2100))]
+        #expect(world.windows.scanCounts[400] == nil, "the boot sweep did not go near it")
+
+        world.windows.entries.append(WindowListEntry(number: 6, pid: 400, frame: rect(2100)))
+        world.heartbeat.beat()
+
+        #expect(world.created.last?.title == "General")
+        #expect(world.created.last?.wasAlreadyOpen == true, "met mid-life, not watched open")
+        #expect(world.source.watchedApps.contains(400),
+                "and observed from here on, so this route is paid once rather than every interval")
+    }
+
+    @Test func anOffScreenStrayNeverReachesTheSweepsExemption() {
+        // The other half of what keeps the exemption cheap: it is spent on *evidence*, and an off-screen
+        // layer-0 entry is not any. Ordinary apps carry several apiece, and an accessory process that
+        // never shows a window is never asked about at all.
+        let world = LiveWorld()
+        world.watcher.start()
+
+        world.windows.unswept.append(ScanTarget(pid: 400, bundleId: "zip.tanner.ping"))
+        world.windows.windowsByPid[400] = [
+            scanned(pid: 400, seed: 6, bundle: "zip.tanner.ping", title: "General", frame: rect(2100))]
+        world.windows.entries.append(
+            WindowListEntry(number: 6, pid: 400, frame: rect(2100), isOnScreen: false))
+
+        for _ in 0..<5 { world.heartbeat.beat() }
+
+        #expect(world.windows.scanCounts[400] == nil, "never asked, however often the backstop runs")
+        #expect(world.created.allSatisfy { $0.title != "General" })
     }
 
     @Test func anAccountedForDesktopCostsOneWindowListReadAndNoAXAtAll() {
