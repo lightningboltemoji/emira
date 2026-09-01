@@ -1500,20 +1500,20 @@ public enum Engine {
 
     /// Whether `[focus] system-events` refuses this focus report — and if so, the whole of the response.
     ///
-    /// `nil` admits, and the caller carries on as if the policy did not exist. A refusal is one `.focus`
-    /// effect and **no state change at all** — which the signature says, taking `State` by value: the
-    /// core's belief about focus never moved, so re-asserting it is the entire undo. Nothing reveals, no
-    /// workspace switches, no cover goes up — which is the point, since the transition is exactly what
-    /// the user did not want to watch.
+    /// `nil` admits, and the caller carries on as if the policy did not exist. A refusal is one
+    /// `.restoreFocus` effect and **no state change at all** — which the signature says, taking `State`
+    /// by value: the core's belief about focus never moved, so re-asserting it is the entire undo.
+    /// Nothing reveals, no workspace switches, no cover goes up — which is the point, since the
+    /// transition is exactly what the user did not want to watch.
     ///
     /// **Our own echo** is always admitted, in every mode, because the reducer wrote that focus
     /// optimistically when it emitted the effect, so refusing it would leave the core arguing with itself.
     /// Before the first `screensChanged` there is no geometry to judge against either, and no grounds to
     /// refuse is not a refusal.
     ///
-    /// **Having nothing to restore to is not consent.** A refusal is at most one `.focus`, so with no
-    /// anchor it is simply silent — emira declines to move and macOS's own focus stands, which cannot
-    /// leave the desktop keyless because nothing here can unfocus a window. Admitting instead was the
+    /// **Having nothing to restore to is not consent.** A refusal is at most one `.restoreFocus`, so
+    /// with no anchor it is simply silent — emira declines to move and macOS's own focus stands, which
+    /// cannot leave the desktop keyless because nothing here can unfocus a window. Admitting instead was the
     /// rule this replaces, and it is reachable in two ordinary ways that both end with the desktop
     /// switching to a workspace nobody asked for: a `focusChanged` naming no window (routine, legitimate,
     /// and handled above this guard, so it clears focus without ever consulting the policy), and sitting
@@ -1536,7 +1536,7 @@ public enum Engine {
         // Already ours: nothing to undo, and the reveal is the promise that a focused window is one the
         // user can see. Never reached from another workspace, where focus is `nil` rather than stale.
         guard restore != id else { return nil }
-        return [.focus(restore)]
+        return [.restoreFocus(restore)]
     }
 
     /// Whether the policy lets a focus emira did not cause land on `id`.

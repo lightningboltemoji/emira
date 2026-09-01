@@ -87,6 +87,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// Give a real window keyboard focus (raise + make key via AX / app activation).
     case focus(WindowId)
 
+    /// Put keyboard focus *back* on a window the user never left — the whole of a `[focus] system-events`
+    /// refusal, and the same write as `focus` under a different promise: a correction is owed only to a
+    /// window that can still hold focus, where a command is owed whatever the app is busy doing.
+    case restoreFocus(WindowId)
+
     /// Raise a real window in the z-order without necessarily focusing it (stacking within a column).
     case raise(WindowId)
 

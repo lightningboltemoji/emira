@@ -321,6 +321,59 @@ import EmiraCore
         #expect(events.events.isEmpty)
     }
 
+    // The refusal's correction (`Effect.restoreFocus`)
+
+    /// Which of the writer's two focus routes an effect takes *is* the claim above this seam: a
+    /// correction asks whether the window can still hold focus, a command never does. What the answer
+    /// is comes from LaunchServices and the window server, and needs a real departing app.
+    @Test("a restore takes the writer's asking route, and a focus takes the plain one")
+    func aRestoreAndAFocusTakeDifferentRoutes() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let b = Self.adopt(registry, pid: 100, number: 2)
+        let writer = ScriptedWriter()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.restoreFocus(a), .focus(b)], feedback: events.sink)
+
+        #expect(writer.restored == [a])
+        #expect(writer.focused == [b])
+    }
+
+    @Test("a restore acks its activation exactly as a focus does")
+    func aRestoreAcksItsActivation() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        let scheduler = ManualScheduler()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer, scheduler: scheduler)
+            .execute([.restoreFocus(a)], feedback: events.sink)
+
+        // A turn behind, for `focus`'s reason: an activation is an activation whatever asked for it,
+        // and the cursor hide it discards is re-established after the call returns.
+        #expect(events.events.isEmpty)
+        scheduler.drain()
+        #expect(events.events == [.appActivated])
+    }
+
+    @Test("a restore for an unknown window is dropped, like focus and raise")
+    func aRestoreForAnUnknownWindowIsDropped() {
+        let registry = WindowRegistry()
+        let writer = ScriptedWriter()
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.restoreFocus(WindowId(7))], feedback: events.sink)
+
+        #expect(writer.restored.isEmpty)
+        // Nor an `axFailed`: what the core believes about focus is the one thing a refusal
+        // deliberately does not move.
+        #expect(events.events.isEmpty)
+    }
+
     @Test("close is routed to the writer and answers nothing")
     func closeIsRoutedAndUnacked() {
         let registry = WindowRegistry()
@@ -593,6 +646,7 @@ final class ScriptedWriter: WindowWriter {
 
     private(set) var placements: [Placement] = []
     private(set) var focused: [WindowId] = []
+    private(set) var restored: [WindowId] = []
     private(set) var raised: [WindowId] = []
     private(set) var closed: [WindowId] = []
 
@@ -620,6 +674,14 @@ final class ScriptedWriter: WindowWriter {
         completion()
     }
 
+    /// Recorded apart from `focus`, because which of the two the executor reaches for *is* the claim:
+    /// whether the system is asked about the window is decided by the effect, not inside the write.
+    func restoreFocus(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor () -> Void) {
+        restored.append(window.id)
+        completion()
+    }
+
     func raise(_ window: WindowRegistry.Record) { raised.append(window.id) }
 
     func close(_ window: WindowRegistry.Record) { closed.append(window.id) }
@@ -640,6 +702,8 @@ private final class SilentFocusWriter: WindowWriter {
     func place(_ moves: [WindowMove], of app: pid_t,
                then completion: @escaping @MainActor ([WindowLanding]) -> Void) {}
     func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void) {}
+    func restoreFocus(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor () -> Void) {}
     func raise(_ window: WindowRegistry.Record) {}
     func close(_ window: WindowRegistry.Record) {}
 }

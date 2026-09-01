@@ -73,6 +73,11 @@ public protocol WindowWriter {
     /// Raise a window within its app's stack, without touching focus.
     func raise(_ window: WindowRegistry.Record)
 
+    /// Put focus *back* on a window, unless the system says it can no longer hold it — the refusal's
+    /// correction (`Effect.restoreFocus`). Same write as `focus` and the same completion contract, and
+    /// silent where the answer is no: a window that cannot take focus is not one to report about.
+    func restoreFocus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
+
     /// Ask the window to close itself, as clicking its close button would. Reports nothing: the window
     /// actually going away arrives as a destroy observation, and an app is entitled to refuse (or to
     /// put up a save sheet and close later, or never).
@@ -140,13 +145,29 @@ public final class AXWindowWriter: WindowWriter {
     /// only on a refusal, so the common path keeps both its latency and the ordering the ticket buys.
     public func focus(_ window: WindowRegistry.Record,
                       then completion: @escaping @MainActor () -> Void) {
+        focus(window, correcting: false, then: completion)
+    }
+
+    /// The same write under `canHoldFocus`, asked twice around it: before `makeKey`, which alone brings
+    /// a hidden app back, and in its completion — the last instant, and a lane round trip into the
+    /// departing app later than the report being corrected.
+    public func restoreFocus(_ window: WindowRegistry.Record,
+                             then completion: @escaping @MainActor () -> Void) {
+        guard Self.canHoldFocus(pid: window.pid, window: window.number) else { return }
+        focus(window, correcting: true, then: completion)
+    }
+
+    private func focus(_ window: WindowRegistry.Record, correcting: Bool,
+                       then completion: @escaping @MainActor () -> Void) {
         let ticket = intent.request(window.id)
         let element = window.element
         let pid = window.pid
+        let number = window.number
         client.perform(app: pid) { _ in
             element.makeKey()
         } then: { [intent, client] _ in
             guard intent.isCurrent(ticket) else { return }
+            guard !correcting || Self.canHoldFocus(pid: pid, window: number) else { return }
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
             if NSRunningApplication(processIdentifier: pid)?.activate() == true {
@@ -160,6 +181,18 @@ public final class AXWindowWriter: WindowWriter {
                 completion()
             }
         }
+    }
+
+    /// Whether keyboard focus can still land here. Asked of LaunchServices and the window server and
+    /// never of AX, which describes a quitting app as a healthy one for hundreds of milliseconds.
+    /// `.prohibited` is an app saying it cannot be activated; `.accessory` is not that and must pass.
+    private static func canHoldFocus(pid: pid_t, window number: CGWindowID) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: pid),
+              !app.isTerminated, !app.isHidden, app.activationPolicy != .prohibited
+        else { return false }
+        let listed = CGWindowListCopyWindowInfo([.optionIncludingWindow], number) as? [[String: Any]]
+        guard let info = listed?.first else { return false }   // no longer a window at all
+        return info[kCGWindowIsOnscreen as String] as? Bool ?? false
     }
 
     public func raise(_ window: WindowRegistry.Record) {

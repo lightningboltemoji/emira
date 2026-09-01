@@ -6,7 +6,7 @@ import Testing
 //
 // The whole feature is one guard on the `focusChanged` path, so almost every test here is a pair — the
 // same event under two policies — and the assertion that carries the file is what a *refusal* costs:
-// one `.focus` effect putting our own focus back, and no state change whatsoever. A refusal that moved
+// one `.restoreFocus` effect putting our own focus back, and no state change whatsoever. A refusal that moved
 // the viewport, switched a workspace or raised a cover would be the transition the user is trying to
 // stop seeing.
 //
@@ -60,7 +60,7 @@ import Testing
                                sourceLocation: SourceLocation = #_sourceLocation) {
         let restore = before.world.focusedWindow
         let (after, fx) = Engine.reduce(before, report)
-        #expect(fx == [.focus(restore!)], "expected one restoring focus, got \(fx)",
+        #expect(fx == [.restoreFocus(restore!)], "expected one restoring focus, got \(fx)",
                 sourceLocation: sourceLocation)
         #expect(after == before, "a refusal changed the state", sourceLocation: sourceLocation)
     }
@@ -288,7 +288,7 @@ import Testing
         #expect(s.world.lastStripFocus == anchor, "but where the user was is not forgotten")
 
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(1)))
-        #expect(fx == [.focus(anchor)], "refused, and focus goes back where the user was")
+        #expect(fx == [.restoreFocus(anchor)], "refused, and focus goes back where the user was")
         #expect(after == s, "a refusal changed the state")
     }
 
@@ -362,7 +362,7 @@ import Testing
         let (after, fx) = Engine.reduce(s, systemEvent(away))
 
         #expect(after.monitors.shown == home, "the desktop followed a report it had refused")
-        #expect(fx == [.focus(WindowId(1))])
+        #expect(fx == [.restoreFocus(WindowId(1))])
         #expect(after == s)
     }
 

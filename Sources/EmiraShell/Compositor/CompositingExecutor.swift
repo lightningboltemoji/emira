@@ -214,7 +214,7 @@ public final class CompositingExecutor: Executor {
             return .presentation
         case .capture:
             return .capture
-        case .setFrame, .park, .focus, .raise, .closeWindow:
+        case .setFrame, .park, .focus, .restoreFocus, .raise, .closeWindow:
             return .truth
         case .setCursorHidden, .warpPointer:
             return .pointer
@@ -259,8 +259,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .focus, .raise, .closeWindow, .setCursorHidden,
-                 .warpPointer, .exec:
+            case .setFrame, .park, .capture, .focus, .restoreFocus, .raise, .closeWindow,
+                 .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
             }
         }

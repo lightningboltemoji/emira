@@ -795,9 +795,15 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
 ### Focus policy
 
 - `[focus] system-events` — `respect` / `on-screen` / `ignore`: which focus changes emira did not cause it
-  honours. A refusal is one `.focus` effect restoring the focus the core already believed in and **no state
-  change at all** — no reveal, no switch, no cover. Two things are always admitted: our own echo (marked
-  `.ours` by `FocusIntent`), and a `nil` report.
+  honours. A refusal is one `.restoreFocus` effect restoring the focus the core already believed in and **no
+  state change at all** — no reveal, no switch, no cover. Two things are always admitted: our own echo (marked
+  `.ours` by `FocusIntent`), and a `nil` report. **The correction is the one focus that asks permission.**
+  The report it answers may be an app *surrendering* focus rather than another app taking it, and forcing a
+  surrendering app forward undoes the quit or the ⌘H that caused it — so `AXWindowWriter.restoreFocus` goes
+  out only while the window can still hold focus, which it asks of LaunchServices and the window server and
+  never of AX (`PRINCIPLES.md` §5). It asks **around its own write, twice**: before `makeKey`, which alone
+  brings a hidden app back, and again in that write's completion, because the answer arrives a few
+  milliseconds after the report and the lane round trip is what carries the question past it.
 - `[focus] follows-mouse` — the only focus source that can chase itself, because **here focus scrolls**. Two
   rules stop the runaway and neither is an optimisation: it fires on **pointer motion only, never window
   motion** (that is the termination argument), and it is **suspended while a cover is up** while still

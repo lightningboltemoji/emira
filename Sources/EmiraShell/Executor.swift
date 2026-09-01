@@ -97,7 +97,9 @@ public final class MockExecutor: Executor {
         // The real shell moves focus via AX and the observers echo it back, so the core absorbs its own
         // echo (a reveal of an already-revealed window is a no-op). `.ours`, as the live path marks it:
         // an ack the policy could refuse would be a mock that fights the core it is standing in for.
-        case .focus(let id):
+        // A restore lands here too: the window it names is the one the user is on, so the system this
+        // stands in for is one where it never left the screen.
+        case .focus(let id), .restoreFocus(let id):
             feedback(.focusChanged(id, origin: .ours))
 
         // The cover is on the glass, instantly — a display an infinitely fast system composes on.

@@ -73,6 +73,15 @@ public final class AXExecutor: Executor {
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }
 
+            // The correction's write, and the same ack: an activation is an activation whatever asked
+            // for it. What separates it from `focus` is a question about the window's app that only the
+            // system can answer and only at the moment of writing, so it is the writer's to ask.
+            case .restoreFocus(let id):
+                guard let record = registry.record(id) else { continue }
+                writer.restoreFocus(record) { [scheduler] in
+                    scheduler.schedule(after: 0) { feedback(.appActivated) }
+                }
+
             case .raise(let id):
                 guard let record = registry.record(id) else { continue }
                 writer.raise(record)

@@ -240,6 +240,13 @@ happen on.
   sign. The Accessibility API is not subject to that decision, so the front stays reachable by writing
   `AXFrontmost` where AppKit is refused. Focus lands by whichever route is open, which is §4's bargain again:
   the placement is owed, the mechanism is not.
+- **An app on its way out looks healthy to AX, and only to AX.** A quitting app lists its windows, names a
+  focused one and answers about live elements for hundreds of milliseconds after it has given up focus.
+  LaunchServices is the register that knows: it stops calling the app activatable, says when it is hidden,
+  and drops it outright — all within a few milliseconds, and none of it visible through the Accessibility
+  API. So *can this window still take focus* is asked of `NSRunningApplication` and the window server, never
+  of the app, and it is asked at the instant of acting rather than the instant of deciding — an app is
+  entitled to read being brought forward as a reason to cancel its own shutdown.
 - **A screenshot costs per call, not per pixel, and the window server serializes them.** A covered
   transition's head cost is therefore linear in how many columns it scopes and independent of display size —
   so anything that narrows the scope is worth more than anything that makes one capture cheaper.
