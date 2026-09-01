@@ -979,13 +979,36 @@ desktop carries far more off-screen layer-0 entries than on-screen ones — back
 Dock — and each is a live window, which is exactly why the *discovery* direction filters on the opposite sense.
 And an empty list is a failed read rather than an empty desktop, so it is refused before it can retire the
 strip. Removal goes through `vanish`, so a window that closed unheard still gets the succession its
-notification would have bought it. A window number outlives everything a window does short of closing,
+notification would have bought it.
+
+**The succession wait is a question, not a rule.** A destroyed element is not always a window leaving —
+a native tab group carries on under its next tab — so `vanish` holds the *id* until a scan says whether
+anything stood in. But that scan is a round trip into the app that just tore the window down, which is
+the process least able to answer it, so paying it on every close spends `successionGrace` on windows
+nothing could ever have succeeded. It is therefore asked first whether a successor is even possible,
+and both halves of that are needed. A group is several window-server entries standing on **one**
+rectangle with exactly one of them on screen, so a candidate is another entry of the app on this
+window's own frame — a synchronous read of a list emira already holds. And a *newly made* tab is
+described by AX before the window server lists it, which the rectangle cannot see, so an app whose last
+scan could not place everything keeps the wait regardless. With neither, the id retires at once. A window number outlives everything a window does short of closing,
 **native full screen included**: the window goes off screen and changes frame across that transition and
 keeps its number, while the full-screen-sized and menu-bar-height windows the transition mints and
 destroys around it are the ones that come and go. The set is layer-0 only, so a level change would read as a
 death as surely as a close does — and nothing a managed window goes through changes its layer, **Mission
 Control, App Exposé and a Space switch included**, which matter more than full screen because they last as
 long as the user holds them.
+
+**A death certificate arrives late; a departure notice arrives early.** Absence from the window list settles
+what happened, and on a slow quit it settles it hundreds of milliseconds after the window left the screen —
+long enough for the strip to sit open around a window nobody can see. LaunchServices publishes the departure
+first, and publishes it as an *edge*: `activationPolicy` becoming `.prohibited` is the app saying it can no
+longer be activated, and `isHidden` is ⌘H, which nothing else reports at all. Both are watched per app
+(`AXObservationSource.observeApp`), and they divide by what comes back. A departure retires its windows
+through `retire`, with no succession to scan for — the process that would have produced one is leaving — and
+leaves the *app* tracked, so a `.prohibited` that was not a quit costs one reconciliation rather than going
+unmanaged. A hide only borrows them: they leave on the **minimize** pair and the unhide returns exactly that
+set, minus anything the Dock already held. Neither displaces `appTerminated`, which stays the whole signal
+for a fast app that reaches its own death without ever saying `.prohibited`.
 
 **Which apps get asked is two questions, and the wider one needs evidence.** `WindowSource.applications()`
 sweeps `.regular` apps only: accessory and prohibited processes outnumber them by an order of magnitude, most

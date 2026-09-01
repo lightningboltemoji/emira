@@ -50,10 +50,10 @@ public final class WorldWatcher {
     public static let maxReconcileRounds = 3
 
     /// How long a destroyed window's id may wait for a scan to say whether anything took its place
-    /// (`vanish`). A backstop rather than a delay: the ordinary answer arrives when the scan does, one
-    /// lane round trip later, including the app that answers with no windows at all — which is what
-    /// closing an app's *last* window looks like. This fires only when a scan settles nothing, and its
-    /// cost when it does is one dead window on the strip for a quarter second.
+    /// (`vanish`). Reached only by a window something *could* have succeeded, and a backstop even then:
+    /// the ordinary answer arrives when the scan does, one lane round trip later. It is what bounds a
+    /// scan slower than the close — an app tearing a window down is the one least able to answer — and
+    /// its cost when it fires is one dead window on the strip for a quarter second.
     public static let successionGrace: TimeInterval = 0.25
 
     /// How long a released drag's frame reports must go quiet before it counts as finished. An app is
@@ -111,6 +111,20 @@ public final class WorldWatcher {
     /// Windows whose element is destroyed and whose *id* has not been retired yet, because a scan may
     /// still hand it to a successor (`vanish`). Dead for every other purpose — see `isLive`.
     private var vanishing: Set<WindowId> = []
+
+    /// Apps whose last scan left something unaccounted for. `AXEnumerator.Report` already carries
+    /// this — it is what `mayHaveMissedAnArrival` asks — but only for the instant the report lands,
+    /// and `vanish` needs it when a *later* destroy arrives. So it is a latch rather than a reading:
+    /// set by a scan that could not place everything, cleared by one that could.
+    private var pendingArrivals: Set<pid_t> = []
+
+    /// Windows the Dock is holding. Tracked for one question only: a hide must put back exactly what it
+    /// took, and a window the user had already minimized before ⌘H is not part of that.
+    private var minimized: Set<WindowId> = []
+
+    /// What each hidden app's ⌘H took off the strip, so its unhide can return precisely that set.
+    /// Keyed on a pid and cleared with it, like everything else here.
+    private var hidden: [pid_t: Set<WindowId>] = [:]
 
     /// Whether the watcher has been shut down (`stop()`). Once set, nothing reaches the core again.
     private var isStopped = false
@@ -202,6 +216,8 @@ public final class WorldWatcher {
             observing.remove(pid)
             scanning[pid] = nil
             rescan[pid] = nil
+            hidden[pid] = nil
+            pendingArrivals.remove(pid)
             source.unwatch(app: pid)
             // Window by window: `World` has no notion of an app dying, only of windows going away.
             // Nothing here waits on a successor — the process that would have produced one is gone.
@@ -210,6 +226,31 @@ public final class WorldWatcher {
                 moved.remove(id)
                 vanishing.remove(id)
                 emit(.windowDestroyed(id))
+            }
+
+        // The same windows `appTerminated` takes, taken when LaunchServices says the app is going
+        // rather than when it has finally gone. Through `retire` and not `vanish`: what a scan settles
+        // is whether something took the window's place, and an app on its way out has no successor to
+        // offer. The app itself stays tracked, so a `.prohibited` that was not a quit costs one
+        // reconciliation rather than going silently unmanaged.
+        case .appDeparting(let pid):
+            for record in registry.records(ofApps: [pid]) { retire(record.id) }
+
+        // ⌘H, which nothing else reports. The *minimize* pair rather than a destroy: these windows are
+        // coming back, and a destroy would return them as fresh columns having forgotten their width
+        // and their place. Windows the Dock already held are left out, since unhiding does not restore
+        // those.
+        case .appHidden(let pid):
+            let taken = registry.records(ofApps: [pid])
+                .map(\.id)
+                .filter { isLive($0) && !minimized.contains($0) }
+            guard !taken.isEmpty else { return }
+            hidden[pid] = Set(taken)
+            for id in taken { emit(.windowMinimized(id)) }
+
+        case .appUnhidden(let pid):
+            for id in (hidden.removeValue(forKey: pid) ?? []).sorted() where isLive(id) {
+                emit(.windowDeminimized(id))
             }
 
         case .windowAppeared(let pid):
@@ -227,10 +268,12 @@ public final class WorldWatcher {
 
         case .windowMinimized(let id):
             guard isLive(id) else { return }
+            minimized.insert(id)
             emit(.windowMinimized(id))
 
         case .windowDeminimized(let id):
             guard isLive(id) else { return }
+            minimized.remove(id)
             emit(.windowDeminimized(id))
 
         case .focusMoved(let id):
@@ -265,7 +308,7 @@ public final class WorldWatcher {
     }
 
     /// Take a destroyed window off the strip — after asking, exactly once, whether anything took its
-    /// place.
+    /// place, and only where something could have.
     ///
     /// `AXUIElementDestroyed` proves an *element* died. It does not prove the *window* left, and a
     /// native tab group is where those differ: ⌘W destroys the selected tab while the group it stood for
@@ -289,6 +332,15 @@ public final class WorldWatcher {
             retire(id)
             return
         }
+        // Whether there is an answer worth waiting for. A succession needs *something to succeed
+        // with*: a native tab group is one AX window over several window-server entries on a single
+        // rectangle, so a candidate is another entry of this app on this window's own frame. With no
+        // candidate visible and nothing outstanding from the last scan, the wait buys only latency —
+        // and on an app busy tearing the window down, that is the whole of `successionGrace`.
+        guard pendingArrivals.contains(record.pid) || couldBeSucceeded(record) else {
+            retire(id)
+            return
+        }
         vanishing.insert(id)
         // `alreadyOpen`, like the boot scan and reconciliation: what provoked this is a window *leaving*,
         // so anything else the scan finds is a window nothing announced — one emira met mid-life, and
@@ -297,6 +349,24 @@ public final class WorldWatcher {
         scheduler.schedule(after: Self.successionGrace) { [weak self] in
             guard let self, vanishing.contains(id) else { return }
             retire(id)
+        }
+    }
+
+    /// Whether the window server shows anything that could take this window's place: another entry of
+    /// the same app standing on the same rectangle.
+    ///
+    /// Asked of the window server because the app is the one process that cannot answer promptly — it
+    /// is mid-teardown, which is what the grace is really bounding. Not sufficient on its own, which is
+    /// why `vanish` asks it beside `pendingArrivals`: a *newly made* tab is described by AX before the
+    /// window server lists it, and in that gap a real successor is invisible here.
+    ///
+    /// An empty list is a failed read rather than an empty desktop, and a failed read is not evidence.
+    private func couldBeSucceeded(_ record: WindowRegistry.Record) -> Bool {
+        let list = enumerator.windowList()
+        guard !list.isEmpty else { return true }
+        return list.contains { entry in
+            entry.pid == record.pid && entry.number != record.number
+                && WindowIdentity.sameFrame(entry.frame, record.frame)
         }
     }
 
@@ -309,6 +379,8 @@ public final class WorldWatcher {
         registry.forget(id)
         reading.remove(id)
         moved.remove(id)
+        minimized.remove(id)
+        hidden[record.pid]?.remove(id)
         emit(.windowDestroyed(id))
     }
 
@@ -418,6 +490,16 @@ public final class WorldWatcher {
         for target in report.apps {
             scanning[target.pid] = nil
             ensureWatching(target, attempt: attempt, alreadyOpen: alreadyOpen)
+        }
+
+        // Carry each app's "could not account for everything" forward past this report. An arrival the
+        // join could not place is exactly what a successor looks like a moment before it can be seen,
+        // and `vanish` has to know that when the destroy lands rather than only while the scan that
+        // noticed it is being absorbed.
+        let incomplete = Set(report.incompleteApps.map(\.pid))
+        for target in report.apps {
+            if incomplete.contains(target.pid) { pendingArrivals.insert(target.pid) }
+            else { pendingArrivals.remove(target.pid) }
         }
 
         // Watch before announcing: dispatching `windowCreated` pumps the reducer synchronously and its

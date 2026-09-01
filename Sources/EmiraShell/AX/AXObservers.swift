@@ -112,6 +112,27 @@ public final class AXObservationSource: ObservationSource {
     /// Held only to be released.
     private var workspaceTokens: [any NSObjectProtocol] = []
 
+    /// One app's LaunchServices watch, owning both halves: `NSKeyValueObservation` holds its object
+    /// weakly and `NSRunningApplication(processIdentifier:)` mints a fresh one per call, so the app is
+    /// held here. A class for the ordering — `deinit` invalidates while the app it names is still
+    /// alive, and a registration outliving its object crashes rather than leaks.
+    private final class AppWatch {
+        let app: NSRunningApplication
+        let tokens: [NSKeyValueObservation]
+
+        init(app: NSRunningApplication, tokens: [NSKeyValueObservation]) {
+            self.app = app
+            self.tokens = tokens
+        }
+
+        deinit { tokens.forEach { $0.invalidate() } }
+    }
+
+    /// The LaunchServices facts watched per app (`observeApp`). Separate from `observers`: an
+    /// `AXObserver` registration can fail and be retried, while these cannot fail and must not be
+    /// registered twice.
+    private var appWatches: [pid_t: AppWatch] = [:]
+
     /// The two global mouse monitors, and they are two because they are wanted on different terms.
     /// Buttons are always: they bracket a possible drag, which is a fact about the desktop and
     /// predates the pointer plane. Motion is a *setting*: it fires at the pointer's sample rate, and
@@ -137,6 +158,9 @@ public final class AXObservationSource: ObservationSource {
     }
 
     public func watch(app target: ScanTarget, then completion: @escaping @MainActor (Bool) -> Void) {
+        // Ahead of the guard below, and deliberately: this is a second register with its own
+        // idempotence, and an app whose `AXObserver` is already up must not be left without it.
+        observeApp(target.pid)
         if observers[target.pid] != nil {
             completion(true)
             return
@@ -230,6 +254,7 @@ public final class AXObservationSource: ObservationSource {
     /// Release an app's observer and everything registered through it, leaving its lane alone.
     private func dropObserver(of pid: pid_t) {
         watchedWindows[pid] = nil
+        appWatches[pid] = nil
         if let observer = observers.removeValue(forKey: pid) {
             // Releasing the observer invalidates every registration it holds, so window elements need
             // no individual removal — unlike `unwatch(window:of:)`, where the observer lives on.
@@ -336,6 +361,36 @@ public final class AXObservationSource: ObservationSource {
                 MainActor.assumeIsolated { self?.activated(facts) }
             },
         ]
+    }
+
+    /// Watch the two LaunchServices facts that know an app is leaving before anything else does:
+    /// `.prohibited` (a quit, well before the process goes) and `isHidden` (⌘H). Neither moves when an
+    /// app merely loses focus. `isTerminated` is left to `didTerminateApplicationNotification`.
+    private func observeApp(_ pid: pid_t) {
+        guard appWatches[pid] == nil,
+              let app = NSRunningApplication(processIdentifier: pid) else { return }
+        appWatches[pid] = AppWatch(app: app, tokens: [
+            app.observe(\.activationPolicy, options: [.new]) { [weak self] app, _ in
+                // `.accessory` is not a departure — an agent with a window is a legitimate place for
+                // focus to sit. Only the app saying it cannot be activated at all.
+                guard app.activationPolicy == .prohibited else { return }
+                self?.fromLaunchServices(.appDeparting(pid))
+            },
+            app.observe(\.isHidden, options: [.new]) { [weak self] app, _ in
+                self?.fromLaunchServices(app.isHidden ? .appHidden(pid) : .appUnhidden(pid))
+            },
+        ])
+    }
+
+    /// Deliver one KVO observation on the main actor. A branch rather than a bare `assumeIsolated`
+    /// because KVO has no delivery contract — it calls back on whichever thread mutated the property,
+    /// and these landing on the main one is measured rather than promised.
+    private nonisolated func fromLaunchServices(_ observation: WorldObservation) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { deliver?(observation) }
+        } else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.deliver?(observation) } }
+        }
     }
 
     /// A global mouse-down opens a possible drag and a mouse-up closes it. Being *global*, the monitor

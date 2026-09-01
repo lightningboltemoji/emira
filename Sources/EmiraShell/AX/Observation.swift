@@ -21,6 +21,19 @@ public enum WorldObservation: Sendable, Equatable {
     /// An app exited. Everything keyed on its pid — windows, lane, observer — is now garbage.
     case appTerminated(pid_t)
 
+    /// An app stopped being able to come forward (`activationPolicy` became `.prohibited`) — its own
+    /// statement that it can no longer be activated, and in practice the first published sign of a
+    /// quit. Complementary to `appTerminated`, which a fast app reaches without ever saying this.
+    case appDeparting(pid_t)
+
+    /// An app hid itself (⌘H). **Not a departure**: the windows still exist and come back where they
+    /// were. Nothing else reports it — AX has no notification for a hide, and the window server goes
+    /// on listing the windows.
+    case appHidden(pid_t)
+
+    /// A hidden app came back.
+    case appUnhidden(pid_t)
+
     /// An app created a window. Which one only a re-scan of that app can answer, so this carries the pid
     /// and nothing else.
     case windowAppeared(pid_t)

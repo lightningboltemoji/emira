@@ -799,11 +799,25 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     // A destroyed element is not always a window leaving the strip: ⌘W on a native tab group destroys
     // the selected tab and the group carries on under the next one. Only a scan can see the successor,
     // and it answers later than the notification — so the id waits for it. See `WorldWatcher.vanish`.
+    //
+    // The wait is not unconditional, and these fixtures say why: a group is several window-server
+    // entries standing on *one* rectangle, exactly one of them on screen, so `backgroundTab` is what
+    // makes a window one that could be succeeded at all. Without it there is nothing to wait for and
+    // the id retires at once — which is the ordinary close, and is asserted on its own below.
+
+    /// A native tab group's other tab: a second entry of the same app on the window's own rectangle,
+    /// listed by the window server and off screen, exactly as a background tab is.
+    private static func backgroundTab(_ world: LiveWorld, of pid: pid_t, on frame: Rect,
+                                      number: CGWindowID = 99) {
+        world.windows.entries.append(
+            WindowListEntry(number: number, pid: pid, frame: frame, isOnScreen: false))
+    }
 
     @Test func aVanishedWindowIsNotAnnouncedDeadUntilAScanHasBeenAsked() {
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "one"))
+        Self.backgroundTab(world, of: 200, on: rect(700))   // something that could stand in
         world.windows.holdsAnswers = true
         let before = world.recorder.events.count
 
@@ -825,6 +839,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let id = try! #require(world.id(titled: "one"))
         world.windows.windowsByPid[200] = [world.windows.windowsByPid[200]![1]]
         world.windows.entries = world.windows.entries.filter { $0.number != 2 }
+        Self.backgroundTab(world, of: 200, on: rect(700))   // a candidate, so the wait is entered
 
         world.watcher.handle(.windowVanished(id))
 
@@ -857,6 +872,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "one"))
+        Self.backgroundTab(world, of: 200, on: rect(700))   // a candidate, so the wait is entered
 
         world.watcher.handle(.windowVanished(id))       // the stub still describes window "one"
 
@@ -907,6 +923,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
                                                    bundle: "com.mitchellh.ghostty",
                                                    title: "next tab", frame: rect(0))]
         world.windows.entries = world.windows.entries.filter { $0.pid != 100 }
+        // Making the tab announces it (`AXWindowCreated`), and the scan that answers cannot place it —
+        // which is what leaves the app with an arrival outstanding when the destroy lands a moment
+        // later. Without that step the window server is the only witness, and it has nothing to say.
+        world.watcher.handle(.windowAppeared(100))
         world.watcher.handle(.windowVanished(id))
 
         #expect(world.registry.record(id) != nil, "an unbindable arrival is not a ruled-out successor")
@@ -924,6 +944,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let world = LiveWorld()
         world.watcher.start()
         let id = try! #require(world.id(titled: "one"))
+        Self.backgroundTab(world, of: 200, on: rect(700))   // a candidate, so the wait is entered
         world.windows.holdsAnswers = true
         world.watcher.handle(.windowVanished(id))       // still waiting on a scan
 
@@ -933,6 +954,54 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(destroyed.count == 1)
         world.scheduler.fire()
         #expect(world.recorder.events.filter { $0 == .windowDestroyed(id) }.count == 1)
+    }
+
+    /// The ordinary close, and the reason the wait is a question rather than a rule: with nothing
+    /// standing on the window's rectangle there is no successor to be had, so waiting for one costs a
+    /// quarter second of empty column and buys nothing. The app is never asked — which matters most
+    /// exactly here, since an app tearing a window down is the one least able to answer.
+    @Test func aWindowNothingCouldSucceedRetiresWithoutAskingAtAll() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+        let scans = world.windows.scanCounts[200] ?? 0
+        world.windows.holdsAnswers = true          // a scan, if one were asked for, would park here
+
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(world.recorder.events.last == .windowDestroyed(id))
+        #expect(world.registry.record(id) == nil)
+        #expect(world.windows.scanCounts[200] ?? 0 == scans, "no succession scan was asked for")
+        #expect(world.scheduler.pending == 0, "and no deadline was set")
+        #expect(world.source.unwatchedWindows == [id])
+    }
+
+    /// The window server is not the only witness, and this is the case that proves it must not be.
+    /// A tab AX has described but the window server has not listed yet stands on nothing, so the
+    /// rectangle says "no successor possible" while a real successor is a moment away. What earns the
+    /// wait is the arrival the last scan could not place.
+    @Test func anArrivalTheWindowServerHasNotListedStillEarnsTheWait() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+
+        world.windows.windowsByPid[100] = [scanned(pid: 100, seed: 11,
+                                                   bundle: "com.mitchellh.ghostty",
+                                                   title: "next tab", frame: rect(0))]
+        world.windows.entries = world.windows.entries.filter { $0.pid != 100 }
+        world.watcher.handle(.windowAppeared(100))     // the tab announces itself; the scan cannot place it
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowVanished(id))
+
+        #expect(!Array(world.recorder.events.dropFirst(before)).contains(.windowDestroyed(id)),
+                "an outstanding arrival is a successor that cannot be seen yet")
+        #expect(world.registry.record(id) != nil)
+
+        // And once a scan can account for the app again, the latch lifts: the next close is free.
+        world.windows.entries.append(WindowListEntry(number: 11, pid: 100, frame: rect(0)))
+        world.scheduler.fire()
+        #expect(world.registry.record(id)?.number == 11, "the id moved onto the tab that took over")
     }
 
     @Test func aVanishedWindowWeNeverManagedIsSilence() {
@@ -1631,5 +1700,108 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.stop()
         world.watcher.handle(.pointerMoved(Point(x: 500, y: 400)))
         #expect(seen == 0)
+    }
+}
+
+//
+// The two departures LaunchServices reports and nothing else does (`WorldObservation.appDeparting`,
+// `.appHidden`/`.appUnhidden`). What is asserted here is the *shape* of each answer, since the facts
+// themselves belong to a live desktop and none of them is AX's to give: a departure retires its
+// windows, a hide only borrows them.
+
+@Suite @MainActor struct WorldWatcherDepartureTests {
+
+    @Test func aDepartingAppLosesItsWindowsWithoutLosingItsProcess() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        let scans = world.windows.scanCounts[200] ?? 0
+
+        world.watcher.handle(.appDeparting(200))
+
+        let destroyed = world.recorder.events.compactMap {
+            if case .windowDestroyed(let id) = $0 { return id } else { return nil }
+        }
+        #expect(destroyed.sorted() == [one, two].sorted())
+        #expect(world.registry.ids == [term])
+        #expect(world.source.unwatchedWindows.sorted() == [one, two].sorted())
+
+        // No succession scan, which is the one thing that separates this from a destroy notification:
+        // what a scan settles is whether something took the window's place, and an app on its way out
+        // has nothing to offer.
+        #expect(world.windows.scanCounts[200] ?? 0 == scans)
+
+        // The *app* survives it. `.prohibited` is the strongest early evidence of a quit and still not
+        // a death certificate, so the observer, the lane and the scan target all stay — and an app that
+        // turns out to be alive is re-adopted rather than silently unmanaged.
+        #expect(world.source.unwatchedApps.isEmpty)
+        world.watcher.handle(.windowAppeared(200))
+        #expect(world.windows.scanCounts[200] ?? 0 == scans + 1)
+    }
+
+    @Test func aDepartureIsBoundedByTheWindowsItActuallyHas() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appDeparting(999))            // never seen
+        world.watcher.handle(.appDeparting(200))
+        world.watcher.handle(.appDeparting(200))            // and again: nothing left to take
+
+        #expect(world.recorder.events.count == before + 2)
+    }
+
+    /// ⌘H is not a close. The windows come back where they were, so they leave on the *minimize* pair
+    /// — a destroy would return them as fresh columns having forgotten their width and their place.
+    @Test func aHiddenAppBorrowsItsWindowsAndReturnsExactlyWhatItTook() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+
+        // `two` is in the Dock before the hide. Unhiding the app does not bring a minimized window
+        // back, so claiming it here would promise a restore that never arrives.
+        world.watcher.handle(.windowMinimized(two))
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appHidden(200))
+        world.watcher.handle(.appUnhidden(200))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [
+            .windowMinimized(one), .windowDeminimized(one),
+        ])
+        // Managed throughout: the id never went anywhere, which is what lets the column come back.
+        #expect(world.registry.record(one) != nil)
+    }
+
+    @Test func anUnhideReturnsNothingItDidNotTake() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appUnhidden(200))             // never hidden
+        world.watcher.handle(.appHidden(999))               // never seen
+        world.watcher.handle(.appUnhidden(999))
+
+        #expect(world.recorder.events.count == before)
+    }
+
+    /// A hidden app that then quits: the windows are already off the strip, and the destroy that
+    /// retires them must not leave the hide holding ids nothing can return.
+    @Test func aHiddenAppThatQuitsLeavesNothingBehindToRestore() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+
+        world.watcher.handle(.appHidden(200))
+        world.watcher.handle(.appDeparting(200))
+        let before = world.recorder.events.count
+        world.watcher.handle(.appUnhidden(200))
+
+        #expect(world.recorder.events.count == before, "no window came back from the dead")
+        #expect(world.registry.ids.allSatisfy { $0 != one && $0 != two })
     }
 }

@@ -249,7 +249,7 @@ public enum WindowIdentity {
     /// - Returns: the pairings, and the departures with no successor — windows that have left the strip
     ///   for good (merged into someone else's tab group, or closed without a destroy notification).
     public static func succeed(departed: [Departure], arrived: [ObservedWindow],
-                               tolerance: Double = 2) -> (successions: [Succession],
+                               tolerance: Double = frameTolerance) -> (successions: [Succession],
                                                           orphaned: [WindowId]) {
         var tentative: [Int: Int] = [:]         // departure index → arrival index
         var claimants: [Int: [Int]] = [:]       // arrival index → departure indices
@@ -281,8 +281,13 @@ public enum WindowIdentity {
         return (successions, orphaned.sorted())
     }
 
+    /// How far apart two frames may be and still be one window. Absorbs the rounding between an AX
+    /// read and the window server's integers, and nothing wider: a successor stands on the *identical*
+    /// rectangle, because a tab group is one window drawn from several entries.
+    public static let frameTolerance: Double = 2
+
     /// Whether two rectangles describe the same window, within per-edge slack.
-    private static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double) -> Bool {
+    public static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double = frameTolerance) -> Bool {
         abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
         abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }

@@ -241,12 +241,17 @@ happen on.
   `AXFrontmost` where AppKit is refused. Focus lands by whichever route is open, which is §4's bargain again:
   the placement is owed, the mechanism is not.
 - **An app on its way out looks healthy to AX, and only to AX.** A quitting app lists its windows, names a
-  focused one and answers about live elements for hundreds of milliseconds after it has given up focus.
-  LaunchServices is the register that knows: it stops calling the app activatable, says when it is hidden,
-  and drops it outright — all within a few milliseconds, and none of it visible through the Accessibility
-  API. So *can this window still take focus* is asked of `NSRunningApplication` and the window server, never
-  of the app, and it is asked at the instant of acting rather than the instant of deciding — an app is
-  entitled to read being brought forward as a reason to cancel its own shutdown.
+  focused one and answers about live elements for hundreds of milliseconds after it has given up focus — and
+  the window server keeps its entry very nearly as long. LaunchServices is the register that knows: within
+  milliseconds it stops calling the app activatable, and it says when the app is hidden, both long before it
+  finally drops the process and none of it visible through the Accessibility API. So *can this window still
+  take focus* is asked of `NSRunningApplication` and the window server, never of the app, and it is asked at
+  the instant of acting rather than the instant of deciding — an app is entitled to read being brought
+  forward as a reason to cancel its own shutdown. **That register is watched as well as asked.** Both facts
+  are KVO-live, and nothing else carries either one: a hide has no AX notification at all, and a quit's own
+  notification arrives with the dead process, far too late to close the strip over the window. Reading them
+  on demand cannot stand in, since a focus report lands ahead of the answer it would need — so a departure
+  is an observation like any other, and the app's death is the backstop rather than the signal.
 - **A screenshot costs per call, not per pixel, and the window server serializes them.** A covered
   transition's head cost is therefore linear in how many columns it scopes and independent of display size —
   so anything that narrows the scope is worth more than anything that makes one capture cheaper.
