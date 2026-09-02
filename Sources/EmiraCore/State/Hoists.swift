@@ -17,11 +17,11 @@ import Foundation
 //
 // Three rules, and the first is the one that keeps this honest.
 //
-//  1. **A float is hoisted only while something is actually covering it.** A hoisted float is a
-//     photograph: it cannot be dragged, resized, scrolled or hovered, and its pixels stop at the moment
-//     they were taken. That is the right trade for a window you cannot see and a bad one for a window
-//     you can, so the lie is confined to exactly where the truth is already hidden. A float sitting in
-//     the open is left alone and stays a real window in every respect.
+//  1. **A float's picture is shown only while something is actually covering it.** A shown picture
+//     cannot be dragged, resized, scrolled or hovered, and its pixels stop at the moment they were
+//     taken. That is the right trade for a window you cannot see and a bad one for a window you can, so
+//     the lie is confined to exactly where the truth is already hidden. A float sitting in the open is
+//     `.standby` — prepared and invisible — and stays a real window in every respect.
 //  2. **Only what the user chose to float** (`World.isFloatedByChoice`). The taxonomy floats every
 //     dialog, sheet, popover and tool palette; pinning a background app's palettes over the window you
 //     are typing in is not floating, it is in the way.
@@ -29,9 +29,19 @@ import Foundation
 //     windows the last pass put on the glass. A float buried by a window emira never placed was not
 //     buried by emira, and hoisting it would be an opinion about somebody else's desktop.
 
-/// One float drawn over the desktop: which window, which display's screen it is on, and the rect it
-/// occupies in core (top-left, global) coordinates. Array order is z-order, bottom→top — the same
-/// convention `LayerBinding` carries, and for the same reason.
+/// Whether a float's stand-in is on the screen or merely ready to be. A stand-in built when it is first
+/// needed is late by one screenshot, which is long enough to watch the float go behind and come back —
+/// so one is prepared for every on-screen float and burial is an alpha flip.
+public enum HoistState: String, Sendable, Equatable, Codable {
+    /// Something emira placed is in front of the float. The picture is on the screen and takes clicks.
+    case covered
+    /// Nothing is in front of it. The picture is built and filmed, and shows nothing.
+    case standby
+}
+
+/// One float's stand-in: which window, which display's screen it is on, the rect it occupies in core
+/// (top-left, global) coordinates, and whether it is showing. Array order is z-order, bottom→top — the
+/// same convention `LayerBinding` carries, and for the same reason.
 public struct HoistBinding: Sendable, Equatable, Codable {
     public let window: WindowId
     /// The display the shell films it for. A still is filmed at its destination's backing scale, so a
@@ -40,11 +50,15 @@ public struct HoistBinding: Sendable, Equatable, Codable {
     /// Where the real window is, which is where its picture goes. Never a frame emira computed: emira
     /// declines an opinion about where a float sits, and hoisting does not change that.
     public let frame: Rect
+    /// Whether the picture is showing, or waiting to.
+    public let state: HoistState
 
-    public init(window: WindowId, monitor: MonitorId, frame: Rect) {
+    public init(window: WindowId, monitor: MonitorId, frame: Rect,
+                state: HoistState = .covered) {
         self.window = window
         self.monitor = monitor
         self.frame = frame
+        self.state = state
     }
 }
 
@@ -85,9 +99,9 @@ struct StackOrder {
 
 extension State {
 
-    /// The floats to draw over the desktop right now, bottom→top. Cheap on the common desktop — one
-    /// dictionary scan where nothing is floated by choice — because the post-pass that calls it runs on
-    /// every event, including a display-link tick.
+    /// Every on-screen float and whether its picture is showing, bottom→top. Cheap on the common
+    /// desktop — one dictionary scan where nothing is floated by choice — because the post-pass that
+    /// calls it runs on every event, including a display-link tick.
     public func hoistBindings() -> [HoistBinding] {
         // Rule 2, and the early out. `floating` is small and usually holds nothing explicit at all.
         guard world.floating.values.contains(true) else { return [] }
@@ -129,14 +143,21 @@ extension State {
             hoisted.formUnion(next)
         }
 
-        return hoisted
+        // **Every on-screen float is named, not only the covered ones.** A float standing in the open is
+        // `.standby`: its picture is built and filmed and shows nothing, so the burial that follows is an
+        // alpha flip rather than a screenshot the user waits through. The test is deliberately *not*
+        // "something could cover it" — a float overlapping a column would leave and re-enter that set
+        // every time the strip scrolled out from under it, paying a film each way for a picture nobody
+        // saw. On screen is stable, and the cost of being generous is one still per float.
+        return candidates
             .compactMap { id -> HoistBinding? in
                 guard let frame = frames[id],
                       // A float off every attached screen has no display to be filmed for. Asked of the
                       // centre rather than the origin: a window half off the left edge is still on the
                       // screen holding the rest of it.
                       let monitor = world.monitor(at: frame.center) else { return nil }
-                return HoistBinding(window: id, monitor: monitor, frame: frame)
+                return HoistBinding(window: id, monitor: monitor, frame: frame,
+                                    state: hoisted.contains(id) ? .covered : .standby)
             }
             // Bottom→top. The tie-break is the id, which only reaches windows nothing has focused.
             .sorted { a, b in

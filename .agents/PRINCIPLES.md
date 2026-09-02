@@ -183,8 +183,10 @@ happen on.
   So a buried float is drawn back over the desktop out of its own pixels and a click on that picture brings
   the real window forward — the same trade §3 makes everywhere else, a reconstruction standing where the
   thing we may not move should be. It is confined to where the truth is already hidden: a float nothing
-  covers is left alone, because a picture cannot be dragged, resized or scrolled and a float you can see is a
-  window you should be able to use. And it is only ever the floats the **user** chose, never the dialogs and
+  covers shows no picture, because a picture cannot be dragged, resized or scrolled and a float you can see is
+  a window you should be able to use. What it does have is one **ready**, built and filmed while the window is
+  still in the open, because a stand-in minted at the moment of burial arrives a screenshot late and a
+  window that visibly goes behind before its picture catches up has not floated at all. And it is only ever the floats the **user** chose, never the dialogs and
   tool palettes the taxonomy floats on macOS's say-so — a background app's palettes pinned over the window
   you are typing in is not a promise kept, it is a window manager in the way.
 - **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the

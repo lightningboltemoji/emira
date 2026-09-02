@@ -4,8 +4,9 @@ import Testing
 import EmiraCore
 @testable import EmiraShell
 
-// The hoist plane's policy: the diff that keeps the panels matching the core's set, and the release
-// fence that holds a dropped one up until the window server says the real window is in front of it.
+// The hoist plane's policy: the diff that keeps the panels matching the core's set, the standby that
+// makes a burial an alpha flip rather than a screenshot, and the fence that holds a released picture up
+// until the window server says the real window is in front of it.
 
 @Suite @MainActor struct HoistPlaneTests {
 
@@ -13,10 +14,11 @@ import EmiraCore
     final class RecordingSurface: HoistSurface {
         let window: WindowId
         private(set) var frame: Rect
-        private(set) var isShown = false
+        private(set) var isRevealed = false
         private(set) var log: [String] = []
-        /// Held rather than run, so a test says when the dissolve finishes.
-        private(set) var dismissal: (@MainActor () -> Void)?
+        private var hasImage = false
+        private var wantsReveal = false
+
         var handle: Int { Int(window.raw) }
 
         init(window: WindowId, frame: Rect) {
@@ -25,23 +27,34 @@ import EmiraCore
         }
 
         func place(at frame: Rect) { self.frame = frame; log.append("place") }
-        func show(_ image: CGImage) { isShown = true; log.append("show") }
         func order(above handle: Int) { log.append("order>\(handle)") }
         func release() { log.append("release") }
-        func reclaim() { log.append("reclaim") }
-        func retire() { isShown = false; log.append("retire") }
 
-        func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
-            log.append("dismiss")
-            dismissal = completion
+        func setImage(_ image: CGImage) {
+            log.append(hasImage ? "refresh" : "image")
+            hasImage = true
+            if wantsReveal { reveal() }
         }
 
-        /// The dissolve finished.
-        func finishDismissal() {
-            let done = dismissal
-            dismissal = nil
-            retire()
-            done?()
+        func reveal() {
+            wantsReveal = true
+            guard hasImage, !isRevealed else { return }
+            isRevealed = true
+            log.append("reveal")
+        }
+
+        func conceal(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
+            wantsReveal = false
+            guard isRevealed else { return completion() }
+            isRevealed = false
+            log.append("conceal")
+            completion()
+        }
+
+        func retire() {
+            isRevealed = false
+            wantsReveal = false
+            log.append("retire")
         }
     }
 
@@ -57,14 +70,22 @@ import EmiraCore
         }
     }
 
-    /// Hands back a 1×1 image for every film, immediately.
-    final class InstantFilmer: SurfaceFilmer {
+    /// Films on request and holds the answer, so a test says when the photograph lands.
+    final class HeldFilmer: SurfaceFilmer {
         private(set) var films: [WindowId] = []
+        private var pending: [@MainActor (CapturedSurface?) -> Void] = []
 
         func film(_ window: WindowId, on monitor: MonitorId,
                   then: @escaping @MainActor (CapturedSurface?) -> Void) {
             films.append(window)
-            then(CapturedSurface(image: Self.pixel, frame: .zero))
+            pending.append(then)
+        }
+
+        /// Every film in flight lands.
+        func deliver() {
+            let due = pending
+            pending = []
+            for then in due { then(CapturedSurface(image: Self.pixel, frame: .zero)) }
         }
 
         static let pixel: CGImage = {
@@ -96,9 +117,9 @@ import EmiraCore
     static let monitor = MonitorId(1)
     static let frame = Rect(x: 100, y: 100, width: 300, height: 200)
 
-    static func harness() -> (HoistPanels, InstantFilmer, FakeProbe, ManualScheduler,
+    static func harness() -> (HoistPanels, HeldFilmer, FakeProbe, ManualScheduler,
                               () -> [WindowId: RecordingSurface]) {
-        let filmer = InstantFilmer()
+        let filmer = HeldFilmer()
         let probe = FakeProbe()
         let scheduler = ManualScheduler()
         final class Box { var made: [WindowId: RecordingSurface] = [:] }
@@ -115,109 +136,155 @@ import EmiraCore
         return (panels, filmer, probe, scheduler, { box.made })
     }
 
-    static func binding(_ raw: UInt64, _ frame: Rect = HoistPlaneTests.frame) -> HoistBinding {
-        HoistBinding(window: WindowId(raw), monitor: monitor, frame: frame)
+    static func binding(_ raw: UInt64, _ state: HoistState = .covered,
+                        _ frame: Rect = HoistPlaneTests.frame) -> HoistBinding {
+        HoistBinding(window: WindowId(raw), monitor: monitor, frame: frame, state: state)
     }
 
-    @Test func namingAFloatFilmsItAndShowsIt() {
+    // Standby
+
+    /// The point of standby: the panel is built and filmed while the float is still in the open, and
+    /// shows nothing until something covers it.
+    @Test func aStandbyFloatIsFilmedAndStaysInvisible() {
         let (panels, filmer, _, _, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
+        filmer.deliver()
 
         #expect(filmer.films == [WindowId(1)])
-        #expect(made()[WindowId(1)]?.isShown == true)
+        #expect(made()[WindowId(1)]?.isRevealed == false)
+        #expect(made()[WindowId(1)]?.log == ["place", "order>0", "image"])
     }
 
-    /// The defect this fence exists for. The core drops a hoist on an AX focus report, which says the
-    /// app told us its focus moved — not that the raise reached the glass. Cutting the picture away then
+    /// …so burial costs no screenshot at all: the pixels are already loaded and revealing is the whole
+    /// of it. This is the flash on the way in, closed.
+    @Test func buryingAStandbyFloatRevealsItWithoutFilmingFirst() {
+        let (panels, filmer, _, _, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
+        filmer.deliver()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+
+        let surface = made()[WindowId(1)]!
+        #expect(surface.isRevealed)
+        // Revealed before the burial's own film was even asked for, let alone landed.
+        #expect(surface.log.firstIndex(of: "reveal")! < (surface.log.firstIndex(of: "refresh") ?? .max))
+    }
+
+    /// A float buried before its standby film lands owes the reveal, and the film pays it.
+    @Test func aRevealBeforeThePixelsExistIsOwedAndThenPaid() {
+        let (panels, filmer, _, _, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        #expect(made()[WindowId(1)]?.isRevealed == false)      // nothing to show yet
+
+        filmer.deliver()
+        #expect(made()[WindowId(1)]?.isRevealed == true)
+    }
+
+    // The release fence
+
+    /// The defect the fence exists for. The core stops covering a float on an AX focus report, which
+    /// says the app told us its focus moved — not that the raise reached the glass. Concealing then
     /// shows the window still in front of it.
-    @Test func aDroppedHoistStaysUpWhileTheWindowServerSaysItIsStillCovered() {
-        let (panels, _, probe, scheduler, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+    @Test func aReleasedPictureStaysUpWhileTheWindowServerSaysItIsStillCovered() {
+        let (panels, filmer, probe, scheduler, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
         let surface = made()[WindowId(1)]!
 
         probe.covered = true
-        panels.setHoists([], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
         #expect(surface.log.contains("release"))          // clicks let go at once…
-        #expect(!surface.log.contains("dismiss"))         // …pixels held
+        #expect(surface.isRevealed)                       // …picture held
 
         scheduler.fire()                                  // still covered: asked again, still held
         #expect(probe.asks == 2)
-        #expect(!surface.log.contains("dismiss"))
+        #expect(surface.isRevealed)
 
         probe.covered = false
         scheduler.fire()
-        #expect(surface.log.contains("dismiss"))
+        #expect(!surface.isRevealed)
+        #expect(surface.log.contains("conceal"))
     }
 
-    /// The whole point of a released panel keeping its pixels: nothing is cut, so nothing flashes.
-    @Test func anUncoveredFloatDissolvesWithoutWaiting() {
-        let (panels, _, probe, _, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+    /// Nothing over it: the picture goes at once, on one ask.
+    @Test func anUncoveredFloatConcealsWithoutWaiting() {
+        let (panels, filmer, probe, _, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
         probe.covered = false
-        panels.setHoists([], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
 
-        let surface = made()[WindowId(1)]!
-        #expect(surface.log == ["place", "order>0", "show", "release", "dismiss"])
+        #expect(made()[WindowId(1)]!.log == ["place", "order>0", "image", "reveal",
+                                             "place", "order>0", "release", "conceal"])
         #expect(probe.asks == 1)
     }
 
     /// A fence is a delay, not a veto. An activation the system refused leaves the float genuinely
-    /// behind, and a shell that kept a panel the core had dropped would be a second opinion about what
+    /// behind, and a shell that kept a picture the core had dropped would be a second opinion about what
     /// is on the screen.
     @Test func aFenceThatNeverClearsGivesUp() {
-        let (panels, _, probe, scheduler, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+        let (panels, filmer, probe, scheduler, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
         probe.covered = true
-        panels.setHoists([], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
 
-        // Past the grace, which the fence reads off the clock rather than a tick count.
         let surface = made()[WindowId(1)]!
         let start = Date()
-        while Date().timeIntervalSince(start) < 0.2, !surface.log.contains("dismiss") {
+        while Date().timeIntervalSince(start) < 0.2, !surface.log.contains("conceal") {
             scheduler.fire()
         }
-        #expect(surface.log.contains("dismiss"))
+        #expect(surface.log.contains("conceal"))
     }
 
-    /// The float was buried again while its own picture was still dissolving. It reclaims the panel it
-    /// is already showing rather than building a second one over it — and films nothing, since the
-    /// pixels never left the screen.
-    @Test func aFloatBuriedAgainMidReleaseReclaimsItsOwnPanel() {
-        let (panels, filmer, probe, _, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+    /// The float was buried again while its picture was being let go. It keeps the panel and the pixels
+    /// — nothing is rebuilt and nothing is refilmed, because neither ever left.
+    @Test func aFloatBuriedAgainMidReleaseKeepsItsPictureUp() {
+        let (panels, filmer, probe, scheduler, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
         probe.covered = true
-        panels.setHoists([], feedback: Self.nowhere)
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
 
         let surface = made()[WindowId(1)]!
-        #expect(made().count == 1)                        // one panel, not two
-        #expect(surface.log.contains("reclaim"))
-        #expect(filmer.films == [WindowId(1)])            // filmed once
-    }
+        #expect(surface.isRevealed)
+        #expect(made().count == 1)
+        #expect(filmer.films == [WindowId(1)])
 
-    /// …and the fence it left behind cannot then take it down under the float that came back.
-    @Test func aReclaimedPanelIsNotDismissedByItsOwnStaleFence() {
-        let (panels, _, probe, scheduler, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
-        probe.covered = true
-        panels.setHoists([], feedback: Self.nowhere)
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
-
+        // …and the fence it left behind cannot take it down under the float that came back.
         probe.covered = false
         scheduler.fire()
-        #expect(!made()[WindowId(1)]!.log.contains("dismiss"))
+        #expect(surface.isRevealed)
+        #expect(!surface.log.contains("conceal"))
+    }
+
+    // Teardown
+
+    /// A float that closed, stopped floating or left the screen has nothing left to stand in for.
+    @Test func aFloatTheCoreStopsNamingIsRetired() {
+        let (panels, filmer, probe, _, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
+        probe.covered = false
+        panels.setHoists([], feedback: Self.nowhere)
+
+        #expect(made()[WindowId(1)]!.log.last == "retire")
     }
 
     /// Quitting is the one exit that waits for nothing: there is no desktop left to hand back to.
-    @Test func retireAllTakesDownAReleasingPanelToo() {
-        let (panels, _, probe, _, made) = Self.harness()
-        panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
+    @Test func retireAllTakesDownAPictureMidFenceToo() {
+        let (panels, filmer, probe, _, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
         probe.covered = true
-        panels.setHoists([], feedback: Self.nowhere)
+        panels.setHoists([], feedback: Self.nowhere)      // fence pending
 
         panels.retireAll()
         #expect(made()[WindowId(1)]!.log.last == "retire")
     }
+
+    // The diff
 
     /// Bottom→top, each above the one before it. `0` is the front of the level, so the first is simply
     /// put there and the rest stack on it.
@@ -235,7 +302,7 @@ import EmiraCore
         let (panels, filmer, _, _, made) = Self.harness()
         panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
         let moved = Rect(x: 500, y: 400, width: 300, height: 200)
-        panels.setHoists([Self.binding(1, moved)], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .covered, moved)], feedback: Self.nowhere)
 
         #expect(filmer.films == [WindowId(1)])
         #expect(made()[WindowId(1)]!.frame == moved)
@@ -245,7 +312,8 @@ import EmiraCore
     @Test func aFloatThatResizedIsRefilmed() {
         let (panels, filmer, _, _, _) = Self.harness()
         panels.setHoists([Self.binding(1)], feedback: Self.nowhere)
-        panels.setHoists([Self.binding(1, Rect(x: 100, y: 100, width: 400, height: 260))], feedback: Self.nowhere)
+        panels.setHoists([Self.binding(1, .covered, Rect(x: 100, y: 100, width: 400, height: 260))],
+                         feedback: Self.nowhere)
 
         #expect(filmer.films == [WindowId(1), WindowId(1)])
     }

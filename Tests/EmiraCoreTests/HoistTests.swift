@@ -2,10 +2,17 @@ import Foundation
 import Testing
 @testable import EmiraCore
 
-// The hoist derivation (`State.hoistBindings`): which floats emira draws over the desktop, in what
-// order, and the three rules that decide it — covered, chosen, and covered *by a window emira placed*.
+// The hoist derivation (`State.hoistBindings`): which floats emira stands in for, which of those
+// pictures are *showing*, in what order, and the three rules that decide it — covered, chosen, and
+// covered *by a window emira placed*.
 
 @Suite struct HoistTests {
+
+    /// The floats whose picture is on the screen. Every on-screen float is named, so "not hoisted" is a
+    /// claim about `.covered` rather than about the list being empty.
+    static func shown(_ s: State) -> [WindowId] {
+        s.hoists.filter { $0.state == .covered }.map(\.window)
+    }
 
     /// A booted display with `w1` tiled full width and `w2` floated by hand at a rect that overlaps it.
     /// The `windowFrameChanged` is not decoration: a float keeps the frame it *had*, which is the tiled
@@ -25,7 +32,7 @@ import Testing
 
     @Test func aFloatBuriedByATiledWindowIsHoistedWhereItStands() {
         let s = Self.floatOverATile()
-        #expect(s.hoists.map(\.window) == [WindowId(2)])
+        #expect(Self.shown(s) == [WindowId(2)])
         #expect(s.hoists.first?.frame == Self.float)
         #expect(s.hoists.first?.monitor == MonitorId(1))
     }
@@ -37,8 +44,10 @@ import Testing
         s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1)),
                               .windowCreated(EngineFix.snapshot(2))]).0
         s = EngineFix.run(s, [.command(.float(.on)), .windowFrameChanged(WindowId(2), Self.float)]).0
-        // The float still holds focus, so it is in front of the tiled window it overlaps.
-        #expect(s.hoists.isEmpty)
+        // The float still holds focus, so it is in front of the tiled window it overlaps — named, so
+        // its picture is built and filmed against the burial to come, but not showing.
+        #expect(Self.shown(s).isEmpty)
+        #expect(s.hoists.map(\.state) == [.standby])
     }
 
     /// The float coming forward is the whole exit: it is then the front-most thing on the desktop and
@@ -50,10 +59,10 @@ import Testing
         let (after, fx) = Engine.reduce(s, .hoistClicked(WindowId(2)))
         #expect(fx == [.focus(WindowId(2)), .raise(WindowId(2))])
         // The click alone does not take it down — the real window is not in front yet.
-        #expect(after.hoists.map(\.window) == [WindowId(2)])
+        #expect(Self.shown(after) == [WindowId(2)])
 
         s = EngineFix.run(after, [.focusChanged(WindowId(2), origin: .ours)]).0
-        #expect(s.hoists.isEmpty)
+        #expect(Self.shown(s).isEmpty)
     }
 
     /// Rule 2. The taxonomy floats every dialog, sheet and tool palette; hoisting reads the user's own
@@ -64,7 +73,7 @@ import Testing
                               .windowCreated(EngineFix.snapshot(2, role: .dialog, frame: Self.float))]).0
         s = EngineFix.run(s, [.focusChanged(WindowId(1), origin: .system)]).0
         #expect(s.world.isFloating(WindowId(2)))            // it floats…
-        #expect(s.hoists.isEmpty)                           // …and is still nobody's to hoist
+        #expect(s.hoists.isEmpty)                           // …and is still nobody's to stand in for
     }
 
     /// …until the user says so. `float on` over a window that already floats moves nothing, and
@@ -77,7 +86,7 @@ import Testing
                               .command(.float(.on)),
                               .focusChanged(WindowId(1), origin: .system)]).0
         #expect(s.world.isFloatedByChoice(WindowId(2)))
-        #expect(s.hoists.map(\.window) == [WindowId(2)])
+        #expect(Self.shown(s) == [WindowId(2)])
     }
 
     /// Rule 3: only a window emira placed can bury one. A float overlapping nothing on the strip is a
@@ -92,16 +101,21 @@ import Testing
                               .windowFrameChanged(WindowId(2), Rect(x: 600, y: 200,
                                                                     width: 300, height: 200)),
                               .focusChanged(WindowId(1), origin: .system)]).0
-        #expect(s.hoists.isEmpty)
+        #expect(Self.shown(s).isEmpty)
+        // Named all the same, and this is the rule rather than an accident: standby is *on screen*, not
+        // "something could cover it". A float overlapping a column would leave and re-enter that set
+        // every time the strip scrolled out from under it, paying a film each way for a picture nobody
+        // saw.
+        #expect(s.hoists.map(\.state) == [.standby])
     }
 
-    /// A minimized float has nothing to stand in for, and a hoist of one would be a window in the Dock
-    /// drawn over the desktop.
+    /// A minimized float has nothing to stand in for, and a picture of one would be a window in the
+    /// Dock drawn over the desktop.
     @Test func aMinimizedFloatIsNotHoisted() {
         var s = Self.floatOverATile()
-        #expect(!s.hoists.isEmpty)
+        #expect(!Self.shown(s).isEmpty)
         s = EngineFix.run(s, [.windowMinimized(WindowId(2))]).0
-        #expect(s.hoists.isEmpty)
+        #expect(s.hoists.isEmpty)                           // off the screen: nothing even to prepare
     }
 
     /// The float leaving takes its hoist with it — the shell is told by the same effect that would have
@@ -139,16 +153,17 @@ import Testing
                               .windowFrameChanged(WindowId(3), Rect(x: 600, y: 250,
                                                                     width: 300, height: 200)),
                               .focusChanged(WindowId(1), origin: .system)]).0
-        #expect(s.hoists.map(\.window) == [WindowId(2), WindowId(3)])
+        #expect(Self.shown(s) == [WindowId(2), WindowId(3)])
     }
 
-    /// Nothing has been focused, so nothing is known to be behind anything. The conservative answer at
-    /// boot, and it falls out of the rank rather than being a case.
-    @Test func aDesktopNothingHasFocusedHoistsNothing() {
+    /// Nothing has been focused, so nothing is known to be behind anything: the float is prepared and
+    /// shows nothing. The conservative answer at boot, and it falls out of the rank rather than being a
+    /// case.
+    @Test func aDesktopNothingHasFocusedShowsNothing() {
         var s = EngineFix.booted(config: EngineFix.fullWidth)
         s.world.insert(EngineFix.snapshot(1))
         s.world.insert(EngineFix.snapshot(2, frame: Self.float))
         s.world.setFloating(WindowId(2), true)
-        #expect(s.hoistBindings().isEmpty)
+        #expect(s.hoistBindings().map(\.state) == [.standby])
     }
 }

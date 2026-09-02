@@ -2,11 +2,16 @@ import AppKit
 import QuartzCore
 import EmiraCore
 
-// One hoisted float's substrate: a borderless `NSWindow` standing exactly where the real window
-// stands, holding a photograph of it, one level above the cover. A sibling of `Overlay` and
-// `GuidePanel`, and it keeps their two proven idioms — `animationBehavior = .none` with the window
-// ordered in at `alpha 0` from birth, so appearing is a pure alpha flip rather than a system show
-// animation, and `isReleasedWhenClosed = false`.
+// One float's substrate: a borderless `NSWindow` standing exactly where the real window stands, holding
+// a photograph of it, one level above the cover. A sibling of `Overlay` and `GuidePanel`, and it keeps
+// their two proven idioms — `animationBehavior = .none` with the window ordered in at `alpha 0` from
+// birth, so appearing is a pure alpha flip rather than a system show animation, and
+// `isReleasedWhenClosed = false`.
+//
+// **It is built and filmed before it is needed.** A panel minted at the moment a float goes behind is
+// late by a screenshot, and that is long enough to watch the window disappear and come back. So a float
+// standing in the open already has one of these, loaded and invisible (`HoistState.standby`), and
+// burial is `reveal()` — the alpha flip the idiom above exists to make free.
 //
 // **A window per hoist, rather than one per display, and the mouse is the whole reason.** A hoist has
 // to take the clicks that land on it and pass on every click that does not, and no window can do both:
@@ -39,10 +44,15 @@ public final class HoistPanel: HoistSurface {
     /// the click landed says nothing and is not reported.
     private let onClick: @MainActor (WindowId) -> Void
 
-    /// Whether a photograph has arrived. Until one has, the panel is up at `alpha 0` and takes no
-    /// clicks: an empty window with a shadow is a hole in the desktop, and one that swallowed clicks
-    /// would be worse than the burial it is fixing.
-    public private(set) var isShown = false
+    /// Whether the picture is on the screen and taking clicks.
+    public private(set) var isRevealed = false
+
+    /// Whether a photograph has arrived. A panel with none shows nothing whatever it is asked to: an
+    /// empty window with a shadow is a hole in the desktop, and one that swallowed clicks would be
+    /// worse than the burial it is fixing.
+    private var hasImage = false
+    /// Whether a reveal is owed — asked for before the pixels existed, and paid by the first `setImage`.
+    private var wantsReveal = false
 
     /// What another panel orders itself against — `NSWindow.windowNumber`, which is what
     /// `order(above:)` takes.
@@ -81,11 +91,12 @@ public final class HoistPanel: HoistSurface {
         host.contentsGravity = .resize
 
         view.onClick = { [weak self] in
-            guard let self, self.isShown else { return }
+            guard let self, self.isRevealed else { return }
             self.onClick(self.window)
         }
         panel.contentView = view
-        // Ordered in now and left in, so showing is an alpha flip. Nothing waits on this call, which
+        self.frame = frame
+        // Ordered in now and left in, so revealing is an alpha flip. Nothing waits on this call, which
         // matters: the window server can defer an ordering change for as long as another app animates.
         panel.orderFrontRegardless()
     }
@@ -109,26 +120,70 @@ public final class HoistPanel: HoistSurface {
         panel.invalidateShadow()
     }
 
-    /// The photograph landed: show it. The first one is what brings the panel onto the screen and puts
-    /// it in the way of the mouse; a later one replaces the pixels of a panel already up.
-    public func show(_ image: CGImage) {
+    /// Load the pixels. On a panel already showing, this is the burial's own film replacing the standby
+    /// still it was revealed from; on one that is not, it pays a reveal that was owed.
+    public func setImage(_ image: CGImage) {
+        let replacing = hasImage && isRevealed
         host.contents = image
+        hasImage = true
         panel.invalidateShadow()
-        guard !isShown else { return }
-        isShown = true
+        if replacing {
+            // Cross-faded rather than swapped: the standby still and the burial film differ by the
+            // window's focus styling and by whatever its app redrew between them.
+            let fade = CABasicAnimation(keyPath: "contents")
+            fade.duration = Self.refreshDuration
+            host.add(fade, forKey: "refresh")
+        }
+        if wantsReveal { reveal() }
+    }
+
+    /// Show it and take the clicks. Instant where the pixels are already loaded, which is the whole
+    /// point of standby; owed until they are, where they are not.
+    public func reveal() {
+        wantsReveal = true
+        generation &+= 1                            // a conceal in flight owns nothing now
+        guard hasImage else { return }
+        isRevealed = true
         panel.ignoresMouseEvents = false
         setAlpha(1)
     }
 
-    /// Every alpha write but the fade's own. Through the animator at zero duration, not as a bare
-    /// assignment: a direct one is overwritten by the next frame of a dissolve still in flight, where a
-    /// zero-duration animation replaces that dissolve outright. `Overlay.raise` writes the same way.
-    private func setAlpha(_ alpha: CGFloat) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            panel.animator().alphaValue = alpha
-        }
+    /// The core has stopped covering this float: stop taking clicks, keep the pixels. The click that
+    /// caused it has already been spent, and anything after it belongs to the real window coming
+    /// forward underneath.
+    public func release() {
+        panel.ignoresMouseEvents = true
     }
+
+    /// Fade the picture out and stand by. Not a cut: the still was filmed while the float was behind and
+    /// unfocused, so it hands over to a window whose focus styling differs — the absence the cover's own
+    /// cross-fade exists to carry. The panel and its pixels stay, ready for the next burial.
+    /// `completion` runs exactly once, including for a panel that was never revealed.
+    public func conceal(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
+        wantsReveal = false
+        guard isRevealed else { return completion() }
+        generation &+= 1
+        let mine = generation
+        // Dropped at the *start* of the fade, not its end: a picture on its way out is no longer the
+        // thing on the screen, and a second pass finding it still revealed would start a second fade
+        // over the first. `reveal` bumps the generation, so coming back mid-fade still works.
+        isRevealed = false
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = duration
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            MainActor.assumeIsolated {
+                guard self.generation == mine else { return }    // revealed again mid-fade
+                completion()
+            }
+        })
+    }
+
+    /// How long that fade takes, and how long a standby still takes to become the burial's own film.
+    /// `Reconstruction.refreshDuration`'s value and its reasoning: a stand-in becoming the window's own
+    /// pixels, finished before the eye has settled anywhere.
+    public static let concealDuration: TimeInterval = 0.12
+    private static let refreshDuration: TimeInterval = 0.12
 
     /// Restack: this panel sits directly above `handle`, or at the front of its level when `0`.
     /// Ordering is what keeps two overlapping hoists in the order the desktop had them.
@@ -136,58 +191,30 @@ public final class HoistPanel: HoistSurface {
         panel.order(.above, relativeTo: handle)
     }
 
-    /// The core has dropped this hoist: stop taking clicks, keep the pixels. The panel is a picture
-    /// waiting to dissolve from here, and the click that caused the release has already been spent —
-    /// anything after it belongs to the real window coming forward underneath.
-    public func release() {
-        panel.ignoresMouseEvents = true
-    }
-
-    /// The float came back before the release finished. Cancel the dissolve and take the clicks again.
-    public func reclaim() {
-        generation &+= 1                            // a fade in flight owns nothing now
-        setAlpha(isShown ? 1 : 0)
-        panel.ignoresMouseEvents = !isShown
-    }
-
-    /// Dissolve the picture into the real window now standing under it, then order out. Not a cut: the
-    /// still was filmed while the float was behind and unfocused, so it hands over to a window whose
-    /// focus styling differs — the absence the cover's own cross-fade exists to carry. `completion` runs
-    /// exactly once, including for a panel that was never shown.
-    public func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
-        guard isShown else { return completion() }
-        generation &+= 1
-        let mine = generation
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = duration
-            panel.animator().alphaValue = 0
-        }, completionHandler: {
-            MainActor.assumeIsolated {
-                guard self.generation == mine else { return }    // reclaimed mid-fade
-                self.retire()
-                completion()
-            }
-        })
-    }
-
-    /// How long that dissolve takes. `Reconstruction.refreshDuration`'s value and its reasoning: this is
-    /// the same event in the other direction — a stand-in becoming the window's own pixels, finished
-    /// before the eye has settled anywhere.
-    public static let dismissDuration: TimeInterval = 0.12
-
-    /// Take it off the screen for good — a display changed under it, or the daemon is quitting. Instant,
-    /// and the one exit that does not wait for anything: there is no desktop left to hand back to.
+    /// Take it off the screen for good — the float has gone, a display changed under it, or the daemon
+    /// is quitting. The one exit that waits for nothing.
     public func retire() {
         generation &+= 1
-        isShown = false
+        isRevealed = false
+        wantsReveal = false
         panel.ignoresMouseEvents = true
         setAlpha(0)
         panel.orderOut(nil)
     }
 
-    /// Bumped by every dissolve and every reclaim, so a fade's completion can tell whether it is still
+    /// Bumped by every reveal, conceal and retire, so a fade's completion can tell whether it is still
     /// the current one. The idiom `Overlay.fadeOut` already uses.
     private var generation = 0
+
+    /// Every alpha write but the fade's own. Through the animator at zero duration, not as a bare
+    /// assignment: a direct one is overwritten by the next frame of a fade still in flight, where a
+    /// zero-duration animation replaces that fade outright. `Overlay.raise` writes the same way.
+    private func setAlpha(_ alpha: CGFloat) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            panel.animator().alphaValue = alpha
+        }
+    }
 }
 
 /// The panel's content view: pixels and one gesture. `mouseDown` rather than `mouseUp` — this is a

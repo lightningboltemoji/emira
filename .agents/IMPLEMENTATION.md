@@ -909,7 +909,10 @@ and each removes a way for the picture to be a lie:
 
 - **Only while something covers it.** A hoist cannot be dragged, resized, scrolled or hovered and its pixels
   stop at the moment they were taken, so the stand-in is confined to a window the user cannot see anyway. A
-  float sitting in the open is left alone and stays real in every respect.
+  float sitting in the open is `HoistState.standby` — its panel built and filmed, showing nothing — and stays
+  real in every respect. **Standby is *on screen*, not "something could cover it"**: an overlap test would put
+  a float in and out of the set every time the strip scrolled out from under it, paying a film each way for a
+  picture nobody saw, where on screen is stable and costs one still per float.
 - **Only what the user chose** (`World.isFloatedByChoice`) — an explicit `true` in the tri-state, never a
   role. The taxonomy floats every dialog, sheet and tool palette, and pinning a background app's palettes
   over the window you are typing in is not floating them.
@@ -924,17 +927,21 @@ only the difference, so a tick costs nothing.
 **A hoist is decided on an AX report and comes down on the window server's answer.** `Event.focusChanged`
 says the app told us its focus moved, not that the raise has reached the glass, and the two are far enough
 apart to see — so a released panel stops taking clicks, keeps its pixels, and asks `StackProbe` until nothing
-foreign sits over the float. Only then does it dissolve, over `HoistPanel.dismissDuration`, which is not a cut
+foreign sits over the float. Only then does it conceal, over `HoistPanel.concealDuration`, which is not a cut
 because the still was filmed while the window was behind and unfocused. **The fence is a delay, not a veto**:
-`HoistPanels.releaseGrace` bounds it and expiry dismisses anyway, since a shell keeping a panel the core had
+`HoistPanels.releaseGrace` bounds it and expiry conceals anyway, since a shell keeping a picture the core had
 dropped would be a second opinion about what is on the screen. `StackProbe` is asked off the main thread for
 `Overlay.confirmPublished`'s reason — what is being waited out is another app's activation.
 
-**Nothing is gated on the pixels going up.** No raise waits for a hoist and no window is held behind one, so
-the panel goes up empty and becomes visible when its photograph lands — and a machine with no Screen Recording
-grant never sees one, which is the cover ladder's degradation ending in the same geometry. The one flash left
-is on the way in: a float is genuinely buried for the length of its film, because there is nothing to draw
-until the first photograph exists. The photograph is taken
+**Two photographs, and the second is the honest one.** A standby still is filmed while the float is in the
+open, so it carries the window's focused styling and whatever it looked like before the user's last
+interaction; the burial's own film is what the desktop just showed. The reveal paints the first and
+cross-fades to the second — `CoverMode.immediate`'s trade in another place, a stand-in buying the instant and
+its own capture overtaking it. Neither is live, and the frozen content is the standing cost of hoisting.
+
+**Nothing is gated on the pixels.** No raise waits for a hoist and no window is held behind one, so a panel
+with no photograph yet shows nothing and takes no clicks — which is also the whole degradation on a machine
+with no Screen Recording grant, the cover ladder's answer ending in the same geometry. The photograph is taken
 when the float is buried and not again: that instant is the freshest one available, and the cost of the two
 alternatives is a screenshot on a timer for a window nobody is looking at, or an `SCStream` holding the
 screen-recording indicator lit for as long as the window floats. A hoisted float's content is therefore

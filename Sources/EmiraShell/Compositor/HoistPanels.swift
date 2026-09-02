@@ -3,58 +3,60 @@ import EmiraCore
 
 // The hoist plane: every `HoistPanel` on the desktop, and the diff that keeps them matching the core's
 // answer. `Effect.setHoists` carries the whole set every time, so this file's whole job is the
-// difference — film what is new, move what moved, restack, take down what left.
+// difference — build and film what is new, move what moved, restack, reveal and conceal, and take down
+// what left.
 //
-// **Nothing is gated on a film.** A hoist is not a cover: no raise waits for it, no window is held
-// behind it, and the reducer counts nothing down. So the panel goes up at `alpha 0` the moment the core
-// names it and becomes visible when its photograph lands — and a machine with no Screen Recording grant
-// simply never sees one appear, which is the same degradation the cover ladder makes and ends in the
-// same geometry.
+// **A panel exists for every on-screen float, not only the covered ones.** `HoistState.standby` is a
+// panel built, filmed and invisible, so the burial that follows is `reveal()` — an alpha flip on a
+// window that is already ordered in. Minting it at the moment of burial instead would be late by one
+// screenshot, which is long enough to watch the float go behind and come back.
 //
-// **A hoist is dropped on an AX report and comes down on the window server's answer.** The core drops
-// the binding when `Event.focusChanged` says the float is in front, and that report says the app told
-// us its focus moved — not that the raise has reached the glass. Cutting the picture away on it shows
-// the window that is still in front for as long as the two are apart, which is the whole of the flash.
-// So a released panel stops taking clicks, keeps its pixels, and asks `StackProbe` until the float is
-// genuinely unobstructed; only then does it dissolve. The wait is bounded, and expiry dismisses anyway —
-// a fence is a delay, not a veto, and a shell that kept a panel the core had dropped would be a second
+// **A hoist is decided on an AX report and comes down on the window server's answer.** The core stops
+// covering a float when `Event.focusChanged` says it is in front, and that report says the app told us
+// its focus moved — not that the raise has reached the glass. Concealing on it shows the window that is
+// still in front for as long as the two are apart, which is the whole of the flash on the way out. So a
+// released panel stops taking clicks, keeps its pixels, and asks `StackProbe` until the float is
+// genuinely unobstructed; only then does it fade. The wait is bounded, and expiry conceals anyway — a
+// fence is a delay, not a veto, and a shell that kept a picture the core had dropped would be a second
 // opinion about what is on the screen.
 //
-// **A photograph is taken when a float is buried and not again.** That instant is the freshest one
-// available — the pixels are what the user was just looking at — and it is the only one that costs
-// nothing to choose: a hoist that re-filmed on a timer would put a screenshot through the window
-// server every few seconds for a window nobody is looking at, and one that mirrored the window live
-// would hold a `SCStream` open and light the screen-recording indicator for as long as it floated. The
-// price is that a hoisted float's content is frozen; a float that comes forward and goes back is filmed
-// again, because it left the set and re-entered it.
+// **Two photographs, and the second is the honest one.** A standby still is filmed while the float is in
+// the open, so it carries the window's focused styling and whatever it looked like before the user's
+// last interaction; the burial film that follows is what the desktop actually just showed. The reveal
+// paints the first and cross-fades to the second, which is `CoverMode.immediate`'s trade in another
+// place — a stand-in buys the instant, and its own capture overtakes it. Neither is live: a hoisted
+// float's content is frozen, because the alternatives are a screenshot on a timer for a window nobody
+// is looking at, or an `SCStream` holding the screen-recording indicator lit for as long as it floats.
 
 /// Where `Effect.setHoists` goes. A protocol for `CoverPlane`'s reason: the daemon owns the AppKit
 /// half, and `CompositingExecutor` routes to a seam a test can stand in for.
 @MainActor
 public protocol HoistPlane: AnyObject {
-    /// Draw exactly these floats, bottom→top, and take down every hoist not named.
+    /// Stand in for exactly these floats, bottom→top, and take down every one not named.
     func setHoists(_ bindings: [HoistBinding], feedback: EventSink)
 }
 
-/// One hoisted float's surface — `HoistPanel` is the real one. A protocol for `CoverSurface`'s reason:
-/// the release fence above it is policy with races in it, and the window below it is AppKit.
+/// One float's surface — `HoistPanel` is the real one. A protocol for `CoverSurface`'s reason: the
+/// reveal/conceal policy above it has races in it, and the window below it is AppKit.
 @MainActor
 public protocol HoistSurface: AnyObject {
     /// Where the real window is, in core coordinates — what the release fence asks about.
     var frame: Rect { get }
-    /// Whether a photograph has arrived and the surface is on the screen.
-    var isShown: Bool { get }
+    /// Whether the picture is on the screen and taking clicks.
+    var isRevealed: Bool { get }
     /// What another surface orders itself against. `0` is the front of the level.
     var handle: Int { get }
 
     func place(at frame: Rect)
-    func show(_ image: CGImage)
-    func order(above handle: Int)
-    /// The core has dropped this hoist: stop taking clicks, keep the pixels.
+    /// Load the pixels, paying a reveal that was owed and cross-fading over one already showing.
+    func setImage(_ image: CGImage)
+    /// Show it and take clicks — instant where the pixels are loaded, owed where they are not.
+    func reveal()
+    /// Stop taking clicks. The picture stays until `conceal`.
     func release()
-    /// The float came back before the release finished: cancel the dissolve, take the clicks again.
-    func reclaim()
-    func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void)
+    /// Fade the picture out and stand by; the surface and its pixels stay.
+    func conceal(over duration: TimeInterval, completion: @escaping @MainActor () -> Void)
+    func order(above handle: Int)
     func retire()
 }
 
@@ -63,7 +65,7 @@ public typealias HoistSurfaceFactory =
     @MainActor (_ window: WindowId, _ frame: Rect, _ scale: CGFloat, _ geometry: ScreenGeometry,
                 _ onClick: @escaping @MainActor (WindowId) -> Void) -> any HoistSurface
 
-/// Every hoisted float's panel, keyed by the window it stands for.
+/// Every float's panel, keyed by the window it stands for.
 @MainActor
 public final class HoistPanels: HoistPlane {
 
@@ -72,19 +74,14 @@ public final class HoistPanels: HoistPlane {
     private let scheduler: any DelayScheduler
     private let build: HoistSurfaceFactory
     private var panels: [WindowId: any HoistSurface] = [:]
-    /// Panels the core has dropped that are still on the screen, waiting for the real window to come
-    /// forward under them. Held apart from `panels` so a float re-hoisted mid-release reclaims its own
-    /// panel rather than building a second one over it.
-    private var releasing: [WindowId: any HoistSurface] = [:]
-    /// Bumped per window by every release and every reclaim, so a fence answering late owns nothing.
-    private var releaseGeneration: [WindowId: Int] = [:]
     /// The size each window's photograph was asked for — `SurfaceCache`'s freshness test, since a window
     /// that merely moved still shows the pixels it was filmed with. Written when a film is *requested*,
     /// so a second `setHoists` arriving mid-flight does not order a second photograph.
     private var pictured: [WindowId: Size] = [:]
-    /// Bumped per window by every film, so one answering after the panel it was for came down (or after
-    /// a newer film overtook it) owns nothing.
+    /// Bumped per window by every film, so one answering after its panel came down owns nothing.
     private var filmGeneration: [WindowId: Int] = [:]
+    /// Bumped per window by every reveal and every conceal, so a fence answering late owns nothing.
+    private var fenceGeneration: [WindowId: Int] = [:]
 
     /// The last set the core named, re-applied whenever the displays change under it — every panel is
     /// built against a `ScreenGeometry` and a backing scale, and the core has no reason to re-emit a set
@@ -110,7 +107,7 @@ public final class HoistPanels: HoistPlane {
         self.build = build
     }
 
-    /// How long a release waits for the window server before dissolving regardless. Generous, because
+    /// How long a release waits for the window server before concealing regardless. Generous, because
     /// nothing is waiting on it — the panel it holds up is a pixel-identical copy of the window coming
     /// forward, so overshooting costs a stale title bar and undershooting costs the flash.
     public static let releaseGrace: TimeInterval = 0.5
@@ -139,7 +136,7 @@ public final class HoistPanels: HoistPlane {
         apply(bindings)
     }
 
-    /// Take every hoist off the screen — the daemon is quitting, and a picture of a window is the last
+    /// Take every panel off the screen — the daemon is quitting, and a picture of a window is the last
     /// thing a desktop being handed back should be holding.
     public func retireAll() {
         retireEvery()
@@ -147,27 +144,31 @@ public final class HoistPanels: HoistPlane {
         current = []
     }
 
-    /// Every panel off the screen at once, released ones included — a fence still out is answered by a
-    /// generation that has moved on.
     private func retireEvery() {
-        for panel in panels.values.map({ $0 }) + releasing.values.map({ $0 }) { panel.retire() }
-        for id in panels.keys { releaseGeneration[id, default: 0] &+= 1 }
-        for id in releasing.keys { releaseGeneration[id, default: 0] &+= 1 }
+        for (id, panel) in panels.merging(retiring, uniquingKeysWith: { held, _ in held }) {
+            panel.retire()
+            fenceGeneration[id, default: 0] &+= 1
+            filmGeneration[id, default: 0] &+= 1
+        }
         panels.removeAll()
-        releasing.removeAll()
+        retiring.removeAll()
     }
 
     private func apply(_ bindings: [HoistBinding]) {
         let wanted = Set(bindings.map(\.window))
         for (id, panel) in panels where !wanted.contains(id) {
+            // The float has gone off the screen, stopped floating, or closed. A picture of it stays only
+            // as long as it takes the window server to agree there is nothing over it — after which
+            // there is nothing left for it to stand in for. State first: a probe may answer at once.
             panels[id] = nil
-            filmGeneration[id, default: 0] &+= 1     // a film still out belongs to nothing
-            // The pixels stay up and `pictured` with them: the panel is still on the screen, and a
-            // float that comes straight back must reclaim what it is already showing rather than film
-            // a second copy of it.
-            releasing[id] = panel
+            filmGeneration[id, default: 0] &+= 1
+            retiring[id] = panel
             panel.release()
-            fenceRelease(id, panel)
+            fence(id, panel) { [weak self] in
+                panel.retire()
+                self?.retiring[id] = nil
+                self?.pictured[id] = nil
+            }
         }
 
         // Bottom→top, which is both the order the array carries and the order the restack needs: each
@@ -178,21 +179,31 @@ public final class HoistPanels: HoistPlane {
             panel.place(at: binding.frame)
             panel.order(above: below?.handle ?? 0)
             below = panel
-            guard pictured[binding.window] != binding.frame.size else { continue }
-            film(binding)
+            if pictured[binding.window] != binding.frame.size { film(binding) }
+            switch binding.state {
+            case .covered:
+                // Instant where a standby still is already loaded, which is the point of standby. The
+                // burial's own film overtakes it when it lands (`film`).
+                fenceGeneration[binding.window, default: 0] &+= 1
+                panel.reveal()
+            case .standby:
+                guard panel.isRevealed else { continue }
+                panel.release()
+                fence(binding.window, panel) { panel.conceal(over: HoistPanel.concealDuration) {} }
+            }
         }
     }
 
-    /// The panel for a binding, built if this is the first time the core has named it. `nil` for a
-    /// display that has left between the core deciding and this running — there is no scale to
-    /// rasterize at, and guessing one is a soft hoist beside a sharp desktop.
+    /// Panels the core has dropped that are still fading. Held only so `retireAll` and `setDisplays`
+    /// can reach them; nothing else reads it.
+    private var retiring: [WindowId: any HoistSurface] = [:]
+
+    /// The panel for a binding, built if this is the first time the core has named it — or reclaimed
+    /// from a teardown that has not finished, which is a float that left and came straight back.
     private func panel(for binding: HoistBinding) -> (any HoistSurface)? {
         if let existing = panels[binding.window] { return existing }
-        // Back before the release finished — the float was buried again while its own picture was still
-        // dissolving. Reclaiming it is what stops the two crossing over.
-        if let returning = releasing.removeValue(forKey: binding.window) {
-            releaseGeneration[binding.window, default: 0] &+= 1
-            returning.reclaim()
+        if let returning = retiring.removeValue(forKey: binding.window) {
+            fenceGeneration[binding.window, default: 0] &+= 1
             panels[binding.window] = returning
             return returning
         }
@@ -204,32 +215,25 @@ public final class HoistPanels: HoistPlane {
         return made
     }
 
-    /// Hold `panel` up until the window server stops showing anything over the float, then dissolve it.
-    /// Re-asked rather than awaited: there is no notification for "the raise reached the glass". Bounded
-    /// by `grace`, after which it comes down regardless — see the file header.
-    private func fenceRelease(_ id: WindowId, _ panel: any HoistSurface) {
-        releaseGeneration[id, default: 0] &+= 1
+    /// Run `then` once the window server stops showing anything over the float. Re-asked rather than
+    /// awaited: there is no notification for "the raise reached the glass". Bounded by `grace`, after
+    /// which it runs regardless — see the file header.
+    private func fence(_ id: WindowId, _ panel: any HoistSurface,
+                       then: @escaping @MainActor () -> Void) {
+        fenceGeneration[id, default: 0] &+= 1
         ask(id, panel, until: Date().addingTimeInterval(grace),
-            generation: releaseGeneration[id] ?? 0)
+            generation: fenceGeneration[id] ?? 0, then: then)
     }
 
     private func ask(_ id: WindowId, _ panel: any HoistSurface, until deadline: Date,
-                     generation mine: Int) {
+                     generation mine: Int, then: @escaping @MainActor () -> Void) {
         probe.isCovered(id, within: panel.frame) { [weak self] covered in
-            guard let self, self.releaseGeneration[id] == mine else { return }
-            guard covered, Date() < deadline else { return self.dissolve(id, panel, generation: mine) }
+            guard let self, self.fenceGeneration[id] == mine else { return }
+            guard covered, Date() < deadline else { return then() }
             self.scheduler.schedule(after: Self.releaseInterval) { [weak self] in
-                guard let self, self.releaseGeneration[id] == mine else { return }
-                self.ask(id, panel, until: deadline, generation: mine)
+                guard let self, self.fenceGeneration[id] == mine else { return }
+                self.ask(id, panel, until: deadline, generation: mine, then: then)
             }
-        }
-    }
-
-    private func dissolve(_ id: WindowId, _ panel: any HoistSurface, generation mine: Int) {
-        panel.dismiss(over: HoistPanel.dismissDuration) { [weak self] in
-            guard let self, self.releaseGeneration[id] == mine else { return }
-            self.releasing[id] = nil
-            self.pictured[id] = nil
         }
     }
 
@@ -243,11 +247,11 @@ public final class HoistPanels: HoistPlane {
             guard let surface else {
                 // Nothing came back — no grant, a departed display, a window that closed. Forget the
                 // request so the next `setHoists` asks again rather than standing on a photograph that
-                // does not exist; the panel stays invisible and click-through until one does.
+                // does not exist; the panel shows nothing and takes no clicks until one does.
                 self.pictured[id] = nil
                 return
             }
-            self.panels[id]?.show(surface.image)
+            self.panels[id]?.setImage(surface.image)
         }
     }
 }

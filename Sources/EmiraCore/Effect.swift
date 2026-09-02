@@ -31,9 +31,9 @@ public enum Effect: Sendable, Equatable, Codable {
     /// surface it built it on and the hottest path in the reducer carries nothing extra.
     case setLayerFrame(LayerId, Rect)
 
-    /// Draw these floats over the desktop, bottom→top, and take down every hoist not named. The whole
-    /// set every time — a replacement, which the shell diffs. Unacked and gating nothing: a hoist
-    /// appears when its still lands, and a machine that cannot film one never sees it appear.
+    /// The floats to stand in for, bottom→top, each either showing or ready to — and take down every
+    /// one not named. The whole set every time: a replacement, which the shell diffs. Unacked and gating
+    /// nothing, so a machine that cannot film a still simply never sees one appear.
     case setHoists([HoistBinding])
 
     /// Take one reconstruction layer off the screen, until a `setLayerFrame` puts it back — what a

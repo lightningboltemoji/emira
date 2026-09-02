@@ -352,7 +352,10 @@ import Testing
         #expect(after.world.isFloating(WindowId(1)))
         #expect(!after.world.participatesInStrip(WindowId(1)))
         #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
-        #expect(fx.isEmpty)                                 // the app's to position, so we say nothing
+        // Where the window *goes* is the app's to decide, so nothing places it. The one effect is the
+        // hoist plane being told the float exists, which builds its stand-in against the burial to come.
+        #expect(fx == [.setHoists(after.hoists)])
+        #expect(after.hoists.map(\.state) == [.standby])
     }
 
     /// …and `float = false` tiles a window macOS classed a dialog, which is the direction that needs a
