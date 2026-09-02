@@ -290,14 +290,20 @@ window cannot write there either.
 **The fence asks two things, because one of them is answerable only by the window server.** Whether a frame has
 been shown since the raise is the display's to say, and `CADisplayLink.targetTimestamp` says it: a commit made
 before a callback is in that frame or an earlier one. Whether *ours* was in it is not — the display refreshes
-whether or not the server is showing what this process commits, and there are stretches where it is not: while
-an app closes a window, a cover is raised and its layers are blitted with none of it reaching the glass for
-hundreds of milliseconds, and then all of it in one frame. So the second half asks the window server for the
-alpha it has *published* for the overlay (`Overlay.confirmPublished`). `CGWindowListCopyWindowInfo` opens by
+whether or not the server is showing what this process commits, and a stretch where it is not shows up as a
+cover raised and its layers blitted with none of it reaching the glass, then all of it in one frame. So the
+second half asks the window server for the alpha it has *published* for the overlay
+(`Overlay.confirmPublished`). `CGWindowListCopyWindowInfo` opens by
 synchronizing this process's pending Core Animation commit, so the question does not answer until the raise has
 been taken, and a wait of any length is absorbed inside one asking. It is asked off the main thread — nothing is painted while
 a cover is `.raising`, so the read contends with no frame commit of ours, which is what makes moving it off the
 main actor sound here where it is not in `WorldWatcher.reconcile`.
+
+**A raise is an alpha flip and nothing else.** The overlay is ordered in once and left in, and the top of its
+level is re-taken only while the cover is down (`Overlay.orderToFront`, called at build and from the
+cross-fade's completion). An ordering call inside the raise is held by the window server for the length of any
+window-close animation in flight, and every commit queued behind it with it — which is the deferral the fence
+exists to survive, arriving on the one path that could have avoided it.
 
 **And the gate is quantified over displays:** a real window may move only when the cover is up on every display
 it is visible on before *or* after the move. A workspace lives on one display, so that is the display holding

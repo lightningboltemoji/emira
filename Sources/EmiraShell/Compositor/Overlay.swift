@@ -86,7 +86,7 @@ public final class Overlay: NSObject {
 
         window.contentView = view
         // Ordered in now and left in forever, or the system's show-animation pops on the first raise.
-        window.orderFrontRegardless()
+        orderToFront()
     }
 
     /// Add a reconstruction layer above the base. Call order is z-order, bottom→top.
@@ -120,6 +120,9 @@ public final class Overlay: NSObject {
     /// the animator at zero duration, not as a bare assignment: a direct one would be overwritten by the
     /// next frame of a cross-fade still in flight, where a zero-duration animation replaces that fade
     /// outright. `onScreen` fires at most once, and not at all for a cover replaced or faded first.
+    ///
+    /// A pure alpha flip and nothing else: an ordering call here is deferred by the window server for
+    /// the length of any close animation in flight, and every commit behind it with it.
     public func raise(onScreen: @escaping @MainActor () -> Void) {
         generation &+= 1
         isRaised = true
@@ -127,8 +130,13 @@ public final class Overlay: NSObject {
             context.duration = 0
             window.animator().alphaValue = Self.raisedAlpha
         }
-        window.orderFrontRegardless()
         armFence(onScreen)
+    }
+
+    /// Re-take the top of the overlay's level, at the two moments nothing is waiting on the window
+    /// server: the build, and every cover that finishes coming down. Never during a raise (`raise`).
+    private func orderToFront() {
+        window.orderFrontRegardless()
     }
 
     //
@@ -267,7 +275,10 @@ public final class Overlay: NSObject {
         // A cover on its way down has nothing left to report having arrived. Dropping the fence rather
         // than firing it keeps `coverOnScreen` a fact about a live cover; the core tolerates either.
         cancelFence()
-        guard isRaised else { return completion(true) }
+        guard isRaised else {
+            orderToFront()
+            return completion(true)
+        }
         generation &+= 1
         let mine = generation
         NSAnimationContext.runAnimationGroup({ context in
@@ -277,6 +288,8 @@ public final class Overlay: NSObject {
             MainActor.assumeIsolated {
                 guard self.generation == mine else { return completion(false) }
                 self.isRaised = false
+                // Invisible at alpha 0, so the ordering costs nothing anybody is waiting for.
+                self.orderToFront()
                 completion(true)
             }
         })
