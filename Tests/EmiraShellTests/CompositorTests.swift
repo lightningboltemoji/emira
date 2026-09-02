@@ -460,6 +460,25 @@ import EmiraCore
         #expect(reported == 2)
     }
 
+    /// The smoothness number measures the cover, not the wait in front of it: a raise can sit behind a
+    /// window-server deferral for hundreds of milliseconds, and charging that to the animation would
+    /// report a whole transition as a slow one.
+    @Test func aCoverIsTimedFromTheGlassAndNotFromTheRaise() {
+        let (executor, surface, _, _, log) = Self.harness()
+        var reported: TimeInterval?
+        executor.onCoverDismissed = { _, _, seconds in reported = seconds }
+
+        executor.execute([.beginTransition(MonitorId(1), Self.bindings)], feedback: log.sink)
+        usleep(60_000)                          // the fence held, as one behind a deferral is
+        surface.heldFence?()
+        executor.execute([.setLayerFrame(LayerId(1), Self.rect(0))], feedback: log.sink)
+        executor.execute([.endTransition(MonitorId(1))], feedback: log.sink)
+
+        // Clear of both sides: the blit and the dismissal that follow the fence cost microseconds, and
+        // timing from the raise would have reported at least the 60 ms above.
+        #expect((reported ?? .infinity) < 0.03, "the wait before the glass is not animation")
+    }
+
     /// The stills are released when the cover is down, not when `endTransition` is reduced: they are
     /// on screen for the whole cross-fade, held by `CALayer.contents`.
     @Test func theStillsAreReleasedOnlyAfterTheCrossFadeCompletes() {

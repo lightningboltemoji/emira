@@ -80,6 +80,11 @@ public final class WorldWatcher {
     /// A window manager quietly not managing something is the failure a user cannot debug.
     public var onIncompleteScan: (@MainActor (AXEnumerator.Report) -> Void)?
 
+    /// Whether the shell is committing a Core Animation transaction every frame. Read by `reconcile`,
+    /// which is the one thing here that must not run while it is true; `false` where nothing paints,
+    /// which is every test that is not about the interaction.
+    public var isPainting: @MainActor () -> Bool = { false }
+
     /// Every raw pointer sample, forwarded whole. This type owns the mouse monitor and therefore the
     /// fan-out, and owns nothing else about the pointer: what a sample *means* is `PointerFocus`'s (a
     /// crossing) and `PointerWake`'s (the motion that ends a hide), and the order those two run in is
@@ -396,6 +401,10 @@ public final class WorldWatcher {
     /// Each of the three is a state rather than a race, which is what separates them from the retry
     /// chain: a race resolves itself and is waited out under a budget, a state stays wrong until
     /// something asks again.
+    ///
+    /// **Never while a frame is being painted.** The list read blocks until the window server has taken
+    /// *our own* pending Core Animation commit, so a cover makes it hundreds of times its idle cost. A
+    /// round skipped costs three more seconds; a round taken mid-transition costs the animation.
     private func reconcile() {
         guard !isStopped else { return }
 
@@ -403,7 +412,10 @@ public final class WorldWatcher {
         // busy to answer when we asked is deaf to us from then on — no creation, no destroy, no move —
         // and nothing in the edge plane can fix that, because a budget must terminate and this must not.
         // `register` skips the apps already covered, so a healthy desktop pays one set lookup each.
+        // Ahead of the paint gate, being AX work on the lanes and free to the main thread.
         for (_, target) in apps.sorted(by: { $0.key < $1.key }) { register(target) }
+
+        guard !isPainting() else { return }
 
         let list = enumerator.windowList()
         // An empty list is a failed read, not an empty desktop — `WindowListEntry.current()` answers `[]`

@@ -48,6 +48,12 @@ case let unexpected:
 /// A peer vanishing mid-reply must be a failed `write`, never a signal that kills the daemon.
 signal(SIGPIPE, SIG_IGN)
 
+/// `EMIRA_STALL_PROBE=<ms>` reports every main-thread stall past that many milliseconds, with the stack
+/// holding it. Off by default and costing nothing when off; before the run loop, so it covers boot too.
+if let raw = ProcessInfo.processInfo.environment["EMIRA_STALL_PROBE"], let ms = Double(raw), ms > 0 {
+    StallProbe.install(threshold: ms / 1000)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
@@ -432,6 +438,30 @@ let watcher = WorldWatcher(
 // A scan that gave up leaves a window simply unmanaged, with nothing else to say so.
 watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
+}
+
+// The one thing reconciliation needs from the core, through a reader for `PointerFocus`'s reason: the
+// watcher holds no core state, and what it is asking is not about the world it watches but about
+// whether *we* are mid-frame. See `WorldWatcher.reconcile`.
+watcher.isPainting = { runtime.state.motion.needsFrames }
+
+// `EMIRA_TRACE=1` prints every reduce — the event, the effects, and the wall clock between them.
+// Bursts are separated by 400 ms of quiet, so one interaction is one block. Instrumentation only.
+if ProcessInfo.processInfo.environment["EMIRA_TRACE"] == "1" {
+    var burstStart: UInt64 = 0
+    var previous: UInt64 = 0
+    runtime.onReduce = { event, effects in
+        let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        if previous == 0 || now &- previous > 400_000_000 {
+            burstStart = now
+            FileHandle.standardError.write(Data("\n--- trace ---\n".utf8))
+        }
+        previous = now
+        var line = String(format: "%.4f %7.1f  %@\n", Double(now) / 1e9,
+                          Double(now &- burstStart) / 1e6, "\(event)")
+        for effect in effects { line += "         → \(effect)\n" }
+        FileHandle.standardError.write(Data(line.utf8))
+    }
 }
 
 // The pointer plane's read direction: two consumers of the same samples, neither of which the watcher

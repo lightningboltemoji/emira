@@ -137,7 +137,7 @@ public final class CompositingExecutor: Executor {
     private let truth: any Executor
     private let pointer: any Executor
     private let launcher: any ProcessLauncher
-    /// Per display, frames blitted since that cover was raised and when it went up. One run of blits
+    /// Per display, frames blitted since that cover was raised and when it reached the glass. One run of blits
     /// counts as a frame for every cover that is up: a tick emits the layer frames of every cover with
     /// motion to make in one run, so the alternative would need this file to know which display a
     /// `LayerId` is on — which is exactly the routing D11 keeps in the plane.
@@ -236,9 +236,14 @@ public final class CompositingExecutor: Executor {
         for effect in effects {
             switch effect {
             case .beginTransition(let monitor, let bindings):
-                surface.raiseCover(on: monitor, bindings) { feedback(.coverOnScreen(monitor)) }
+                // Stamped when the cover is *on the glass*, not when it was asked for: the fence can
+                // wait out a window-server deferral, and counting that as animation would report a
+                // whole transition as a slow one.
+                surface.raiseCover(on: monitor, bindings) { [weak self] in
+                    self?.coverRaisedAt[monitor] = Date()
+                    feedback(.coverOnScreen(monitor))
+                }
                 framesBlitted[monitor] = 0
-                coverRaisedAt[monitor] = Date()
             case .extendCover(let monitor, let bindings):
                 // The `setLayerFrame`s that place these are in this same run, so the new layers are
                 // created and positioned inside one transaction.

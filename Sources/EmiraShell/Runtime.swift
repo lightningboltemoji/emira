@@ -82,6 +82,10 @@ public final class Runtime {
     /// An observer must not `dispatch` from here — that would drain again and re-notify.
     public var onStateChanged: (@MainActor (State) -> Void)?
 
+    /// Every reduce as it happens — the event and the effects it produced. Instrumentation only, and
+    /// `nil` unless something is watching.
+    public var onReduce: (@MainActor (Event, [Effect]) -> Void)?
+
     /// Feed one event to the core.
     ///
     /// If a pump is already running (called from inside `Executor.execute`, or from an event source a
@@ -109,6 +113,7 @@ public final class Runtime {
             head += 1
             let (next, effects) = Engine.reduce(state, event)
             state = next
+            onReduce?(event, effects)
             // Skip empty batches so an executor can treat every call as real work (open a
             // `CATransaction`, take a lock) without guarding.
             if !effects.isEmpty {

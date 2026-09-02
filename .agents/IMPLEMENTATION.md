@@ -282,10 +282,22 @@ compositor routes on a dictionary read.
 **Why the raise is two steps.** `beginTransition` reaches the window server synchronously, but the display
 composes on its own schedule, and an app fast enough to answer an AX set inside that interval would move in the
 open. Emission order cannot close that — ordering our own calls says nothing about whose pixels the window
-server has ready. So the shell fences the raise against the display itself (`CADisplayLink.targetTimestamp`, two
-callbacks) and reports `coverOnScreen`, which is the only thing advancing the phase and the only batch a
-teleport rides in. `.raising` answers the truth plane exactly as `.capturing` does — `reassertTruthPlane` writes
-nothing **for that display** — so an unrelated event landing inside the window cannot write there either.
+server has ready. So the shell fences the raise and reports `coverOnScreen`, which is the only thing advancing
+the phase and the only batch a teleport rides in. `.raising` answers the truth plane exactly as `.capturing`
+does — `reassertTruthPlane` writes nothing **for that display** — so an unrelated event landing inside the
+window cannot write there either.
+
+**The fence asks two things, because one of them is answerable only by the window server.** Whether a frame has
+been shown since the raise is the display's to say, and `CADisplayLink.targetTimestamp` says it: a commit made
+before a callback is in that frame or an earlier one. Whether *ours* was in it is not — the display refreshes
+whether or not the server is showing what this process commits, and there are stretches where it is not: while
+an app closes a window, a cover is raised and its layers are blitted with none of it reaching the glass for
+hundreds of milliseconds, and then all of it in one frame. So the second half asks the window server for the
+alpha it has *published* for the overlay (`Overlay.confirmPublished`). `CGWindowListCopyWindowInfo` opens by
+synchronizing this process's pending Core Animation commit, so the question does not answer until the raise has
+been taken, and a wait of any length is absorbed inside one asking. It is asked off the main thread — nothing is painted while
+a cover is `.raising`, so the read contends with no frame commit of ours, which is what makes moving it off the
+main actor sound here where it is not in `WorldWatcher.reconcile`.
 
 **And the gate is quantified over displays:** a real window may move only when the cover is up on every display
 it is visible on before *or* after the move. A workspace lives on one display, so that is the display holding
@@ -909,6 +921,8 @@ can quietly break:
   never introduced to an app that didn't have it, never left off.
 - **Never block our own run loop.** AX setters are synchronous Mach IPC. They run off the main thread on serial
   per-app lanes under a short `AXUIElementSetMessagingTimeout`, which protects _us_ and does nothing for the app.
+  The window server is the one round trip this rule cannot answer: `CGWindowListCopyWindowInfo` waits on our own
+  pending Core Animation commit, so no thread makes it cheap and the caller yields instead (§ reconciliation).
 - **Expect clamping.** Apps clamp to their own min/max, so landing exactly can take size → position → size. What
   an app answered is then a fact the geometry consults (`World.corrections`, §6) rather than something re-asked.
 - **An empty `AXWindows` is not proof of an app with no windows.** Finder stops answering it — `.success`, empty
@@ -959,9 +973,19 @@ have it, never left off.
 
 **A reconciliation heartbeat is the standing check behind all of it** (`WorldWatcher.reconcile`, every 3 s).
 Everything else is edge-triggered, so a missed discovery is a window unmanaged for the life of the daemon,
-silently. The list is a window-server query rather than IPC, so being level-triggered costs ~2.5 ms and no AX
+silently. The list is a window-server query rather than IPC, so being level-triggered costs ~3 ms and no AX
 until the two disagree. `Heartbeat` is its own seam beside `DelayScheduler`: a retry terminates and a heartbeat
 does not, and one drained by a test's "run everything pending" loop never would.
+
+**But it yields to the frame loop** (`WorldWatcher.isPainting`). `CGWindowListCopyWindowInfo` synchronizes
+*this process's own* pending Core Animation commit with the window server before it answers, so its cost is a
+function of what emira has in flight rather than of how busy the desktop is: the ~3 ms above is the idle
+figure, and against a cover committing a frame every 8 ms it has been measured at 450. So the read is skipped
+outright while `Motion.needsFrames` is true, which a backstop measured in seconds can afford — a skipped round
+costs three more of them, and a round taken mid-transition costs the animation a fifth of a second. Only the
+list read yields; registering an observer is AX work on that app's own lane and costs the main thread nothing.
+The read is on the main thread and stays there: moving it to a background queue relocates the wait rather than
+removing it, since the same per-connection lock is what our own frame commit then blocks on.
 
 **It holds three invariants, not one, and the division is race versus state.** A race resolves itself, so it is
 waited out under a budget in the edge plane; a state stays wrong until something asks again, and only the

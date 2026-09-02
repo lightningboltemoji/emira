@@ -132,13 +132,36 @@ public final class Overlay: NSObject {
     }
 
     //
-    // Nothing in AppKit or Core Animation reports a commit reaching the glass, so the display is asked
-    // instead. `CADisplayLink.targetTimestamp` is when the frame being composed at this callback will be
-    // shown, and a commit made before the callback is in that frame or an earlier one — so the cover has
-    // been displayed once the clock passes it. Two callbacks, one refresh.
+    // The fence has two halves, because each answers a question the other cannot.
+    //
+    // **Has a frame been shown since the raise?** Nothing in AppKit or Core Animation reports a commit
+    // reaching the glass, so the display is asked. `CADisplayLink.targetTimestamp` is when the frame
+    // being composed at this callback will be shown, and a commit made before the callback is in that
+    // frame or an earlier one — so a frame has been shown once the clock passes it. Two callbacks, one
+    // refresh.
+    //
+    // **Was ours in it?** The display refreshes whether or not the window server is showing what this
+    // process commits, and there are stretches where it is not: while an app closes a window, a raise
+    // and the layer frames behind it can go untaken for hundreds of milliseconds and then be published
+    // in one frame. The display link cannot see that, so the server is asked (`confirmPublished`).
+
+    /// How long the second half may go on asking before the cover is treated as up regardless — the
+    /// backstop for a server that answers "not yet" forever. It does **not** bound the ordinary wait:
+    /// the read does not return until the raise has been taken, so a deferral is absorbed inside one
+    /// asking however long it runs. Inside `[animation] hold-timeout`, which bounds the transition
+    /// itself if no answer ever comes.
+    private static let publishGrace: CFTimeInterval = 0.75
 
     /// Fired at most once per raise, then cleared. Non-`nil` ⇒ a fence is armed.
     private var fence: (@MainActor () -> Void)?
+
+    /// When the armed fence stops waiting for the window server and fires anyway.
+    private var fenceExpiry: CFTimeInterval = 0
+
+    /// The one question `confirmPublished` asks, off the main thread: the wait is another app's
+    /// animation, and its length is not ours to block for. Serial and per display — two answers about
+    /// one overlay have no reason to overlap.
+    private let inspector = DispatchQueue(label: "xyz.emira.cover.published", qos: .userInteractive)
 
     /// When the frame carrying the raise reaches the display, latched at the first callback after it.
     /// `nil` while the fence is armed but that callback has yet to arrive.
@@ -150,6 +173,7 @@ public final class Overlay: NSObject {
     private func armFence(_ onScreen: @escaping @MainActor () -> Void) {
         fence = onScreen
         presentedBy = nil
+        fenceExpiry = CACurrentMediaTime() + Self.publishGrace
         let link = fenceLink ?? {
             let made = screen.displayLink(target: self, selector: #selector(fenceStep(_:)))
             // `.common` for the same reason the pump's clock uses it: a transition begun during event
@@ -168,12 +192,53 @@ public final class Overlay: NSObject {
     }
 
     @objc private func fenceStep(_ link: CADisplayLink) {
-        guard let fence else { return cancelFence() }        // paused between callbacks
+        guard fence != nil else { return cancelFence() }     // paused between callbacks
         guard let deadline = presentedBy else {
             presentedBy = link.targetTimestamp
             return
         }
         guard link.timestamp >= deadline else { return }
+        // A frame has been shown since the raise; whether ours was in it is the window server's to say,
+        // and the link has nothing left to answer. Paused rather than cancelled: the fence is still
+        // armed, and a second half that comes back short of the glass re-arms it.
+        link.isPaused = true
+        confirmPublished()
+    }
+
+    /// Whether the window server has *published* the raise, as opposed to having been told about it.
+    /// `CGWindowListCopyWindowInfo` opens by synchronizing this process's pending Core Animation commit,
+    /// so it cannot answer before the raise is taken, and the alpha it then reports is what the server
+    /// is showing rather than what we last set.
+    ///
+    /// Off the main thread: the wait is another app's animation and its length is not ours to block for.
+    /// Sound here where it is not in `WorldWatcher.reconcile` because nothing is painted while a cover
+    /// is `.raising`, so the read contends with no frame commit of ours.
+    private func confirmPublished() {
+        let mine = generation
+        let number = CGWindowID(window.windowNumber)
+        // Unreadable is not "not up": the answer is gone, not negative, and stalling the transition on
+        // it would trade a cover raised early for one never raised at all.
+        let unreadable = Double(Self.raisedAlpha)
+        inspector.async { [weak self] in
+            let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], number) as? [[String: Any]]
+            let published = list?.first?[kCGWindowAlpha as String] as? Double ?? unreadable
+            Task { @MainActor in
+                self?.publishedAlphaAnswered(published, generation: mine)
+            }
+        }
+    }
+
+    /// One answer from the window server, back on the main actor. A raise superseded while the question
+    /// was out owns nothing here — `generation` is what says so, exactly as it does for a fade.
+    private func publishedAlphaAnswered(_ alpha: Double, generation asked: Int) {
+        guard generation == asked, let fence else { return }
+        if alpha < Double(Self.raisedAlpha), CACurrentMediaTime() < fenceExpiry {
+            // Taken but not shown. Wait out another refresh before asking again, so a server that
+            // answers instantly cannot turn the fence into a spin.
+            presentedBy = nil
+            fenceLink?.isPaused = false
+            return
+        }
         cancelFence()
         fence()
     }

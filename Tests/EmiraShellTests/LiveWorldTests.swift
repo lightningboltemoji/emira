@@ -1404,7 +1404,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func anAccountedForDesktopCostsOneWindowListReadAndNoAXAtAll() {
         // The price of the backstop when nothing is wrong. `CGWindowListCopyWindowInfo` is a window
-        // server query, not IPC into anybody's app, so it cannot be slowed down by a busy one.
+        // server query, not IPC into anybody's app, so no app can slow it down — which is not the same
+        // as it being cheap; see `reconciliationDoesNotReadTheWindowListWhileAFrameIsBeingPainted`.
         let world = LiveWorld()
         world.watcher.start()
         let scansAfterBoot = world.windows.scanCounts
@@ -1417,6 +1418,33 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.windows.scanCounts == scansAfterBoot)
         #expect(world.windows.windowListCalls == readsAfterBoot + 2)
         #expect(world.source.watchedApps.count == watchesAfterBoot, "an observed app is not re-asked")
+    }
+
+    /// **The backstop yields to the frame loop.** `CGWindowListCopyWindowInfo` blocks until the window
+    /// server has taken emira's *own* pending Core Animation commit, so a cover makes it hundreds of
+    /// times its idle cost and a poll landing mid-transition takes the animation with it.
+    ///
+    /// The notification half still runs — registering an app is AX work on its lane, and free here.
+    @Test func reconciliationDoesNotReadTheWindowListWhileAFrameIsBeingPainted() {
+        // An app left unobserved, so the notification half has something to do on every round: it is
+        // AX work on that app's own lane and yields to nothing.
+        let world = LiveWorld()
+        world.source.watchSucceeds = false
+        world.watcher.start()
+        for _ in 0..<10 { world.scheduler.fire() }          // burn the edge plane's budget
+        world.watcher.isPainting = { true }
+        let readsSoFar = world.windows.windowListCalls
+        let watchesSoFar = world.source.watchedApps.count
+
+        for _ in 0..<3 { world.heartbeat.beat() }
+
+        #expect(world.windows.windowListCalls == readsSoFar, "not one read while a frame is out")
+        #expect(world.source.watchedApps.count == watchesSoFar + 6, "the notification half never yielded")
+
+        world.watcher.isPainting = { false }
+        world.heartbeat.beat()
+
+        #expect(world.windows.windowListCalls == readsSoFar + 1, "and the next round is an ordinary one")
     }
 
     // Removal — the half of the standing check the notification stream cannot be trusted for.
