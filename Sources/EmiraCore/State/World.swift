@@ -173,6 +173,14 @@ public struct World: Sendable, Equatable, Codable {
     /// transient `nil`, one constraint looser, because a float and a full-screen window are both windows
     /// a user works in and neither is ever `lastStripFocus`. What an arrival is measured against.
     public private(set) var lastFocus: WindowId?
+    /// When each window last took focus — the whole of what emira knows about **stacking**, and it is
+    /// derived rather than read: the window server's own answer costs a `CGWindowListCopyWindowInfo`
+    /// that blocks for as long as another app's animation runs. Absent reads as 0, below everything
+    /// focused and above nothing, so a desktop nothing has focused knows of no window behind another.
+    public private(set) var focusedAt: [WindowId: Int] = [:]
+    /// The counter behind `focusedAt`. Monotonic and never reset — it orders the session rather than the
+    /// windows in it, so two windows can never share a rank.
+    private var focusClock = 0
 
     public init() {
         self.windows = [:]
@@ -212,6 +220,7 @@ public struct World: Sendable, Equatable, Codable {
         unverified.remove(id)
         placedOnScreen.remove(id)
         floating[id] = nil
+        focusedAt[id] = nil
         pruneStripFocus()
         if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
@@ -266,9 +275,21 @@ public struct World: Sendable, Equatable, Codable {
     /// Fold `Event.focusChanged`. Stores the argument verbatim — referential validity is the reducer's
     /// contract; World only *enforces* the destroy-clears-focus invariant (see `remove`).
     public mutating func setFocus(_ id: WindowId?) {
+        let previous = focusedWindow
         focusedWindow = id
         if let id { lastFocus = id }
         if let id, participatesInStrip(id) { lastStripFocus = id }
+        // The stacking record, written wherever focus is, and unconditional on kind: a float taking
+        // focus is the event that puts it back on top, and it is the one this exists to catch.
+        //
+        // **Only when focus actually moved.** Re-asserting focus onto the window that already has it
+        // raises nothing — it is already in front — so bumping the clock for it would make a fold that
+        // changes nothing on the desktop change `World`, and the echo of our own `.focus` is exactly
+        // that fold.
+        if let id, id != previous, windows[id] != nil {
+            focusClock += 1
+            focusedAt[id] = focusClock
+        }
     }
 
     /// Move the strip memory without moving focus — what `setFocus` cannot say, for a window that carries
@@ -355,6 +376,15 @@ public struct World: Sendable, Equatable, Codable {
     public func isFloating(_ id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
         return floating[id] ?? !window.role.tiles
+    }
+
+    /// Whether *somebody asked* for this window to float, as against macOS's opinion of it — the same
+    /// tri-state `isFloating` collapses, read without collapsing it. An explicit `true` is only ever
+    /// written by `Command.float` or a rule's `float = true`; `nil` under a non-tiling role is the
+    /// taxonomy speaking. What hoisting reads, because a picture over a background app's tool palettes
+    /// is not floating them, it is putting them in the way.
+    public func isFloatedByChoice(_ id: WindowId) -> Bool {
+        windows[id] != nil && floating[id] == true
     }
 
     /// Whether the user can see `id` right now. Not the same question as `participatesInStrip`, and the

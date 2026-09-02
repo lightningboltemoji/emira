@@ -65,6 +65,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// dispatching only on a crossing.
     case pointerEntered(WindowId)
 
+    /// A click landed on a hoisted float's picture (`Effect.setHoists`) — the user asking for the
+    /// window behind it back. Carries the window rather than a point: a hoist is one window's whole
+    /// extent, so where inside it the click landed says nothing.
+    case hoistClicked(WindowId)
+
     /// The user moved the mouse far enough to end a hide (`Effect.setCursorHidden`). One event,
     /// edge-triggered, never a stream: the shell holds the anchor and the distance threshold, because a
     /// mouse on a desk jitters and a resting trackpad finger jitters more — so *which* motion counts is

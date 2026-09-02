@@ -98,6 +98,10 @@ public final class CompositingExecutor: Executor {
         case presentation
         case capture
         case truth
+        /// The hoisted floats. Its own plane rather than a corner of the presentation one: a hoist is
+        /// not inside a transition's frame, owes no ack, and is drawn in windows of its own that
+        /// outlive every cover.
+        case hoist
         /// The cursor. Not the presentation plane: it composites above our overlay as it does above
         /// every other window, which is the whole reason it needs hiding at all.
         case pointer
@@ -133,6 +137,7 @@ public final class CompositingExecutor: Executor {
     }
 
     private let surface: any CoverPlane
+    private let hoists: any HoistPlane
     private let store: any CaptureStore
     private let truth: any Executor
     private let pointer: any Executor
@@ -145,9 +150,11 @@ public final class CompositingExecutor: Executor {
     private var coverRaisedAt: [MonitorId: Date] = [:]
 
     /// `store` is the same object that backs `surface`'s pixels.
-    public init(surface: any CoverPlane, store: any CaptureStore, truth: any Executor,
-                pointer: any Executor, launcher: any ProcessLauncher = ShellLauncher()) {
+    public init(surface: any CoverPlane, hoists: any HoistPlane, store: any CaptureStore,
+                truth: any Executor, pointer: any Executor,
+                launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
+        self.hoists = hoists
         self.store = store
         self.truth = truth
         self.pointer = pointer
@@ -164,6 +171,13 @@ public final class CompositingExecutor: Executor {
                 // batch and pays one `SCShareableContent` fetch.
                 for batch in Self.captureTargets(run.effects) {
                     store.capture(batch.targets, on: batch.monitor, feedback: feedback)
+                }
+            case .hoist:
+                // Last wins, and there is only ever one in a run: the core emits the whole set, so two
+                // in a batch would be a decision superseded before it reached the screen.
+                for effect in run.effects {
+                    guard case .setHoists(let bindings) = effect else { continue }
+                    hoists.setHoists(bindings, feedback: feedback)
                 }
             case .truth:        truth.execute(run.effects, feedback: feedback)
             case .pointer:      pointer.execute(run.effects, feedback: feedback)
@@ -214,6 +228,8 @@ public final class CompositingExecutor: Executor {
             return .presentation
         case .capture:
             return .capture
+        case .setHoists:
+            return .hoist
         case .setFrame, .park, .focus, .restoreFocus, .raise, .closeWindow:
             return .truth
         case .setCursorHidden, .warpPointer:
@@ -264,7 +280,7 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .focus, .restoreFocus, .raise, .closeWindow,
+            case .setFrame, .park, .capture, .setHoists, .focus, .restoreFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
             }

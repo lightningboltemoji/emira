@@ -170,6 +170,19 @@ public struct CoverToken: Sendable, Equatable {
     }
 }
 
+/// One window's pixels, outside every cover — what a hoist is drawn from (`Effect.setHoists`). Separate
+/// from `CaptureStore` because nothing about it is a cover's: no base, no session, no ack, and no
+/// entitlement, since the panel holds the `CGImage` itself. It shares only the capturer, and therefore
+/// the display a still is filmed at the backing scale of.
+@MainActor
+public protocol SurfaceFilmer: AnyObject {
+    /// Photograph `window` for a hoist on `monitor` and hand the result back, exactly once. `nil` for
+    /// every failure there is — an unknown window, a departed display, a missing Screen Recording
+    /// grant — because there is no decision to make from which.
+    func film(_ window: WindowId, on monitor: MonitorId,
+              then: @escaping @MainActor (CapturedSurface?) -> Void)
+}
+
 /// The reconstruction's source of pixels: ask for a batch, read what arrived, drop it when the cover
 /// comes down. `CompositingExecutor` drives `capture`/`discard` and `Reconstruction` reads
 /// `surface(for:)`/`base`; one object because those writes and reads are ordered against each other
@@ -237,7 +250,7 @@ public struct CaptureReport: Sendable {
 
 /// The capture plane's policy: batch, bound, ack, cache.
 @MainActor
-public final class CaptureService: CaptureStore {
+public final class CaptureService: CaptureStore, SurfaceFilmer {
 
     /// How long a batch may take before we proceed without it.
     ///
@@ -392,6 +405,28 @@ public final class CaptureService: CaptureStore {
         // to raise.
         guard token.generation == coverGeneration[token.monitor] ?? 0 else { return }
         clearStore(of: token.monitor)
+    }
+
+    public func film(_ window: WindowId, on monitor: MonitorId,
+                     then: @escaping @MainActor (CapturedSurface?) -> Void) {
+        guard let number = registry.record(window)?.number,
+              isAttached(monitor), let capturer = capturers[monitor] else { return then(nil) }
+        // Ordered against the covers' films on the one counter, so the newer photograph of a window
+        // wins in the store whichever path took it (`SurfaceCache` rule 3, arrival order is not film
+        // order). The batch machinery is untouched: this owes no ack and gates nothing.
+        generation &+= 1
+        let mint = generation
+        var filmed: CapturedSurface?
+        capturer.capture([CaptureRequest(id: window, number: number)], includeBase: false,
+                         piece: { [weak self] piece in
+                             guard case .window(let id, let surface) = piece, id == window else { return }
+                             filmed = surface
+                             // Unpinned: what keeps this photograph on the screen is the panel's own
+                             // layer, not an entitlement, so the store may reduce or collect it freely.
+                             // A cover that comes along meanwhile gets a stand-in it did not pay for.
+                             self?.cache.record(surface, mintedAt: mint, for: id, pinnedBy: nil)
+                         },
+                         done: { then(filmed) })
     }
 
     public func capture(_ targets: [CaptureTarget], on monitor: MonitorId, feedback: EventSink) {

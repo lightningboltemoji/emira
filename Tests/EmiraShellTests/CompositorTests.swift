@@ -200,6 +200,20 @@ import EmiraCore
 
     /// The pointer plane's recorder. Its own executor rather than a second `RecordingTruth`, so a test
     /// can say that a hide reached the cursor and *not* the AX lanes.
+    /// The hoist plane's recorder — every set, so a test can say what the desktop was told to show.
+    @MainActor final class RecordingHoists: HoistPlane {
+        let timeline: Timeline
+        private(set) var sets: [[HoistBinding]] = []
+        var current: [HoistBinding] { sets.last ?? [] }
+
+        init(_ timeline: Timeline) { self.timeline = timeline }
+
+        func setHoists(_ bindings: [HoistBinding], feedback: EventSink) {
+            sets.append(bindings)
+            timeline.record("hoists[" + bindings.map { "w\($0.window.raw)" }.joined(separator: ",") + "]")
+        }
+    }
+
     @MainActor final class RecordingPointer: Executor {
         let timeline: Timeline
         private(set) var batches: [[Effect]] = []
@@ -251,7 +265,8 @@ import EmiraCore
         let surface = RecordingPlane(timeline)
         let truth = RecordingTruth(timeline)
         let store = RecordingStore(timeline)
-        return (CompositingExecutor(surface: surface, store: store, truth: truth,
+        return (CompositingExecutor(surface: surface, hoists: RecordingHoists(timeline),
+                                    store: store, truth: truth,
                                     pointer: RecordingPointer(timeline),
                                     launcher: RecordingLauncher(timeline)),
                 surface, truth, store, timeline, EventLog())
@@ -262,6 +277,7 @@ import EmiraCore
         let timeline = Timeline()
         let launcher = RecordingLauncher(timeline)
         return (CompositingExecutor(surface: RecordingPlane(timeline),
+                                    hoists: RecordingHoists(timeline),
                                     store: RecordingStore(timeline),
                                     truth: RecordingTruth(timeline),
                                     pointer: RecordingPointer(timeline),
@@ -277,6 +293,7 @@ import EmiraCore
         let pointer = RecordingPointer(timeline)
         let truth = RecordingTruth(timeline)
         return (CompositingExecutor(surface: RecordingPlane(timeline),
+                                    hoists: RecordingHoists(timeline),
                                     store: RecordingStore(timeline),
                                     truth: truth, pointer: pointer,
                                     launcher: RecordingLauncher(timeline)),

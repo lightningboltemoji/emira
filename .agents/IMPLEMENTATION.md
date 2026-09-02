@@ -201,15 +201,20 @@ and the executors themselves, acking their own effects.
 
 **Effect execution splits by plane.** `CompositingExecutor` splits a batch into **maximal contiguous
 same-plane runs** — never partitioned, because emission order is the reducer's to decide — and routes each to
-its executor. There are five planes:
+its executor. There are six planes:
 
 | Plane        | Executor                              | Machinery                                            |
 | ------------ | ------------------------------------- | ---------------------------------------------------- |
 | presentation | `Reconstruction` (via `CoverSurface`) | Core Animation, main thread, instant                 |
 | capture      | `CaptureService`                      | ScreenCaptureKit, own queue, deadline-bounded        |
+| hoist        | `HoistPanels` (via `HoistPlane`)      | one `NSWindow` per hoisted float, outside every cover |
 | truth        | `AXExecutor`                          | AX Mach IPC, serial per-app queues, slow, may refuse |
 | pointer      | `PointerExecutor`                     | CoreGraphics on the cursor itself                    |
 | system       | `ShellLauncher`                       | `/bin/sh -c`, fire and forget                        |
+
+**The hoist plane is the presentation plane outside a transition**, and it is its own plane because
+nothing it does is a cover's: no base, no session, no ack the reducer counts down, and windows that
+outlive every transition. `Effect.setHoists` carries the whole set and the plane diffs it.
 
 What the router cannot supply is "cover before teleport" — that is a fact about the _display_, not about
 emission order, so it is a phase in the core fenced by `Event.coverOnScreen`, and the two never share a batch.
@@ -847,6 +852,12 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   column, else whichever column now stands at the departed one's index, else — for a window that was already
   off the strip, a float or a dialog — `stripAnchor`, and only then the strip's front. The first two clauses
   are positional and a window with no column has neither, so the anchor is the whole of its answer.
+- **`World.focusedAt` is the stacking order**, and it is the third thing focus is recorded for. macOS
+  stacks by what was focused last — an app's activation lifts all of its windows above every other app's,
+  and within an app the newest focus is on top — so a counter written on every focus change reconstructs
+  the order without asking the window server, whose own answer costs a `CGWindowListCopyWindowInfo` that
+  blocks for as long as another app's animation runs. Written only when focus actually *moves*: re-asserting
+  it onto the window that already has it raises nothing, and our own echo is exactly that.
 - **`World.lastStripFocus` is a place, not a window that once held focus.** It is dropped the moment its
   window leaves the strip (`pruneStripFocus`, on destroy, float, minimize and `Cmd-H`) and moved onto the
   place a departing window vacated (`noteStripFocus`, from `departFromStrip`, which is the only moment the
@@ -887,6 +898,47 @@ Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/pane
 native-fullscreen windows are excluded; app chrome that merely happens to carry an `NSWindow` is declined
 outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the strip,
 animated out like a close, position remembered.
+
+### Hoisting
+
+**A float macOS has buried is drawn back over the desktop** (`State.hoistBindings` → `Effect.setHoists`).
+emira cannot re-level a foreign window — `AXRaise` orders only within an app — so the answer is the
+presentation plane's: the float's own pixels in a window of ours, standing where it stands, and a click on
+that picture is `Event.hoistClicked`, which is `focus` + `raise` on the real one. Three rules decide the set,
+and each removes a way for the picture to be a lie:
+
+- **Only while something covers it.** A hoist cannot be dragged, resized, scrolled or hovered and its pixels
+  stop at the moment they were taken, so the stand-in is confined to a window the user cannot see anyway. A
+  float sitting in the open is left alone and stays real in every respect.
+- **Only what the user chose** (`World.isFloatedByChoice`) — an explicit `true` in the tri-state, never a
+  role. The taxonomy floats every dialog, sheet and tool palette, and pinning a background app's palettes
+  over the window you are typing in is not floating them.
+- **Only a window emira placed can bury one** (`World.placedOnScreen`). A float behind something emira never
+  placed was not buried by emira, and hoisting it would be an opinion about somebody else's desktop.
+
+Ordering is `StackOrder`, lexicographic on `(app, window)` over `World.focusedAt`, and it reaches one step
+further than the rule: a float above a hoisted one, overlapping it, is hoisted too, or the picture would be
+drawn over a window genuinely in front of it. `settleHoists` re-derives the whole set as a post-pass and emits
+only the difference, so a tick costs nothing.
+
+**A hoist is decided on an AX report and comes down on the window server's answer.** `Event.focusChanged`
+says the app told us its focus moved, not that the raise has reached the glass, and the two are far enough
+apart to see — so a released panel stops taking clicks, keeps its pixels, and asks `StackProbe` until nothing
+foreign sits over the float. Only then does it dissolve, over `HoistPanel.dismissDuration`, which is not a cut
+because the still was filmed while the window was behind and unfocused. **The fence is a delay, not a veto**:
+`HoistPanels.releaseGrace` bounds it and expiry dismisses anyway, since a shell keeping a panel the core had
+dropped would be a second opinion about what is on the screen. `StackProbe` is asked off the main thread for
+`Overlay.confirmPublished`'s reason — what is being waited out is another app's activation.
+
+**Nothing is gated on the pixels going up.** No raise waits for a hoist and no window is held behind one, so
+the panel goes up empty and becomes visible when its photograph lands — and a machine with no Screen Recording
+grant never sees one, which is the cover ladder's degradation ending in the same geometry. The one flash left
+is on the way in: a float is genuinely buried for the length of its film, because there is nothing to draw
+until the first photograph exists. The photograph is taken
+when the float is buried and not again: that instant is the freshest one available, and the cost of the two
+alternatives is a screenshot on a timer for a window nobody is looking at, or an `SCStream` holding the
+screen-recording indicator lit for as long as the window floats. A hoisted float's content is therefore
+frozen, and a float that comes forward and goes back is filmed again.
 
 ---
 
@@ -1114,6 +1166,23 @@ carry the plural:
 A surface builds a layer for every binding it is handed, and every binding it is handed is its own: a cover
 belongs to one display, so the session that minted them named its monitor. A guide draws only the strips its
 own monitor owns. Both are the same rule: a per-display thing asks a per-display question.
+
+**`HoistPanel` is the exception, and the mouse is why.** A hoist has to take the clicks that land on it and
+pass on every click that does not, and no single window can do both: a fully transparent region of a
+non-opaque window swallows a click rather than passing it through, and an `NSView.hitTest` returning `nil`
+swallows it too. The only region the window server routes on is a window's frame, so the frames have to be
+the hoists — one window each, built on demand rather than at launch, behind a `HoistSurface` seam for
+`CoverSurface`'s reason: the release fence above it is policy with races in it and the window below it is not. What it needs from a display is a
+backing scale and the flip line, which `syncDisplays` hands `HoistPanels`; a reconfiguration rebuilds every
+panel, and the plane re-applies the last set itself, since the core has no reason to re-emit one that did not
+change just because the screens did. The shape pays twice more: `hasShadow` is then macOS's own shadow around
+the float's silhouette rather than a synthesized approximation, and a panel carrying neither
+`.canJoinAllSpaces` nor `.fullScreenAuxiliary` belongs to the Space it was ordered in on — which is the whole
+of "do not follow the user into a full-screen app", with nothing observing Spaces to get it wrong.
+
+Levels, top down: `GuidePanel` at `.floating + 2`, `HoistPanel` at `+ 1`, `Overlay` at `.floating`. A hoisted
+float is over the cover, because a float that stays on top through a scroll is the point, and under the
+guides, because they answer *where am I* about the desktop the hoist is part of.
 
 **The menu bar is the exception, because it is one item for a desktop of several.** `StatusModel.title` is a
 single character and goes to the address the user is on; the rest go to the tooltip after it

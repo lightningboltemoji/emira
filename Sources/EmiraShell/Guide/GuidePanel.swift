@@ -21,10 +21,11 @@ import EmiraGuide
 // — the same object the settings window fades — because two guides keep their own dwells. The window
 // is up while any of them is on it or on its way off.
 //
-// Two further differences from `Overlay`. It sits one level *above* `.floating`, so a guide is over the
-// cover rather than under it. And it is **not opaque**: a guide is a translucent HUD, so it can neither
-// mark a window behind it occluded nor be asked to, and it goes up at full alpha rather than the
-// thousandth short of it a cover needs.
+// Two further differences from `Overlay`. It sits at the **top** of the three overlay levels — over the
+// cover, and over the hoisted floats (`HoistPanel`), because a guide answers *where am I* about the
+// whole desktop and a picture of one window is part of what it is answering about. And it is **not
+// opaque**: a guide is a translucent HUD, so it can neither mark a window behind it occluded nor be
+// asked to, and it goes up at full alpha rather than the thousandth short of it a cover needs.
 //
 // It is not baked into a cover's base either, and that needs no work: `SCKCapturer` excludes every
 // window owned by our process from the base capture, not just the overlay.
@@ -64,7 +65,7 @@ public final class GuidePanel: GuideSurface {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
         window.ignoresMouseEvents = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.animationBehavior = .none

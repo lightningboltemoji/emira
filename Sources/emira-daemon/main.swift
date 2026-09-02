@@ -304,8 +304,14 @@ let truth = AXExecutor(registry: registry,
 let launcher = ShellLauncher()
 launcher.onOutcome = { log("exec: \($0)") }
 
-let executor = CompositingExecutor(surface: compositor, store: capture, truth: truth,
-                                   pointer: pointer, launcher: launcher)
+/// The hoist plane. One object for the desktop rather than one per display: a hoist is a window of its
+/// own standing where the float stands, so what it needs from a display is a backing scale, not a
+/// surface. `syncDisplays` hands it those.
+let hoistPanels = HoistPanels(filmer: capture, probe: CGStackProbe(registry: registry),
+                              scheduler: DispatchScheduler())
+
+let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
+                                   truth: truth, pointer: pointer, launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below,
@@ -583,6 +589,13 @@ applyShellConfig(config)
 
     compositor.setSurfaces(parts.map { ($0.key, $0.value.reconstruction as any CoverSurface) })
     capture.setCapturers(parts.map { ($0.key, $0.value.capturer as any SurfaceCapturer) })
+    // Every panel is built against one flip line and one backing scale, so a reconfiguration rebuilds
+    // them exactly as it rebuilds an overlay — and it re-applies the set itself, since the core has no
+    // reason to re-emit one that did not change just because the screens did.
+    hoistPanels.setDisplays(
+        geometry: displays.geometry,
+        scales: Dictionary(uniqueKeysWithValues: zip(displays.monitors, displays.screens)
+            .map { ($0.id, $1.backingScaleFactor) }))
     if let fastest = displays.fastest { clock.retarget(to: fastest) }
     for entry in parts.values { entry.reconstruction.animation = config.windowAnimation }
 }
@@ -710,6 +723,9 @@ var isShuttingDown = false
     // Directly, not through `Teardown`: that takes the truth executor and emits only
     // `setFrame`/`raise`/`focus`, and quitting is the one moment there is no next command to unhide on.
     pointer.restoreCursor()
+    // The same reasoning one line down: the cascade is the desktop being handed back, and a photograph
+    // of a window standing over it is exactly what must not be the last thing on the screen.
+    hoistPanels.retireAll()
     hotkeys.stop()
     gestures.stop()         // a live tap outliving the daemon is a leak nothing else surfaces
     loader.stop()

@@ -33,6 +33,9 @@ public struct State: Sendable, Equatable, Codable {
     /// Whether three fingers are on the trackpad, and whose viewport they are driving. Beside `drag`,
     /// and for its reason — see `TrackpadScroll`.
     public var trackpadScroll: TrackpadScroll
+    /// The floats the shell is drawing over the desktop, bottom→top — the decision *kept*, for the
+    /// reason `World.placedOnScreen` is kept. `settleHoists` re-derives it and emits the difference.
+    public var hoists: [HoistBinding]
 
     /// The strip the acting monitor is showing — a projection of `workspaces` at `monitors.shown`, not
     /// a second authority. Only the cross-workspace queries bypass it: reconcile, `targetFrames`, the
@@ -52,6 +55,7 @@ public struct State: Sendable, Equatable, Codable {
         self.pointer = Pointer()
         self.drag = .idle
         self.trackpadScroll = .idle
+        self.hoists = []
     }
 
     /// Full memberwise init — for the reducer building a specific state, for replay, and for tests.
@@ -69,6 +73,7 @@ public struct State: Sendable, Equatable, Codable {
         self.pointer = pointer
         self.drag = drag
         self.trackpadScroll = trackpadScroll
+        self.hoists = []
     }
 
     /// The single-strip init: `layout` becomes the launch address's strip, nothing else materialized.
@@ -401,7 +406,18 @@ public enum Engine {
         trackFocusRing(from: state, into: &next)
         hidePointer(on: event, into: &next, effects: &effects)
         warpPointer(on: event, from: state, into: &next, effects: &effects)
+        settleHoists(into: &next, effects: &effects)
         return (next, effects)
+    }
+
+    /// Bring the hoisted floats into line with the desktop this batch produced. A post-pass because
+    /// what covers a float is the product of focus, every frame on the screen and the placement pass —
+    /// there is no one verb to hang it on. Emitted only on a change, so a tick costs nothing.
+    private static func settleHoists(into s: inout State, effects: inout [Effect]) {
+        let next = s.hoistBindings()
+        guard next != s.hoists else { return }
+        s.hoists = next
+        effects.append(.setHoists(next))
     }
 
     /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch
@@ -639,6 +655,9 @@ public enum Engine {
         case .pointerEntered(let id):
             let effects = handlePointerEntered(&s, id)   // local first — the `.command` trap above
             return (s, effects)
+
+        case .hoistClicked(let id):
+            return (s, handleHoistClicked(&s, id))
 
         case .trackpadScrollBegan:
             let effects = beginTrackpadScroll(&s)   // local first — the `.command` trap above
@@ -1650,7 +1669,18 @@ public enum Engine {
     private static func handleFloat(_ s: inout State, _ toggle: Toggle) -> [Effect] {
         guard let focused = s.world.focusedWindow, s.world.windows[focused] != nil else { return [] }
         let current = s.world.isFloating(focused)
-        guard toggle.resolved(current: current) != current else { return [] }
+        guard toggle.resolved(current: current) != current else {
+            // Nothing moves — but `float on` over a window the *taxonomy* floated is still an answer,
+            // and until hoisting there was nowhere for it to land: a dialog already reads as floating,
+            // so the verb did nothing at all. `World.isFloatedByChoice` is the reader that makes the
+            // difference visible, and this is the only way to say it.
+            //
+            // One direction only. `float off` over a tiled window records nothing, because nothing
+            // reads "explicitly tiled" differently from "tiled by role" — a role is read once, at
+            // adoption, so it cannot move under a live window and there is no answer to outrank.
+            if current { s.world.setFloating(focused, true) }
+            return []
+        }
 
         guard !current else {                       // floating → tiled: an arrival, like a de-minimize
             let before = strandedGeometry(&s)
@@ -1667,6 +1697,16 @@ public enum Engine {
         // still there. What moves instead is the strip memory, onto the place being vacated, so closing
         // the float later has somewhere to come back to. The viewport holds: no column reveals to nowhere.
         return departFromStrip(&s, focused) { $0.world.setFloating(focused, true) }
+    }
+
+    /// A click on a hoisted float's picture: bring the real window forward. `focus` lifts the app above
+    /// every other app's windows and `raise` orders this one above its own siblings; neither alone is
+    /// enough. Nothing here takes the hoist down — `settleHoists` does, once the focus report says the
+    /// real window is in front. Refused for a window that has stopped floating or stopped existing
+    /// while the click was in the air.
+    private static func handleHoistClicked(_ s: inout State, _ id: WindowId) -> [Effect] {
+        guard s.world.isFloatedByChoice(id), s.world.isOnScreen(id) else { return [] }
+        return [.focus(id), .raise(id)]
     }
 
     // Placement (the instant-correct core)

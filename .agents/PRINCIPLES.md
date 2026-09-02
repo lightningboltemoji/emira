@@ -63,7 +63,7 @@ The single most important idea in the project. A window "moving" is two independ
 | Plane            | Mechanism                                                   | Speed                                       | Owns                                     |
 | ---------------- | ----------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
 | **Truth**        | the Accessibility API                                       | slow, bound to the target app's main thread | where a window really is                 |
-| **Presentation** | a layered reconstruction of the desktop, in overlays we own | instant, on the GPU compositor              | what the user sees _during a transition_ |
+| **Presentation** | a layered reconstruction of the desktop, in overlays we own | instant, on the GPU compositor              | what the user sees during a transition — and, standing, where a float appears in the stack |
 
 **Rearrange instantly on the truth plane; smooth it over on the presentation plane when a transition warrants
 it.** This is the inverse of the SIP-off design — there you would transform live foreign surfaces; here we
@@ -177,6 +177,16 @@ happen on.
   quietly and assumes as little as it can — a matcher that reads a window against the one it opened out of
   has nothing a user chose to compare against, so it matches nothing — while a window opened _now_ is one
   you opened, and going there is already what a Dock click does.
+- **A float that floats.** Taking a window off the strip is only half an answer: macOS stacks by what was
+  focused last, so clicking a tiled window buries the float behind it, and nothing emira may call raises a
+  foreign window across apps. A float that can be lost behind the work is not floating, it is being ignored.
+  So a buried float is drawn back over the desktop out of its own pixels and a click on that picture brings
+  the real window forward — the same trade §3 makes everywhere else, a reconstruction standing where the
+  thing we may not move should be. It is confined to where the truth is already hidden: a float nothing
+  covers is left alone, because a picture cannot be dragged, resized or scrolled and a float you can see is a
+  window you should be able to use. And it is only ever the floats the **user** chose, never the dialogs and
+  tool palettes the taxonomy floats on macOS's say-so — a background app's palettes pinned over the window
+  you are typing in is not a promise kept, it is a window manager in the way.
 - **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the
   temptation is to read a hand on the frame as a mistake to correct. It isn't: the handle is the most direct
   thing the user can say about a size, and it says exactly what `grow` says by another route — so the size a
@@ -219,7 +229,9 @@ happen on.
 ## 5. Constraints (truths, not bugs)
 
 - **We cannot hide, alpha, transform or re-level a foreign window.** Those need SkyLight, which needs SIP off.
-  All masking is done with covers made of our own windows. This is _the_ constraint that shapes §3.
+  `AXRaise` is not a way around the last of them: it orders a window within its own app and says nothing
+  about the app's place among the others. So both jobs fall to windows of our own — a cover that masks, and a
+  picture of a float that stands where the float should be. This is _the_ constraint that shapes §3.
 - **macOS will not let a window go fully off-screen.** Extreme coordinates clamp to a ~40 px sliver; a
   _precise_ position leaving as little as ~1 px is honoured, and how little is per app and only observable by
   asking. So a parked window is a small nub at a corner, positioned as a **grab handle** — the window's own

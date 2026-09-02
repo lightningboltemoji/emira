@@ -118,8 +118,10 @@ public final class MockExecutor: Executor {
         // the pointer plane for a fourth: what answers a hide is the user moving the mouse, which no
         // system, however fast, can be made to do — and a warp posts no event at all, which is a fact
         // about the window server this mock could only misrepresent.
-        case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .raise,
-             .closeWindow, .setCursorHidden, .warpPointer, .exec:
+        // `setHoists` joins them for a fifth reason: a hoist appears when its photograph lands and the
+        // core is never told that it did, so there is no reply for even a perfect system to give.
+        case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
+             .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec:
             break
         }
     }
