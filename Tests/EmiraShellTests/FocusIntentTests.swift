@@ -73,6 +73,40 @@ import EmiraCore
         #expect(intent.resolve(Self.w1) == .external)   // …but off the record, so no longer ours
     }
 
+    // newest: a marker for now, taken before a read leaves on a lane
+
+    @Test func aMarkerTakenBeforeAnyRequestIsCurrentUntilTheFirst() {
+        let intent = Self.intent(ManualScheduler())
+        let asked = intent.newest
+        #expect(intent.isCurrent(asked))
+
+        _ = intent.request(Self.w1)
+        #expect(!intent.isCurrent(asked), "a read queued before the request answers about the past")
+    }
+
+    @Test func aMarkerTakenAfterARequestIsThatRequest() {
+        // A read queued once the request is out is judged against it, exactly as its ticket is.
+        let intent = Self.intent(ManualScheduler())
+        let ticket = intent.request(Self.w1)
+        let asked = intent.newest
+        #expect(asked == ticket)
+        #expect(intent.isCurrent(asked))
+
+        _ = intent.request(Self.w2)
+        #expect(!intent.isCurrent(asked))
+    }
+
+    @Test func theGraceDoesNotMoveTheMarker() {
+        // Expiry clears the *record*; the order of requests is untouched, so a read that nothing
+        // overtook is still current however long its lane took.
+        let clock = ManualScheduler()
+        let intent = Self.intent(clock)
+        _ = intent.request(Self.w1)
+        let asked = intent.newest
+        clock.fire()
+        #expect(intent.isCurrent(asked))
+    }
+
     // resolve: which report is news
 
     @Test func aReportWithNothingOutstandingIsExternal() {

@@ -289,6 +289,16 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
+    public func focusedWindow(of pid: pid_t,
+                              then completion: @escaping @MainActor (FocusedWindowRead) -> Void) {
+        client.perform(app: pid) { application in
+            application.focusedWindow()
+        } then: { [weak self] window in
+            guard let self, let window else { return completion(.unreadable) }
+            completion(.window(registry.id(for: window)))
+        }
+    }
+
     // The callback's landing point
 
     /// Turn one AX notification into a `WorldObservation`. An unmanaged element produces silence.
@@ -452,22 +462,12 @@ public final class AXObservationSource: ObservationSource {
         deliver?(.appLaunched(ScanTarget(pid: app.pid, bundleId: bundleId)))
     }
 
-    /// An app came forward. `NSWorkspace` says *which app*, so the focused window has to be read — the
-    /// one observation in this file that costs a round trip.
+    /// An app came forward. Every app but us, whatever its activation policy: what the notification
+    /// means here is "the cursor has a new owner", which is as true of an accessory app. Which window
+    /// has focus is the watcher's to ask (`focusedWindow(of:)`), not reported from here.
     private func activated(_ app: AppFacts) {
-        // Reported before the `isRegular` filter below, and for every app but us: what this half of the
-        // notification means is "the cursor has a new owner", which is true of an accessory app coming
-        // forward as much as a regular one. A spurious one costs a re-assert of a hide that is already
-        // in force, which the pointer plane's own depth count makes free; a missed one is a pointer
-        // that stays visible.
-        if !app.isSelfOrInvalid { deliver?(.appActivated) }
-        guard app.isRegular, !app.isSelfOrInvalid else { return }
-        client.perform(app: app.pid) { application in
-            application.focusedWindow()
-        } then: { [weak self] window in
-            guard let self, let window else { return }   // unreadable ⇒ say nothing, don't guess `nil`
-            deliver?(.focusMoved(registry.id(for: window)))
-        }
+        guard !app.isSelfOrInvalid else { return }
+        deliver?(.appActivated(app.pid))
     }
 
     /// The callback context. Unretained on purpose — see `axObserverCallback`.

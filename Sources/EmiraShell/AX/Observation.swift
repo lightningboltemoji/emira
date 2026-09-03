@@ -70,11 +70,18 @@ public enum WorldObservation: Sendable, Equatable {
     /// nothing more: whether it is *motion* is a threshold, and the threshold is `WorldWatcher`'s.
     case pointerMoved(Point)
 
-    /// An application came to the front. The same `NSWorkspace` notification `focusMoved` is derived
-    /// from, reported raw as well because the two mean different things: that one asks *which window*
-    /// now has focus and needs an AX read to answer, this one is the bare fact that somebody else owns
-    /// the cursor now — which discards a hide we issued from the background.
-    case appActivated
+    /// An application came to the front — the bare fact that somebody else owns the cursor now, which
+    /// discards a hide we issued from the background. `NSWorkspace` names the app and not the window;
+    /// which one has focus is the watcher's to ask (`focusedWindow(of:)`), stamped against later requests.
+    case appActivated(pid_t)
+}
+
+/// What an app answered when asked which of its windows has focus.
+public enum FocusedWindowRead: Sendable, Equatable {
+    /// No answer — busy, gone, or without AX. Evidence of nothing, and never to be read as `nil`.
+    case unreadable
+    /// It named a window: one emira manages, or `nil` for one it does not.
+    case window(WindowId?)
 }
 
 /// Everything the live world needs from macOS, and nothing more.
@@ -122,4 +129,8 @@ public protocol ObservationSource: AnyObject {
     /// either "the user moved focus" or "macOS backfilled a dead window" and only a read tells them apart
     /// (`WorldWatcher.resolveFocus`). A window the registry has already forgotten is `false`.
     func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void)
+
+    /// Which of an app's windows has focus, off the main actor, answering on it — the read an
+    /// activation costs, since `NSWorkspace` names only the app. Answers exactly once.
+    func focusedWindow(of app: pid_t, then: @escaping @MainActor (FocusedWindowRead) -> Void)
 }

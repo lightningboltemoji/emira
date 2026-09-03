@@ -313,6 +313,9 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
             then(frames[window])
         }
         func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void) { then(true) }
+        func focusedWindow(of app: pid_t, then: @escaping @MainActor (FocusedWindowRead) -> Void) {
+            then(.unreadable)
+        }
     }
 
     @MainActor private final class ImmediateScheduler: DelayScheduler {

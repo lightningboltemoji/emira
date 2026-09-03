@@ -82,6 +82,11 @@ public final class FocusIntent {
     /// two different hops onto the main actor, and either may land first.
     public func isCurrent(_ ticket: Ticket) -> Bool { ticket.number == issued }
 
+    /// A marker for *now* in request order, taken before a question leaves on a lane: `isCurrent` on it
+    /// when the answer lands says whether anything has been asked for in between. Before any request it
+    /// names none, and stays current until the first.
+    public var newest: Ticket { Ticket(number: issued) }
+
     /// Classify one focus report. Pure — a verdict is a reading of the record, never an edit to it.
     ///
     /// `nil` is `external` by construction: it names no window, so it can be nothing we asked for, and

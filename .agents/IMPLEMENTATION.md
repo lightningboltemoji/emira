@@ -1031,6 +1031,16 @@ which is the thing being withheld. It goes out **only** on a refusal, so the com
 the cross-app ordering `FocusIntent`'s ticket buys. A focus neither route lands reports nothing, so no
 `appActivated` is claimed for an activation that never happened.
 
+**A focus report that went out as a read is judged against the request order it left under, not the window
+it names.** `NSWorkspace` names an activated app and not its window, so the window is a read on that app's
+lane (`ObservationSource.focusedWindow(of:)`), and the liveness probe a displacing report costs is another. A
+lane can hold either behind a placement batch for longer than the next keypress takes, and an answer landing
+after a focus command describes the desktop the command changed — which the core would read as the user
+asking to go back, and re-aim the scroll at where it started. So `WorldWatcher` takes `FocusIntent.newest` as
+each read leaves and drops an answer `isCurrent` no longer holds for. The marker is request *order* and has
+no clock — a lane that is merely slow is not a reason to doubt its answer — where the record `FocusIntent`
+keeps for the app's own notifications is bounded by its grace, and that is the half the grace still covers.
+
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The
 enhanced-UI flag is **read before it is written** and restored after — never introduced to an app that didn't

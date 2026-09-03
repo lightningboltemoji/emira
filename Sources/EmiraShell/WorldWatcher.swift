@@ -22,8 +22,13 @@ import Foundation
 //    up, so the size the window was dragged to is in neither AX nor the window server yet, and a
 //    release passed straight through carries a frame from mid-drag. Held until the frames stop
 //    arriving (`beginSettle`).
+// 6. A focus report that went out as a *read* describes the desktop as it was when the read was queued,
+//    not when it answered, and a lane can hold one past the next keypress. A command that moved focus
+//    in between makes the answer news about the past, which the core would read as the user asking to
+//    go back. So a queued read on the focus path carries `FocusIntent.newest` from the moment it
+//    leaves, and an answer a later request overtook is dropped (`readFocus`, `resolveFocus`).
 //
-// The last two are the only deferrals here, and both are bounded. Everything else is bookkeeping, with
+// Cases 4 and 5 are the only deferrals here, and both are bounded. Everything else is bookkeeping, with
 // one rule: nothing keyed on a pid or a `WindowId` outlives the thing it is keyed on.
 
 /// Turns the live system into `Event`s: enumerates at boot, watches everything it adopts, and keeps the
@@ -299,8 +304,22 @@ public final class WorldWatcher {
             // two readers, which is all this file does with it.
             onPointerMoved?(point)
 
-        case .appActivated:
+        case .appActivated(let pid):
             emit(.appActivated)
+            readFocus(of: pid)
+        }
+    }
+
+    /// Ask which of an activated app's windows has focus — `NSWorkspace` names the app and nothing more.
+    /// Only for an app with windows under management, since the answer for any other is `nil` or
+    /// nothing; and only if no focus request overtakes the read on the lane (case 6 above).
+    private func readFocus(of pid: pid_t) {
+        guard apps[pid] != nil else { return }
+        let asked = intent.newest
+        source.focusedWindow(of: pid) { [weak self] read in
+            guard let self, !isStopped, intent.isCurrent(asked),
+                  case .window(let id) = read else { return }
+            resolveFocus(id)
         }
     }
 
@@ -680,8 +699,11 @@ public final class WorldWatcher {
             return
         }
         guard isLive(displaced) else { return }   // already known dead — free answer
+        // The probe is a queued read too: a focus request issued while it is out makes this report
+        // news about the past (case 6 above).
+        let asked = intent.newest
         source.isAlive(displaced) { [weak self] alive in
-            guard let self, alive, isLive(displaced) else { return }
+            guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { return }
             emit(.focusChanged(id, origin: .system))
         }
     }

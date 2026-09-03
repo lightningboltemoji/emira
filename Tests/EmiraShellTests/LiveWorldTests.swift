@@ -149,6 +149,30 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let (_, completion) = pendingProbes.removeFirst()
         completion(alive)
     }
+
+    /// Which apps have been asked for their focused window — the read an activation costs.
+    private(set) var focusReads: [pid_t] = []
+    /// When true, focus reads park in `pendingFocusReads` instead of answering.
+    var holdsFocusReads = false
+    var pendingFocusReads: [(pid_t, @MainActor (FocusedWindowRead) -> Void)] = []
+    /// What each app answers when asked. An app not listed does not answer at all.
+    var focused: [pid_t: FocusedWindowRead] = [:]
+
+    func focusedWindow(of app: pid_t, then: @escaping @MainActor (FocusedWindowRead) -> Void) {
+        focusReads.append(app)
+        guard holdsFocusReads else {
+            then(focused[app] ?? .unreadable)
+            return
+        }
+        pendingFocusReads.append((app, then))
+    }
+
+    /// Answer the oldest parked focus read.
+    func answerFocusRead(_ read: FocusedWindowRead) {
+        guard !pendingFocusReads.isEmpty else { return }
+        let (_, completion) = pendingFocusReads.removeFirst()
+        completion(read)
+    }
 }
 
 /// A scheduler that never runs anything until the test says so — the retry chain with no wall clock.
@@ -1064,7 +1088,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.mouseDown)
         world.watcher.handle(.mouseUp)
         world.scheduler.fire()                              // the release settles
-        world.watcher.handle(.appActivated)
+        world.watcher.handle(.appActivated(100))
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
             .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system),
@@ -1101,7 +1125,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.start()
         let before = world.recorder.events.count
 
-        for _ in 0..<3 { world.watcher.handle(.appActivated) }
+        for _ in 0..<3 { world.watcher.handle(.appActivated(100)) }
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated, .appActivated,
                                                                    .appActivated])
@@ -1212,6 +1236,107 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(one))        // now a genuine Cmd-Tab back to it
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    // Focus reports that are reads, answering late
+    //
+    // `NSWorkspace` names an activated app and not its window, so that is a read on the app's lane —
+    // and a lane can hold it behind a placement batch for longer than the next keypress takes. A read
+    // queued before a focus command and answered after it describes the desktop the command changed,
+    // and the core, told it, would move focus back and re-aim the scroll at where it started. So a
+    // queued read is judged against the request order it left under, not the window it names.
+
+    @Test func anActivationAsksWhichWindowHasFocusAndReportsIt() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.source.focused[200] = .window(one)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(200))
+
+        #expect(world.source.focusReads == [200])
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.appActivated, .focusChanged(one, origin: .system)])
+    }
+
+    @Test func anActivationReadOvertakenByAFocusRequestNeverReachesTheCore() {
+        // Click into TextEdit, then press `focus left` before its lane has answered: the answer names
+        // the window the click landed on, which the command has since left.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        world.source.holdsFocusReads = true
+        world.watcher.handle(.appActivated(200))      // the read goes out on TextEdit's lane
+        _ = world.intent.request(term)                // the keypress, while it is out
+        let before = world.recorder.events.count
+
+        world.source.answerFocusRead(.window(one))    // the lane answers about the past
+
+        #expect(world.recorder.events.count == before, "no focusChanged reached the core")
+    }
+
+    @Test func anActivationReadNothingOvertookStillReachesHoweverLateItAnswers() {
+        // The marker is request order, not the clock: a lane that is merely slow is not a reason to
+        // doubt its answer, and the grace expiring does not move the marker either.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.source.holdsFocusReads = true
+        world.watcher.handle(.appActivated(200))
+        world.intentClock.fire()
+        let before = world.recorder.events.count
+
+        world.source.answerFocusRead(.window(one))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    @Test func anUnreadableActivationSaysNothing() {
+        // No answer is not `nil`: a busy app would otherwise clear the core's focus every time it
+        // came forward.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .unreadable
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(200))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated])
+    }
+
+    @Test func anActivationOfAnAppWithNothingManagedIsNotAskedAboutItsWindows() {
+        // The cursor half still reaches — an accessory app coming forward discards a hide too — but
+        // the read is spent only on an app that could name a managed window.
+        let world = LiveWorld()
+        world.watcher.start()
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(999))
+
+        #expect(world.source.focusReads.isEmpty)
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated])
+    }
+
+    @Test func aLivenessProbeOvertakenByAFocusRequestDropsTheReportItWasFor() {
+        // The other queued read on this path: a report that displaces a window asks whether that window
+        // is still alive before it is believed, and the answer can land after a keypress just as an
+        // activation's can.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(one))        // the present: focus is on `one`
+        world.source.holdsProbes = true
+        world.watcher.handle(.focusMoved(two))        // a click on `two`; asks whether `one` lives
+        _ = world.intent.request(term)                // the keypress, while the probe is out
+        let before = world.recorder.events.count
+
+        world.source.answerProbe(true)
+
+        #expect(world.recorder.events.count == before, "the report about `two` is news about the past")
     }
 
     // Focus reports macOS made up
