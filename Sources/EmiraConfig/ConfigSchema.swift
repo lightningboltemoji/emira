@@ -404,7 +404,8 @@ extension Setting.Kind {
 /// Every setting emira has, in the order it is read and the order it is shown.
 public enum ConfigSchema {
 
-    public static let settings: [Setting] = layout + focus + mouse + animation + springs + guide
+    public static let settings: [Setting] =
+        layout + focus + mouse + animation + motionBlur + springs + guide
 
     /// The setting spelled `key`, or `nil` when the schema has no such key — which the three sections
     /// it doesn't describe are also on the wrong side of: `[keys]` and `[[window-rules]]` are edited
@@ -628,6 +629,21 @@ public enum ConfigSchema {
                 label: "Cover mode",
                 help: "exact waits for current screenshots; immediate uses stale screenshots to begin sooner.",
                 section: .animation),
+    ]
+
+    /// A preference and a dial, both in `[animation]` itself: a sub-table with one row on the main
+    /// surface would split the section into sub-tabs (`ControlSlab`), which is a place to go for one
+    /// slider. Both are read by the presentation plane alone.
+    private static let motionBlur: [Setting] = [
+        Setting("animation.motion-blur", \.motionBlur.shutter, .number(atLeast: 0, unit: .bare),
+                label: "Motion blur",
+                help: "The share of each frame's motion that is smeared — 0.5 is a 180° film shutter, 0 is off.",
+                section: .animation),
+
+        Setting("animation.motion-blur-attack", \.motionBlur.attack, .number(atLeast: 0, unit: .seconds),
+                label: "Motion blur attack",
+                help: "Seconds the blur takes to build as a window speeds up; it clears at once as it settles.",
+                section: .animation, advanced: true),
     ]
 
     /// The two guides, a table each, of which the reducer reads one key. Labels are short because the

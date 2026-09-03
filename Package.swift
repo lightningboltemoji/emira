@@ -12,7 +12,7 @@ import PackageDescription
 //      ├── EmiraProtocol Codable request/reply envelope + wire framing.
 //      └── EmiraConfig   pure — the TOML grammar and the config schema (text ⇄ Config).
 //       ▲
-//   EmiraGuide    AppKit — the guides' layer tree, hosted by the settings window and by the daemon.
+//   EmiraGuide    AppKit — the guides' layer tree and the smear, hosted by the settings window and the daemon.
 //       ▲
 //   EmiraSettings AppKit — the settings window: scrim, mock desktop, controls. Config + geometry only.
 //       ▲
@@ -40,7 +40,7 @@ let package = Package(
         // `EmiraSettings`' reason and to the same end — the daemon and the settings window host the
         // *same* renderer, so a preview cannot be a second drawing of the guide. `ImportFenceTests`
         // scans it too: the compiler cannot say that a name is absent.
-        .target(name: "EmiraGuide", dependencies: ["EmiraCore"]),
+        .target(name: "EmiraGuide", dependencies: ["EmiraCore", "EmiraMotion"]),
         // The settings window. A target for `EmiraConfig`'s reason, one rung further: it sees the
         // config and the geometry and nothing else, so it cannot reach the reducer. The graph does not
         // enforce that on its own — EmiraConfig pulls in EmiraCore — so `ImportFenceTests` pins it.

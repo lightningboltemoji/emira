@@ -2,6 +2,7 @@ import AppKit
 import QuartzCore
 import EmiraCore
 import EmiraGuide
+import EmiraMotion
 
 // The mock monitor: a floating slab holding the user's own wallpaper, a menu-bar band at the real
 // height, and one pooled `CALayer` per mock window — the guide's tile pool at another scale.
@@ -256,6 +257,7 @@ final class DesktopView: NSView {
     func render(scene: Scene, frames: [WindowId: Rect], targets: [WindowId: Rect],
                 camera: Rect, pointer location: Point? = nil, cursor: MockPointer? = nil,
                 showsPointer: Bool = true, animation: WindowAnimation = .stretch,
+                motionBlur: MotionBlur = .off,
                 raised: WindowId? = nil, showsFocus: Bool = true,
                 guides: [GuideFrame] = [], mark drawn: Mark.Drawn? = nil) {
         CATransaction.begin()
@@ -272,7 +274,7 @@ final class DesktopView: NSView {
             capture(pane, drawn: frame.size, target: targets[window.id]?.size)
             pane.place(framing.mock(frame),
                        focused: showsFocus && window.id == scene.focus, projection: framing,
-                       animation: animation)
+                       animation: animation, blur: motionBlur)
             // A float is over the strip, wherever its app put it — which is what makes it the one kind
             // of window `focus.system-events`' `ignore` rung still honours. A window with a hand on its
             // edge is over it for the length of the drag, because it is growing across a neighbour that
@@ -556,7 +558,8 @@ final class DesktopView: NSView {
 /// with the sublayers, so the outer layer carries the shadow and nothing else while the inner one is the
 /// window: rounded, clipped, and therefore able to cut the still's square top corners to its own. It is
 /// the same split `Reconstruction` makes for the same reason — "it costs `root` its alpha-derived
-/// shadow, hence the shadow a layer up".
+/// shadow, hence the shadow a layer up". And the same `SmearLayer` around both, at the mock's scale, so
+/// `animation.motion-blur` previews itself rather than being mimed.
 ///
 /// **The interior is one image, not a dozen layers.** `MockContent` draws the whole window — band,
 /// stoplights, icon and furniture — at the size the window was when it last came to rest, and the pane
@@ -565,8 +568,11 @@ final class DesktopView: NSView {
 @MainActor
 final class PaneLayer {
 
-    /// The outer layer: the shadow, and the frame everything else is measured against.
-    let layer = CALayer()
+    /// What the ground hosts: the smear around the pane.
+    var layer: CALayer { smear.layer }
+    private let smear: SmearLayer
+    /// The shadow, and the frame everything else is measured against.
+    private let outer = CALayer()
     /// The window itself — rounded and clipping, so the still is cut to its corners.
     private let body = CALayer()
     /// The still. Its own layer rather than `body.contents`, so a crop can place it at its captured
@@ -587,11 +593,12 @@ final class PaneLayer {
     init(role: MockRole, scale: CGFloat) {
         self.role = role
         self.scale = scale
+        smear = SmearLayer(hosting: outer)
 
-        layer.contentsScale = scale
-        layer.masksToBounds = false
-        layer.shadowColor = NSColor.black.cgColor
-        layer.shadowOpacity = SettingsStyle.paneShadowOpacity
+        outer.contentsScale = scale
+        outer.masksToBounds = false
+        outer.shadowColor = NSColor.black.cgColor
+        outer.shadowOpacity = SettingsStyle.paneShadowOpacity
 
         body.contentsScale = scale
         body.cornerCurve = .continuous
@@ -599,7 +606,7 @@ final class PaneLayer {
         body.backgroundColor = SettingsStyle.paneFill
         body.borderWidth = SettingsStyle.paneEdgeWidth
         body.borderColor = SettingsStyle.paneEdge
-        layer.addSublayer(body)
+        outer.addSublayer(body)
 
         still.contentsScale = scale
         still.contentsGravity = .resize
@@ -631,8 +638,8 @@ final class PaneLayer {
     /// captured at, anchored top-left — a growing window shows wallpaper through the strip it has not
     /// filled, and a shrinking one is cut off at the corner by the pane's own rounded clip.
     func place(_ frame: CGRect, focused: Bool, projection: Projection,
-               animation: WindowAnimation = .stretch) {
-        layer.frame = frame
+               animation: WindowAnimation = .stretch, blur: MotionBlur = .off) {
+        smear.place(frame, blur: blur, scale: projection.mock(1))
         body.frame = CGRect(origin: .zero, size: frame.size)
         body.borderWidth = focused ? SettingsStyle.paneFocusEdgeWidth : SettingsStyle.paneEdgeWidth
         body.borderColor = focused ? SettingsStyle.paneFocusEdge : SettingsStyle.paneEdge
@@ -656,14 +663,14 @@ final class PaneLayer {
         // The compositor's own shadow spec, at mock scale. Cast from the pane's own rounded silhouette
         // rather than derived from its alpha: the outer layer paints nothing, so there is no alpha to
         // derive one from.
-        layer.shadowRadius = projection.mock(SettingsStyle.paneShadowRadius)
-        layer.shadowOffset = CGSize(width: projection.mock(Double(SettingsStyle.paneShadowOffset.width)),
+        outer.shadowRadius = projection.mock(SettingsStyle.paneShadowRadius)
+        outer.shadowOffset = CGSize(width: projection.mock(Double(SettingsStyle.paneShadowOffset.width)),
                                     height: projection.mock(Double(SettingsStyle.paneShadowOffset.height)))
         // Every dimension below is a **real** window's, projected — a fixed mock radius is a different
         // real radius at every `k`, and next to an actual desktop that reads as the wrong window.
         let radius = min(projection.mock(SettingsStyle.paneRadius), min(frame.width, frame.height) / 4)
         body.cornerRadius = radius
-        layer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: frame.size),
+        outer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: frame.size),
                                   cornerWidth: radius, cornerHeight: radius, transform: nil)
     }
 }

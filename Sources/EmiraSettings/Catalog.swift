@@ -317,6 +317,9 @@ public enum Catalog {
         // the loop are the same bug seen from two ends.
         case "animation.scroll.stiffness", "animation.scroll.damping-ratio":
             return Scenes.strideRight.paced(by: Scenes.beat(config.scrollSpring, over: 900))
+        // The smear is at its longest where the step is, which is a scroll at the spring's peak.
+        case "animation.motion-blur", "animation.motion-blur-attack":
+            return Scenes.strideRight.paced(by: Scenes.beat(config.scrollSpring, over: 900))
         case "animation.glide.stiffness", "animation.glide.damping-ratio":
             return Scenes.trackpadSwipe.paced(by: Scenes.beat(config.glideSpring, over: 400))
         case "animation.resize.stiffness", "animation.resize.damping-ratio":

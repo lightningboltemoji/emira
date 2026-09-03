@@ -498,7 +498,10 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
 /// there would compile clean and read zeroed memory if it were ever called early. Keeping the
 /// definition after the last thing it touches makes that unrepresentable rather than merely avoided.
 @MainActor func applyShellConfig(_ config: Config) {
-    for entry in parts.values { entry.reconstruction.animation = config.windowAnimation }
+    for entry in parts.values {
+        entry.reconstruction.animation = config.windowAnimation
+        entry.reconstruction.motionBlur = config.motionBlur
+    }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
     // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
@@ -597,7 +600,10 @@ applyShellConfig(config)
         scales: Dictionary(uniqueKeysWithValues: zip(displays.monitors, displays.screens)
             .map { ($0.id, $1.backingScaleFactor) }))
     if let fastest = displays.fastest { clock.retarget(to: fastest) }
-    for entry in parts.values { entry.reconstruction.animation = config.windowAnimation }
+    for entry in parts.values {
+        entry.reconstruction.animation = config.windowAnimation
+        entry.reconstruction.motionBlur = config.motionBlur
+    }
 }
 
 /// Take one display's machinery off the screen. Instant on both windows: a reconfiguration is not

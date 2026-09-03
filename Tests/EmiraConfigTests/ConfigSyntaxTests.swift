@@ -170,6 +170,24 @@ import EmiraCore
         #expect(glided.moveSpring == Config().moveSpring)
     }
 
+    /// The smear is two keys of `[animation]` itself: a shutter a user turns down or off, and an attack
+    /// behind the disclosure. A negative of either is refused in the schema's words.
+    @Test func theMotionBlurIsAShutterAndAnAttack() throws {
+        #expect(Config().motionBlur == MotionBlur(shutter: 0.5, attack: 0.05))
+
+        let smeared = try Self.parse("[animation]\nmotion-blur = 1\nmotion-blur-attack = 0.1\n")
+        #expect(smeared.motionBlur == MotionBlur(shutter: 1, attack: 0.1))
+        #expect(smeared.scrollSpring == Config().scrollSpring)
+
+        let off = try Self.parse("[animation]\nmotion-blur = 0\n")
+        #expect(off.motionBlur == MotionBlur(shutter: 0, attack: 0.05))
+
+        #expect(Self.diagnostic("[animation]\nmotion-blur = -0.5\n")
+                == .badValue(line: 2, key: "animation.motion-blur", message: "must be at least 0"))
+        #expect(Self.diagnostic("[animation]\nmotion-blur-attack = -1\n")
+                == .badValue(line: 2, key: "animation.motion-blur-attack", message: "must be at least 0"))
+    }
+
     /// A misspelled animation table is refused like any other unknown key: a window manager that ignores
     /// `[animation.movemnt]` is one the user believes is broken.
     @Test func aMisspelledAnimationTableIsRefused() {

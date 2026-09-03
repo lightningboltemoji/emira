@@ -332,8 +332,11 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
                             mode: draft.config.transitionMode, head: state.head)
             camera.retarget(to: framing(of: state))
         }
-        draw(state)
         syncClock()
+        // A snap is a teleport, not motion, and a teleport smeared is a lie about speed. And under a
+        // running clock the tick draws: a retarget between two frames changes where the next one goes,
+        // not what is on the glass, and a second render of one frame is a frame the panes stood still for.
+        if settle || clock?.isRunning != true { draw(state, smeared: !settle) }
     }
 
     private func advance(by dt: Double) {
@@ -371,12 +374,14 @@ public final class SettingsWindow: NSObject, NSWindowDelegate {
         state.camera.frame(of: state, in: projection)
     }
 
-    private func draw(_ state: PreviewState) {
+    private func draw(_ state: PreviewState, smeared: Bool = true) {
         stage?.desktop.render(scene: state.scene, frames: motion.frames(of: state),
                               targets: state.frames, camera: camera.current,
                               pointer: state.pointer, cursor: state.scene.pointer,
                               showsPointer: state.isPointerShown,
-                              animation: draft.config.windowAnimation, raised: state.raised,
+                              animation: draft.config.windowAnimation,
+                              motionBlur: smeared && animates ? draft.config.motionBlur : .off,
+                              raised: state.raised,
                               showsFocus: state.showsFocus,
                               guides: motion.guides(of: state), mark: state.mark)
     }

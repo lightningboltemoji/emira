@@ -386,6 +386,9 @@ public struct Config: Sendable, Equatable, Codable {
     /// When a cover may be raised. Read by the capture plane, never the reducer: what changes is when a
     /// window is deemed to *have* pixels, not what the core does once every scoped one does.
     public var coverMode: CoverMode
+    /// How a stand-in moving fast is smeared across its step. Read by the compositor and the settings
+    /// mock, never the reducer: the emitted geometry is identical under every value of it.
+    public var motionBlur: MotionBlur
     /// Whether a transition covers, and whether it animates under the cover. Also a capability bit: the
     /// cover is made of captured pixels, so the shell clamps this to `off` when the Screen Recording
     /// grant is missing, which degrades emira to instant, correct placement rather than a blank rectangle.
@@ -445,6 +448,7 @@ public struct Config: Sendable, Equatable, Codable {
         focusFollowsMouse: Bool = false,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
+        motionBlur: MotionBlur = MotionBlur(),
         transitionMode: TransitionMode = .smooth,
         holdTimeout: Double = 1.0,
         hidesCursor: Bool = false,
@@ -471,6 +475,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.focusFollowsMouse = focusFollowsMouse
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
+        self.motionBlur = motionBlur
         self.transitionMode = transitionMode
         self.holdTimeout = holdTimeout
         self.hidesCursor = hidesCursor

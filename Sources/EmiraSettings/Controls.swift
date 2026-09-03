@@ -251,7 +251,7 @@ final class NumberControl: SettingControl {
         let ceiling: Double
         switch unit {
         case .points:  ceiling = max(floor + 40, current * 5)
-        case .seconds: ceiling = max(floor + 2, current * 5)
+        case .seconds: ceiling = max(floor + 0.5, current * 5)
         case .bare:    ceiling = max(floor + 1, current * 4)
         }
         return (floor, ceiling)
@@ -284,10 +284,10 @@ final class NumberControl: SettingControl {
         onChange(.setting(setting, .number(value)))
     }
 
-    /// Whole points and whole tenths elsewhere — a slider that produced `7.4183` would write that into
-    /// the file, and no one means it.
+    /// Whole points, tenths elsewhere, and hundredths under one — a slider that produced `7.4183` would
+    /// write that into the file, and no one means it; one that could not reach `0.05` is not a handle.
     private static func rounded(_ value: Double, bound: Setting.Bound) -> Double {
-        let step = (value.magnitude >= 10 ? 1.0 : 0.1)
+        let step = value.magnitude >= 10 ? 1.0 : (value.magnitude >= 1 ? 0.1 : 0.01)
         let snapped = (value / step).rounded() * step
         // Never below the floor, and never *on* an exclusive one.
         switch bound {

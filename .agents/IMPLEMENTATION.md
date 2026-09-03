@@ -1142,6 +1142,28 @@ reason (`ScreenGeometry.displayId`): the `MonitorId` the core keys a strip on, t
 ScreenCaptureKit films from and the `NSScreen` the overlay covers are one number under three names, and a
 second reader with its own fallback is how they quietly stop naming the same display.
 
+**A fast frame is smeared, not strobed.** At 60 Hz a spring at its peak moves a stand-in a hundred points
+between one still and the next, and a run of crisp stills that far apart reads as a strobe. So a stand-in whose
+step since the last frame passes `Smear.minStep`, and whose smear would be more than a softened edge
+(`Smear.minSigma`), carries a `CIMotionBlur` for that frame, along the step and over `[animation] motion-blur`
+of its length — the shutter of a film camera, integrating the motion a single frame covers. The σ on screen
+lags a rising step by `motion-blur-attack` and follows a falling one at once: a spring from rest is at full
+speed within two frames, and a smear that arrives as fast reads as a switch, while the settle must stay crisp.
+The lag runs over a frame and never over a pause: a gap longer than `Smear.longestFrame` — a stand-in settled
+under a cover that the next scroll extends — ends in the first frame from rest, not one long frame. The smear
+is the shell's alone: `SmearLayer` differences consecutive placements, so no velocity crosses the plane
+boundary and the core's `setLayerFrame` stream is unchanged. The filter is Gaussian with its radius in **layer
+points**, drawn only inside its own layer's bounds — hence the pad around every stand-in, the room it draws
+into — and its cost is the window server's, per layer and nearly flat in the radius; a stand-in outside the
+host is culled, filter or none, and the pad's area costs nothing. It comes off entirely below either threshold
+rather than idling at zero, because a still at rest must be bit-identical for the cross-fade and any filter at
+all is an offscreen pass. Two things are not steps: the rect a layer is built at, which is where its still was
+filmed and, for a parked window, a nub in a corner the core teleports it away from in the raise's own frame;
+and a reappearance after `hideLayer`. **The mock desktop smears through the same object** (`PaneLayer` hosts a
+`SmearLayer` at the mock's scale), which is what makes the two keys settings that preview themselves rather
+than mimed ones — and it renders a frame once: under a running clock a retarget leaves the drawing to the
+tick, since a second render of one frame is a step of nothing and would drop the smear for a frame.
+
 **One of every display-shaped thing, per display.** An `Overlay` + `Reconstruction` each (its own struts, its
 own backing scale, its own base capture), a `GuidePanel` + `Guide` each, an `SCKCapturer` each. Three seams
 carry the plural:
@@ -1682,7 +1704,7 @@ emira/
 ├── Resources/Info.plist                 LSUIElement=YES + a stable CFBundleIdentifier (TCC keys on it)
 ├── Resources/emira.icon/                layered icon; `make icon` compiles it to Assets.car
 └── Sources/
-    ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator
+    ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator · MotionBlur (+ Smear, its envelope)
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
     │                    Event · Effect · Config · Rules · Engine
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
@@ -1694,6 +1716,7 @@ emira/
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
     ├── EmiraGuide/      GuideRenderer (the seam: a drawing · scale · palette · sources) · GuideFade
     │                    RoundedLayer · GuideTypeface (the face, and the one thing that measures it)
+    │                    SmearLayer (the motion blur, hosted by the cover and by the mock)
     │                    PreviewGuideRenderer (the minimap) · NamesGuideRenderer (the row of words)
     ├── EmiraSettings/   Draft · Scene · Take · Catalog · PreviewModel · PreviewMotion (pure)
     │                    Camera (the lens + the marks) · Cue (the input badge) · GuideFrame

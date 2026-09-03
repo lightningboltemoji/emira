@@ -1,6 +1,8 @@
 import AppKit
 import QuartzCore
 import EmiraCore
+import EmiraGuide
+import EmiraMotion
 
 // The layer tree inside an `Overlay`: one `CALayer` per window the core scoped into the transition,
 // keyed by `LayerId`, over a base layer holding the captured desktop. Layers are built per transition,
@@ -8,15 +10,17 @@ import EmiraCore
 // pixel-identical to what it replaces. This is the only place `Config.windowAnimation` means anything:
 // the core emits the same `setLayerFrame` stream either way.
 
-/// One window's stand-in: one layer in `.stretch`, three in `.crop`. The count is forced by two Core
-/// Animation facts pulling against each other — a layer with `masksToBounds` on cannot draw its own
-/// shadow, and a crop must clip or a shrinking window grows square corners.
+/// One window's stand-in: two layers in `.stretch`, four in `.crop`. The count is forced by Core
+/// Animation facts pulling against each other — a masking layer cannot draw its own shadow, a crop must
+/// clip or a shrinking window grows square corners, and a filter draws only inside its own layer's bounds.
 private struct CoverLayer {
     /// The window this layer stands for — what `refreshLayer` needs to find its still in the store, and
     /// the one thing the `LayerId` key cannot answer.
     let window: WindowId
-    /// What the overlay hosts and `setLayerFrame` positions. Carries the image in `.stretch`; in
-    /// `.crop` only the shadow, with the window's extent as its bounds.
+    /// What the overlay hosts and `setLayerFrame` positions: `root` inside the pad the smear draws into.
+    let pad: SmearLayer
+    /// The window's extent, inset in `pad`. Carries the image in `.stretch`; in `.crop` only the
+    /// shadow, with the window's extent as its bounds.
     let root: CALayer
     /// The rounded silhouette, filled with the scrim and clipping the still to it — `nil` in
     /// `.stretch`, where the capture's own transparent corners do this job.
@@ -44,6 +48,8 @@ public final class Reconstruction: CoverSurface {
     /// How a still is painted into the rect the core hands it. Read only when a layer is *built*, so a
     /// reload landing mid-transition changes the next cover, not the one on screen.
     public var animation: WindowAnimation
+    /// How a fast stand-in is smeared across its step. Read every frame, so a reload lands at once.
+    public var motionBlur = MotionBlur()
 
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
                 animation: WindowAnimation = .stretch) {
@@ -71,7 +77,7 @@ public final class Reconstruction: CoverSurface {
         // Core Animation treats `addSublayer` on a layer it already hosts as a reorder to the top, not
         // a duplicate. Total: the core can name a layer whose window had no still.
         guard let target = layers[layer] else { return }
-        overlay.addLayer(target.root)
+        overlay.addLayer(target.pad.layer)
     }
 
     public func setLayerFrame(_ layer: LayerId, to rect: Rect) {
@@ -84,7 +90,10 @@ public final class Reconstruction: CoverSurface {
         // Total, as `setLayerFrame` is. Hidden rather than removed: the core may place it again on any
         // later frame — a workspace can come back to this display while the cover it left is still up —
         // and rebuilding the layer would take a second still and lose its z-order.
-        layers[layer]?.root.isHidden = true
+        guard let target = layers[layer] else { return }
+        target.pad.layer.isHidden = true
+        // Wherever it comes back is not a step it took, so the frame that shows it again smears nothing.
+        target.pad.forget()
     }
 
     public func refreshLayer(_ layer: LayerId) {
@@ -129,13 +138,14 @@ public final class Reconstruction: CoverSurface {
                   let surface = store.surface(for: binding.window) else { continue }
             let layer = makeLayer(for: binding.window, with: surface)
             layers[binding.layer] = layer
-            overlay.addLayer(layer.root)
+            overlay.addLayer(layer.pad.layer)
         }
     }
 
     private func makeLayer(for window: WindowId, with surface: CapturedSurface) -> CoverLayer {
         let root = CALayer()
         root.contentsScale = overlay.backingScale
+        let pad = SmearLayer(hosting: root)
         // Synthesized, not captured: a window's system drop-shadow isn't part of its surface, and a
         // reconstruction without one reads as flat.
         root.shadowColor = NSColor.black.cgColor
@@ -153,7 +163,7 @@ public final class Reconstruction: CoverSurface {
             // No `masksToBounds` and no `shadowPath`: a capture is transparent outside the window's
             // rounded corners, so CA derives the shadow from the contents' alpha. Clipping to bounds
             // would square it off and cut it away.
-            cover = CoverLayer(window: window, root: root, clip: nil, still: nil,
+            cover = CoverLayer(window: window, pad: pad, root: root, clip: nil, still: nil,
                                natural: surface.frame.size)
 
         case .crop:
@@ -183,13 +193,17 @@ public final class Reconstruction: CoverSurface {
             // `root` holds only the shadow and has no contents to derive one from, so the crop states
             // its silhouette outright. Re-stated every frame by `place`.
             root.shadowPath = Self.shadowPath(for: .zero, radius: radius)
-            cover = CoverLayer(window: window, root: root, clip: clip, still: still,
+            cover = CoverLayer(window: window, pad: pad, root: root, clip: clip, still: still,
                                natural: surface.frame.size)
         }
 
         // A layer starts at its capture's own rect, where the crop is the identity, so neither mode
         // can pop at the raise.
         place(cover, at: surface.frame)
+        // But that rect is where the raise is pixel-identical, not somewhere the window travelled from:
+        // a parked window is filmed at its nub in a corner, and the core's first placement teleports
+        // it to the strip. Not a step, so nothing to smear.
+        pad.forget()
         return cover
     }
 
@@ -197,10 +211,10 @@ public final class Reconstruction: CoverSurface {
     /// its still that reaches.
     private func place(_ cover: CoverLayer, at rect: Rect) {
         let frame = overlay.localRect(rect)
-        cover.root.frame = frame
+        cover.pad.place(frame, blur: motionBlur)
         // A placed layer is a shown one: `hideLayer` says "the core has no rect for this right now", so
         // being handed one is the whole of the answer coming back.
-        cover.root.isHidden = false
+        cover.pad.layer.isHidden = false
         guard let clip = cover.clip, let still = cover.still else { return }   // `.stretch`: that's all
         clip.frame = CGRect(origin: .zero, size: frame.size)
         // Always the still's own size, pinned to the window's top-left, overflowing a shrunk clip.
@@ -209,7 +223,7 @@ public final class Reconstruction: CoverSurface {
     }
 
     private func discardLayers() {
-        for layer in layers.values { layer.root.removeFromSuperlayer() }
+        for layer in layers.values { layer.pad.layer.removeFromSuperlayer() }
         layers.removeAll()
     }
 

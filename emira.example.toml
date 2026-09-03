@@ -87,6 +87,14 @@ window = "stretch"
 # One of "exact", "immediate".
 cover = "exact"
 
+# The share of each frame's motion that is smeared — 0.5 is a 180° film shutter, 0 is off.
+# Must be at least 0.
+motion-blur = 0.5
+
+# Seconds the blur takes to build as a window speeds up; it clears at once as it settles.
+# In seconds, must be at least 0.
+motion-blur-attack = 0.05
+
 [animation.scroll]
 
 # Spring constant k for the viewport scroll — larger is stiffer, and faster.
