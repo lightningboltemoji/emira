@@ -122,6 +122,17 @@ public enum CapturePiece: Sendable {
     case window(WindowId, CapturedSurface)
 }
 
+/// What a batch that opens a cover asks of its base beyond the requests' own holes. `departed` is cut
+/// from it and filmed by nobody: windows management has let go of that the window server may still be
+/// fading out, which a base photographed in between would carry frozen under the layers sliding over it.
+public struct BaseRequest: Sendable, Equatable {
+    public let departed: Set<CGWindowID>
+
+    public init(departed: Set<CGWindowID> = []) {
+        self.departed = departed
+    }
+}
+
 /// The untestable half: ScreenCaptureKit behind one method.
 ///
 /// Implementers must deliver each piece to `piece` as it arrives and call `done` exactly once, on the
@@ -129,19 +140,20 @@ public enum CapturePiece: Sendable {
 /// captured at all. Pieces stream because the window server *serializes* screenshots, so a batch's
 /// stills arrive about 10 ms apart and a cover gated on the base need not wait for the last.
 ///
-/// `includeBase` is `false` for a batch *growing* an existing cover: a second base taken mid-transition
-/// would bake the first batch's windows, by then already teleported, into the desktop behind their own
+/// `base` is `nil` for a batch *growing* an existing cover: a second base taken mid-transition would
+/// bake the first batch's windows, by then already teleported, into the desktop behind their own
 /// sliding layers.
 ///
 /// **`requests` is both instructions at once**: photograph these windows, and cut them out of the base.
 /// The two can be one again now that a cover names its display — a batch goes to exactly one capturer,
 /// the one whose screen the cover is over, so the windows it films and the hole its base needs are the
 /// same list. (They had to be separate while one session covered every screen and only the first
-/// capturer filmed.) A window straddling two displays is the case this does not serve: it is covered on
-/// the display its workspace lives on, and its other half is left in the neighbouring desktop.
+/// capturer filmed.) What the hole needs beyond that list is `BaseRequest`'s. A window straddling two
+/// displays is the case this does not serve: it is covered on the display its workspace lives on, and
+/// its other half is left in the neighbouring desktop.
 @MainActor
 public protocol SurfaceCapturer: AnyObject {
-    func capture(_ requests: [CaptureRequest], includeBase: Bool,
+    func capture(_ requests: [CaptureRequest], base: BaseRequest?,
                  piece: @escaping @MainActor (CapturePiece) -> Void,
                  done: @escaping @MainActor () -> Void)
 }
@@ -417,7 +429,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         generation &+= 1
         let mint = generation
         var filmed: CapturedSurface?
-        capturer.capture([CaptureRequest(id: window, number: number)], includeBase: false,
+        capturer.capture([CaptureRequest(id: window, number: number)], base: nil,
                          piece: { [weak self] piece in
                              guard case .window(let id, let surface) = piece, id == window else { return }
                              filmed = surface
@@ -467,7 +479,8 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
 
         // An id the registry doesn't know has no window number to ask about, but is still owed an ack —
         // dropped from the *request*, kept in the ack list. It reaches the cover as a missing layer,
-        // which is truthful for the likely cause: destroyed between the reducer scoping it and here.
+        // which is truthful for the likely cause: destroyed between the reducer scoping it and here —
+        // and its number, if the registry let it go, is among the departed the base cuts below.
         // A stood-in window is still filmed: the stand-in buys the raise, not the transition.
         let requests = targets.compactMap { target in
             registry.record(target.id).map { CaptureRequest(id: target.id, number: $0.number) }
@@ -481,9 +494,10 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
 
         // One capturer, filming what its own base has to have a hole where: with a cover per display
         // those are the same list, so a second screen costs a transition nothing unless it is also
-        // being covered.
+        // being covered. The departed are the hole's other half — still on the glass, filmed by nobody,
+        // and the close that let them go is very often what opened this cover.
         if let asked {
-            asked.capture(requests, includeBase: isHead,
+            asked.capture(requests, base: isHead ? BaseRequest(departed: registry.departedNumbers) : nil,
                           piece: { [weak self] piece in
                               self?.receive(generation: mine, from: monitor, piece: piece)
                           },

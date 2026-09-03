@@ -339,6 +339,9 @@ public final class WindowRegistry {
     private var idByElement: [AXWindow: WindowId] = [:]
     /// Everything known about each managed window.
     private var records: [WindowId: Record] = [:]
+    /// Numbers management has let go of that the window server may still be showing: a closing window
+    /// fades out after AX has destroyed its element. Cut from every base until the list stops carrying them.
+    private var departed: Set<CGWindowID> = []
 
     public init() {}
 
@@ -355,6 +358,7 @@ public final class WindowRegistry {
     public func adopt(_ observed: ObservedWindow, element: AXWindow,
                       number: CGWindowID) -> WindowSnapshot? {
         if let existing = idByElement[element], records[existing]?.number != number { return nil }
+        departed.remove(number)     // bound again, the number is a live window's, whoever held it last
         let id: WindowId
         if let existing = idByNumber[number] {
             id = existing
@@ -399,6 +403,10 @@ public final class WindowRegistry {
         idByElement[element] = id
         records[id] = Record(id: id, number: number, pid: observed.pid,
                              bundleId: observed.bundleId, element: element, frame: observed.frame)
+        // The entry left behind is a closed tab still fading on the successor's own rectangle, or a
+        // background tab off screen — departed either way, and pruned once the list lets go of it.
+        departed.remove(number)
+        if old.number != number { departed.insert(old.number) }
         return true
     }
 
@@ -430,11 +438,13 @@ public final class WindowRegistry {
     /// Drop one window (it closed).
     ///
     /// The number → id entry goes too: the window server *does* reuse a `CGWindowID` after a window is
-    /// destroyed, so a stale mapping would eventually hand a dead window's id to a live one.
+    /// destroyed, so a stale mapping would eventually hand a dead window's id to a live one. The number
+    /// itself stays on as departed, since the window is still on the glass for the length of its fade.
     public func forget(_ id: WindowId) {
         guard let record = records.removeValue(forKey: id) else { return }
         idByNumber[record.number] = nil
         idByElement[record.element] = nil
+        departed.insert(record.number)
     }
 
     /// Drop every window of a process (the app quit) and return the ids, which the caller turns into
@@ -444,6 +454,16 @@ public final class WindowRegistry {
         let doomed = records.values.filter { $0.pid == pid }.map(\.id).sorted()
         for id in doomed { forget(id) }
         return doomed
+    }
+
+    /// The numbers still to be cut from a base: let go of, and not yet seen to have left the window list.
+    public var departedNumbers: Set<CGWindowID> { departed }
+
+    /// Drop every departed number the window server no longer lists — its fade is over and the number
+    /// is free to be reused. `listed` is the whole list rather than its on-screen half: a background
+    /// tab is off screen and still exists.
+    public func pruneDeparted(keeping listed: Set<CGWindowID>) {
+        departed.formIntersection(listed)
     }
 
     /// Every managed id, sorted — deterministic order for debug dumps and tests.

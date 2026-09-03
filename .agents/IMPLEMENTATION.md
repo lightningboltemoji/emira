@@ -1040,7 +1040,9 @@ have it, never left off.
 Everything else is edge-triggered, so a missed discovery is a window unmanaged for the life of the daemon,
 silently. The list is a window-server query rather than IPC, so being level-triggered costs ~3 ms and no AX
 until the two disagree. `Heartbeat` is its own seam beside `DelayScheduler`: a retry terminates and a heartbeat
-does not, and one drained by a test's "run everything pending" loop never would.
+does not, and one drained by a test's "run everything pending" loop never would. The same list read is what
+releases a departed window number (`WindowRegistry.pruneDeparted`): the window server is the one authority on
+whether a closed window's fade has finished.
 
 **But it yields to the frame loop** (`WorldWatcher.isPainting`). `CGWindowListCopyWindowInfo` synchronizes
 *this process's own* pending Core Animation commit with the window server before it answers, so its cost is a
@@ -1186,7 +1188,10 @@ carry the plural:
   filmed once *per cover*, which is what carries each destination overlay's backing scale — a still filmed at
   2× shown on a 1× overlay pops on the cross-fade. Photographing and cutting out of the base are one list
   again for the same reason: the windows a cover shows and the windows its own base must not contain are the
-  same set.
+  same set. The hole has one member the film list cannot name: a window management has let go of is on the
+  glass for the length of its fade, and the close that let it go is very often the edit opening the cover. So
+  `WindowRegistry` keeps every forgotten number as _departed_ until reconciliation finds it unlisted, and a
+  head batch cuts them all (`BaseRequest.departed`) while filming none.
 - **The photographs are one store, and a cover's hold on one is an entitlement.** A window two covers show is
   released by the last of them, so one cover coming down cannot blank a layer still on screen on the other
   display — and what that last release drops is the entitlement, not the photograph. A head batch that ends

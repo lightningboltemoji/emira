@@ -422,6 +422,9 @@ public final class WorldWatcher {
         // when `CGWindowListCopyWindowInfo` does — and believing it would retire the whole strip at once.
         guard !list.isEmpty else { return }
         let listed = Set(list.map(\.number))
+        // A departed window still listed is still fading; one the list has dropped is gone for good, and
+        // its number with it.
+        registry.pruneDeparted(keeping: listed)
 
         // Managed windows the window server no longer lists *at all*. Deliberately not `isOnScreen`,
         // which the discovery half below does consult: an ordinary desktop carries far more off-screen

@@ -350,6 +350,50 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(reused.id != first.id)
     }
 
+    @Test func aForgottenWindowsNumberStaysDepartedUntilTheWindowServerDropsIt() {
+        // AX destroys the element before the window server has finished fading the window out, so a
+        // base photographed in between would carry it. The capture plane cuts departed numbers from
+        // every base until the list stops carrying them — the whole list, since a background tab is
+        // off screen and still a window.
+        let registry = WindowRegistry()
+        let first = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
+        _ = registry.adopt(observed(frame: rect(700)), element: element(42), number: 42)!
+
+        registry.forget(first.id)
+        #expect(registry.departedNumbers == [41])
+
+        registry.pruneDeparted(keeping: [41, 42])                    // still fading
+        #expect(registry.departedNumbers == [41])
+        registry.pruneDeparted(keeping: [42])                        // gone
+        #expect(registry.departedNumbers.isEmpty)
+    }
+
+    @Test func aRecycledNumberIsNoLongerDeparted() {
+        // Bound again, the number is a live window's, whoever held it last — cutting it from a base
+        // would put a hole where a window is.
+        let registry = WindowRegistry()
+        let first = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
+        registry.forget(first.id)
+
+        _ = registry.adopt(observed(frame: rect(0)), element: element(41), number: 41)!
+
+        #expect(registry.departedNumbers.isEmpty)
+    }
+
+    @Test func rebindingLeavesTheOldNumberDeparted() {
+        // Closing the selected tab moves the id onto its successor and the core never hears of it, while
+        // the closed tab's own entry fades on the very rectangle the successor's layer will slide over.
+        let registry = WindowRegistry()
+        let tab = registry.adopt(observed(frame: rect(0)), element: element(1), number: 1)!
+
+        registry.rebind(tab.id, to: 2, observed: observed(frame: rect(0)), element: element(2))
+        #expect(registry.departedNumbers == [1])
+
+        // Selected again, it is a window once more.
+        registry.rebind(tab.id, to: 1, observed: observed(frame: rect(0)), element: element(1))
+        #expect(registry.departedNumbers == [2])
+    }
+
     @Test func quittingAnAppForgetsExactlyItsOwnWindows() {
         let registry = WindowRegistry()
         let a1 = registry.adopt(observed(pid: 100, frame: rect(0)), element: element(1), number: 1)!

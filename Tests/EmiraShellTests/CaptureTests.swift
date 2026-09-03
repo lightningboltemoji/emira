@@ -26,20 +26,21 @@ import EmiraCore
     /// cover waits for is a decision, not an implementation detail.
     @MainActor final class ManualCapturer: SurfaceCapturer {
         private(set) var requests: [[CaptureRequest]] = []
-        /// Whether each batch was asked for a base — what separates a cover being opened from one
-        /// being grown.
-        private(set) var baseRequested: [Bool] = []
+        /// What each batch asked of its base, `nil` for none — which separates a cover being opened
+        /// from one being grown, and names the departed windows the base has to cut.
+        private(set) var bases: [BaseRequest?] = []
+        var baseRequested: [Bool] { bases.map { $0 != nil } }
         private struct Sink {
             let piece: @MainActor (CapturePiece) -> Void
             let done: @MainActor () -> Void
         }
         private var sinks: [Sink] = []
 
-        func capture(_ requests: [CaptureRequest], includeBase: Bool,
+        func capture(_ requests: [CaptureRequest], base: BaseRequest?,
                      piece: @escaping @MainActor (CapturePiece) -> Void,
                      done: @escaping @MainActor () -> Void) {
             self.requests.append(requests)
-            self.baseRequested.append(includeBase)
+            self.bases.append(base)
             sinks.append(Sink(piece: piece, done: done))
         }
 
@@ -178,6 +179,29 @@ import EmiraCore
 
         #expect(log.capturedIds == [WindowId(1), WindowId(2)])        // both answered
         #expect(service.surface(for: WindowId(2)) == nil)             // …one of them with no pixels
+    }
+
+    /// AX destroys a window's element before the window server has finished fading it out, and the
+    /// close that let it go is very often the edit opening the cover — so the base has to cut what the
+    /// registry has let go of, or it carries the window frozen under the layers closing ranks over it.
+    @Test func aHeadBatchCutsDepartedWindowsFromItsBase() {
+        let registry = Self.registry([1, 2])
+        let capturer = ManualCapturer()
+        let service = CaptureService(registry: registry, capturer: capturer,
+                                     scheduler: ManualScheduler(), deadline: 0.25)
+        let log = EventLog()
+        registry.forget(WindowId(2))                                  // closed, still fading
+
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+
+        #expect(capturer.requests.last?.map(\.number) == [1])         // nobody films it
+        #expect(capturer.bases.last == BaseRequest(departed: [2]))    // but the base cuts it
+        capturer.answer(with: [WindowId(1)])
+
+        // Growing the cover takes no base, so there is nothing for the departed to be cut from.
+        service.capture(windows: [WindowId(1)], feedback: log.sink)
+        #expect(capturer.bases.count == 2)
+        #expect(capturer.bases[1] == nil)
     }
 
     /// The batch here grows an already-open cover, so the deadline's outcome is acks. A head batch

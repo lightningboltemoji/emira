@@ -794,6 +794,26 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.registry.record(two) != nil, "and only the one window left")
     }
 
+    @Test func aClosedWindowsNumberIsDepartedUntilReconciliationSeesItGone() {
+        // The app stops describing the window at once; the window server keeps listing it for the length
+        // of its fade. The number is held as departed across that gap — the capture plane cuts it from
+        // any base taken meanwhile — and released by the first reconciliation that finds it unlisted.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "one"))
+
+        world.windows.windowsByPid[200] = [world.windows.windowsByPid[200]![1]]
+        world.watcher.handle(.windowVanished(id))
+        #expect(world.registry.departedNumbers == [2])
+
+        world.heartbeat.beat()                                       // still listed: still fading
+        #expect(world.registry.departedNumbers == [2])
+
+        world.windows.entries = world.windows.entries.filter { $0.number != 2 }
+        world.heartbeat.beat()
+        #expect(world.registry.departedNumbers.isEmpty)
+    }
+
     // The destroy that waits for one answer
     //
     // A destroyed element is not always a window leaving the strip: ⌘W on a native tab group destroys

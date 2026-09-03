@@ -16,6 +16,11 @@ import EmiraCore
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
 //
+// And it excludes the windows management has just let go of. AX destroys a window's element before the
+// window server has finished fading it out, and the close that let it go is very often the edit opening
+// this cover — so a base photographed in between would carry the window frozen under the layers
+// closing ranks over it. Those numbers arrive as `BaseRequest.departed`: a hole, and nothing to film.
+//
 // **The batch is taken one capture at a time, and that is the fast path.** The window server serializes
 // screenshot requests, so overlapping them hides nothing — and worse, inflates each one: ~25 ms taken
 // alone against ~41 ms with anything else in flight, which is 1.55–1.90× on the batch and grows under
@@ -48,7 +53,7 @@ public final class SCKCapturer: SurfaceCapturer {
         self.scale = scale
     }
 
-    public func capture(_ requests: [CaptureRequest], includeBase: Bool,
+    public func capture(_ requests: [CaptureRequest], base: BaseRequest?,
                         piece: @escaping @MainActor (CapturePiece) -> Void,
                         done: @escaping @MainActor () -> Void) {
         let numbers = Dictionary(requests.map { ($0.number, $0.id) }, uniquingKeysWith: { first, _ in first })
@@ -57,7 +62,7 @@ public final class SCKCapturer: SurfaceCapturer {
 
         Task {
             await grab(windows: Set(numbers.keys), display: displayId, scale: scale,
-                       includeBase: includeBase) { shot in
+                       base: base) { shot in
                 switch shot {
                 case .base(let image):
                     await piece(.base(image))
@@ -102,11 +107,11 @@ private enum Piece: Sendable {
 ///
 /// `windows` is both lists at once: what to photograph, and what the base has to have a hole where. A
 /// cover belongs to one display, so the windows it shows and the windows its own base must not contain
-/// are the same set.
+/// are the same set — plus `base.departed`, which is a hole and nothing more.
 private func grab(windows: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
-                  includeBase: Bool,
+                  base: BaseRequest?,
                   deliver: @Sendable (Piece) async -> Void) async {
     let content: SCShareableContent
     do {
@@ -119,14 +124,17 @@ private func grab(windows: Set<CGWindowID>,
 
     let targets = content.windows.filter { windows.contains($0.windowID) }
     let mine = ProcessInfo.processInfo.processIdentifier
-    // The base excludes what we are about to animate *and* our own overlay. See the file header.
+    let departed = base?.departed ?? []
+    // The base excludes what we are about to animate, what is still fading out, *and* our own overlay.
+    // See the file header.
     let excluded = content.windows.filter {
-        windows.contains($0.windowID) || $0.owningApplication?.processID == mine
+        windows.contains($0.windowID) || departed.contains($0.windowID)
+            || $0.owningApplication?.processID == mine
     }
     // Only the batch that *opens* a cover takes a base: by the time one grows, the cover's other windows
     // have teleported to their end frames, and a fresh base would carry them frozen behind their own
     // sliding layers.
-    let scDisplay = includeBase ? content.displays.first { $0.displayID == display } : nil
+    let scDisplay = base != nil ? content.displays.first { $0.displayID == display } : nil
 
     // Before the group, not first in it: this is the gate, and it is the one piece whose arrival time
     // we are unwilling to leave to the scheduler. See the file header.
