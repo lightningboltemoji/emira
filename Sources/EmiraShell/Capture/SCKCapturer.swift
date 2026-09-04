@@ -16,6 +16,12 @@ import EmiraCore
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
 //
+// And it excludes **everything that composites above the cover** — the menu bar, the Dock, a notification
+// banner. Those draw over the cover whatever it holds, so a copy of them inside it can only double with
+// the live one. Dropping them is what lets the cover be the whole display (`Overlay`) rather than stop at
+// the struts, which is what lets a stand-in's shadow reach past the working area the way a real window's
+// does. `SCWindow.windowLayer` is the same number as `NSWindow.level`, so `Overlay.level` is the cut.
+//
 // And it excludes the windows management has just let go of. AX destroys a window's element before the
 // window server has finished fading it out, and the close that let it go is very often the edit opening
 // this cover — so a base photographed in between would carry the window frozen under the layers
@@ -125,11 +131,13 @@ private func grab(windows: Set<CGWindowID>,
     let targets = content.windows.filter { windows.contains($0.windowID) }
     let mine = ProcessInfo.processInfo.processIdentifier
     let departed = base?.departed ?? []
-    // The base excludes what we are about to animate, what is still fading out, *and* our own overlay.
-    // See the file header.
+    // The base excludes what we are about to animate, what is still fading out, our own overlay, *and*
+    // everything that composites above the cover. See the file header.
+    let chrome = Overlay.level.rawValue
     let excluded = content.windows.filter {
         windows.contains($0.windowID) || departed.contains($0.windowID)
             || $0.owningApplication?.processID == mine
+            || $0.windowLayer > chrome
     }
     // Only the batch that *opens* a cover takes a base: by the time one grows, the cover's other windows
     // have teleported to their end frames, and a fresh base would carry them frozen behind their own

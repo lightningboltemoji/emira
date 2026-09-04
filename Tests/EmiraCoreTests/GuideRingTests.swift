@@ -95,7 +95,7 @@ import EmiraMotion
         var motion = Motion()
         motion.openTransition(scope: [WindowId(1)], on: display)
         motion.markCaptured(WindowId(1))
-        motion.raiseCover(on: display)
+        motion.raiseCover(on: display, focused: nil)
         motion.confirmCover(on: display)
         motion.markLanded(WindowId(1))
         motion.nudgeFocusRing(by: Rect(x: 900, y: 0, width: 0, height: 0), params: .smooth)

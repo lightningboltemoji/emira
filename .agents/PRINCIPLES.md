@@ -69,8 +69,9 @@ The single most important idea in the project. A window "moving" is two independ
 it.** This is the inverse of the SIP-off design — there you would transform live foreign surfaces; here we
 rebuild the desktop out of pieces we own and puppet those.
 
-The reconstruction is **layered, not flat**: a captured base holding the wallpaper, the menu bar and every
-window that isn't moving, with one captured still per moving window on top. A flat cover cannot move in parts,
+The reconstruction is **layered, not flat**: a captured base holding the wallpaper and every window that isn't
+moving — but nothing that composites above the cover, which draws over it live — with one captured still per
+moving window on top. A flat cover cannot move in parts,
 because it is one photograph. Gappy per-window overlays expose the real windows, which we are not allowed to
 hide. A full, opaque, layered cover has neither flaw — it covers everything _and_ moves in parts.
 

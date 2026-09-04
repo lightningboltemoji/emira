@@ -54,11 +54,12 @@ import Testing
         #expect(focus == #"{"focus":{"_0":5}}"#)
 
         // Ids encode as bare numbers, so a `beginTransition` payload carries no `Double` and its wire
-        // shape is stable to pin (bindings are an ordered array of {layer, window} objects).
+        // shape is stable to pin (bindings are an ordered array of {isFocused, layer, window} objects).
         let begin = String(decoding: try encoder.encode(
             Effect.beginTransition(MonitorId(1),
-                                   [LayerBinding(window: WindowId(7), layer: LayerId(8))])),
+                                   [LayerBinding(window: WindowId(7), layer: LayerId(8),
+                                                 isFocused: true)])),
                            as: UTF8.self)
-        #expect(begin == #"{"beginTransition":{"_0":1,"_1":[{"layer":8,"window":7}]}}"#)
+        #expect(begin == #"{"beginTransition":{"_0":1,"_1":[{"isFocused":true,"layer":8,"window":7}]}}"#)
     }
 }

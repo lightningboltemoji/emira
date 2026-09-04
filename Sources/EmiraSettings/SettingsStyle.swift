@@ -83,13 +83,9 @@ public enum SettingsStyle {
 
     // A mock window
     //
-    // **The compositor's own shadow, scaled.** `Reconstruction` synthesizes a window's drop shadow at
-    // these numbers, so using them here — with the radius and offset through `Projection.mock(_:)` — is
-    // what makes the small desktop lit like the big one rather than merely shaped like it.
-
-    public static let paneShadowOpacity: Float = 0.35
-    public static let paneShadowRadius: Double = 18
-    public static let paneShadowOffset = CGSize(width: 0, height: -8)
+    // **A pane's shadow is not here.** It is `WindowShadow`, which the compositor synthesizes from too —
+    // scaled through `Projection.mock(_:)` and chosen by the same focus flag. A second set of numbers
+    // here is how the small desktop stops being lit like the big one.
 
     // **A window's own dimensions, in real points, projected like everything else.** These were mock
     // points until it sat next to a real desktop: a fixed 7 pt corner is a 13 pt corner on the display

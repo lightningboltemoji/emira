@@ -19,10 +19,8 @@ public final class SmearLayer {
     public let content: CALayer
 
     /// Empty layer around the content on every side, in points: three σ of the longest smear, where a
-    /// Gaussian's tail ends, plus a drop shadow's reach.
-    public static let margin: CGFloat = CGFloat(Smear.maxSigma) * 3 + shadowReach
-    /// How far past its silhouette the shadow either host casts extends: its radius, offset, and slack.
-    private static let shadowReach: CGFloat = 32
+    /// Gaussian's tail ends, plus the reach of the widest shadow either host casts.
+    public static let margin: CGFloat = CGFloat(Smear.maxSigma) * 3 + CGFloat(WindowShadow.maxReach)
     private static let filterName = "smear"
 
     private var smear = Smear()

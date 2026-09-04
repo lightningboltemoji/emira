@@ -221,7 +221,7 @@ import Testing
         for monitor in [Self.left, Self.right] {
             m.openTransition(scope: [WindowId(1)], on: monitor)
             m.markCaptured(WindowId(1))
-            m.raiseCover(on: monitor)
+            m.raiseCover(on: monitor, focused: nil)
             m.confirmCover(on: monitor)
         }
         #expect(!m.isReadyToClose(on: Self.left, holding: contents, hand: .idle))
@@ -595,7 +595,7 @@ import Testing
         for monitor in [Self.left, Self.right] {
             m.openTransition(scope: [WindowId(1)], on: monitor)
             m.markCaptured(WindowId(1))
-            m.raiseCover(on: monitor)
+            m.raiseCover(on: monitor, focused: nil)
             m.confirmCover(on: monitor)
         }
         m.markLanded(WindowId(1))

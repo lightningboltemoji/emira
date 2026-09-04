@@ -23,10 +23,15 @@ import EmiraMotion
 public struct LayerBinding: Sendable, Equatable, Codable {
     public let window: WindowId
     public let layer: LayerId
+    /// Whether this is the focused window, which macOS draws a different shadow around — the one thing
+    /// a stand-in needs that neither the still nor the rect carries. Read at the moment the layers are
+    /// minted, which is the focus the stills were filmed under.
+    public let isFocused: Bool
 
-    public init(window: WindowId, layer: LayerId) {
+    public init(window: WindowId, layer: LayerId, isFocused: Bool = false) {
         self.window = window
         self.layer = layer
+        self.isFocused = isFocused
     }
 }
 
@@ -85,6 +90,10 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     ///
     /// A set, because a held keybind rides several hand-overs on one cover.
     public private(set) var carried: Set<WindowId> = []
+    /// Which of the scoped windows was focused when the layers were minted — the focus the stills were
+    /// filmed under, and so the one the stand-ins must be shadowed for. Held rather than read per
+    /// binding, so a window a retarget adds later joins a cover whose windows agree about it.
+    public private(set) var focusedWindow: WindowId?
 
     init(windows: [WindowId], elevated: WindowId? = nil) {
         self.phase = .capturing
@@ -141,9 +150,10 @@ public struct TransitionSession: Sendable, Equatable, Codable {
         awaitingLanding = Set(moved)
     }
 
-    mutating func raiseCover(layerIds: [WindowId: LayerId]) {
+    mutating func raiseCover(layerIds: [WindowId: LayerId], focused: WindowId?) {
         guard phase == .capturing else { return }
         self.layerIds = layerIds
+        self.focusedWindow = focused
         self.phase = .raising
     }
 
@@ -163,7 +173,15 @@ public struct TransitionSession: Sendable, Equatable, Codable {
 
     /// The ordered bindings the cover is built from. Empty until `raiseCover`; z-order follows `windows`.
     public var bindings: [LayerBinding] {
-        windows.compactMap { w in layerIds[w].map { LayerBinding(window: w, layer: $0) } }
+        windows.compactMap { w in binding(for: w) }
+    }
+
+    /// One window's binding, or `nil` where it has no layer yet. The single place a `LayerBinding` is
+    /// made, so `extendCover`'s newcomers cannot disagree with the raise about who is focused.
+    func binding(for window: WindowId) -> LayerBinding? {
+        layerIds[window].map {
+            LayerBinding(window: window, layer: $0, isFocused: window == focusedWindow)
+        }
     }
 
     public func layerId(for id: WindowId) -> LayerId? { layerIds[id] }
@@ -625,7 +643,7 @@ public struct Motion: Sendable, Equatable, Codable {
         for w in unbound { ids[w] = mintLayerId() }
         t.bindLayers(ids)
         withViewport(id) { $0.transition = t }
-        return unbound.compactMap { w in ids[w].map { LayerBinding(window: w, layer: $0) } }
+        return unbound.compactMap { t.binding(for: $0) }
     }
 
     /// Abandon `id`'s session *before* its cover was ever raised — the answer to
@@ -640,11 +658,12 @@ public struct Motion: Sendable, Equatable, Codable {
 
     /// Raise `id`'s cover: mint a `LayerId` per scoped window (in z-order) and advance to `.raising`.
     /// Called once `isReadyToRaise`, followed by `Effect.beginTransition` and the cover's first blits.
-    public mutating func raiseCover(on id: MonitorId?) {
+    /// `focused` is `World`'s, which `Motion` has no way to reach and the stand-ins' shadows need.
+    public mutating func raiseCover(on id: MonitorId?, focused: WindowId?) {
         guard var t = transition(of: id), t.phase == .capturing else { return }
         var ids: [WindowId: LayerId] = [:]
         for w in t.windows { ids[w] = mintLayerId() }
-        t.raiseCover(layerIds: ids)
+        t.raiseCover(layerIds: ids, focused: focused)
         withViewport(id) { $0.transition = t }
     }
 

@@ -5,7 +5,7 @@ import EmiraCore
 @testable import EmiraShell
 
 // The presentation plane's tests: the Y-flip (`ScreenGeometry`), where core top-left coordinates
-// become Cocoa bottom-left ones and the inset cover's local space is computed, and the routing and
+// become Cocoa bottom-left ones and a panel's local space is computed, and the routing and
 // framing (`CompositingExecutor`) — effects reaching the right plane in emission order, every
 // presentation run wrapped in exactly one frame. `Overlay`, `Reconstruction` and `DisplayLinkDriver`
 // need a window server and hold no decisions, hence `CoverSurface` and `FrameClock` being protocols.
@@ -45,37 +45,42 @@ import EmiraCore
 
     // The cover's local space
 
-    /// The cover is inset past the menu bar, so `local` and `cocoa` differ — this is the arithmetic
-    /// that decides whether a window layer is drawn where the window is.
-    @Test func aWindowAtTheTopOfTheWorkingAreaSitsAtTheCoversTopEdge() {
-        // A 1000-tall display with a 25 pt menu bar: the cover's Cocoa frame is y 0…975.
-        let cover = Self.geometry.cocoa(Rect(x: 0, y: 25, width: 800, height: 975))
-        #expect(cover == CGRect(x: 0, y: 0, width: 800, height: 975))
-        // A window tiled at the very top of the working area sits flush with the cover's top edge.
+    /// The cover is the whole display, so the base fills it and a window tiled at the top of the
+    /// working area sits the menu bar's height *below* the cover's top edge — which is the room its
+    /// shadow reaches into.
+    @Test func aWindowAtTheTopOfTheWorkingAreaSitsBelowTheCoversTopEdge() {
+        let display = Rect(x: 0, y: 0, width: 800, height: 1000)
+        let cover = Self.geometry.cocoa(display)
+        #expect(cover == CGRect(x: 0, y: 0, width: 800, height: 1000))
+        // The base is the display in the cover's own space: the identity, at the local origin.
+        #expect(Self.geometry.local(display, in: cover) == CGRect(x: 0, y: 0, width: 800, height: 1000))
+        // A window tiled at the very top of a 25 pt working area, 25 pt of cover above it.
         let top = Self.geometry.local(Rect(x: 100, y: 25, width: 200, height: 50), in: cover)
         #expect(top == CGRect(x: 100, y: 925, width: 200, height: 50))
+        #expect(cover.maxY - top.maxY == 25)
     }
 
-    /// The desktop base is a capture of the whole display, so inside an inset cover its layer hangs off
-    /// each edge by that strut. Wrong, it slides the wallpaper by the height of the menu bar.
-    @Test func theDisplayBaseOverhangsAnInsetCoverByTheStrut() {
+    /// The guides *are* inset past the chrome (`GuidePanel`), so `local` still has to handle a window
+    /// frame that is not the display — this is the arithmetic that decides whether a layer is drawn
+    /// where the thing it stands for is.
+    @Test func theDisplayOverhangsAnInsetPanelByTheStrut() {
         let display = Rect(x: 0, y: 0, width: 800, height: 1000)
-        let cover = Self.geometry.cocoa(display.inset(by: EdgeInsets(top: 25, bottom: 60)))
-        let base = Self.geometry.local(display, in: cover)
-        #expect(base.width == 800 && base.height == 1000)        // still the whole display…
-        #expect(base.origin == CGPoint(x: 0, y: -60))            // …hanging below by the Dock strut
-        #expect(base.maxY == 940)                                // …and above by the menu bar's 25
+        let panel = Self.geometry.cocoa(display.inset(by: EdgeInsets(top: 25, bottom: 60)))
+        let full = Self.geometry.local(display, in: panel)
+        #expect(full.width == 800 && full.height == 1000)        // still the whole display…
+        #expect(full.origin == CGPoint(x: 0, y: -60))            // …hanging below by the Dock strut
+        #expect(full.maxY == 940)                                // …and above by the menu bar's 25
     }
 
     /// A left-edge Dock (or an outer margin) insets horizontally, which the vertical-only cases above
     /// would not catch — the flip touches `y` only, so an `x` error here has nothing to cancel it.
     @Test func localHandlesAnInsetOnTheHorizontalEdgesToo() {
         let display = Rect(x: 0, y: 0, width: 800, height: 1000)
-        let cover = Self.geometry.cocoa(display.inset(by: EdgeInsets(left: 70, right: 10)))
-        #expect(cover.origin.x == 70)
-        #expect(Self.geometry.local(display, in: cover).origin.x == -70)
-        // A window at the working area's left edge is at the cover's local origin, not the display's.
-        let tile = Self.geometry.local(Rect(x: 70, y: 0, width: 100, height: 1000), in: cover)
+        let panel = Self.geometry.cocoa(display.inset(by: EdgeInsets(left: 70, right: 10)))
+        #expect(panel.origin.x == 70)
+        #expect(Self.geometry.local(display, in: panel).origin.x == -70)
+        // A window at the working area's left edge is at the panel's local origin, not the display's.
+        let tile = Self.geometry.local(Rect(x: 70, y: 0, width: 100, height: 1000), in: panel)
         #expect(tile == CGRect(x: 0, y: 0, width: 100, height: 1000))
     }
 }

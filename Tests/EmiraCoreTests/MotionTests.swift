@@ -293,7 +293,7 @@ import EmiraMotion
         var m = Motion()
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
 
         let t = try! #require(m.transition(of: Self.one))
         #expect(t.phase == .raising)              // built and handed over; not yet on the glass
@@ -305,13 +305,47 @@ import EmiraMotion
         #expect(m.layerIds(for: WindowId(42)).first == nil)   // not scoped
     }
 
+    /// macOS draws a different shadow around the focused window, and the still does not carry it — so
+    /// exactly one binding says which one it is, and a focus outside the scope marks none of them.
+    @Test func exactlyTheFocusedWindowsBindingSaysSo() {
+        var m = Motion()
+        m.openTransition(scope: Self.scope, on: Self.one)
+        for w in Self.scope { m.markCaptured(w) }
+        m.raiseCover(on: Self.one, focused: WindowId(2))
+
+        let t = try! #require(m.transition(of: Self.one))
+        #expect(t.bindings.filter(\.isFocused).map(\.window) == [WindowId(2)])
+
+        var stranger = Motion()
+        stranger.openTransition(scope: Self.scope, on: Self.one)
+        for w in Self.scope { stranger.markCaptured(w) }
+        stranger.raiseCover(on: Self.one, focused: WindowId(99))     // focused, but not on this cover
+        #expect(stranger.transition(of: Self.one)?.bindings.allSatisfy { !$0.isFocused } == true)
+    }
+
+    /// A window a retarget sweeps in joins a cover that has already chosen its focus, and reads it from
+    /// the session rather than from wherever focus has since gone. One cover, one answer.
+    @Test func aWindowAddedAfterTheRaiseAgreesWithItAboutFocus() {
+        var m = Motion()
+        m.openTransition(scope: Self.scope, on: Self.one)
+        for w in Self.scope { m.markCaptured(w) }
+        m.raiseCover(on: Self.one, focused: WindowId(4))             // focused, and not yet in scope
+
+        _ = m.extendTransition(scope: [WindowId(4), WindowId(5)], on: Self.one)
+        m.markCaptured(WindowId(4))
+        m.markCaptured(WindowId(5))
+        let added = m.extendCover(on: Self.one)
+        #expect(added.filter(\.isFocused).map(\.window) == [WindowId(4)])
+        #expect(m.transition(of: Self.one)?.bindings.filter(\.isFocused).map(\.window) == [WindowId(4)])
+    }
+
     /// The raise is two steps, and only the second one lets a real window move. Between them the layers
     /// exist — the cover is real, just not composed yet — which is what `hasLayers` separates out.
     @Test func theCoverOwnsTheRealsOnlyOnceItIsOnScreen() {
         var m = Motion()
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
 
         #expect(!m.isCovered(on: Self.one))                     // committed is not composed
         #expect(m.hasLayers(on: Self.one))                      // …but the layer tree is up and can be extended
@@ -330,7 +364,7 @@ import EmiraMotion
         #expect(m.phase(of: Self.one) == .capturing)
 
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         m.confirmCover(on: Self.one)
         m.confirmCover(on: Self.one)                          // a second report changes nothing
         #expect(m.phase(of: Self.one) == .covered)
@@ -338,7 +372,7 @@ import EmiraMotion
 
     @Test func raiseCoverBeforeAnOpenSessionIsANoOp() {
         var m = Motion()
-        m.raiseCover(on: Self.one)                            // no session
+        m.raiseCover(on: Self.one, focused: nil)                            // no session
         #expect(!m.isTransitioning)
         #expect(m.layerIds(for: WindowId(1)).first == nil)
     }
@@ -354,7 +388,7 @@ import EmiraMotion
         #expect(m.extendTransition(scope: [WindowId(4), WindowId(2)], on: Self.one) == [WindowId(4)])  // 2 already in
         #expect(!m.isReadyToRaise(on: Self.one))                // the newcomer owes a still, so the raise waits
         m.markCaptured(WindowId(4))
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         // One cover, built in one piece, with the newcomer last in z-order.
         #expect(m.transition(of: Self.one)?.bindings.map(\.window) == Self.scope + [WindowId(4)])
     }
@@ -363,7 +397,7 @@ import EmiraMotion
         var m = Motion()
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         #expect(m.extendCover(on: Self.one).isEmpty)          // nothing unbound — the cover is complete
 
         _ = m.extendTransition(scope: [WindowId(4)], on: Self.one)
@@ -386,7 +420,7 @@ import EmiraMotion
         var m = Motion()
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
 
         _ = m.extendTransition(scope: [WindowId(4)], on: Self.one)
         _ = m.extendTransition(scope: [WindowId(5)], on: Self.one)     // a second interrupt, before the first answers
@@ -434,7 +468,7 @@ import EmiraMotion
         var m = Motion()
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
 
         m.abortTransition(on: Self.one)
         #expect(m.phase(of: Self.one) == .raising, "a cover on its way to the glass is still a cover")
@@ -448,7 +482,7 @@ import EmiraMotion
         var m = Motion(viewportOffset: 0, params: .snappy)
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         m.confirmCover(on: Self.one)
         m.retargetViewport(to: 400, on: Self.one)               // the strip is scrolling under the cover
         advance(&m, frames: 5)
@@ -465,7 +499,7 @@ import EmiraMotion
         m.displaceWindow(WindowId(7), by: Self.displacement, on: Self.one)
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         m.retargetViewport(to: 400, on: Self.one)
         advance(&m, frames: 5)                    // mid-flight when the timeout closes it
 
@@ -491,12 +525,12 @@ import EmiraMotion
         var m = Motion()
         m.openTransition(scope: [WindowId(1), WindowId(2)], on: Self.one)
         m.markCaptured(WindowId(1)); m.markCaptured(WindowId(2))
-        m.raiseCover(on: Self.one)                            // mints L1, L2
+        m.raiseCover(on: Self.one, focused: nil)                            // mints L1, L2
         m.closeTransition(on: Self.one)
 
         m.openTransition(scope: [WindowId(1)], on: Self.one)
         m.markCaptured(WindowId(1))
-        m.raiseCover(on: Self.one)                            // watermark continues → L3, not a reused L1
+        m.raiseCover(on: Self.one, focused: nil)                            // watermark continues → L3, not a reused L1
         #expect(m.layerIds(for: WindowId(1)).first == LayerId(3))
     }
 
@@ -509,7 +543,7 @@ import EmiraMotion
         advance(&m, frames: 6)                    // in-flight: non-zero velocities to serialize
         m.openTransition(scope: Self.scope, on: Self.one)
         for w in Self.scope { m.markCaptured(w) }
-        m.raiseCover(on: Self.one)
+        m.raiseCover(on: Self.one, focused: nil)
         m.markLanded(WindowId(1))
 
         let data = try JSONEncoder().encode(m)

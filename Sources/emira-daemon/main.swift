@@ -543,7 +543,7 @@ applyShellConfig(config)
 /// back to the enumeration position for a screen AppKit gives no number.
 @MainActor func buildDisplay(_ info: MonitorInfo, _ screen: NSScreen, at index: Int,
                              in geometry: ScreenGeometry) -> DisplayParts {
-    let overlay = Overlay(screen: screen, geometry: geometry, insets: info.struts)
+    let overlay = Overlay(screen: screen, geometry: geometry)
     let panel = GuidePanel(screen: screen, geometry: geometry, insets: info.struts)
     let guide = Guide(panel: panel, monitor: info.id, icons: GuideIcons(), names: GuideNames(),
                       scheduler: DispatchScheduler(),

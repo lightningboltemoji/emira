@@ -7,10 +7,15 @@ import EmiraCore
 // permanently ordered-in at `alpha 0` — a window ordered front for the first time gets a system
 // show-animation, so a raise must be a pure alpha flip. Opacity — any transparency the eye can reach
 // is a hole in the guarantee that nothing behind shows while the real windows teleport, so a raise
-// stops one thousandth short of it and no further (`raisedAlpha`). And the cover is the *working
-// area*, not the display: the real menu bar (`.mainMenu`, level 24) composites above our `.floating`
-// window and would double with the base capture's own copy of it. The base is still the whole
-// display, at a negative local origin, clipped.
+// stops one thousandth short of it and no further (`raisedAlpha`). And the cover is the **display**,
+// not the working area: a window's shadow reaches past its own edge, so a cover that stopped at the
+// strut would cut every top row's shadow off along the menu bar's lower edge — and show, in the band
+// above it, the real windows' shadows from wherever they have already teleported to.
+//
+// Covering the chrome is safe because nothing of ours is *in* the base there to double with the live
+// menu bar: `SurfaceCapturer` drops every window that composites above `level` from the base, so the
+// band holds wallpaper and shadow and the real menu bar and Dock draw over it, as they draw over a
+// real window's shadow.
 //
 // A raise is not done when it returns: it is on the glass a refresh later, and `raise(onScreen:)` is
 // what says so.
@@ -20,15 +25,17 @@ import EmiraCore
 @MainActor
 public final class Overlay: NSObject {
 
-    /// The whole display in core (top-left) coordinates — where the desktop *base* capture is placed.
+    /// The whole display in core (top-left) coordinates — what this overlay covers, and where the
+    /// desktop *base* capture is placed.
     public let displayFrame: Rect
-
-    /// The region this overlay actually covers — the display inset by its struts. Everything outside
-    /// it (menu bar, notch, Dock) deliberately shows the real desktop.
-    public let coverFrame: Rect
 
     /// Stamped onto every layer so the reconstruction rasterizes at native resolution.
     public let backingScale: CGFloat
+
+    /// The cover's window level. Everything above it composites on top of the cover rather than being
+    /// hidden by it — the menu bar (`.mainMenu`) and the Dock — which is the one reader for what
+    /// `SurfaceCapturer` must leave out of the base.
+    public nonisolated static let level: NSWindow.Level = .floating
 
     private let screen: NSScreen
     private let geometry: ScreenGeometry
@@ -45,21 +52,18 @@ public final class Overlay: NSObject {
     /// current one — otherwise a transition opening mid-fade loses its fresh layers to the old one.
     private var generation = 0
 
-    /// `insets` must be the *same* struts the core lays the strip out with (`Config.struts`): leaving
-    /// the chrome bands unpainted is safe only while no managed window can be outside the working area.
-    public init(screen: NSScreen, geometry: ScreenGeometry, insets: EdgeInsets = .zero) {
+    public init(screen: NSScreen, geometry: ScreenGeometry) {
         self.screen = screen
         self.geometry = geometry
         self.displayFrame = geometry.core(screen.frame)
-        self.coverFrame = displayFrame.inset(by: insets)
         self.backingScale = screen.backingScaleFactor
 
-        let frame = geometry.cocoa(coverFrame)
+        let frame = geometry.cocoa(displayFrame)
         window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         window.isOpaque = true
         window.backgroundColor = .black
         window.hasShadow = false
-        window.level = .floating
+        window.level = Self.level
         window.ignoresMouseEvents = true
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         window.animationBehavior = .none
@@ -73,9 +77,8 @@ public final class Overlay: NSObject {
         host.contentsScale = screen.backingScaleFactor
 
         base = CALayer()
-        // The whole display in the cover's local space: origin *negative* by the strut on each inset
-        // edge, clipped by the host. Anywhere else slides the wallpaper by the menu bar's height.
-        base.frame = geometry.local(displayFrame, in: window.frame)
+        // The window *is* the display, so the base fills it. Any other rect slides the wallpaper.
+        base.frame = CGRect(origin: .zero, size: frame.size)
         base.contentsGravity = .resize
         base.contentsScale = screen.backingScaleFactor
         // A fallback, not a look: reaching it means the desktop capture failed.

@@ -136,22 +136,21 @@ public final class Reconstruction: CoverSurface {
         for binding in bindings {
             guard layers[binding.layer] == nil,
                   let surface = store.surface(for: binding.window) else { continue }
-            let layer = makeLayer(for: binding.window, with: surface)
+            let layer = makeLayer(for: binding, with: surface)
             layers[binding.layer] = layer
             overlay.addLayer(layer.pad.layer)
         }
     }
 
-    private func makeLayer(for window: WindowId, with surface: CapturedSurface) -> CoverLayer {
+    private func makeLayer(for binding: LayerBinding, with surface: CapturedSurface) -> CoverLayer {
+        let window = binding.window
         let root = CALayer()
         root.contentsScale = overlay.backingScale
         let pad = SmearLayer(hosting: root)
-        // Synthesized, not captured: a window's system drop-shadow isn't part of its surface, and a
-        // reconstruction without one reads as flat.
-        root.shadowColor = NSColor.black.cgColor
-        root.shadowOpacity = 0.35
-        root.shadowRadius = 18
-        root.shadowOffset = CGSize(width: 0, height: -8)
+        // Synthesized, not captured: a window's system drop-shadow isn't part of its surface. Which of
+        // the two macOS draws is the binding's to say — the stand-in for the focused window carries the
+        // key window's shadow and the rest carry the other, exactly as the desktop underneath does.
+        WindowShadow.of(focused: binding.isFocused).apply(to: root)
 
         let cover: CoverLayer
         switch animation {

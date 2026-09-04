@@ -761,7 +761,7 @@ public enum Engine {
             var effects: [Effect] = []
             for monitor in s.motion.transitioningMonitors {
                 if s.motion.isReadyToRaise(on: monitor) {
-                    s.motion.raiseCover(on: monitor)
+                    s.motion.raiseCover(on: monitor, focused: s.world.focusedWindow)
                     guard let session = s.motion.transition(of: monitor) else { continue }
                     effects.append(.beginTransition(monitor, session.bindings))
                     effects += elevationEffects(s, on: monitor)   // z-order the bindings can't express

@@ -112,10 +112,11 @@ EmiraCore       pure — geometry, ids, Command/Event/Effect, State, layout engi
    ├── EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.
    └── EmiraConfig     pure — the TOML grammar and the config schema; text ⇄ `Config`.
     ▲
-EmiraGuide      AppKit — the guides' layer tree, and no window. Hosted by both the settings
-    │           window and the daemon, which is what makes a preview the same object.
-    │           Sees the config and the geometry; may not name the reducer.
-    │                                     (deps: EmiraCore; imports AppKit/QuartzCore)
+EmiraGuide      AppKit — the guides' layer tree, and no window; with it the layer pieces a
+    │           stand-in needs whichever host draws it (`SmearLayer`, `WindowShadow`). Hosted by
+    │           both the settings window and the daemon, which is what makes a preview the same
+    │           object. Sees the config and the geometry; may not name the reducer.
+    │                          (deps: EmiraCore, EmiraMotion; imports AppKit/QuartzCore)
     ▲
 EmiraSettings   AppKit — the settings window: the scrim, the mock desktop, the controls.
     │           Sees the config and the geometry; may not name the reducer.
@@ -165,7 +166,7 @@ Each boundary buys one enforced property:
 | decides _what should happen_ — geometry, policy, sequencing | `EmiraCore`               |
 | is scalar motion given `dt`                                 | `EmiraMotion`             |
 | is a fact about the config file's _text_                    | `EmiraConfig`             |
-| is how a *guide* is drawn, at any scale                     | `EmiraGuide`              |
+| is how a *guide*, or a *stand-in*, is drawn at any scale    | `EmiraGuide`              |
 | is how a *setting* is shown, previewed or edited            | `EmiraSettings`           |
 | needs a framework, a thread, or a system answer             | `EmiraShell`              |
 | only wires things together                                  | `emira-daemon/main.swift` |
@@ -1141,18 +1142,32 @@ frames stop arriving. All three responses are policy, and the last two are why t
 `WorldObservation` is a fact about the desktop and an `Event` is one the core can act on, which for anything
 the truth plane answers late is a fact that has to wait for its own answer.
 
-**The cover is the working area, not the display.** Our overlay is `.floating` (level 3); the menu bar is
-`.mainMenu` (level 24) and always composites on top of it, over the base capture's own copy of it. So the
-overlay is **inset by the struts** and the chrome bands show the real, live menu bar and Dock — safe for exactly
-the reason the strut exists. The struts reach the core on `Event.screensChanged`, beside the frame they inset,
-so a display's overlay and that display's strip are laid out against one number: the invariant holds only
-while the two agree, and it is stated per monitor. Which is why the daemon reads the display set **once** and
-hands that same array to both — `NSScreen.visibleFrame` is live, so a second read for the core's copy would
-let a Dock that moved in between inset the cover by one number and the strip by another, and adoption can be
-held back for as long as a broken config file takes to fix. A display's **identity** has one reader for the same
+**The cover is the display, not the working area.** Our overlay is `.floating` (level 3), and everything above
+it — the menu bar at `.mainMenu` (24), the Dock, a notification banner — composites on top of it whatever it
+holds. So the base carries none of them: `SurfaceCapturer` drops every window whose `SCWindow.windowLayer` is
+above `Overlay.level`, and there is nothing left in the cover to double with the live chrome. That is what lets
+the cover be the **whole display**, and it has to be: a window's shadow reaches past its own edge, so a cover
+stopping at the strut cuts every top-row stand-in's shadow off along the menu bar's lower edge — and shows, in
+the band above it, the real windows' shadows from wherever they have already teleported to. The **guides** are
+still inset (`GuidePanel`), and so is the strip. The struts reach the core on `Event.screensChanged`, beside the
+frame they inset, so a display's guides and that display's strip are laid out against one number: the invariant
+holds only while the two agree, and it is stated per monitor. Which is why the daemon reads the display set
+**once** and hands that same array to both — `NSScreen.visibleFrame` is live, so a second read for the core's
+copy would let a Dock that moved in between inset one by one number and the other by another, and adoption can
+be held back for as long as a broken config file takes to fix. A display's **identity** has one reader for the same
 reason (`ScreenGeometry.displayId`): the `MonitorId` the core keys a strip on, the `CGDirectDisplayID`
 ScreenCaptureKit films from and the `NSScreen` the overlay covers are one number under three names, and a
 second reader with its own fallback is how they quietly stop naming the same display.
+
+**A stand-in casts the shadow macOS would have cast, and there are two of those.** A window's drop shadow is
+not part of its surface, so a stand-in synthesizes one — and macOS draws a key window's and every other
+window's, which are not variants of each other: σ 20 against σ 8, dropped 17.4 pt against 6.5. One shadow for
+both is a halo on whichever it was not chosen for, worst in the outer gap above a top-row window, where the
+difference between them is fivefold. `WindowShadow` holds the pair and `LayerBinding.isFocused` chooses;
+`TransitionSession` records the focus its layers were minted under, so a window a retarget sweeps into a
+raised cover agrees with the rest of it rather than reading focus afresh. That is the focus the **stills were
+filmed under**, which is the desktop the cover has to match; where focus ends up is the closing cross-fade's
+business. The settings mock reads the same pair through `PaneLayer`, at `k`.
 
 **A fast frame is smeared, not strobed.** At 60 Hz a spring at its peak moves a stand-in a hundred points
 between one still and the next, and a run of crisp stills that far apart reads as a strobe. So a stand-in whose
@@ -1166,7 +1181,8 @@ under a cover that the next scroll extends — ends in the first frame from rest
 is the shell's alone: `SmearLayer` differences consecutive placements, so no velocity crosses the plane
 boundary and the core's `setLayerFrame` stream is unchanged. The filter is Gaussian with its radius in **layer
 points**, drawn only inside its own layer's bounds — hence the pad around every stand-in, the room it draws
-into — and its cost is the window server's, per layer and nearly flat in the radius; a stand-in outside the
+into, sized for the longest smear *and* the widest `WindowShadow.reach`, since the filter would clip the
+shadow too — and its cost is the window server's, per layer and nearly flat in the radius; a stand-in outside the
 host is culled, filter or none, and the pad's area costs nothing. It comes off entirely below either threshold
 rather than idling at zero, because a still at rest must be bit-identical for the cross-fade and any filter at
 all is an offscreen pass. Two things are not steps: the rect a layer is built at, which is where its still was
@@ -1176,8 +1192,9 @@ and a reappearance after `hideLayer`. **The mock desktop smears through the same
 than mimed ones — and it renders a frame once: under a running clock a retarget leaves the drawing to the
 tick, since a second render of one frame is a step of nothing and would drop the smear for a frame.
 
-**One of every display-shaped thing, per display.** An `Overlay` + `Reconstruction` each (its own struts, its
-own backing scale, its own base capture), a `GuidePanel` + `Guide` each, an `SCKCapturer` each. Three seams
+**One of every display-shaped thing, per display.** An `Overlay` + `Reconstruction` each (its own frame, its
+own backing scale, its own base capture), a `GuidePanel` + `Guide` each (these carry the struts), an
+`SCKCapturer` each. Three seams
 carry the plural:
 
 - **`CoverSurface` is one display's layer tree; `CoverPlane` is all of them, plus the frame boundary and the
@@ -1198,10 +1215,12 @@ carry the plural:
   filmed once *per cover*, which is what carries each destination overlay's backing scale — a still filmed at
   2× shown on a 1× overlay pops on the cross-fade. Photographing and cutting out of the base are one list
   again for the same reason: the windows a cover shows and the windows its own base must not contain are the
-  same set. The hole has one member the film list cannot name: a window management has let go of is on the
-  glass for the length of its fade, and the close that let it go is very often the edit opening the cover. So
+  same set. The hole has two members the film list cannot name. A window management has let go of is on the
+  glass for the length of its fade, and the close that let it go is very often the edit opening the cover — so
   `WindowRegistry` keeps every forgotten number as _departed_ until reconciliation finds it unlisted, and a
-  head batch cuts them all (`BaseRequest.departed`) while filming none.
+  head batch cuts them all (`BaseRequest.departed`) while filming none. And everything above `Overlay.level`
+  is cut whatever it is: the cover cannot hide the menu bar or the Dock, so a copy of either inside it could
+  only double with the live one.
 - **The photographs are one store, and a cover's hold on one is an entitlement.** A window two covers show is
   released by the last of them, so one cover coming down cannot blank a layer still on screen on the other
   display — and what that last release drops is the entitlement, not the photograph. A head batch that ends
@@ -1732,6 +1751,7 @@ emira/
     ├── EmiraGuide/      GuideRenderer (the seam: a drawing · scale · palette · sources) · GuideFade
     │                    RoundedLayer · GuideTypeface (the face, and the one thing that measures it)
     │                    SmearLayer (the motion blur, hosted by the cover and by the mock)
+    │                    WindowShadow (macOS's two window shadows, read by the cover and the mock)
     │                    PreviewGuideRenderer (the minimap) · NamesGuideRenderer (the row of words)
     ├── EmiraSettings/   Draft · Scene · Take · Catalog · PreviewModel · PreviewMotion (pure)
     │                    Camera (the lens + the marks) · Cue (the input badge) · GuideFrame
@@ -1844,7 +1864,9 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   renderer is a second place to write a number down. `NamesTypeTests` is where the packing meets the real
   face: that `GuideTypeface` never measures a word short of what it will set, in Kana and Hangul and an
   emoji as well as in Latin, and that a name in any script gets a cell it fits in. `GuideTileTests` drives
-  `RoundedLayer` against a detached `CALayer`. No window server: a layer tree needs none.
+  `RoundedLayer` against a detached `CALayer`, and `WindowShadowTests` pins what a stand-in's shadow costs in
+  room — that the smear pad holds the widest of the two, since a filter clips what it cannot fit. No window
+  server: a layer tree needs none.
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
   identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display

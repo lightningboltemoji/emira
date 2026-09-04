@@ -597,8 +597,6 @@ final class PaneLayer {
 
         outer.contentsScale = scale
         outer.masksToBounds = false
-        outer.shadowColor = NSColor.black.cgColor
-        outer.shadowOpacity = SettingsStyle.paneShadowOpacity
 
         body.contentsScale = scale
         body.cornerCurve = .continuous
@@ -660,12 +658,10 @@ final class PaneLayer {
                                  width: captured.width, height: captured.height)
         }
 
-        // The compositor's own shadow spec, at mock scale. Cast from the pane's own rounded silhouette
-        // rather than derived from its alpha: the outer layer paints nothing, so there is no alpha to
-        // derive one from.
-        outer.shadowRadius = projection.mock(SettingsStyle.paneShadowRadius)
-        outer.shadowOffset = CGSize(width: projection.mock(Double(SettingsStyle.paneShadowOffset.width)),
-                                    height: projection.mock(Double(SettingsStyle.paneShadowOffset.height)))
+        // The compositor's own shadow spec, at mock scale, and the same one of the two — a mock desktop
+        // whose panes are all lit alike is not the desktop it stands for. Cast from the pane's own
+        // rounded silhouette: the outer layer paints nothing, so there is no alpha to derive one from.
+        WindowShadow.of(focused: focused).scaled(by: projection.mock(1)).apply(to: outer)
         // Every dimension below is a **real** window's, projected — a fixed mock radius is a different
         // real radius at every `k`, and next to an actual desktop that reads as the wrong window.
         let radius = min(projection.mock(SettingsStyle.paneRadius), min(frame.width, frame.height) / 4)

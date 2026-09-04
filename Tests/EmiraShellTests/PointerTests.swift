@@ -577,7 +577,7 @@ import EmiraCore
         // Force the covered phase the way a real transition reaches it.
         state.motion.openTransition(scope: state.world.stripWindowIds, on: state.monitors.focused)
         for id in state.world.stripWindowIds { state.motion.markCaptured(id) }
-        state.motion.raiseCover(on: state.monitors.focused)
+        state.motion.raiseCover(on: state.monitors.focused, focused: state.world.focusedWindow)
         state.motion.confirmCover(on: state.monitors.focused)
         #expect(state.motion.isCovered(on: state.monitors.focused))
 
@@ -597,7 +597,7 @@ import EmiraCore
         let uncovered = covered
         covered.motion.openTransition(scope: covered.world.stripWindowIds, on: covered.monitors.focused)
         for id in covered.world.stripWindowIds { covered.motion.markCaptured(id) }
-        covered.motion.raiseCover(on: covered.monitors.focused)
+        covered.motion.raiseCover(on: covered.monitors.focused, focused: covered.world.focusedWindow)
         covered.motion.confirmCover(on: covered.monitors.focused)
 
         var current = covered
