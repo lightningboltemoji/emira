@@ -795,6 +795,14 @@ public struct Motion: Sendable, Equatable, Codable {
         transition(of: id)?.isPinCleared ?? true
     }
 
+    /// Whether anything could still be drawn over a band this display's cover is leaving clear — a pin
+    /// yet to come forward, or a window still crossing. **One predicate**, because what holds a focus
+    /// back and what pays it out are the same question asked twice and must not drift apart.
+    public func isGatingFocus(on id: MonitorId?) -> Bool {
+        guard let t = transition(of: id) else { return false }
+        return !t.isPinCleared || !t.clearance.isEmpty
+    }
+
     /// The windows this display's cover is still waiting to see land before anything else may take
     /// focus — empty with no session, which is what makes the debt fall due at every exit.
     public func pinClearance(on id: MonitorId?) -> Set<WindowId> {

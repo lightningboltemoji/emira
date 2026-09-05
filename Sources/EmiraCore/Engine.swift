@@ -267,7 +267,12 @@ public struct State: Sendable, Equatable, Codable {
         let departed = motion.reconcile(infos.map(\.id))
         // A pin belongs to a screen, so a screen leaving strands one. It goes to the display the user
         // is on, evicting that side if it is taken — the same "claim dispossesses" rule `show` runs on.
-        world.rehomePins(attached: Set(infos.map(\.id)), onto: monitors.focused)
+        let attached = Set(infos.map(\.id))
+        world.rehomePins(attached: attached, onto: monitors.focused)
+        // A departed display's cover never reports its cross-fade, so nothing is left to release the shape
+        // it was holding — and kept, it diffs equal against the flush surface a returning display is
+        // rebuilt with, whose cover would then draw over the pin. Dropped here, as the shell drops its own.
+        coverClearing = coverClearing.filter { attached.contains($0.key) }
         guard moved else { return departed }
         let surviving = motion.transitioningMonitors
         for monitor in surviving { motion.closeTransition(on: monitor) }
@@ -433,21 +438,29 @@ public enum Engine {
     /// back above the pin**, so it goes last. A debt whose session has gone falls due at once, which is
     /// how "every exit pays" holds without being repeated at each teardown site.
     private static func settleGatedFocus(into s: inout State, effects: inout [Effect]) {
-        for monitor in s.monitors.ids where !s.motion.isPinCleared(on: monitor) {
+        // **A gate speaks only for its own display.** The focus it holds is the one landing on the
+        // screen whose band is at risk; another screen's is nothing this cover can be drawn over.
+        for monitor in s.monitors.ids where s.motion.isGatingFocus(on: monitor) {
             let held = effects.compactMap { effect -> WindowId? in
-                if case .focus(let id) = effect { return id } else { return nil }
+                if case .focus(let id) = effect, host(s, holding: id) == monitor { return id }
+                return nil
             }
             guard let owed = held.last else { continue }
-            effects.removeAll { if case .focus = $0 { return true } else { return false } }
+            effects.removeAll {
+                if case .focus(let id) = $0 { return host(s, holding: id) == monitor }
+                return false
+            }
             s.owedFocus[monitor] = owed
         }
         for (monitor, owed) in s.owedFocus.sorted(by: { $0.key < $1.key }) {
-            guard s.motion.isPinCleared(on: monitor),
-                  s.motion.pinClearance(on: monitor).isEmpty else { continue }
+            guard !s.motion.isGatingFocus(on: monitor) else { continue }
             s.owedFocus[monitor] = nil
             // Dropped rather than retried where the window has gone: a debt is owed to a window, and
             // there is nothing to pay a window that closed while the pin was coming forward.
             guard s.world.windows[owed] != nil else { continue }
+            // The write reasserts a focus the core already holds, so the echo raises nothing and the
+            // stacking record has to be written here — this activation is the whole point of the debt.
+            s.world.noteActivation(owed)
             effects.append(.focus(owed))
         }
     }
@@ -761,6 +774,10 @@ public enum Engine {
                 return (s, [])
             }
             if let refusal = refuseSystemFocusEvent(s, id, origin) { return (s, refusal) }
+            // Our own write onto a pin the core does not think is focused is the fence's: a stacking
+            // operation, whose record of intent is `owedFocus`. Folded as a focus change it would put the
+            // user on the pin for the gate's length, and every verb reading `focusedWindow` with them.
+            if origin == .ours, s.world.isPinned(id), s.world.focusedWindow != id { return (s, []) }
             let effects = revealAcrossWorkspaces(&s, id)
             return (s, effects)
 
@@ -1720,6 +1737,14 @@ public enum Engine {
         s.monitors.monitor(of: destination) ?? s.monitors.focused
     }
 
+    /// Which display holds `id`: the one it is pinned to, the one showing its workspace, or — for a
+    /// window on no strip at all — the one the user is on, which is the same fallback `acting` makes.
+    private static func host(_ s: State, holding id: WindowId) -> MonitorId? {
+        if let pin = s.world.pins[id] { return pin.monitor }
+        guard let name = s.workspaces.workspace(of: id) else { return s.monitors.focused }
+        return host(s, name)
+    }
+
     /// The body of a workspace switch — shared by `focus-workspace`, `focus-monitor`,
     /// `move-to-workspace-and-focus`, and the cross-workspace `focusChanged`. Store the live offset and
     /// strip focus into the outgoing record, move `focused`, snap the viewport to the incoming record,
@@ -2125,6 +2150,10 @@ public enum Engine {
                 s.motion.confirmPin(next, on: monitor)
                 continue
             }
+            // The stacking record is written where the order is decided, not when the echo happens to
+            // arrive: this activation and the one that pays the debt are two halves of one sequence,
+            // and two apps' notifications have no order between them.
+            s.world.noteActivation(next)
             return [.confirmFocus(next, within: band)]
         }
         return []

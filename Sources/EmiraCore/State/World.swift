@@ -326,6 +326,15 @@ public struct World: Sendable, Equatable, Codable {
         lastStripFocus = id
     }
 
+    /// Record that `id`'s app was brought to the front without moving focus — `setFocus`'s stacking half
+    /// alone. What a pin's fence writes, and what pays a gated focus out on top of it: both are orderings
+    /// the core decides, so neither waits on the arrival of two apps' notifications.
+    public mutating func noteActivation(_ id: WindowId) {
+        guard windows[id] != nil else { return }
+        focusClock += 1
+        focusedAt[id] = focusClock
+    }
+
     /// Drop the strip memory when it names a window that is no longer on the strip — the invariant that
     /// separates `lastStripFocus` from `lastFocus`, kept here rather than re-argued at every read. Called
     /// by each of the four mutators that can break it: destroy, float, minimize, `Cmd-H`.

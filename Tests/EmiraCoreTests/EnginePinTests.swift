@@ -647,3 +647,157 @@ extension EnginePinGateTests {
         #expect(EngineFix.settle(after, command).motion.isTransitioning == false)
     }
 }
+
+extension EnginePinGateTests {
+
+    /// Drive to the point the fence releases and no further: captures answered, cover on the glass, the
+    /// pin confirmed — but nothing landed, so the windows crossing the band are still in flight.
+    static func confirmed(_ start: State, _ effects: [Effect]) -> State {
+        var s = start
+        var queue = effects
+        for _ in 0..<50 {
+            var feedback: [Event] = []
+            for effect in queue {
+                switch effect {
+                case .capture(_, let w, _): feedback.append(.captureReady(w))
+                case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
+                case .confirmFocus(let w, _):
+                    feedback.append(.focusChanged(w, origin: .ours))
+                    feedback.append(.focusConfirmed(w))
+                default: continue                       // deliberately no `axLanded`
+                }
+            }
+            guard !feedback.isEmpty else { return s }
+            queue = []
+            for event in feedback {
+                let (next, out) = Engine.reduce(s, event)
+                s = next
+                queue += out
+            }
+        }
+        return s
+    }
+
+    /// The overhanging world, walked onto the strip's near end — the state one `focus right` gates.
+    static func atTheNearEnd() -> State {
+        var s = Self.overhanging()
+        for command in [Command.focusPinned, Command.focus(.left)] {
+            let (next, fx) = Engine.reduce(s, .command(command))
+            s = EngineFix.settle(next, fx)
+        }
+        return s
+    }
+
+    /// **The fence's write is a stacking operation, not the user's answer about where they are
+    /// working.** Its echo says an app came forward; `owedFocus` is what holds the focus.
+    @Test func theFencesOwnWriteDoesNotMoveTheUsersFocus() {
+        let (gated, fx) = Engine.reduce(Self.atTheNearEnd(), .command(.focus(.right)))
+        #expect(Self.requests(fx) == [WindowId(3)])
+
+        let (echoed, out) = Engine.reduce(gated, .focusChanged(WindowId(3), origin: .ours))
+        #expect(out.isEmpty)
+        #expect(echoed.world.focusedWindow == WindowId(2), "the user is where the command put them")
+        #expect(echoed.owedFocus[MonitorId(1)] == WindowId(2))
+        // The activation is still recorded — a float behind the pin is buried by it either way.
+        #expect(StackOrder(echoed.world).isInFront(WindowId(3), of: WindowId(1)))
+    }
+
+    /// …and so a command arriving while the pin is coming forward reads the strip, not the pin. Held
+    /// keybinds land here: without it the second press resolves as *re-enter the strip* and is
+    /// swallowed, and `focus-pinned` toggles the wrong way.
+    @Test func aCommandDuringTheGateActsOnTheStripAndNotThePin() {
+        let (gated, _) = Engine.reduce(Self.atTheNearEnd(), .command(.focus(.right)))
+        let (echoed, _) = Engine.reduce(gated, .focusChanged(WindowId(3), origin: .ours))
+
+        // Read off the pin, `left` is the direction *away* from the strip and goes nowhere at all.
+        let (again, _) = Engine.reduce(echoed, .command(.focus(.left)))
+        #expect(again.world.focusedWindow == WindowId(1), "the press moved a column, not nowhere")
+
+        let (pinned, _) = Engine.reduce(echoed, .command(.focusPinned))
+        #expect(pinned.world.focusedWindow == WindowId(3), "the toggle went to the pin, not back")
+    }
+
+    /// The debt is paid **on top of** the pin, and that write reasserts a focus the core already holds,
+    /// so the ordering is the core's to record rather than two apps' notifications to race over.
+    @Test func theOwedFocusIsRecordedAsActivatedAfterThePin() {
+        let (gated, fx) = Engine.reduce(Self.atTheNearEnd(), .command(.focus(.right)))
+        let settled = EngineFix.settle(gated, fx)
+        #expect(settled.owedFocus.isEmpty)
+        #expect(StackOrder(settled.world).isInFront(WindowId(2), of: WindowId(3)),
+                "the focus the command asked for ended up above the pin")
+    }
+
+    /// **A gate speaks for its own display only.** A pin coming forward on one screen says nothing
+    /// about a focus landing on another, and stealing it would also drop the debt already owed here.
+    @Test func aGateHoldsOnlyItsOwnDisplaysFocus() {
+        var s = EngineFix.booted(config: Self.config)
+        let (wide, _) = Engine.reduce(s, .screensChanged([
+            MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame),
+            MonitorInfo(id: MonitorId(2), frame: Rect(x: 1000, y: 0, width: 1000, height: 800))]))
+        s = wide
+        for raw in 1...3 {
+            let (next, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(UInt64(raw))))
+            s = EngineFix.settle(next, fx)
+        }
+        // Window 4 belongs to the second display's workspace.
+        let (across, xfx) = Engine.reduce(s, .command(.focusMonitor(.direction(.right))))
+        s = EngineFix.settle(across, xfx)
+        let (made, cfx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(4)))
+        s = EngineFix.settle(made, cfx)
+        let (home, hfx) = Engine.reduce(s, .command(.focusMonitor(.direction(.left))))
+        s = EngineFix.settle(home, hfx)
+
+        // A pin on display 1, with window 2 standing over its band, and a gate open there.
+        s.world.setFocus(WindowId(3))
+        let (pinned, pfx) = Engine.reduce(s, .command(.pin(.left)))
+        s = EngineFix.settle(pinned, pfx)
+        s.world.setFocus(WindowId(2))
+        let (drifted, _) = Engine.reduce(s, .windowFrameChanged(
+            WindowId(2), Rect(x: 100, y: 0, width: 500, height: 800)))
+        let (gated, _) = Engine.reduce(drifted, .command(.focus(.left)))
+        let owed = try! #require(gated.owedFocus[MonitorId(1)])
+
+        let (jumped, fx) = Engine.reduce(gated, .command(.focusMonitor(.direction(.right))))
+        #expect(Self.focuses(fx) == [WindowId(4)], "the other display's focus is not this gate's")
+        #expect(jumped.owedFocus[MonitorId(1)] == owed, "and it did not overwrite the debt owed here")
+    }
+
+    /// The hold and the pay are one predicate. A focus arriving after the pin is confirmed but while a
+    /// window is still crossing the band would otherwise go out at once — putting its app back over the
+    /// pin, which is the whole thing the sequence exists to prevent.
+    @Test func aFocusArrivingWhileAWindowStillCrossesTheBandWaitsToo() {
+        let (gated, fx) = Engine.reduce(Self.atTheNearEnd(), .command(.focus(.right)))
+        let s = Self.confirmed(gated, fx)
+        #expect(s.motion.isPinCleared(on: MonitorId(1)))
+        #expect(!s.motion.pinClearance(on: MonitorId(1)).isEmpty, "still in flight over the band")
+
+        // `focus-pinned` opens no transition, so nothing re-arms the gate on its behalf.
+        let (asked, out) = Engine.reduce(s, .command(.focusPinned))
+        #expect(Self.focuses(out).isEmpty)
+        #expect(asked.owedFocus[MonitorId(1)] == WindowId(3), "the newer intent is what is owed")
+    }
+
+    /// A display's cover goes with it and never reports its cross-fade, so the shape it was holding has
+    /// nothing left to release it — and a returning display is rebuilt flush with its own screen.
+    @Test func aDepartedDisplayDoesNotLeaveItsCoverShapeBehind() {
+        var (s, _) = EnginePinCoverTests.pinnedWorld()
+        s.world.setFocus(WindowId(2))
+        let (open, fx) = Engine.reduce(s, .command(.focus(.left)))
+        let covered = Self.confirmed(open, fx)
+        #expect(covered.coverClearing[MonitorId(1)] != nil)
+
+        let (gone, _) = Engine.reduce(covered, .screensChanged([]))
+        #expect(gone.coverClearing.isEmpty, "the shape went with the display")
+
+        let (backAgain, bfx) = Engine.reduce(gone, .screensChanged([
+            MonitorInfo(id: MonitorId(1), frame: EngineFix.displayFrame)]))
+        let back = EngineFix.settle(backAgain, bfx)
+        #expect(back.coverClearing.isEmpty)
+
+        let (again, afx) = Engine.reduce(back, .command(.focus(.right)))
+        let (after, emitted) = EnginePinCoverTests.raised(again, afx)
+        #expect(after.motion.hasLayers(on: MonitorId(1)), "the scroll has to raise a cover to be a test")
+        #expect(!EnginePinCoverTests.clearings(emitted).isEmpty,
+                "the returning display's cover is cut back out")
+    }
+}

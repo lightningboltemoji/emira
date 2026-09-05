@@ -464,6 +464,10 @@ Two decisions are **kept** beside those containers rather than re-derived, for t
 cover is held off its own edges), each re-derived by a post-pass that emits only the difference. `owedFocus`
 is a third and is not a projection at all — it is a debt, and it is on `State` because every exit owes it.
 
+**A kept decision keyed by display is dropped in `setMonitors` when that display leaves**, as the shell drops
+its own copy. What a post-pass emits is the difference, so a record outliving its surface diffs equal against
+the flush one a returning display is rebuilt with, and the decision is never re-sent.
+
 `State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
 second authority. Only the genuinely cross-strip queries bypass it: reconcile, `targetFrames`, the placement
 walks, and the mutators that mint a `ColumnId`.
@@ -989,7 +993,13 @@ proportionate:
 - **The focus the command asked for is paid last**, because focusing the target is what puts its app back
   above the pin. `State.owedFocus` holds it rather than the session, since **every exit owes it** — a debt
   whose session has gone falls due at once, which is how that holds without being repeated at four teardown
-  sites.
+  sites. A gate speaks for **its own display alone**, and what holds a focus back and what releases it are
+  one predicate (`Motion.isGatingFocus`): a pin yet to come forward, or a window still crossing the band.
+- **The fence's write is a stacking operation and not a focus.** Folded as one it would put the user on the
+  pin for the length of the gate, and every verb that branches on `focusedWindow` would read them there.
+  `World.noteActivation` is `setFocus`'s stacking half alone, and it is what records both activations the
+  sequence orders — the pin's, and the debt's, which reasserts a focus the core already holds and so raises
+  nothing the echo could report. Written where the order is decided, not where two apps' notifications land.
 
 ### Hoisting
 
