@@ -23,6 +23,10 @@ The investigation, the rejected alternative and the number that settled an argum
   number row, so `1` is the launch address and `0` is the tenth.
 - **A window's workspace is _derived_ from the strip holding it.** There is one authority on where a window
   is, and nothing may hold a second opinion about it.
+- **A pinned window is on no strip, and therefore on no workspace.** It is held at an edge of a display,
+  and every workspace that display shows is laid out beside it rather than under it. The strip's *area*
+  shrinks by the band; what a width **means** does not, so pinning moves the strip and re-proportions
+  nothing.
 
 **The order of the two goods.** If placement isn't instant and correct, we've failed. If we can _also_ make
 the signature scroll feel smooth, we've won. Everything in §3 is the second win, and none of it may become
@@ -178,6 +182,18 @@ happen on.
   quietly and assumes as little as it can — a matcher that reads a window against the one it opened out of
   has nothing a user chose to compare against, so it matches nothing — while a window opened _now_ is one
   you opened, and going there is already what a Dock click does.
+- **A pinned window stays.** Some windows are not work you scroll past — a chat, a reference, something
+  playing — and both answers the model already has are wrong for them: on the strip they scroll away,
+  floating they go behind the first click on the work. So there is a third, and it is the one shape the
+  other two are not: a window emira **places**, at an edge, that no workspace scrolls past and no cover
+  hides. It is not a mode — it takes the width its column had, hands it back on release, and the width
+  verbs drive it exactly as they drive a column, so the first press of anything the user already knows
+  works on it. What it costs is the constraint §5 names: a window emira may not re-level can be drawn
+  over by anything macOS stacks above it, and the only lever that reorders across apps is focus. So the
+  pin is brought to the front before any window is moved across the space the cover leaves it, and the
+  focus the user actually asked for is paid out after — which is the one place in emira where a
+  keystroke's focus is deliberately late, and it is late only while something could be drawn over the
+  window it is protecting.
 - **A float that floats.** Taking a window off the strip is only half an answer: macOS stacks by what was
   focused last, so clicking a tiled window buries the float behind it, and nothing emira may call raises a
   foreign window across apps. A float that can be lost behind the work is not floating, it is being ignored.
@@ -234,7 +250,10 @@ happen on.
 - **We cannot hide, alpha, transform or re-level a foreign window.** Those need SkyLight, which needs SIP off.
   `AXRaise` is not a way around the last of them: it orders a window within its own app and says nothing
   about the app's place among the others. So both jobs fall to windows of our own — a cover that masks, and a
-  picture of a float that stands where the float should be. This is _the_ constraint that shapes §3.
+  picture of a float that stands where the float should be. And a third job falls to neither: a window that
+  must stay **on top of the desktop we are rearranging** can only be put there by focusing it, since
+  activation is the one thing that reorders across apps — which is why a pin is raised and *confirmed*
+  before the reals move. This is _the_ constraint that shapes §3.
 - **macOS will not let a window go fully off-screen.** Extreme coordinates clamp to a ~40 px sliver; a
   _precise_ position leaving as little as ~1 px is honoured, and how little is per app and only observable by
   asking. So a parked window is a small nub at a corner, positioned as a **grab handle** — the window's own

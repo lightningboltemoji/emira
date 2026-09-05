@@ -141,6 +141,12 @@ public enum Event: Sendable, Equatable, Codable {
     /// `captureReady`, so this asks for a content swap and changes no geometry.
     case captureRefreshed(WindowId)
 
+    /// The window server shows nothing foreign over the band a `confirmFocus` named — its pin is on
+    /// top. **The second half of the teleport gate**, beside `coverOnScreen`, and the pass fires from
+    /// whichever of the two lands last. Reported on the shell's expiry regardless: a fence is a delay
+    /// and not a veto, and `holdTimeout` is what bounds the transition.
+    case focusConfirmed(WindowId)
+
     /// The cover a `beginTransition` built is on this display's glass — committing a frame is not
     /// displaying one, and until this arrives nothing is hiding that desktop. The gate on every teleport
     /// of a window that display shows, reported once per raise.

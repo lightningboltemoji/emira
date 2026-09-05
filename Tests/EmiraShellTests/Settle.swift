@@ -15,6 +15,7 @@ func settled(_ start: State, _ effects: [Effect] = []) -> State {
         for effect in queue {
             switch effect {
             case .capture(_, let w, _): feedback.append(.captureReady(w))
+            case .confirmFocus(let w, _): feedback.append(.focusConfirmed(w))
             case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
             case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
             default: continue

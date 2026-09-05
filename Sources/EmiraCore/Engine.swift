@@ -36,6 +36,15 @@ public struct State: Sendable, Equatable, Codable {
     /// The floats the shell is drawing over the desktop, bottom→top — the decision *kept*, for the
     /// reason `World.placedOnScreen` is kept. `settleHoists` re-derives it and emits the difference.
     public var hoists: [HoistBinding]
+    /// The focus a command asked for while a pin was being brought to the top, per display. Kept on
+    /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
+    /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
+    /// leaving the user typing into the pin.
+    public var owedFocus: [MonitorId: WindowId] = [:]
+    /// How far each display's cover is staying off its own edges, so the pins there stay live — kept
+    /// for `hoists`' reason, and re-derived by `settleCoverClearing` on the same terms. Absent means
+    /// flush with the display, which is every cover on a desktop that pins nothing.
+    public var coverClearing: [MonitorId: EdgeInsets] = [:]
 
     /// The strip the acting monitor is showing — a projection of `workspaces` at `monitors.shown`, not
     /// a second authority. Only the cross-workspace queries bypass it: reconcile, `targetFrames`, the
@@ -103,7 +112,8 @@ public struct State: Sendable, Equatable, Codable {
             heightOverrides: workspaces.heightOverrides,
             corrections: world.corrections,
             parkFloors: world.parkFloors,
-            parkingLot: ParkingLot(among: world.monitors))
+            parkingLot: ParkingLot(among: world.monitors),
+            pins: world.pinBands(on: id))
     }
 
     /// The **acting** monitor's metrics — the display the user is on, which is what a verb naming no
@@ -255,6 +265,9 @@ public struct State: Sendable, Equatable, Codable {
         followMainDisplay(from: wasMain, acting: wasActing)
         materializeShown()
         let departed = motion.reconcile(infos.map(\.id))
+        // A pin belongs to a screen, so a screen leaving strands one. It goes to the display the user
+        // is on, evicting that side if it is taken — the same "claim dispossesses" rule `show` runs on.
+        world.rehomePins(attached: Set(infos.map(\.id)), onto: monitors.focused)
         guard moved else { return departed }
         let surviving = motion.transitioningMonitors
         for monitor in surviving { motion.closeTransition(on: monitor) }
@@ -403,11 +416,64 @@ public enum Engine {
     /// reason for a new one.
     public static func reduce(_ state: State, _ event: Event) -> (State, [Effect]) {
         var (next, effects) = fold(state, event)
+        // Ahead of the two pointer passes, so it stays inside the fold's own presentation run and the
+        // shell applies it in the same `CATransaction` the raise rides in. A cover that reached the
+        // glass a frame before it was cut back would be a frame drawn over the pin.
+        settleCoverClearing(into: &next, effects: &effects)
+        settleGatedFocus(into: &next, effects: &effects)
         trackFocusRing(from: state, into: &next)
         hidePointer(on: event, into: &next, effects: &effects)
         warpPointer(on: event, from: state, into: &next, effects: &effects)
         settleHoists(into: &next, effects: &effects)
         return (next, effects)
+    }
+
+    /// Hold back the focus a command asked for while a pin is coming to the top, and pay it once the
+    /// windows that could be drawn over that pin have landed. **Focusing the target is what puts its app
+    /// back above the pin**, so it goes last. A debt whose session has gone falls due at once, which is
+    /// how "every exit pays" holds without being repeated at each teardown site.
+    private static func settleGatedFocus(into s: inout State, effects: inout [Effect]) {
+        for monitor in s.monitors.ids where !s.motion.isPinCleared(on: monitor) {
+            let held = effects.compactMap { effect -> WindowId? in
+                if case .focus(let id) = effect { return id } else { return nil }
+            }
+            guard let owed = held.last else { continue }
+            effects.removeAll { if case .focus = $0 { return true } else { return false } }
+            s.owedFocus[monitor] = owed
+        }
+        for (monitor, owed) in s.owedFocus.sorted(by: { $0.key < $1.key }) {
+            guard s.motion.isPinCleared(on: monitor),
+                  s.motion.pinClearance(on: monitor).isEmpty else { continue }
+            s.owedFocus[monitor] = nil
+            // Dropped rather than retried where the window has gone: a debt is owed to a window, and
+            // there is nothing to pay a window that closed while the pin was coming forward.
+            guard s.world.windows[owed] != nil else { continue }
+            effects.append(.focus(owed))
+        }
+    }
+
+    /// Keep each cover off the bands its pins stand in. A post-pass for `settleHoists`' reason: what a
+    /// cover must leave alone is the product of the pins, the scope and the phase, and no one verb owns
+    /// it. **A pin the session is already drawing is not cleared for** — its band is covered, because
+    /// its own frame is moving and it is a stand-in like any other window.
+    private static func settleCoverClearing(into s: inout State, effects: inout [Effect]) {
+        // **Only a cover that still has layers may be reshaped**, which is what keeps the band clear
+        // for the whole of a cross-fade. A cover holds its stand-ins until the fade completes, and the
+        // one that just scrolled off the strip's near end is at a natural frame reaching right across
+        // the band — so growing the cover back at `endTransition` would draw that window over the pin
+        // for the length of the fade. `crossfadeDone` is what releases it.
+        for monitor in s.monitors.ids where s.motion.hasLayers(on: monitor) {
+            guard let metrics = s.metrics(of: monitor) else { continue }
+            let scope = Set(s.motion.transition(of: monitor)?.windows ?? [])
+            var clear = metrics
+            for side in metrics.pins.filter({ scope.contains($0.value.window) }).keys {
+                clear.pins[side] = nil
+            }
+            let insets = clear.pinInsets
+            guard insets != s.coverClearing[monitor] ?? .zero else { continue }
+            s.coverClearing[monitor] = insets == .zero ? nil : insets
+            effects.append(.setCoverClearing(monitor, insets))
+        }
     }
 
     /// Bring the hoisted floats into line with the desktop this batch produced. A post-pass because
@@ -792,7 +858,26 @@ public enum Engine {
             // landing wait, so a repeated report would free sets still in flight.
             guard s.motion.phase(of: monitor) == .raising else { return (s, []) }
             s.motion.confirmCover(on: monitor)
+            // The second half of the gate. Whichever of the two facts arrives last fires the teleport;
+            // when a pin is still coming forward that is `focusConfirmed`, below.
+            guard s.motion.mayPlace(on: monitor) else { return (s, []) }
             let effects = teleportBehindCover(&s, on: monitor)
+            return (s, effects)
+
+        case .focusConfirmed(let id):
+            // Edge-triggered on the gate opening, which is what keeps a late duplicate answer from
+            // re-teleporting: the second one finds the display already clear and does nothing.
+            var effects: [Effect] = []
+            for monitor in s.motion.transitioningMonitors {
+                let wasGated = !s.motion.isPinCleared(on: monitor)
+                s.motion.confirmPin(id, on: monitor)
+                guard wasGated, s.motion.isPinCleared(on: monitor) else {
+                    effects += askNextPin(&s, on: monitor)      // another pin still to come forward
+                    continue
+                }
+                guard s.motion.isCovered(on: monitor) else { continue }
+                effects += teleportBehindCover(&s, on: monitor)
+            }
             return (s, effects)
 
         case .coverUnavailable(let monitor):
@@ -837,9 +922,16 @@ public enum Engine {
             let effects = reassertTruthPlane(&s)
             return (s, [.endTransition(monitor)] + effects)
 
-        case .crossfadeDone:
-            // The cover is fully down; steady state resumed at `endTransition`.
-            return (s, [])
+        case .crossfadeDone(let monitor):
+            // The cover is fully down, so the band it was holding clear is the desktop's again. Not at
+            // `endTransition`: a fading cover is still drawing its stand-ins, and the column that just
+            // scrolled off the strip's near end is at a frame reaching across the band.
+            //
+            // Guarded on there being no layers, because a command arriving during a cross-fade opens a
+            // *new* cover on that display — and the shape then belongs to that one.
+            guard !s.motion.hasLayers(on: monitor),
+                  s.coverClearing.removeValue(forKey: monitor) != nil else { return (s, []) }
+            return (s, [.setCoverClearing(monitor, .zero)])
         }
     }
 
@@ -879,6 +971,12 @@ public enum Engine {
 
         case .float(let toggle):
             return handleFloat(&s, toggle)
+
+        case .pin(let intent):
+            return handlePin(&s, intent)
+
+        case .focusPinned:
+            return handleFocusPinned(&s)
 
         case .moveWindow(let direction):
             return handleMoveWindow(&s, direction)
@@ -931,6 +1029,14 @@ public enum Engine {
     private static func handleFocus(_ s: inout State, _ direction: Direction) -> [Effect] {
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
 
+        // Off the strip because it is pinned: the strip lies one way and the display's edge the other,
+        // so only one of the four directions goes anywhere. Ahead of the re-entry clause below, which
+        // would otherwise read `left` off a left pin as "enter at the far end".
+        if let focused = s.world.focusedWindow, let pin = s.world.pins[focused] {
+            guard direction == pin.side.towardsStrip else { return [] }
+            return enterStrip(&s, from: pin.side)
+        }
+
         // Off the strip: re-enter at the end the direction came from, so `right` lands leftmost.
         let column = s.world.focusedWindow.flatMap { s.layout.columnIndex(ofWindow: $0) }
         guard let column else {
@@ -946,7 +1052,11 @@ public enum Engine {
         case .horizontal:
             let targetColumn = direction == .right ? column + 1 : column - 1
             guard s.layout.columns.indices.contains(targetColumn),
-                  let target = s.layout.columns[targetColumn].windowIds.first else { return [] }
+                  let target = s.layout.columns[targetColumn].windowIds.first else {
+                // Past the last column: whatever is pinned that way is the next thing along the row,
+                // which is what makes a pin read as a column the strip cannot scroll.
+                return focusPin(&s, on: direction == .left ? .left : .right)
+            }
             s.world.setFocus(target)
             // Crossing columns scrolls the strip → animate under a cover (a snap when already in view).
             return scrollReveal(&s, to: target, center: s.config.centerFocusedColumn) + [.focus(target)]
@@ -961,6 +1071,137 @@ public enum Engine {
             s.world.setFocus(target)
             return [.focus(target), .raise(target)]   // within a column: no scroll, so no cover
         }
+    }
+
+    /// Focus whatever `side` holds, or nothing. No scroll and no cover: a pin is in view by
+    /// construction, so there is no column to reveal and nothing on the strip moves.
+    private static func focusPin(_ s: inout State, on side: PinSide) -> [Effect] {
+        guard let monitor = s.monitors.focused, let target = s.world.pinned(on: monitor, side),
+              target != s.world.focusedWindow else { return [] }
+        s.world.setFocus(target)
+        return [.focus(target), .raise(target)]
+    }
+
+    /// The window a pin hands the strip back to: where the user was working if that place survives,
+    /// else the end nearest the pin being left.
+    ///
+    /// **One expression, because two things read it**: `enterStrip` moves focus to it, and
+    /// `restingOffset` frames the strip on it the moment a window is pinned. If those disagreed,
+    /// returning to the strip would scroll — a move the user did not ask for and cannot predict.
+    private static func stripReentry(_ s: State, on strip: Layout, from side: PinSide) -> WindowId? {
+        let anchor = [s.world.focusedWindow, s.world.lastStripFocus].compactMap { $0 }
+            .first { strip.columnIndex(ofWindow: $0) != nil }
+        return anchor ?? (side == .left ? strip.columns.first : strip.columns.last)?.windowIds.first
+    }
+
+    /// Focus back onto the strip from the pin on `side`.
+    private static func enterStrip(_ s: inout State, from side: PinSide) -> [Effect] {
+        guard let entry = stripReentry(s, on: s.layout, from: side) else { return [] }
+        s.world.setFocus(entry)
+        return scrollReveal(&s, to: entry, center: s.config.centerFocusedColumn) + [.focus(entry)]
+    }
+
+    /// Cycle focus through what this display holds pinned and then back to the strip — left, right,
+    /// strip — skipping the sides that are empty. With one pin that is the plain toggle it reads as.
+    private static func handleFocusPinned(_ s: inout State) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let monitor = s.monitors.focused else { return [] }
+        let held = PinSide.allCases.filter { s.world.pinned(on: monitor, $0) != nil }
+        guard let first = held.first else { return [] }
+        // Where in the cycle focus is: on one of the pins, or anywhere else, which is the strip.
+        guard let here = s.world.focusedWindow.flatMap({ id in
+            held.firstIndex { s.world.pinned(on: monitor, $0) == id }
+        }) else { return focusPin(&s, on: first) }
+        guard here + 1 < held.count else { return enterStrip(&s, from: held[here]) }
+        return focusPin(&s, on: held[here + 1])
+    }
+
+    // Pinning (a window the display holds, on no strip at all)
+    //
+    // Three shapes, and each is an edit the reducer already knows how to make. Taking a window off the
+    // strip is `departFromStrip` — a float's departure with somewhere to land; putting it back is
+    // `arriveOnStrip`, a de-minimize with a width to carry. Moving one pin to the other side is neither,
+    // because nothing joins or leaves the strip: it is the plain geometry change, which every column on
+    // the display feels because the clear area moved under them.
+
+    /// Fold `Command.pin`. The subject is the focused window in every case but one: `off` with focus on
+    /// the strip releases what the display is holding, so a pin can be let go without visiting it first.
+    private static func handlePin(_ s: inout State, _ intent: PinIntent) -> [Effect] {
+        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        guard let (monitor, metrics) = s.acting(), let focused = s.world.focusedWindow,
+              s.world.windows[focused] != nil else { return [] }
+
+        guard let side = intent.side else {
+            let releasing = s.world.isPinned(focused) ? [focused]
+                : PinSide.allCases.compactMap { s.world.pinned(on: monitor, $0) }
+            return releasing.flatMap { unpinWindow(&s, $0) }
+        }
+
+        let held = s.world.pins[focused]
+        // Already exactly where it is being asked to go: a toggle lets it go, a plain `pin left` is the
+        // no-op it looks like.
+        if held?.monitor == monitor, held?.side == side {
+            return intent.toggles ? unpinWindow(&s, focused) : []
+        }
+        // Pin → pin. Nothing joins or leaves the strip, so neither half of the arrival/departure pair
+        // applies; what changed is where the clear area starts, which every column feels.
+        if let held {
+            let old = actingSnapshot(s)
+            s.world.setPin(focused, on: monitor, side: side, widthPreset: held.widthPreset,
+                           widthOverride: held.widthOverride)
+            guard !old.isEmpty else { return reassertTruthPlane(&s) }
+            return finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
+                                        focused: focused, mover: focused, animatingFrom: old)
+        }
+
+        // The band starts at the width the column had, both rungs of it: every action seeds something a
+        // verb already owns, so `grow`, `shrink` and `cycle-width` are the pin's width control with
+        // nothing new behind them. A fullscreen column lends the width it resolved to and not the flag,
+        // which names an arrangement the strip is about to close over.
+        let column = s.layout.columnIndex(ofWindow: focused).map { s.layout.columns[$0] }
+        let resolved = column.map { s.layout.resolvedWidth(of: $0, metrics: metrics) }
+        return departFromStrip(&s, focused) { s in
+            s.world.setPin(focused, on: monitor, side: side, widthPreset: column?.widthPreset ?? 0,
+                           widthOverride: resolved.flatMap { metrics.widthExtent.proportion(of: $0) })
+        }
+    }
+
+    /// Let one window go: it rejoins the strip beside wherever focus last was, carrying the band's own
+    /// width into the column so the release is a move rather than a resize. Focus is not announced —
+    /// it either already sits here or belongs somewhere else entirely, and re-asserting it is an AX set
+    /// that can make an app raise a different window.
+    private static func unpinWindow(_ s: inout State, _ id: WindowId) -> [Effect] {
+        guard let metrics = s.metrics(), let pin = s.world.pins[id] else { return [] }
+        let width = pin.widthOverride ?? metrics.widthPresets.size(at: pin.widthPreset)
+        let before = strandedGeometry(&s)
+        let beside = stripAnchor(s)
+        s.world.clearPin(id)
+        guard s.world.participatesInStrip(id), !before.isEmpty else { return reassertTruthPlane(&s) }
+        return arriveOnStrip(&s, id, beside: beside, old: before, width: width,
+                             announcingFocus: false)
+    }
+
+    /// The width verbs with a pin focused — the same two rungs a column walks, so the arithmetic is
+    /// `resizeFocusedColumn`'s. A structural edit rather than a column resize, because a band changing
+    /// width moves every column at once and there is no single width to put under the resize spring.
+    /// No ceiling here: `LayoutMetrics.pinWidth` clamps, beside the resolution it bounds.
+    private static func resizePin(
+        _ s: inout State, _ id: WindowId,
+        _ retarget: (PinPlacement, LayoutMetrics, Double) -> (preset: Int, override: PresetSize?)
+    ) -> [Effect] {
+        guard let (monitor, metrics) = s.acting(), let pin = s.world.pins[id], pin.monitor == monitor,
+              let from = metrics.pinWidth(pin.side) else { return [] }
+        let old = actingSnapshot(s)
+        let intent = retarget(pin, metrics, from)
+        s.world.setPinWidth(id, preset: intent.preset, override: intent.override)
+        // A cycle that lands on the width it was already at moves nothing, and the stored rung still
+        // changed, so the next press acts at once — `resizeFocusedColumn`'s contract, one container over.
+        guard let after = s.metrics(of: monitor)?.pinWidth(pin.side),
+              !approximatelyEqualScalar(from, after), !old.isEmpty else {
+            return reassertTruthPlane(&s)
+        }
+        return finishStructuralEdit(&s, LayoutEdit(moved: true, destroyedColumn: nil),
+                                    focused: s.world.focusedWindow, mover: id, animatingFrom: old)
     }
 
     // Structural edits (the strip rearranged, under the cover)
@@ -1009,11 +1250,17 @@ public enum Engine {
         let widths = s.motion.currentColumnWidths
         var drawn = s.monitors.owned(of: monitor)
         if let travelling, !drawn.contains(travelling) { drawn.append(travelling) }
+        // The pins are merged in and the strips cannot supply them: a pinned window is on no strip, so
+        // without this an edit that moves one has no *before* to measure its travel against. They stay
+        // out of `departing`, which decides the scope — a pin that is not moving belongs in the captured
+        // base, behind the hole, rather than in the cover.
+        var frames = s.workspaces.naturalFrames(shown: shown, among: drawn,
+                                                scrollOffset: start, metrics: metrics, widths: widths)
+        for pin in metrics.pinFrames { frames[pin.window] = pin.frame }
         return StructuralSnapshot(
             monitor: monitor,
             widths: widths,
-            frames: s.workspaces.naturalFrames(shown: shown, among: drawn,
-                                               scrollOffset: start, metrics: metrics, widths: widths),
+            frames: frames,
             departing: s.workspaces[shown].visibleWindowIds(scrollOffset: start, metrics: metrics))
     }
 
@@ -1221,9 +1468,17 @@ public enum Engine {
             // remembered scroll in between — which makes the horizontal axis cancel out of the seed.
             let start = s.motion.offset(of: monitor).current
 
+            // **A pin is scoped exactly when its own frame moves** — pinning a window, letting one
+            // go, or resizing the band. A pin standing still stays in the captured base, which is what
+            // a cover with a hole in it draws around, and filming it would freeze the one window on
+            // the screen that is meant to stay live.
+            let movingPins = metrics.pinFrames.filter { pin in
+                old.frames[pin.window].map { !approximatelyEqual($0, pin.frame) } ?? true
+            }
             let scope = scopeUnion(s, old.departing,
                                    strip.sweptWindowIds(from: start, to: end, metrics: metrics),
-                                   drawnBy: monitor, carrying: crossed?.window)
+                                   drawnBy: monitor, carrying: crossed?.window,
+                                   including: movingPins.map(\.window))
 
             guard s.motion.isTransitioning(on: monitor)
                     || (s.config.transitionMode.covers && !scope.isEmpty) else {
@@ -1235,9 +1490,10 @@ public enum Engine {
             // The second half of the difference: the new geometry, at the live offset and the *same*
             // widths. A window that changed displays appears in one side only and is skipped below —
             // correctly, since there is no single travel for it and both covers already draw it.
-            let new = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
+            var new = s.workspaces.naturalFrames(shown: shown, among: s.monitors.owned(of: monitor),
                                                  scrollOffset: start, metrics: metrics,
                                                  widths: old.widths)
+            for pin in metrics.pinFrames { new[pin.window] = pin.frame }
             // What the edit moves where someone could see it — scoped only, since a window with no
             // layer has nothing to lag behind. A fact about the layout, so no mode changes it; only
             // whether it is put in motion below. The travelling window is excluded because its own
@@ -1260,7 +1516,11 @@ public enum Engine {
             // otherwise-still screen is the whole of what that display has to animate.
             let carries = crossed.map { scope.contains($0.window) } ?? false
             let scrolls = !approximatelyEqualScalar(end, start)
-            guard !moves.isEmpty || carries || scrolls || s.motion.isTransitioning(on: monitor) else {
+            // The pins are asked separately for the viewport's reason: pinning the only window on a
+            // strip leaves nothing behind to displace, and the band travelling is the whole of what
+            // that screen has to animate.
+            guard !moves.isEmpty || !movingPins.isEmpty || carries || scrolls
+                    || s.motion.isTransitioning(on: monitor) else {
                 s.motion.snapViewport(to: end, on: monitor)
                 snapped = true
                 continue
@@ -1297,7 +1557,14 @@ public enum Engine {
               let shown = s.monitors.shown(on: monitor) else { return nil }
         let strip = s.workspaces[shown]
         let start = s.motion.offset(of: monitor).current
-        let revealed = focused.flatMap {
+        // A **pin** holds focus without holding a column, so it frames nothing — and the place it
+        // vacated is where `focus-pinned` hands focus back. Framing that place now is the whole of what
+        // makes the return not a scroll. A float is deliberately not this: emira does not place one, so
+        // re-framing would slide the strip under a window standing still.
+        let subject = focused.flatMap { strip.columnIndex(ofWindow: $0) != nil ? $0 : nil }
+            ?? focused.flatMap { s.world.pins[$0]?.side }
+                .flatMap { stripReentry(s, on: strip, from: $0) }
+        let revealed = subject.flatMap {
             s.config.centerFocusedColumn
                 ? strip.scrollOffsetToCenter(window: $0, metrics: metrics)
                 : strip.scrollOffsetToReveal(window: $0, from: start, metrics: metrics)
@@ -1791,7 +2058,9 @@ public enum Engine {
         guard s.motion.isTransitioning(on: monitor) else {
             s.motion.openTransition(scope: scope, on: monitor)
             aimViewport(&s, at: end, on: monitor)
-            return captures(s, scope, on: monitor)
+            // In the same head batch as the captures, so the activation round trip overlaps the capture
+            // head rather than being serialized behind it.
+            return captures(s, scope, on: monitor) + guardPins(&s, on: monitor)
         }
         aimViewport(&s, at: end, on: monitor)
         return growTransition(&s, on: monitor, scope: scope)
@@ -1805,8 +2074,60 @@ public enum Engine {
                                        scope: [WindowId]) -> [Effect] {
         let newcomers = s.motion.extendTransition(scope: scope, on: monitor)
         var effects: [Effect] = captures(s, newcomers, on: monitor)
-        if s.motion.isCovered(on: monitor) { effects += teleportBehindCover(&s, on: monitor) }
+        // Before the re-teleport, not after: a retarget can sweep in a window standing over a band
+        // nothing was going to move across, and moving it first is the thing the fence exists to stop.
+        effects += guardPins(&s, on: monitor)
+        if s.motion.mayPlace(on: monitor) { effects += teleportBehindCover(&s, on: monitor) }
         return effects
+    }
+
+    /// Ask the window server to put this display's live pins on top, and note what they must be on top
+    /// *of* — the second half of the teleport gate.
+    ///
+    /// **A window is at risk where it is *or* where the teleport is about to put it.** Both halves are
+    /// needed and the second is the commoner: a column scrolling off the strip's near end is still in
+    /// the clear area when the command lands, and only reaches the band once the reals move. Read at the
+    /// aimed offset rather than through `placements()`, which answers at the *live* one until a cover is
+    /// up — which is precisely the moment this has to decide.
+    ///
+    /// Empty on the ordinary desktop and on every scroll past a pin nothing reaches, which is what keeps
+    /// the fence off the path of the commonest thing a keyboard user does. A pin the session is
+    /// *drawing* is not live: its band is covered.
+    private static func guardPins(_ s: inout State, on monitor: MonitorId) -> [Effect] {
+        guard let metrics = s.metrics(of: monitor), !metrics.pins.isEmpty,
+              let shown = s.monitors.shown(on: monitor),
+              let scope = s.motion.transition(of: monitor)?.windows else { return [] }
+        let drawn = Set(scope)
+        let landing = s.workspaces[shown].targetFrames(
+            scrollOffset: s.motion.offset(of: monitor).target, metrics: metrics)
+        for pin in metrics.pinFrames where !drawn.contains(pin.window) {
+            let over = scope.filter { id in
+                id != pin.window
+                    && (s.world.windows[id]?.frame.intersects(pin.frame) == true
+                        || landing[id]?.intersects(pin.frame) == true)
+            }
+            guard !over.isEmpty else { continue }
+            s.motion.requirePin(pin.window, over: over, on: monitor)
+        }
+        return askNextPin(&s, on: monitor)
+    }
+
+    /// The one place a `confirmFocus` is emitted — **one pin at a time**, since two focus requests in
+    /// flight supersede each other on the shell's record and the second would drop the first's
+    /// activation.
+    private static func askNextPin(_ s: inout State, on monitor: MonitorId) -> [Effect] {
+        // A pin released while its own confirmation was being taken has no band to ask about, and a
+        // queue holding one nothing can answer would hold the teleport until `holdTimeout`. Answered
+        // here instead, which is the same thing the shell does for a window the registry has lost.
+        while let next = s.motion.nextPinToConfirm(on: monitor) {
+            guard let side = s.world.pins[next]?.side,
+                  let band = s.metrics(of: monitor)?.pinFrame(side) else {
+                s.motion.confirmPin(next, on: monitor)
+                continue
+            }
+            return [.confirmFocus(next, within: band)]
+        }
+        return []
     }
 
     /// Aim `monitor`'s scroll at `end` — in motion under `smooth`, already arrived under `snap`, which is
@@ -2017,7 +2338,12 @@ public enum Engine {
     /// Cycle the focused column to its next preset width — the ladder, as against `grow`/`shrink`'s
     /// continuous knob.
     private static func handleCycleWidth(_ s: inout State) -> [Effect] {
-        resizeFocusedColumn(&s) { layout, column, metrics, _ in
+        if let pinned = focusedPin(s) {
+            return resizePin(&s, pinned) { pin, metrics, _ in
+                (metrics.widthPresets.nextIndex(after: pin.widthPreset), nil)
+            }
+        }
+        return resizeFocusedColumn(&s) { layout, column, metrics, _ in
             // Also clears any `grow`/`shrink` override, putting the column back on the ladder.
             layout.setWidthPreset(metrics.widthPresets.nextIndex(after: column.widthPreset),
                                   ofColumn: column.id)
@@ -2055,8 +2381,9 @@ public enum Engine {
     }
 
     /// The narrowest an explicit `shrink` may leave a column — a backstop for apps that accept any size,
-    /// not the real bound, which is whatever the app answers as a `SizeCorrection`.
-    public static let minimumColumnWidth: Double = 100
+    /// not the real bound, which is whatever the app answers as a `SizeCorrection`. The number itself is
+    /// `LayoutMetrics`', which clamps a pin against the same floor: one bound, under two names.
+    public static let minimumColumnWidth: Double = LayoutMetrics.minimumColumnWidth
 
     /// Widen or narrow the focused column by an explicit delta — `grow`/`shrink`, the continuous
     /// alternative to `cycleWidth`'s ladder. The delta comes off the column's *resolved* width, not its
@@ -2069,19 +2396,34 @@ public enum Engine {
     /// ladder is deliberately exempt: a preset is an exact intent, and ½ has to stay ½.
     private static func handleResizeColumn(_ s: inout State, by delta: SizeDelta,
                                            sign: Double) -> [Effect] {
+        if let pinned = focusedPin(s) {
+            return resizePin(&s, pinned) { pin, metrics, from in
+                let travel = delta.resolved(available: metrics.nominalArea.width)
+                let width = Swift.max(from + sign * travel, LayoutMetrics.minimumColumnWidth)
+                switch delta {
+                case .percent:
+                    return (pin.widthPreset, metrics.widthExtent.proportion(of: width) ?? .fixed(width))
+                case .points:
+                    return (pin.widthPreset, .fixed(width))
+                }
+            }
+        }
         // The resting offset, to pair with the resting widths `layout` still holds: mid-flight the two
         // describe different strips, and the notch is a fact about the one being left.
         let offset = s.viewport.offset.target
         let detent = s.config.resizeDetent
         let centered = s.config.centerFocusedColumn
         return resizeFocusedColumn(&s) { layout, column, metrics, from in
-            let available = metrics.contentArea.width
-            let ceiling = Swift.max(available, from)
+            // Two widths, on the split a pin opens: a percentage is a share of the **nominal** area, so
+            // `grow 10%` is the same step pinned or not, while the ceiling and the notch are about the
+            // room actually left. Equal with nothing pinned, which is every other display.
+            let usable = metrics.contentArea.width
+            let ceiling = Swift.max(usable, from)
             let floor = Swift.min(minimumColumnWidth, from)
-            var travel = delta.resolved(available: available)
+            var travel = delta.resolved(available: metrics.nominalArea.width)
             if detent, let index = layout.columnIndex(withId: column.id),
                let notch = layout.strip(metrics: metrics)
-                   .resizeDetent(ofColumn: index, growing: sign > 0, viewportWidth: available,
+                   .resizeDetent(ofColumn: index, growing: sign > 0, viewportWidth: usable,
                                  offset: offset, centered: centered) {
                 travel = Swift.min(travel, notch)     // only ever shorter: a detent catches, it never pulls
             }
@@ -2260,16 +2602,21 @@ public enum Engine {
     /// can only hide it, and would hold this session's landing wait on sets another screen is writing.
     /// `carrying` is the exception: a window handed across the desktop is drawn by the display it left,
     /// from the geometry of the one it reached.
+    /// `including` is the other exception, and a different one: a pinned window is on no strip at all,
+    /// so the placement order has no answer for it. Appended, and the end of the list is the top of the
+    /// cover's z-order — where a pin belongs.
     private static func scopeUnion(_ s: State, _ a: [WindowId], _ b: [WindowId],
                                    drawnBy monitor: MonitorId,
-                                   carrying crossing: WindowId? = nil) -> [WindowId] {
+                                   carrying crossing: WindowId? = nil,
+                                   including extras: [WindowId] = []) -> [WindowId] {
         let wanted = Set(a).union(b)
         let owned = Set(s.monitors.owned(of: monitor))
-        return s.workspaces.windowIds(inPlacementOrder: s.monitors.shownWorkspaces)
+        let placed = s.workspaces.windowIds(inPlacementOrder: s.monitors.shownWorkspaces)
             .filter { wanted.contains($0) }
             .filter { id in
                 id == crossing || s.workspaces.workspace(of: id).map(owned.contains) == true
             }
+        return placed + extras.filter { !placed.contains($0) }
     }
 
     /// Teleport the real windows behind `monitor`'s newly-raised cover, *replacing* that session's
@@ -2298,6 +2645,9 @@ public enum Engine {
                                                 scrollOffset: s.motion.offset(of: monitor).current,
                                                 metrics: metrics,
                                                 widths: s.motion.currentColumnWidths)
+        // A pin is on no strip, so the strips cannot place it, and it is on this screen all the same.
+        // Only ever reached by one a session scoped, which is one whose own frame moved.
+        for pin in metrics.pinFrames { frames[pin.window] = pin.frame }
         // A window handed to another display is still this cover's to draw: it is travelling *off* this
         // screen, and nothing here can say where to. Asked of the display that holds it now, in the same
         // global space and against the same shared displacement, so both covers draw the identical
@@ -2351,6 +2701,14 @@ public enum Engine {
     /// Constrained to the focused strip in both directions, because `lastStripFocus` outlives its window
     /// being moved to another workspace: an anchor over there is not a place this workspace can act, and
     /// restoring focus to it would switch the desktop — the very thing the refusal exists to prevent.
+    /// The focused window if this display holds it pinned — the guard the three width verbs share, so
+    /// each branches on one reader rather than three spellings of the same question.
+    private static func focusedPin(_ s: State) -> WindowId? {
+        guard let focused = s.world.focusedWindow, let pin = s.world.pins[focused],
+              pin.monitor == s.monitors.focused else { return nil }
+        return focused
+    }
+
     private static func stripAnchor(_ s: State) -> WindowId? {
         for candidate in [s.world.focusedWindow, s.world.lastStripFocus] {
             if let candidate, s.layout.columnIndex(ofWindow: candidate) != nil { return candidate }
@@ -2459,10 +2817,11 @@ public enum Engine {
     /// so `cycle-width` clears it; clamped to the working width and stored as a proportion so the clamp
     /// survives a display change. No readable width falls back to the preset.
     private static func keepExistingWidth(_ s: inout State, _ id: WindowId) {
-        guard let metrics = s.metrics(), metrics.contentArea.width > 0,
+        guard let metrics = s.metrics(), metrics.nominalArea.width > 0,
               let index = s.layout.columnIndex(ofWindow: id),
               let width = s.world.windows[id]?.frame.width, width > 0 else { return }
-        let fraction = Swift.min(width / metrics.contentArea.width, 1.0)
+        // Against the nominal area, because that is the extent the proportion resolves back against.
+        let fraction = Swift.min(width / metrics.nominalArea.width, 1.0)
         s.layout.setWidthOverride(.proportion(fraction), ofColumn: s.layout.columns[index].id)
     }
 
@@ -2888,14 +3247,12 @@ public enum Engine {
         for placement in placements {
             let strip = s.workspaces[placement.name]
             let owner = s.monitors.monitor(of: placement.name)
-            switch s.motion.phase(of: owner) {
-            case .capturing, .raising:
-                // Nothing has moved on this display and nothing may, so its share of the on-screen
-                // record is the one the last completed pass made.
+            guard s.motion.mayPlace(on: owner) else {
+                // Nothing has moved on this display and nothing may — its cover is not on the glass, or
+                // it is and a pin has yet to come to the top of the band that cover is leaving clear.
+                // Either way its share of the on-screen record is the one the last completed pass made.
                 visible.formUnion(strip.allWindowIds.filter(s.world.isOnScreen))
                 continue
-            case .idle, .covered:
-                break
             }
             if let offset = placement.scrollOffset {
                 visible.formUnion(strip.visibleWindowIds(scrollOffset: offset,
@@ -2907,6 +3264,22 @@ public enum Engine {
                 effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
                 s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
                 moved.append(id)
+            }
+        }
+        // …and the pins, which the walk above cannot reach: a pinned window is on no strip, so no
+        // placement names it, and it is on the screen in every phase, so the record has to. Held back by
+        // the same gate — a display mid-capture writes nothing — while still contributing its share of
+        // what the user can see.
+        for monitor in s.monitors.ids {
+            guard let metrics = s.metrics(of: monitor) else { continue }
+            let held = !s.motion.mayPlace(on: monitor)
+            for pin in metrics.pinFrames {
+                visible.insert(pin.window)
+                guard !held,
+                      !isAlreadyPlaced(s.world, pin.window, at: pin.frame, question: nil) else { continue }
+                effects.append(.setFrame(pin.window, pin.frame))
+                s.world.updateFrame(pin.window, to: pin.frame)
+                moved.append(pin.window)
             }
         }
         // Every managed window was just answered for, including the ones already standing correctly, so

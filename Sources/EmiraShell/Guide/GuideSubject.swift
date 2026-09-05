@@ -25,10 +25,14 @@ extension GuideInput {
         // switch are the ones *this* monitor holds, and another display's strips have nothing to do
         // with this panel.
         let owned = state.monitors.owned(of: monitor)
-        let frames = state.workspaces.naturalFrames(shown: shown, among: owned,
+        var frames = state.workspaces.naturalFrames(shown: shown, among: owned,
                                                     scrollOffset: state.motion.offset(of: monitor).current,
                                                     metrics: metrics,
                                                     widths: state.motion.currentColumnWidths)
+        // The pins, which no strip places and every workspace sees. They fall into `passing` below for
+        // free — a frame the shown strip does not place is exactly what that list is — so a pin draws a
+        // tile, divides nothing, and the viewport indicator stops claiming width the strip has not got.
+        for pin in metrics.pinFrames { frames[pin.window] = pin.frame }
         // The **shown** strip, not every workspace's: a long strip on a workspace you cannot see would
         // otherwise size the guide for one you can. During a switch this is already the strip being
         // switched *to*, which is the one the guide should be sizing itself for.
@@ -40,8 +44,10 @@ extension GuideInput {
         let passing = frames.keys.sorted().filter { !placed.contains($0) }
             .compactMap { GuideInput.Window(state, $0) }
 
-        // The ring is single because focus is; only the monitor holding it draws one.
+        // The ring is single because focus is; only the monitor holding it draws one — and what this
+        // display holds includes what it holds pinned, or focusing a pin would take the ring off screen.
         let mine = Set(owned.flatMap { state.workspaces[$0].allWindowIds })
+            .union(metrics.pins.values.map(\.window))
         let focus = state.world.focusedWindow.flatMap { mine.contains($0) ? $0 : nil }
 
         self.init(workingArea: metrics.workingArea, columns: columns, passing: passing,
@@ -82,6 +88,7 @@ public struct GuideTrigger: Equatable, Sendable {
     public init?(state: State, monitor: MonitorId) {
         guard let shown = state.monitors.shown(on: monitor) else { return nil }
         let mine = Set(state.monitors.owned(of: monitor).flatMap { state.workspaces[$0].allWindowIds })
+            .union(state.world.pinBands(on: monitor).values.map(\.window))
         focused = state.world.focusedWindow.flatMap { mine.contains($0) ? $0 : nil }
         workspace = shown
         columns = state.workspaces[shown].columns.map { .init(id: $0.id, windows: $0.windowIds) }

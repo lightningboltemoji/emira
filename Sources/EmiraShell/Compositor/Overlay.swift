@@ -45,6 +45,14 @@ public final class Overlay: NSObject {
     /// The bottom-most layer: the display captured *excluding* the windows this transition animates,
     /// so it carries every window that is not moving, with holes where the moving ones were.
     private let base: CALayer
+    /// Everything above the base, clipped to the same rectangle — the one container `addLayer` fills.
+    /// It exists so a cleared cover cuts the stand-ins and the photograph at exactly one edge, with the
+    /// sublayers still addressed in the window's own coordinates (`bounds.origin` tracks `frame`).
+    private let strip: CALayer
+
+    /// How far this cover is held off each edge of its display, so the windows pinned there stay live
+    /// and on top of it (`Effect.setCoverClearing`). `.zero` is flush with the display.
+    private var clearing: EdgeInsets = .zero
 
     public private(set) var isRaised = false
 
@@ -85,6 +93,12 @@ public final class Overlay: NSObject {
         base.backgroundColor = NSColor.black.cgColor
         host.addSublayer(base)
 
+        strip = CALayer()
+        strip.frame = CGRect(origin: .zero, size: frame.size)
+        strip.masksToBounds = true
+        strip.contentsScale = screen.backingScaleFactor
+        host.addSublayer(strip)
+
         super.init()
 
         window.contentView = view
@@ -94,7 +108,31 @@ public final class Overlay: NSObject {
 
     /// Add a reconstruction layer above the base. Call order is z-order, bottom→top.
     public func addLayer(_ layer: CALayer) {
-        host.addSublayer(layer)
+        strip.addSublayer(layer)
+    }
+
+    /// Hold the cover this far off each edge, so a pinned window there stays live underneath it.
+    ///
+    /// **A smaller rectangle, not a mask** — a mask would cost the whole cover an offscreen pass on
+    /// every frame of every scroll. The base is cropped with `contentsRect` rather than scaled, since
+    /// it is `.resize`. The window stops being opaque while anything is cleared: what makes the band
+    /// show the real desktop is that nothing of ours is drawn there.
+    public func setClearing(_ insets: EdgeInsets) {
+        guard insets != clearing else { return }
+        clearing = insets
+        let full = CGRect(origin: .zero, size: window.frame.size)
+        let cover = CGRect(x: full.minX + insets.left, y: full.minY,
+                           width: max(full.width - insets.left - insets.right, 0), height: full.height)
+        window.isOpaque = insets == .zero
+        window.backgroundColor = insets == .zero ? .black : .clear
+        base.frame = cover
+        base.contentsRect = full.width > 0
+            ? CGRect(x: cover.minX / full.width, y: 0, width: cover.width / full.width, height: 1)
+            : CGRect(x: 0, y: 0, width: 1, height: 1)
+        strip.frame = cover
+        // Children keep addressing themselves in the window's own coordinates: a bounds origin equal to
+        // the frame's is what makes the container a pure clip rather than a translation.
+        strip.bounds = cover
     }
 
     /// Put this transition's captured desktop behind the window layers, or `nil` for the black fill.

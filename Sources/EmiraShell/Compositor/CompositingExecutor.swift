@@ -24,6 +24,12 @@ public protocol CoverSurface: AnyObject {
     /// everything already there. No-op for a binding already present.
     func extendCover(_ bindings: [LayerBinding])
 
+    /// Keep the cover this far off each edge of its display, so the windows pinned there stay live and
+    /// on top of it. `.zero` is flush with the display, which is what every cover is until something is
+    /// pinned. Takes effect on the next raise as well as immediately, so a cover raised into a cleared
+    /// display is never drawn over the pin even for one frame.
+    func setClearing(_ insets: EdgeInsets)
+
     /// Move one reconstruction layer to `rect` (core top-left coordinates) for this frame.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
 
@@ -69,6 +75,9 @@ public protocol CoverPlane: AnyObject {
 
     /// Add layers to `monitor`'s already-raised cover, for windows a retarget pulled into scope.
     func extendCover(on monitor: MonitorId, _ bindings: [LayerBinding])
+
+    /// Keep `monitor`'s cover this far off its own edges — where its pins stand.
+    func setClearing(on monitor: MonitorId, _ insets: EdgeInsets)
 
     /// Move one reconstruction layer to `rect` this frame, on whichever display holds it.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
@@ -224,13 +233,13 @@ public final class CompositingExecutor: Executor {
     static func plane(of effect: Effect) -> Plane {
         switch effect {
         case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer,
-             .endTransition:
+             .endTransition, .setCoverClearing:
             return .presentation
         case .capture:
             return .capture
         case .setHoists:
             return .hoist
-        case .setFrame, .park, .focus, .restoreFocus, .raise, .closeWindow:
+        case .setFrame, .park, .focus, .restoreFocus, .confirmFocus, .raise, .closeWindow:
             return .truth
         case .setCursorHidden, .warpPointer:
             return .pointer
@@ -260,6 +269,10 @@ public final class CompositingExecutor: Executor {
                     feedback(.coverOnScreen(monitor))
                 }
                 framesBlitted[monitor] = 0
+            case .setCoverClearing(let monitor, let insets):
+                // Not counted as a blit: a cover changing shape is not a frame of motion, and it rides
+                // in this run precisely so the raise beside it lands in the same transaction.
+                surface.setClearing(on: monitor, insets)
             case .extendCover(let monitor, let bindings):
                 // The `setLayerFrame`s that place these are in this same run, so the new layers are
                 // created and positioned inside one transaction.
@@ -280,7 +293,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .setHoists, .focus, .restoreFocus, .raise, .closeWindow,
+            case .setFrame, .park, .capture, .setHoists, .focus, .restoreFocus, .confirmFocus,
+                 .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
             }

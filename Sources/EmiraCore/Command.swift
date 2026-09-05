@@ -32,6 +32,41 @@ public enum Axis: String, Sendable, Codable, CaseIterable, Equatable {
     case horizontal, vertical
 }
 
+/// Which edge of a display a window is pinned to. Two sides rather than four: a pin is full height,
+/// so it takes width off the strip and never height, and the strip's own axis is horizontal.
+public enum PinSide: String, Sendable, Codable, CaseIterable, Equatable {
+    case left, right
+
+    /// The other side.
+    public var opposite: PinSide { self == .left ? .right : .left }
+
+    /// Which way the strip lies from this pin — what `focus` travels along to leave it.
+    public var towardsStrip: Direction { self == .left ? .right : .left }
+}
+
+/// What `pin` does with the focused window. Five cases rather than a `PinSide` and a `Toggle`, because
+/// the two are not independent: there is no toggling without a side to toggle against, and `off` names
+/// no side at all.
+public enum PinIntent: String, Sendable, Codable, CaseIterable, Equatable {
+    case left
+    case toggleLeft = "toggle-left"
+    case right
+    case toggleRight = "toggle-right"
+    case off
+
+    /// The edge this intent names, or `nil` for `off`.
+    public var side: PinSide? {
+        switch self {
+        case .left, .toggleLeft: return .left
+        case .right, .toggleRight: return .right
+        case .off: return nil
+        }
+    }
+
+    /// Whether a window already pinned to `side` comes off instead.
+    public var toggles: Bool { self == .toggleLeft || self == .toggleRight }
+}
+
 /// A boolean command: forced on/off, or flipped. `.on`/`.off` let a script assert an absolute state
 /// without knowing the current one.
 public enum Toggle: String, Sendable, Codable, CaseIterable, Equatable {
@@ -126,6 +161,12 @@ public enum Command: Sendable, Codable, Equatable {
     case fullscreen(Toggle)
     /// Toggle (or force) floating (untiled) for the focused window.
     case float(Toggle)
+    /// Hold the focused window at an edge of the acting display, where every workspace can see it —
+    /// or let it go. A pinned window is on no strip: it takes width off the strip and gives it back,
+    /// and the workspace underneath scrolls past it.
+    case pin(PinIntent)
+    /// Move focus between what this display holds pinned and the strip, and back.
+    case focusPinned
     /// Show a workspace and focus it, wherever it lives — focus follows to the display holding it.
     case focusWorkspace(WorkspaceRef)
     /// Move the user to another display, whatever that display is showing.

@@ -122,6 +122,9 @@ import EmiraCore
         func extendCover(on monitor: MonitorId, _ bindings: [LayerBinding]) {
             timeline.record("extend@\(monitor.raw)(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
         }
+        func setClearing(on monitor: MonitorId, _ insets: EdgeInsets) {
+            timeline.record("clear@\(monitor.raw)(\(insets.left),\(insets.right))")
+        }
         func elevate(_ layer: LayerId) {
             timeline.record("elevate(\(layer.raw))")
         }
@@ -708,6 +711,9 @@ import EmiraCore
         }
         func extendCover(_ bindings: [LayerBinding]) {
             timeline.record("extend\(name)(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
+        }
+        func setClearing(_ insets: EdgeInsets) {
+            timeline.record("clear\(name)(\(insets.left),\(insets.right))")
         }
         func elevate(_ layer: LayerId) { timeline.record("elevate\(name)(\(layer.raw))") }
         func setLayerFrame(_ layer: LayerId, to rect: Rect) {

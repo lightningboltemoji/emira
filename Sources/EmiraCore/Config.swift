@@ -506,7 +506,8 @@ extension LayoutMetrics {
                 heightOverrides: [WindowId: PresetSize] = [:],
                 corrections: [WindowId: SizeCorrection] = [:],
                 parkFloors: [WindowId: Double] = [:],
-                parkingLot: ParkingLot? = nil) {
+                parkingLot: ParkingLot? = nil,
+                pins: [PinSide: PinBand] = [:]) {
         self.init(workingArea: workingArea,
                   widthPresets: config.widthPresets,
                   heightPresets: config.heightPresets,
@@ -517,6 +518,7 @@ extension LayoutMetrics {
                   outerGaps: config.outerGaps,
                   corrections: corrections,
                   parkFloors: parkFloors,
-                  parkingLot: parkingLot)
+                  parkingLot: parkingLot,
+                  pins: pins)
     }
 }

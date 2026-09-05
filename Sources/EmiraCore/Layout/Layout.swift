@@ -83,6 +83,21 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
     }
 }
 
+/// One pinned window as the geometry sees it: which window, and the width stack it walks. The intent
+/// rather than points, so the resolution — and its clamp — happens in exactly one place
+/// (`LayoutMetrics.pinWidth`), the way a column's does in `Layout.resolvedWidth`.
+public struct PinBand: Sendable, Equatable {
+    public let window: WindowId
+    public let widthPreset: Int
+    public let widthOverride: PresetSize?
+
+    public init(window: WindowId, widthPreset: Int = 0, widthOverride: PresetSize? = nil) {
+        self.window = window
+        self.widthPreset = widthPreset
+        self.widthOverride = widthOverride
+    }
+}
+
 /// The monitor + config inputs a `Layout` resolves against — passed per call, never stored.
 public struct LayoutMetrics: Sendable, Equatable {
     /// The monitor's **physical** working area — screen-space, top-left, already inset past the menu
@@ -129,6 +144,10 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// Rides here for the reason the two above do: a call site building its own would be a second
     /// opinion about where a parked window sits. Defaults to this display's own corner.
     public var parkingLot: ParkingLot
+    /// What **this display** holds pinned, by side. Rides here for the reason the three above do: every
+    /// geometry query must see the same one or they place columns at different left edges. This
+    /// display's alone, unlike the corrections and the lot — a pin belongs to a screen.
+    public var pins: [PinSide: PinBand]
 
     public init(
         workingArea: Rect,
@@ -141,7 +160,8 @@ public struct LayoutMetrics: Sendable, Equatable {
         outerGaps: EdgeInsets = .zero,
         corrections: [WindowId: SizeCorrection] = [:],
         parkFloors: [WindowId: Double] = [:],
-        parkingLot: ParkingLot? = nil
+        parkingLot: ParkingLot? = nil,
+        pins: [PinSide: PinBand] = [:]
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
@@ -154,35 +174,114 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.corrections = corrections
         self.parkFloors = parkFloors
         self.parkingLot = parkingLot ?? ParkingLot(frame: workingArea)
+        self.pins = pins
     }
 
     //
-    // Outer gaps split one number in two. *Where does the strip live?* is `contentArea`, the logical
-    // viewport — width proportions, column placement and every scroll target frame against it, and
-    // "100%" means this. *What is on screen?* is `workingArea`, the physical extent — the tile-vs-park
-    // decision, the capture scope, and the area a lot hugs the corner of. Answering the second with the
-    // logical viewport parks any column whose leading edge sits in the outer-gap band.
+    // Three areas, and every geometry query picks one. *Where does the strip live?* is `contentArea`,
+    // the **logical** viewport — column placement and every scroll target frame against it. *What is on
+    // screen for the strip?* is `screenArea`, the **physical** extent — the tile-vs-park decision, the
+    // capture scope, the sweep. Answering the second with the logical viewport parks any column whose
+    // leading edge sits in the outer-gap band. *What is a proportion a share of?* is `nominalArea`, the
+    // working area with the outer gaps taken off and nothing else.
+    //
+    // **A pin narrows the first two and never the third.** Pinning moves the strip; it does not
+    // re-proportion it, so `[0.5]` is half the screen with a pin and without one, and no column is
+    // resized by the act of pinning. What a pin *does* bound is `fullscreen` and every width ceiling,
+    // which are statements about usable room rather than proportions the user typed: `contentExtent` is
+    // that side of the line and `widthExtent` the other.
 
-    /// The **logical** viewport: the working area inset by the outer gaps. Where the strip is laid out.
-    public var contentArea: Rect { workingArea.inset(by: outerGaps) }
+    /// The strip's area **as if nothing were pinned**: the working area inset by the outer gaps. What a
+    /// width proportion is a share of, and the box a pin's band is measured out of.
+    public var nominalArea: Rect { workingArea.inset(by: outerGaps) }
 
-    /// What a column-width proportion is a share of — the logical viewport and the gap the strip lays
-    /// columns out with, so `width-presets = [0.5, 0.5]` fills it exactly. The vertical counterpart is
-    /// `Column`'s own, built from the column box and `windowGap`.
-    public var widthExtent: Extent { Extent(span: contentArea.width, gap: columnGap) }
+    /// The **logical** viewport: the nominal area minus each pin's band and the gap separating it from
+    /// the strip. Where the strip is laid out.
+    public var contentArea: Rect { nominalArea.inset(by: logicalPinInsets) }
 
-    /// What a pinned **height** is a share of — the column box and the gap it stacks with, the vertical
-    /// twin of `widthExtent`. Equal to `Column.extent` by construction: a column's box is the content
-    /// area's height (`columnStripFrames`).
+    /// The **physical** extent the strip has to itself: the working area up to each pin's own edge. A
+    /// pin band is forbidden ground where an outer gap is empty ground crossed in motion, which is why
+    /// this is inset past the margin on a pinned side and flush with the display on an unpinned one.
+    public var screenArea: Rect { workingArea.inset(by: physicalPinInsets) }
+
+    /// What a column-width proportion is a share of — the **nominal** viewport and the gap the strip
+    /// lays columns out with, so `width-presets = [0.5, 0.5]` fills an unpinned screen exactly. The
+    /// vertical counterpart is `Column`'s own, built from the column box and `windowGap`.
+    public var widthExtent: Extent { Extent(span: nominalArea.width, gap: columnGap) }
+
+    /// What `fullscreen` and every width ceiling resolve against — the same extent over the **clear**
+    /// viewport. Equal to `widthExtent` with nothing pinned, and the pair is the whole of what a pin
+    /// does to widths.
+    public var contentExtent: Extent { Extent(span: contentArea.width, gap: columnGap) }
+
+    /// What a height fixed to a preset is a share of — the column box and the gap it stacks with, the
+    /// vertical twin of `widthExtent`. Equal to `Column.extent` by construction: a column's box is the
+    /// content area's height (`columnStripFrames`). A pin is full height, so it never enters here.
     public var heightExtent: Extent { Extent(span: contentArea.height, gap: windowGap) }
 
-    /// The **physical** viewport in strip space, for a strip scrolled to `offset`.
+    /// The **physical** viewport in strip space, for a strip scrolled to `offset`. The shift is the
+    /// distance between the two areas' left edges rather than the outer gap outright — the same number
+    /// on an unpinned side, and the column gap beside a pin on a pinned one.
     ///
     /// `widenedBy` carries a sweep's travel distance, so the swept query composes with this one rather
     /// than re-deriving the shift; they must agree, or the capture scope and the park set disagree.
     public func physicalViewport(at offset: Double, widenedBy extra: Double = 0)
         -> (width: Double, offset: Double) {
-        (workingArea.width + extra, offset - outerGaps.left)
+        (screenArea.width + extra, offset - (contentArea.minX - screenArea.minX))
+    }
+
+    /// The narrowest emira's own arithmetic will squeeze a column — or the strip beside a pin — to. A
+    /// backstop for apps that accept any size, not a real bound: the real one is whatever the app
+    /// answers as a `SizeCorrection`. `Engine.minimumColumnWidth` is this number under its other name.
+    public static let minimumColumnWidth: Double = 100
+
+    /// How wide `side`'s pin actually is: its width stack resolved against the **nominal** extent — a
+    /// pin is a share of the screen, not of what the other pin left — then clamped so the strip keeps a
+    /// column's worth. The clamp splits what is left evenly, which is what stops two pins being a fixed
+    /// point: neither is a share of the other. `nil` where nothing is pinned there.
+    public func pinWidth(_ side: PinSide) -> Double? {
+        guard let band = pins[side] else { return nil }
+        let held = Double(pins.count)
+        let ceiling = (nominalArea.width - Self.minimumColumnWidth - held * columnGap) / held
+        let intent = band.widthOverride ?? widthPresets.size(at: band.widthPreset)
+        return Swift.max(Swift.min(widthExtent.resolve(intent), ceiling), 0)
+    }
+
+    /// The band each pin takes out of the logical viewport: its own width plus the column gap that
+    /// separates it from the strip, so a pin stands where a column would and the strip starts past it.
+    private var logicalPinInsets: EdgeInsets {
+        EdgeInsets(left: pinWidth(.left).map { $0 + columnGap } ?? 0,
+                   right: pinWidth(.right).map { $0 + columnGap } ?? 0)
+    }
+
+    /// …and out of the physical one: the outer gap it stands in plus its own width, so the edge is the
+    /// pin's rather than the margin's. Zero on an unpinned side, where the strip bleeds to the display.
+    ///
+    /// **Public because it is also how far a cover must stay off each edge.** A pinned window has to
+    /// stay live and on top of the reconstruction, and emira may not re-level a foreign window, so the
+    /// cover stops at the band instead and the real desktop shows there.
+    public var pinInsets: EdgeInsets { physicalPinInsets }
+
+    private var physicalPinInsets: EdgeInsets {
+        EdgeInsets(left: pinWidth(.left).map { outerGaps.left + $0 } ?? 0,
+                   right: pinWidth(.right).map { outerGaps.right + $0 } ?? 0)
+    }
+
+    /// Where `side`'s pinned window goes: full height, hard against the nominal area's own edge, so a
+    /// pin stands exactly where the outermost column would have. `nil` where nothing is pinned there.
+    public func pinFrame(_ side: PinSide) -> Rect? {
+        guard let width = pinWidth(side) else { return nil }
+        let area = nominalArea
+        return Rect(x: side == .left ? area.minX : area.maxX - width, y: area.minY,
+                    width: width, height: area.height)
+    }
+
+    /// Every pinned window and where it goes, in side order — the placement pass's one new term.
+    public var pinFrames: [(window: WindowId, frame: Rect)] {
+        PinSide.allCases.compactMap { side in
+            guard let band = pins[side], let frame = pinFrame(side) else { return nil }
+            return (band.window, frame)
+        }
     }
 
     /// One window's height intent, and the only place the height stack resolves — an explicit
@@ -511,8 +610,9 @@ public struct Layout: Sendable, Equatable, Codable {
     /// Capped at the content width once an answer is in play, which bounds two stacked windows on
     /// different quantization grids from chasing each other upward.
     ///
-    /// Content, not working: a proportion is a share of the *logical* viewport, so "100%" leaves the
-    /// outer gaps showing, and `fullscreen` means exactly this 100%.
+    /// The cap is the **clear** width — what is left beside the pins — where the intent underneath is a
+    /// share of the nominal one, so a preset may resolve wider than the viewport exactly as
+    /// `width-presets = [1.5]` already does. Only `fullscreen` and the ceilings mean *usable*.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
         let intent = uncorrectedWidth(of: column, metrics: metrics)
         var answered = false
@@ -529,11 +629,14 @@ public struct Layout: Sendable, Equatable, Codable {
     /// The width this column asks for before any window has answered back — the resolution stack with
     /// no `SizeCorrection` consulted. This *is* the question a correction answers, and an answer
     /// matched against a question nobody asked is the one way this machinery goes wrong.
+    ///
+    /// The two rungs read different extents, and that is the whole of what a pin does to a width.
+    /// `fullscreen` is "fill what is usable", so it is a share of the **clear** viewport; a preset or a
+    /// grown override is a share of the **nominal** one, so pinning a window re-proportions nothing.
     private func uncorrectedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
-        metrics.widthExtent.resolve(
-            column.isFullscreen ? .proportion(1.0)
-                : column.widthOverride
-                ?? metrics.widthPresets.size(at: column.widthPreset))
+        guard !column.isFullscreen else { return metrics.contentExtent.resolve(.proportion(1.0)) }
+        return metrics.widthExtent.resolve(
+            column.widthOverride ?? metrics.widthPresets.size(at: column.widthPreset))
     }
 
     /// A column's resolved width by id — what `cycleWidth` animates *to*, so the presentation plane

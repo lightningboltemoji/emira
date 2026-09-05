@@ -90,6 +90,17 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     ///
     /// A set, because a held keybind rides several hand-overs on one cover.
     public private(set) var carried: Set<WindowId> = []
+    /// The pins this cover must not be drawn over, waiting to be asked for — and the one out on the
+    /// wire. **One at a time**, because two focus requests in flight supersede each other on the shell's
+    /// record and the second would drop the first's activation. Grows with the scope, as `windows`
+    /// does.
+    private(set) var pendingPins: [WindowId] = []
+    private(set) var askingPin: WindowId?
+    /// The scoped windows that currently sit over a live band. Drained by `markLanded`; while any of
+    /// them is still in flight the focus this session owes stays owed, because focusing anything else
+    /// puts its app back above the pin.
+    private(set) var clearance: Set<WindowId> = []
+
     /// Which of the scoped windows was focused when the layers were minted — the focus the stills were
     /// filmed under, and so the one the stand-ins must be shadowed for. Held rather than read per
     /// binding, so a window a retarget adds later joins a cover whose windows agree about it.
@@ -135,7 +146,36 @@ public struct TransitionSession: Sendable, Equatable, Codable {
         layerIds.merge(ids) { _, new in new }
     }
 
-    mutating func markLanded(_ id: WindowId) { awaitingLanding.remove(id) }
+    mutating func markLanded(_ id: WindowId) {
+        awaitingLanding.remove(id)
+        clearance.remove(id)
+    }
+
+    /// Note that `pin` must be confirmed on top before this cover moves anything, and that `over` is
+    /// what it must be confirmed above. Idempotent in both halves.
+    mutating func requirePin(_ pin: WindowId, over windows: [WindowId]) {
+        clearance.formUnion(windows)
+        guard askingPin != pin, !pendingPins.contains(pin) else { return }
+        pendingPins.append(pin)
+    }
+
+    /// Take the next pin to ask about, or `nil` — nothing left, or one already out on the wire.
+    mutating func nextPinToConfirm() -> WindowId? {
+        guard askingPin == nil, !pendingPins.isEmpty else { return nil }
+        askingPin = pendingPins.removeFirst()
+        return askingPin
+    }
+
+    /// Fold `Event.focusConfirmed`. Total: a report about a pin this session never asked for, or one it
+    /// has already been answered about, changes nothing.
+    mutating func confirmPin(_ id: WindowId) {
+        guard askingPin == id else { return }
+        askingPin = nil
+    }
+
+    /// Whether every pin this cover must not be drawn over is confirmed on top. True on the ordinary
+    /// desktop, where nothing was ever asked for.
+    var isPinCleared: Bool { askingPin == nil && pendingPins.isEmpty }
 
     /// Add the scoped windows a re-teleport actually moved to the landing wait. Grows, never shrinks: a
     /// re-teleport that moves nothing must not clear the wait for sets still in flight, or the cover
@@ -739,6 +779,46 @@ public struct Motion: Sendable, Equatable, Codable {
     /// fingers paused — a paused finger is a settled offset, and settled is exactly the wrong reading
     /// of it. The latch is not `Motion`'s, so this is one more question `Motion` cannot answer for
     /// itself: it takes it alongside `MonitorContents`, which is already here for the same reason.
+    /// Whether `id`'s real windows may be written this pass. **The teleport gate, and it has two
+    /// halves**: the cover is on the glass, and every pin it is leaving a band clear for is confirmed on
+    /// top. An idle display has neither to answer for and is always free.
+    public func mayPlace(on id: MonitorId?) -> Bool {
+        switch phase(of: id) {
+        case .idle:                  return true
+        case .capturing, .raising:   return false
+        case .covered:               return transition(of: id)?.isPinCleared ?? true
+        }
+    }
+
+    /// Whether every pin `id`'s cover must not draw over is confirmed on top.
+    public func isPinCleared(on id: MonitorId?) -> Bool {
+        transition(of: id)?.isPinCleared ?? true
+    }
+
+    /// The windows this display's cover is still waiting to see land before anything else may take
+    /// focus — empty with no session, which is what makes the debt fall due at every exit.
+    public func pinClearance(on id: MonitorId?) -> Set<WindowId> {
+        transition(of: id)?.clearance ?? []
+    }
+
+    /// Note that `pin` must come to the top before this display's cover moves `over`.
+    public mutating func requirePin(_ pin: WindowId, over windows: [WindowId], on id: MonitorId?) {
+        guard let id, viewports[id]?.transition != nil else { return }
+        viewports[id]?.transition?.requirePin(pin, over: windows)
+    }
+
+    /// Take the next pin `id`'s cover has to ask the window server about, or `nil`.
+    public mutating func nextPinToConfirm(on id: MonitorId?) -> WindowId? {
+        guard let id else { return nil }
+        return viewports[id]?.transition?.nextPinToConfirm()
+    }
+
+    /// Fold `Event.focusConfirmed` into `id`'s session. Total.
+    public mutating func confirmPin(_ pin: WindowId, on id: MonitorId?) {
+        guard let id else { return }
+        viewports[id]?.transition?.confirmPin(pin)
+    }
+
     public func isReadyToClose(on id: MonitorId, holding contents: MonitorContents,
                                hand: TrackpadScroll) -> Bool {
         guard let t = transition(of: id), !hand.holds(id) else { return false }

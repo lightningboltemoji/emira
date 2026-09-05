@@ -35,7 +35,7 @@ import EmiraCore
 
     // The vocabulary, as controls
 
-    /// **Every verb builds a control.** The claim the argument table exists for: twenty-one verbs, five
+    /// **Every verb builds a control.** The claim the argument table exists for: twenty-three verbs, five
     /// shapes, and not one of them falling through to a blank well.
     @Test func everyVerbBuildsAControl() throws {
         for verb in Vocabulary.verbs {

@@ -121,6 +121,25 @@ public struct MonitorState: Sendable, Equatable, Codable {
     public var workingArea: Rect { frame.inset(by: struts) }
 }
 
+/// Where a pinned window is held: the display, the edge, and the width stack it walks —
+/// `ColumnLayout`'s two lower rungs exactly, minus the fullscreen one, since a pin already fills its
+/// own band. `PresetSize` and never points, so a pin at a quarter of one display is a quarter of the
+/// next.
+public struct PinPlacement: Sendable, Equatable, Codable {
+    public var monitor: MonitorId
+    public var side: PinSide
+    public var widthPreset: Int
+    public var widthOverride: PresetSize?
+
+    public init(monitor: MonitorId, side: PinSide, widthPreset: Int = 0,
+                widthOverride: PresetSize? = nil) {
+        self.monitor = monitor
+        self.side = side
+        self.widthPreset = widthPreset
+        self.widthOverride = widthOverride
+    }
+}
+
 /// The truth-plane state: the live windows, the apps that own them, the displays, and where focus sits.
 /// Mutated only through the total methods below — properties are `private(set)` so the two invariants,
 /// focus integrity and app ref-counting, hold from outside.
@@ -161,6 +180,11 @@ public struct World: Sendable, Equatable, Codable {
     /// `insert` rebuilds the whole record (a re-scan overwrites it), and an answer the user gave should
     /// outlive a re-enumeration. Absent means "follow the role"; see `isFloating`.
     public private(set) var floating: [WindowId: Bool]
+    /// The windows held at a display's edge — `Command.pin`. Beside `floating` and keyed the same way
+    /// because it is the same *kind* of fact: the user's answer about whether a window is on the strip
+    /// at all, which is what `participatesInStrip` reads. **At most one window per (display, side)**,
+    /// which `setPin` is the only writer of.
+    public private(set) var pins: [WindowId: PinPlacement]
     /// The last window focus rested on that belongs to the strip — "where was the user working", against
     /// `focusedWindow`'s "what is focused", which goes `nil` routinely for a moment because an app focuses
     /// a new window *before* we adopt it. A new column opens beside *this*: without it, ⌘N raced that
@@ -192,6 +216,7 @@ public struct World: Sendable, Equatable, Codable {
         self.unverified = []
         self.placedOnScreen = []
         self.floating = [:]
+        self.pins = [:]
         self.lastStripFocus = nil
         self.lastFocus = nil
     }
@@ -220,6 +245,7 @@ public struct World: Sendable, Equatable, Codable {
         unverified.remove(id)
         placedOnScreen.remove(id)
         floating[id] = nil
+        pins[id] = nil
         focusedAt[id] = nil
         pruneStripFocus()
         if lastFocus == id { lastFocus = nil }
@@ -358,7 +384,8 @@ public struct World: Sendable, Equatable, Codable {
     /// Whether a window is currently on the tiled strip: it exists, its own state permits tiling, and its
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
     public func participatesInStrip(_ id: WindowId) -> Bool {
-        guard let window = windows[id], !window.isMinimized, !isFloating(id) else { return false }
+        guard let window = windows[id], !window.isMinimized, !isFloating(id),
+              !isPinned(id) else { return false }
         return !isAppHidden(of: id)
     }
 
@@ -440,7 +467,71 @@ public struct World: Sendable, Equatable, Codable {
     public mutating func setFloating(_ id: WindowId, _ isFloating: Bool) {
         guard windows[id] != nil else { return }
         floating[id] = isFloating
+        // The two are exclusive, and the exclusion is stated here rather than argued at each verb:
+        // both mean *off the strip*, and two records of that would be two authorities on membership.
+        if isFloating { pins[id] = nil }
         pruneStripFocus()
+    }
+
+    // Pinning (a window the display holds, on no strip at all)
+
+    /// Whether this window is held at a display's edge. The hot read — `participatesInStrip` asks it
+    /// once per window per placement pass — which is why the table is keyed by window and not by side.
+    public func isPinned(_ id: WindowId) -> Bool { pins[id] != nil }
+
+    /// The window `monitor` holds on `side`, or `nil`. Determinate despite the dictionary's own lack of
+    /// order: at most one entry can match, which `setPin` maintains by evicting.
+    public func pinned(on monitor: MonitorId, _ side: PinSide) -> WindowId? {
+        pins.first { $0.value.monitor == monitor && $0.value.side == side }?.key
+    }
+
+    /// What `monitor` holds pinned, by side — the shape `LayoutMetrics` takes, carrying the width stack
+    /// rather than a resolved width, because resolving one needs an extent this container has no idea
+    /// about.
+    public func pinBands(on monitor: MonitorId) -> [PinSide: PinBand] {
+        var bands: [PinSide: PinBand] = [:]
+        for (id, pin) in pins where pin.monitor == monitor {
+            bands[pin.side] = PinBand(window: id, widthPreset: pin.widthPreset,
+                                      widthOverride: pin.widthOverride)
+        }
+        return bands
+    }
+
+    /// Fold `Command.pin`: hold `id` at `side` of `monitor`, evicting whatever held that side and
+    /// clearing any float — **the one writer**, which is what makes both exclusions hold from outside.
+    public mutating func setPin(_ id: WindowId, on monitor: MonitorId, side: PinSide,
+                                widthPreset: Int = 0, widthOverride: PresetSize? = nil) {
+        guard windows[id] != nil else { return }
+        if let held = pinned(on: monitor, side), held != id { pins[held] = nil }
+        floating[id] = nil
+        pins[id] = PinPlacement(monitor: monitor, side: side, widthPreset: widthPreset,
+                                widthOverride: widthOverride)
+        pruneStripFocus()
+    }
+
+    /// Fold `pin off`: the window rejoins the strip. Total.
+    public mutating func clearPin(_ id: WindowId) { pins[id] = nil }
+
+    /// Re-record a pin's width intent — `grow`/`shrink` write the override, `cycle-width` the index and
+    /// a cleared override, exactly as they do one container over on a column.
+    public mutating func setPinWidth(_ id: WindowId, preset: Int, override: PresetSize?) {
+        guard pins[id] != nil else { return }
+        pins[id]?.widthPreset = preset
+        pins[id]?.widthOverride = override
+    }
+
+    /// Re-home the pins of displays that are no longer attached onto `monitor`, evicting a side it
+    /// already holds. Called by `State.setMonitors`, which is the only thing that knows what survived.
+    ///
+    /// With nothing attached there is nowhere to go and the records simply wait: no display means no
+    /// metrics, so nothing is placed at all until one arrives and this runs again.
+    public mutating func rehomePins(attached: Set<MonitorId>, onto monitor: MonitorId?) {
+        let stranded = pins.filter { !attached.contains($0.value.monitor) }
+        guard let monitor, !stranded.isEmpty else { return }
+        for (id, pin) in stranded.sorted(by: { $0.key < $1.key }) {
+            setPin(id, on: monitor, side: pin.side, widthPreset: pin.widthPreset,
+                   widthOverride: pin.widthOverride)
+        }
     }
 
     /// The windows currently on the strip, sorted by id for deterministic layout and replay.

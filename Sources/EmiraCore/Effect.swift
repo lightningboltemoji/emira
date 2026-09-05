@@ -36,6 +36,12 @@ public enum Effect: Sendable, Equatable, Codable {
     /// nothing, so a machine that cannot film a still simply never sees one appear.
     case setHoists([HoistBinding])
 
+    /// How far one display's cover must stay clear of each edge, so the windows pinned there stay live
+    /// underneath it. **A band off the edge, not a hole in the middle**: a pin is full height and hard
+    /// against its own edge, so the cover is a smaller rectangle rather than a masked one. The whole
+    /// insets every time, which the shell diffs, as `setHoists` is. Unacked and gating nothing.
+    case setCoverClearing(MonitorId, EdgeInsets)
+
     /// Take one reconstruction layer off the screen, until a `setLayerFrame` puts it back — what a
     /// display says about a stand-in it can no longer place. Emitting nothing instead is not "no layer":
     /// it leaves that one at its capture-time frame, which is not a position (`SurfaceCache`).
@@ -96,6 +102,13 @@ public enum Effect: Sendable, Equatable, Codable {
     /// refusal, and the same write as `focus` under a different promise: a correction is owed only to a
     /// window that can still hold focus, where a command is owed whatever the app is busy doing.
     case restoreFocus(WindowId)
+
+    /// Focus a window and **report back when the window server shows nothing foreign over `rect`** —
+    /// the same write as `focus` under a different promise, the seam `restoreFocus` already sits on, and
+    /// the one focus anything in emira waits on. `rect` is a pin's **band** rather than the window's own
+    /// frame: the question is whether anything is about to be drawn in the space a cover is leaving
+    /// clear (`setCoverClearing`).
+    case confirmFocus(WindowId, within: Rect)
 
     /// Raise a real window in the z-order without necessarily focusing it (stacking within a column).
     case raise(WindowId)

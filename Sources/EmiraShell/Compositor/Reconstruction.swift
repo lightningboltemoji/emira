@@ -73,6 +73,10 @@ public final class Reconstruction: CoverSurface {
         addLayers(bindings)
     }
 
+    public func setClearing(_ insets: EdgeInsets) {
+        overlay.setClearing(insets)
+    }
+
     public func elevate(_ layer: LayerId) {
         // Core Animation treats `addSublayer` on a layer it already hosts as a reorder to the top, not
         // a duplicate. Total: the core can name a layer whose window had no still.

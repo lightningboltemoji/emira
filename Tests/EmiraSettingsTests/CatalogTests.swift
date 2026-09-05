@@ -148,7 +148,7 @@ import EmiraCore
     // and a third of the vocabulary is about the others.
 
     /// A file binding every verb in the vocabulary to a chord, so the catalogue can be asked about all
-    /// twenty-one at once. Built off `Vocabulary` rather than listed, so a verb added to the table is
+    /// twenty-three at once. Built off `Vocabulary` rather than listed, so a verb added to the table is
     /// covered here without this file being touched.
     static func everyVerbBound() throws -> Config {
         let spellings = Vocabulary.verbs.map { verb -> String in
@@ -160,7 +160,7 @@ import EmiraCore
             case .line:                    return "\(verb.name) ghostty"
             }
         }
-        // One letter per verb — twenty-six of them against twenty-one verbs, and every one a legal chord.
+        // One letter per verb — twenty-six of them against twenty-three verbs, and every one legal.
         let letters = "abcdefghijklmnopqrstuvwxyz".map(String.init)
         let lines = zip(letters, spellings).map { "ctrl-alt-\($0.0) = \"\($0.1)\"" }
         #expect(lines.count == Vocabulary.verbs.count, "not every verb got a chord")

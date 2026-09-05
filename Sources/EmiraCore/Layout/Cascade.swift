@@ -57,10 +57,10 @@ extension State {
 
     /// The effects that pile every managed window into the quit cascade — ordinary truth-plane effects
     /// only, no cover: a quit is not a transition and nothing is left running to animate it. Covers
-    /// every window on every workspace's strip including the parked ones (rescuing those is the point),
-    /// but never floats, dialogs, panels or sheets — emira never placed them. The focused window goes
-    /// last, since later means smaller means on top. Cross-app z-order is best-effort: `raise` is
-    /// `AXRaise`, which only orders a window within its own app.
+    /// every window on every workspace's strip including the parked ones (rescuing those is the point)
+    /// **and every pinned one**, but never floats, dialogs, panels or sheets — emira never placed them.
+    /// The focused window goes last, since later means smaller means on top. Cross-app z-order is
+    /// best-effort: `raise` is `AXRaise`, which only orders a window within its own app.
     public func cascadeEffects() -> [Effect] {
         guard let metrics = metrics() else { return [] }
         let ordered = cascadeOrder()
@@ -74,9 +74,17 @@ extension State {
         return effects
     }
 
-    /// Every strip window, back-to-front: placement order with the focused window moved to the end.
+    /// Every window emira places, back-to-front: placement order with the focused window moved to the
+    /// end.
+    ///
+    /// The pins are **appended** rather than merged, because the placement order is over strips and a
+    /// pinned window is on none — `Engine.scopeUnion`'s reason, one container over. A band is as
+    /// unsurvivable as a park slot once the daemon is gone: nothing else on the machine knows why a
+    /// window is standing in a strip down the side of the screen. Sorted, a dictionary's order being no
+    /// order.
     private func cascadeOrder() -> [WindowId] {
         let ids = workspaces.windowIds(inPlacementOrder: monitors.shownWorkspaces)
+            + world.pins.keys.sorted()
         guard let focused = world.focusedWindow, ids.contains(focused) else { return ids }
         return ids.filter { $0 != focused } + [focused]
     }

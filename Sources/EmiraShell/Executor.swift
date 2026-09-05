@@ -102,6 +102,11 @@ public final class MockExecutor: Executor {
         case .focus(let id), .restoreFocus(let id):
             feedback(.focusChanged(id, origin: .ours))
 
+        // The same echo, plus the answer a window server with nothing to re-stack would give at once.
+        case .confirmFocus(let id, _):
+            feedback(.focusChanged(id, origin: .ours))
+            feedback(.focusConfirmed(id))
+
         // The cover is on the glass, instantly — a display an infinitely fast system composes on.
         case .beginTransition(let monitor, _):
             feedback(.coverOnScreen(monitor))
@@ -121,6 +126,7 @@ public final class MockExecutor: Executor {
         // `setHoists` joins them for a fifth reason: a hoist appears when its photograph lands and the
         // core is never told that it did, so there is no reply for even a perfect system to give.
         case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
+             .setCoverClearing,
              .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec:
             break
         }

@@ -23,15 +23,20 @@ public final class AXExecutor: Executor {
     private let registry: WindowRegistry
     private let writer: any WindowWriter
     private let scheduler: any DelayScheduler
+    /// Asks the window server whether a pin has reached the top (`Effect.confirmFocus`). `nil` where
+    /// nothing can ask — a headless test, or a machine with no window server answer — and the report
+    /// then goes out at once, which is the same degradation the grace expiring already gives.
+    private let fence: PinFence?
 
     /// - Parameter scheduler: for the one turn `appActivated` waits (see `execute`). Defaulted because
     ///   it is the only asynchrony in this type and every other test of it is about geometry; a test
     ///   that cares injects a manual one rather than every test that doesn't naming a real one.
     public init(registry: WindowRegistry, writer: any WindowWriter,
-                scheduler: any DelayScheduler = DispatchScheduler()) {
+                scheduler: any DelayScheduler = DispatchScheduler(), fence: PinFence? = nil) {
         self.registry = registry
         self.writer = writer
         self.scheduler = scheduler
+        self.fence = fence
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -82,6 +87,20 @@ public final class AXExecutor: Executor {
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }
 
+            // The same write as `focus`, under the one promise anything in emira waits on: the report
+            // goes out when the *window server* shows nothing over the pin's band, not when the app says
+            // its focus moved. An unknown window is reported at once — a teleport must not be held on a
+            // window nothing can raise.
+            case .confirmFocus(let id, let band):
+                guard let record = registry.record(id), let fence else {
+                    feedback(.focusConfirmed(id))
+                    continue
+                }
+                writer.focus(record) { [scheduler] in
+                    scheduler.schedule(after: 0) { feedback(.appActivated) }
+                }
+                fence.confirm(id, over: band) { feedback(.focusConfirmed(id)) }
+
             case .raise(let id):
                 guard let record = registry.record(id) else { continue }
                 writer.raise(record)
@@ -94,7 +113,8 @@ public final class AXExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .setHoists, .beginTransition, .extendCover, .elevateLayer, .setLayerFrame,
+            case .capture, .setHoists, .setCoverClearing, .beginTransition, .extendCover,
+                 .elevateLayer, .setLayerFrame,
                  .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec:
                 break
             }

@@ -187,3 +187,43 @@ import Testing
         #expect(EngineFix.booted().cascadeEffects().isEmpty)  // a display, no windows
     }
 }
+
+// The pins, which the strip walk cannot reach
+
+@Suite struct CascadePinTests {
+
+    /// A band is as unsurvivable as a park slot: once the daemon is gone, nothing else on the machine
+    /// knows why a window is standing in a strip down the side of the screen.
+    @Test func aPinnedWindowIsRescuedLikeAParkedOne() {
+        var s = EngineFix.world(3, config: EngineFix.halfWidthSnap)
+        s.world.setFocus(WindowId(2))
+        let (pinned, fx) = EngineFix.run(s, [.command(.pin(.left))])
+        let settled = EngineFix.settle(pinned, fx)
+
+        let placed = settled.cascadeEffects().compactMap { effect -> WindowId? in
+            if case .setFrame(let id, _) = effect { return id } else { return nil }
+        }
+        #expect(Set(placed) == Set(settled.world.windows.keys))
+        let region = Cascade.region(in: try! #require(settled.metrics()).workingArea)
+        for effect in settled.cascadeEffects() {
+            guard case .setFrame(let id, let frame) = effect, id == WindowId(2) else { continue }
+            #expect(region.contains(frame.center), "the pin was left in its band")
+        }
+    }
+
+    /// It is a window like any other in the stack, so the focus rule still decides the top of it.
+    @Test func aFocusedPinIsPlacedLastAndFrontmost() {
+        var s = EngineFix.world(3, config: EngineFix.halfWidthSnap)
+        s.world.setFocus(WindowId(2))
+        let (pinned, fx) = EngineFix.run(s, [.command(.pin(.left))])
+        let settled = EngineFix.settle(pinned, fx)
+        #expect(settled.world.focusedWindow == WindowId(2))
+
+        let effects = settled.cascadeEffects()
+        let placed = effects.compactMap { effect -> WindowId? in
+            if case .setFrame(let id, _) = effect { return id } else { return nil }
+        }
+        #expect(placed.last == WindowId(2), "later means smaller means on top")
+        #expect(effects.last == .focus(WindowId(2)))
+    }
+}

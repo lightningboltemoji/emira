@@ -53,6 +53,14 @@ enum EngineFix {
                 case .capture(_, let w, _): feedback.append(.captureReady(w))
                 case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
                 case .setFrame(let w, _), .park(let w, _): feedback.append(.axLanded(w))
+                // A focus write is echoed by the app, and that echo is what records the activation in
+                // `World.focusedAt` — and so in `StackOrder`. Acked here as `MockExecutor` acks it, or a
+                // test asking who is in front of whom reads an order the desktop never had.
+                case .focus(let w), .restoreFocus(let w):
+                    feedback.append(.focusChanged(w, origin: .ours))
+                case .confirmFocus(let w, _):
+                    feedback.append(.focusChanged(w, origin: .ours))
+                    feedback.append(.focusConfirmed(w))
                 default: continue
                 }
             }

@@ -295,8 +295,14 @@ let menuBar = MenuBarItem(configPath: loader.path)
 menuBar.configStatus = bootConfigError.map { .neverLoaded($0) } ?? .loaded
 menuBar.onError = { log($0) }
 
+// One probe object for the desktop, shared by the two things that ask the window server the same
+// question — whether anything foreign sits over one of our windows. Hoisting asks it about a float it
+// is standing in for; the pin fence asks it about the band a cover is leaving clear.
+let stackProbe = CGStackProbe(registry: registry)
+
 let truth = AXExecutor(registry: registry,
-                       writer: AXWindowWriter(client: axClient, intent: focusIntent))
+                       writer: AXWindowWriter(client: axClient, intent: focusIntent),
+                       fence: PinFence(probe: stackProbe))
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this
@@ -307,7 +313,7 @@ launcher.onOutcome = { log("exec: \($0)") }
 /// The hoist plane. One object for the desktop rather than one per display: a hoist is a window of its
 /// own standing where the float stands, so what it needs from a display is a backing scale, not a
 /// surface. `syncDisplays` hands it those.
-let hoistPanels = HoistPanels(filmer: capture, probe: CGStackProbe(registry: registry),
+let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
                               scheduler: DispatchScheduler())
 
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,

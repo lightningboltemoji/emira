@@ -77,7 +77,7 @@ whose argument is a _shell_ line — gets everything after its own word, unsplit
 **The table is `Vocabulary`, and the grammar in it is data.** A surface that must _offer_ the vocabulary
 rather than read it can call neither `usage` nor `parse`, since both answer only once something has been typed.
 So a `Verb` carries its argument as a **shape**, `Verb.Argument`, and the printed grammar is derived from it.
-Five shapes carry twenty-one verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
+Five shapes carry twenty-three verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
 control, never per verb** — and each reads its choices off the type that parses them back. It is top-level
 rather than nested in `Command`: a consumer of the _spellings_ is not a consumer of the reducer's input.
 
@@ -261,7 +261,9 @@ this display's capture head.
 
 ### The phase machine
 
-`TransitionSession.Phase` is `.capturing → .raising → .covered`, and **only the last lets a real window move.**
+`TransitionSession.Phase` is `.capturing → .raising → .covered`, and **only the last lets a real window
+move** — with one further condition on that last one, `Motion.mayPlace`: a cover leaving a band clear for a
+pinned window may move nothing until the window server says that pin is on top of it (§6, *Pinning*).
 
 ```
 command                                            (m = the display it acts on)
@@ -457,6 +459,11 @@ State = World         // truth: displays (frame + struts), apps, windows, focus,
       + TrackpadScroll // three fingers are down, and whose viewport they are driving
 ```
 
+Two decisions are **kept** beside those containers rather than re-derived, for the reason
+`World.placedOnScreen` is kept: `hoists` (the floats the shell is drawing) and `coverClearing` (how far each
+cover is held off its own edges), each re-derived by a post-pass that emits only the difference. `owedFocus`
+is a third and is not a projection at all — it is a debt, and it is on `State` because every exit owes it.
+
 `State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
 second authority. Only the genuinely cross-strip queries bypass it: reconcile, `targetFrames`, the placement
 walks, and the mutators that mint a `ColumnId`.
@@ -571,18 +578,27 @@ then "insert column", because the state between the two calls is invalid.
 The decision tree lives in the reducer beside `handleFocus`, which already makes the distinction: _alone in its
 column ⇒ the column moves or consumes; with stackmates ⇒ it pops out._
 
-**Two viewports, and every geometry query picks a side.** `LayoutMetrics.contentArea` is the **logical**
-viewport (the working area inset by the outer gaps); `workingArea` is the **physical** extent.
+**Three areas, and every geometry query picks one.** `LayoutMetrics.nominalArea` is the working area inset
+by the outer gaps; `contentArea` is that minus each pin's band and the column gap beside it; `screenArea` is
+the working area up to each pin's own edge. With nothing pinned the second is the first and the third is
+`workingArea`, which is every display on the ordinary desktop.
 
-- **Logical** is where the strip lives: widths resolve against it, column 0 starts at its left edge, and every
-  scroll target frames against it.
-- **Physical** is what is on screen: `visibleWindowIds` (the reducer's `setFrame`-vs-`park` switch), the capture
-  scope, and the area the park lot hugs the corner of — a lot inset by the outer gap would poke a nub a
-  margin's width in.
+- **Nominal** is what a proportion is a share of: `widthExtent`, the preset ladder, and a `grow N%` step.
+  A pin does not enter it, which is the whole of *pinning re-proportions nothing*.
+- **Logical** (`contentArea`) is where the strip lives: column 0 starts at its left edge, every scroll target
+  frames against it, and `fullscreen` and the width ceilings resolve against it (`contentExtent`).
+- **Physical** (`screenArea`) is what is on screen for the strip: `visibleWindowIds` (the reducer's
+  `setFrame`-vs-`park` switch), the capture scope, and the sweep. The park lot still hugs `workingArea`'s
+  corner — a lot inset by the outer gap would poke a nub a margin's width in.
 
 Asking `visibleWindowIds` of the _logical_ viewport parks any column whose leading edge sits in the margin —
 enforcing the margin by teleporting windows out of it, which is the clipping this design exists to avoid, and it
 pops the cross-fade because the presentation plane draws that column from geometry that never parks.
+
+**A pin band is a strut and an outer gap is not**, and the arithmetic being identical is the trap in both
+directions. The strip never crosses a band: a layer sliding into one would be drawn over the pin's own
+photograph in the captured base, which reads as a column sliding over it, so the cover's layer container clips
+at the band and that is the one edge the layout's clip and the cover's clip share.
 
 **An outer gap is not a strut**, and the arithmetic being identical is the trap. A strut is **forbidden ground**
 — no managed window is ever inside it, tiled or parked, which is what licenses the strut-inset cover. An outer
@@ -845,6 +861,16 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   so there is no destination to have reached.
 - **Focus off the strip is an entry condition, not a dead end.** A focus command with no column to start from
   re-enters at the near end: `right` at the leftmost column, `left` at the rightmost.
+- **A pin is a virtual column outside the near end.** `focus left` at column 0 with a left pin lands on it;
+  `focus right` off that pin re-enters where the user was working, else the near end. The other three
+  directions from a pin go nowhere — the strip is one way and the display's own edge the other.
+  `focus-pinned` cycles left, right, strip, skipping the sides that are empty.
+- **Returning to the strip never moves it.** `Engine.stripReentry` is the one expression for "which
+  window does a pin hand focus back to", and two things read it: `enterStrip` moves focus there, and
+  `restingOffset` frames the strip there the moment a window is pinned. A pin holds focus without holding
+  a column, so without this the edit leaves the offset wherever it was and the return scrolls — a move
+  nobody asked for and nobody can predict. A float is deliberately not this: emira does not place one, so
+  re-framing would slide the strip under a window standing still.
 - `Engine.stripAnchor` — "where was the user working", used when focus rests on nothing. It reads
   `World.lastStripFocus` rather than live focus, because an app focuses its brand-new window before emira has
   adopted it, so a `focusChanged(nil)` lands a moment _before_ the creation; anchoring on live focus passes a
@@ -899,6 +925,71 @@ Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/pane
 native-fullscreen windows are excluded; app chrome that merely happens to carry an `NSWindow` is declined
 outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the strip,
 animated out like a close, position remembered.
+
+### Pinning
+
+**A pinned window is one emira places and no strip holds** (`World.pins` → `LayoutMetrics.pins`). It sits at
+an edge of one display, full height, and every workspace that display shows is laid out beside it. The record
+is `World`'s beside `floating` because `participatesInStrip` has to read it and four things inside `World`
+read *that*; the two are exclusive, stated in `setPin`/`setFloating`, because both mean *off the strip* and
+two records of it would be two authorities on membership. Hoisting then excludes a pin for free — a hoist is
+only ever a float **by choice**.
+
+Three things follow, and each is somewhere the strip's own machinery had to be told a window can exist
+outside it:
+
+- **The placement pass gains a term.** `writeTruthPlane` walks strips, so nothing there reaches a pin; it is
+  written from `metrics.pinFrames` and joins `placedOnScreen`, which is what keeps that record the whole
+  desktop's rather than the strips'.
+- **A pin is scoped into a cover exactly when its own frame moves** — pinned, released, or resized. A pin
+  standing still stays in the captured base, behind the band the cover is leaving clear, which is what keeps
+  it *live*: filming it would freeze the one window on the screen meant not to be.
+- **Its width is a column's width.** A pin seeds both of `ColumnLayout`'s lower rungs from the column it left
+  and carries them, so `grow`, `shrink` and `cycle-width` are its width control with nothing new behind them.
+  `LayoutMetrics.pinWidth` is where the stack resolves and where the clamp lives, once.
+- **The quit cascade rescues it.** `cascadeOrder` walks strips, so a pin is appended — a band is exactly as
+  unsurvivable as a park slot once the daemon is gone, and for the same reason.
+
+**The cover stops at the band rather than masking a hole in it** (`Effect.setCoverClearing` →
+`Overlay.setClearing`). A pin is full height and hard against its own edge, so the uncovered region is one
+rectangle and the mechanism is a frame change on two layers instead of a mask, which would cost the whole
+cover an offscreen composite on every frame of every scroll. The band takes the outer-gap margin with it,
+which is what makes it one rectangle; nothing of ours is drawn there and the wallpaper under it is the
+wallpaper the base was photographed from.
+
+**The band is held clear for the whole cross-fade, not until the session closes.** A cover keeps its
+stand-ins until the fade completes, and the column that just scrolled off the strip's near end is at a
+natural frame reaching right across the band — held back by nothing but the clip. Growing the cover back
+at `endTransition` unclips it and draws that window over the pin for the length of the fade, which is
+`Event.crossfadeDone`'s one job here. `Compositor` keeps the same decision, because a surface rebuilt
+under it starts flush with its display while the core still believes a band is clear.
+
+**And the band the cover leaves clear is a band the cover does not hide**, which is the second fence on the
+teleport. A real window whose *current* frame overlaps a band is drawn over the pin from the instant the reals
+move until its app answers — and emira may not re-level a foreign window, so focus is the only lever that
+reorders across apps. So `Effect.confirmFocus` goes out in the same head batch as the captures, the shell
+answers it from the window server (`PinFence` over `StackProbe`, bounded, reporting anyway on expiry), and
+`Motion.mayPlace` holds the pass until both that and `coverOnScreen` have landed. Four things make it
+proportionate:
+
+- **The trigger is the at-risk set**, not "a pin exists": `guardPins` asks which scoped windows sit over a
+  live band *or are about to*, read at the aimed offset. Both halves are needed and the second is the
+  commoner — a column scrolling off the strip's near end is still in the clear area when the command lands.
+  The answer is empty on the ordinary desktop and on every scroll past a pin nothing reaches, which is what
+  keeps a foreign app from being flashed into the menu bar on every keystroke.
+- **The ordering it buys outlasts the transition.** A near-end column genuinely overhangs the band and no
+  scroll position removes the overlap, so the pin has to *end up* above it. Activating the pin's app after
+  whatever last activated the overhanging window, and the target's after that, leaves the order
+  overhanging < pin < target — which is why the debt below is paid at the end rather than dropped.
+- **The gate hangs on the teleport, not on the command.** An interrupting command retargets the open session
+  exactly as it does today and the gate is re-read; nothing is queued and no event is deferred.
+- **One pin is asked about at a time.** Two focus requests in flight supersede each other on `FocusIntent`'s
+  record, so a batch asking about both would leave one un-raised. The teleport is edge-triggered on the gate
+  opening, so a late duplicate answer cannot re-teleport and clear a landing wait still in flight.
+- **The focus the command asked for is paid last**, because focusing the target is what puts its app back
+  above the pin. `State.owedFocus` holds it rather than the session, since **every exit owes it** — a debt
+  whose session has gone falls due at once, which is how that holds without being repeated at four teardown
+  sites.
 
 ### Hoisting
 
@@ -1765,9 +1856,11 @@ emira/
     │                    ProcessLauncher · Scheduler · Permissions · Logging
     │   ├── AX/          AXAccess · AXClient · AXEnumerator · AXWriter · AXExecutor
     │   │                Observation · AXObservers · FocusIntent · EnhancedUI
+    │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
+    │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)
     │   ├── Guide/       GuideSubject (State → GuideInput) · Guide · GuidePanel · GuideIcons
     │   │                GuideNames
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples

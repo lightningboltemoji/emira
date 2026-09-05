@@ -180,6 +180,17 @@ public enum Catalog {
         can produce. A take would have to cut between two sets, which reads as the preview restarting.
         """,
 
+        "pin": """
+        Holds a window at the edge of the display and takes it off the strip, and a window off the strip \
+        is part of a *set* rather than something a beat can produce — `float`'s reason, plus one of its \
+        own: the mock has no clear area, so the strip it narrows is not a thing the preview has.
+        """,
+
+        "focus-pinned": """
+        Moves focus between the pinned windows and the strip, and the mock pins nothing. A take would \
+        have to invent the pin before it could focus it.
+        """,
+
         "focus-workspace": Self.oneWorkspace,
         "move-to-workspace": Self.oneWorkspace,
         "move-to-workspace-and-focus": Self.oneWorkspace,

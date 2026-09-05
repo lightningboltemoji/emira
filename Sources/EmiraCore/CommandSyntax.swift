@@ -45,7 +45,7 @@ public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
 // `Direction(rawValue:)` were two statements of one fact, and now there is one.
 //
 // The shape is `Argument`, and the rule is `Setting.Kind`'s one vocabulary over: **one case per shape of
-// control, never per verb.** Five cases carry twenty-one verbs.
+// control, never per verb.** Five cases carry twenty-three verbs.
 
 /// The command vocabulary: every verb emira answers to, and the grammar of what each one takes.
 ///
@@ -109,7 +109,7 @@ public struct Verb: Sendable {
     public func matches(_ word: String) -> Bool { word == name || aliases.contains(word) }
 
     /// What a verb takes after its name — **one case per shape of control**, which is why five of them
-    /// cover twenty-one verbs. A case serving a single verb is the sign the table has stopped paying for
+    /// cover twenty-three verbs. A case serving a single verb is the sign the table has stopped paying for
     /// itself; `.line` sits at that edge and earns it by being the only genuinely open argument here.
     public enum Argument: Sendable, Equatable {
         /// Nothing. The verb is the whole command, and a word after it is a typo.
@@ -184,6 +184,8 @@ extension Command {
         case .consumeOrExpel(let direction):  return ["consume-or-expel", direction.rawValue]
         case .fullscreen(let toggle):         return ["fullscreen", toggle.rawValue]
         case .float(let toggle):              return ["float", toggle.rawValue]
+        case .pin(let intent):                return ["pin", intent.rawValue]
+        case .focusPinned:                    return ["focus-pinned"]
         case .focusWorkspace(let ref):        return ["focus-workspace", ref.word]
         case .focusMonitor(let ref):          return ["focus-monitor", ref.word]
         case .moveToMonitor(let ref):         return ["move-to-monitor", ref.word]
@@ -272,6 +274,13 @@ extension Vocabulary {
              summary: "Toggle floating for the focused window.",
              build: { verb, args in .float(try toggle(args, verb: verb)) }),
 
+        Verb("pin", argument: .pin,
+             summary: "Hold the focused window at an edge of the display, or let it go.",
+             build: { verb, args in .pin(try pinIntent(args, verb: verb)) }),
+
+        Verb("focus-pinned", summary: "Move focus between the pinned windows and the strip.",
+             build: bare(.focusPinned)),
+
         Verb("close-window", summary: "Close the focused window.", build: bare(.closeWindow)),
 
         Verb("focus-workspace", argument: .workspace,
@@ -358,6 +367,15 @@ extension Vocabulary {
         return toggle
     }
 
+    /// `left|toggle-left|right|toggle-right|off` — which edge, and whether pressing it again lets go.
+    /// Required, unlike `toggle`'s: a bare `pin` names no side and there is nothing sensible to default
+    /// it to.
+    private static func pinIntent(_ args: [String], verb: Verb) throws -> PinIntent {
+        let word = try only(args, verb: verb)
+        guard let intent = PinIntent(rawValue: word) else { throw badArgument(word, verb: verb) }
+        return intent
+    }
+
     /// `100px` / `100pt` / `100` / `10%` — the argument to `grow` and `shrink`; the non-percent spellings
     /// all mean *points*. Strictly a magnitude, which also rejects `nan`, `inf` and `0`.
     ///
@@ -437,6 +455,9 @@ extension Verb.Argument {
 
     /// `<Npx|N%>`. Points and a percentage of the working extent.
     static let delta = Verb.Argument.magnitude(units: ["px", "%"])
+
+    /// `<left|toggle-left|right|toggle-right|off>`. No default: a side is not something to guess.
+    static let pin = Verb.Argument.words(PinIntent.allCases.map(\.rawValue), default: nil)
 
     /// One of the 36 addresses, or a relative motion. The relatives are spelled the way `words` emits
     /// them; `usage` compresses the accepted set, aliases and all.
