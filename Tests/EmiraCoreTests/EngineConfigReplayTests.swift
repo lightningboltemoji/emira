@@ -88,7 +88,8 @@ import EmiraMotion
 
     /// `cycleWidth` animates the *resize* spring, which exists so it can differ from the scroll's.
     @Test func aResizeUsesTheResizeSpring() {
-        var config = Config(widthPresets: PresetCycle([.proportion(0.5), .proportion(1.0)]))
+        var config = EngineFix.laddered(Config(widthPresets: PresetCycle([.proportion(0.5),
+                                                                          .proportion(1.0)])))
         config.resizeSpring = SpringParams(stiffness: 123, dampingRatio: 1.0)
         var (s, _) = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))])
         (s, _) = Engine.reduce(s, .command(.cycleWidth))

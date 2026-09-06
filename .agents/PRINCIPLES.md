@@ -182,6 +182,19 @@ happen on.
   quietly and assumes as little as it can — a matcher that reads a window against the one it opened out of
   has nothing a user chose to compare against, so it matches nothing — while a window opened _now_ is one
   you opened, and going there is already what a Dock click does.
+- **A width is a share, and a lone window has nobody to share with.** A preset answers _how much of this do
+  the others get_, so on a workspace with one window on it the question has no content and the ladder's
+  first rung is simply a smaller desktop. The first window takes the whole strip and the second puts both
+  on the ladder. It is a **seed and not a mode**, which is the same promise the rules make: the width verbs
+  take a lone window off it and what they choose stands, until the next arrival or departure hands the strip
+  back to the rule — a width _derived_ from the strip's shape would make every one of those keys dead on the
+  one window they were most needed for. **A seed chooses the rung and a verb clears the shadow**, and every
+  width that is _seeded_ answers to it alike: an app's rule, a width carried over from before emira started,
+  the ladder itself. There is no arrival emira treats as exempt, because a window with nothing beside it is
+  the same window whichever way it got there. What it will not do is undo an arrangement somebody built, so a
+  stack sharing one column keeps the width it was given rather than emira expelling a window to make its own
+  rule true. On by default, because a window manager whose defaults waste the screen is one every user
+  configures the same way on their first day.
 - **A pinned window stays.** Some windows are not work you scroll past — a chat, a reference, something
   playing — and both answers the model already has are wrong for them: on the strip they scroll away,
   floating they go behind the first click on the work. So there is a third, and it is the one shape the

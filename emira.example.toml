@@ -27,6 +27,9 @@ outer-gap-top = 0
 # Center a focused column rather than scrolling the least that reveals it.
 center-focused-column = false
 
+# Give a workspace's only window the whole strip, until a second one opens.
+fullscreen-when-alone = true
+
 # Stop a grow or shrink where it meets the working area boundary; again to pass it.
 resize-detent = false
 

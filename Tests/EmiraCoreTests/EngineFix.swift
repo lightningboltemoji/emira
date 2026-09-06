@@ -26,6 +26,15 @@ enum EngineFix {
     /// is what makes the animated-scroll paths fire; ½-width lets two columns coexist and often snaps.
     static let fullWidth = Config(widthPresets: PresetCycle([.proportion(1.0)]))
 
+    /// `config` with the solo rule out of the way. For a test whose subject is what a preset, a `grow`,
+    /// a hand-drawn width or the `fullscreen` verb does to a lone column — where a window taking the
+    /// whole strip by itself would answer the question before the test got to ask it.
+    static func laddered(_ config: Config = Config()) -> Config {
+        var laddered = config
+        laddered.fullscreenWhenAlone = false
+        return laddered
+    }
+
     /// A fresh state that already knows about one display.
     static func booted(config: Config = Config(), display: Rect = displayFrame) -> State {
         let (s, _) = Engine.reduce(State(config: config),
@@ -245,10 +254,11 @@ enum EngineFix {
     }
 
     /// A snapping world with one preset, so a column's width is only ever what `grow`/`shrink` made it.
-    /// Snapping because these tests are about *what* width results, not how it gets there.
+    /// Snapping because these tests are about *what* width results, not how it gets there — and without
+    /// the solo rule, which would answer for the lone window before the verb under test got to.
     static func oneThirdSnap() -> State {
         let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
-                            transitionMode: .off)
+                            fullscreenWhenAlone: false, transitionMode: .off)
         return Self.run(Self.booted(config: config),
                         [.windowCreated(Self.snapshot(1))]).0
     }

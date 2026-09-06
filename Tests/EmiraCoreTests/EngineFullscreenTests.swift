@@ -71,7 +71,8 @@ import EmiraMotion
     /// `fullscreen` is `cycleWidth`'s motion with a different intent in front of it — the same width
     /// spring, the same transition over a viewport that need not move.
     @Test func fullscreenAnimatesTheColumnWidthExactlyAsACycleDoes() {
-        var (s, _) = EngineFix.run(EngineFix.booted(), [.windowCreated(EngineFix.snapshot(1))])
+        var (s, _) = EngineFix.run(EngineFix.booted(config: EngineFix.laddered()),
+                                   [.windowCreated(EngineFix.snapshot(1))])
         let column = s.layout.columns[0].id
 
         let (f, ffx) = Engine.reduce(s, .command(.fullscreen(.toggle)))
@@ -139,7 +140,8 @@ import EmiraMotion
     /// A column already at the full width has nothing to animate, so the command is silent — but the
     /// *state* still moved, which is what makes the next press restore rather than do nothing twice.
     @Test func fullscreenOnAnAlreadyFullWidthColumnIsSilentAndStillToggles() {
-        let config = Config(widthPresets: PresetCycle([.proportion(1.0)]), transitionMode: .off)
+        let config = EngineFix.laddered(Config(widthPresets: PresetCycle([.proportion(1.0)]),
+                                               transitionMode: .off))
         var s = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))]).0
         #expect(EngineFix.width(s) == 1000)
 
@@ -207,7 +209,8 @@ import EmiraMotion
     /// the answer lands, and it settles onto 400 continuously. The continuity is the point — a clamp
     /// would show up as a one-frame jump.
     @Test func aRefusedGrowSpringsTheLayerBackInsteadOfJumping() throws {
-        let config = Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]), columnGap: 8)
+        let config = EngineFix.laddered(Config(widthPresets: PresetCycle([.proportion(1.0 / 3.0)]),
+                                               columnGap: 8))
         var (s, _) = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))])
         (s, _) = EngineFix.drive(s)                                   // settle the arrival
 

@@ -550,6 +550,11 @@ public enum ConfigSchema {
                 help: "Center a focused column rather than scrolling the least that reveals it.",
                 section: .layout),
 
+        Setting("layout.fullscreen-when-alone", \.fullscreenWhenAlone, .toggle,
+                label: "Fullscreen when alone",
+                help: "Give a workspace's only window the whole strip, until a second one opens.",
+                section: .layout),
+
         Setting("layout.resize-detent", \.resizeDetent, .toggle,
                 label: "Resize detent",
                 help: "Stop a grow or shrink where it meets the working area boundary; again to pass it.",

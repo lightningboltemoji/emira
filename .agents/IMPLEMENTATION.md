@@ -614,6 +614,21 @@ a hand resize) shadows a preset index (from `cycle-width`). Because it shadows r
 underneath needs no memory and no restore policy. Percentages are of the **working area**, not of the column's
 own width, so `grow`/`shrink` are exact inverses.
 
+**Two things raise the top of that stack, and `Fullscreen.Origin` is which.** `asked` is the verb; `solo` is the
+rule that a strip holding exactly one window gives it the whole strip (`layout.fullscreen-when-alone`, on by
+default). Only a `solo` record is lifted when the strip gains company, so the verb still means what it meant.
+`Layout.applySoloFullscreen` is the whole policy, and it is a **seed**: it runs at the four sites where a strip's
+population moves — `arriveOnStrip`, `departFromStrip`, `moveToWorkspace`, `arriveOnWorkspace` — and nowhere else,
+so a width verb's answer on a lone window stands until the next arrival or departure. Each site names the strips
+it touched rather than walking all 36, because `arriveOnWorkspace` puts a rule-assigned newcomer on the strip in
+view for one statement before moving it off, and a pass there would read that transient as company. It runs
+*before* the new geometry is read, so an incumbent's shrink rides the arrival's own cover, and *after* `seedWidth`,
+which is what makes the precedence uniform: **a seed chooses the rung and a verb clears the shadow**. The ladder,
+a window rule's `width` and the launch scan's `keepExistingWidth` are one kind of thing under that line and none
+is exempt — reversed, `setWidthOverride` would clear the shadow and every seeded column would be, which is a
+statement about the width stack rather than about arriving. `configChanged` is the one pass over every
+materialized strip.
+
 **A proportion is a share of the extent _and_ of the gap it is laid out with** — `Extent { span, gap }`, and the
 two never travel apart, which is the whole reason it is a type rather than two arguments. `n` tiles have `n − 1`
 gaps between them, so a tile takes its share of the span widened by one gap and pays one gap back:

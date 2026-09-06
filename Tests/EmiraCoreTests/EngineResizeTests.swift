@@ -200,7 +200,8 @@ import EmiraMotion
     /// `grow` is `cycleWidth`'s motion with different arithmetic in front of it: the same width spring,
     /// the same transition over a viewport that never moves.
     @Test func growAnimatesTheColumnWidthExactlyAsACycleDoes() {
-        var (s, _) = EngineFix.run(EngineFix.booted(), [.windowCreated(EngineFix.snapshot(1))])
+        var (s, _) = EngineFix.run(EngineFix.booted(config: EngineFix.laddered()),
+                                   [.windowCreated(EngineFix.snapshot(1))])
         let column = s.layout.columns[0].id
 
         let (g, gfx) = Engine.reduce(s, .command(.grow(.points(100))))
@@ -287,7 +288,8 @@ import EmiraMotion
     /// columns wider than the screen (`width-presets = [1.5]`) is honored by `Presets`, so a `grow` that
     /// clamped to the working width would answer "wider, please" with a sudden 500 pt *shrink*.
     @Test func aClampNeverMovesAColumnTheWayItWasNotAsked() {
-        let config = Config(widthPresets: PresetCycle([.proportion(1.5)]), transitionMode: .off)
+        let config = EngineFix.laddered(Config(widthPresets: PresetCycle([.proportion(1.5)]),
+                                               transitionMode: .off))
         var s = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))]).0
         #expect(EngineFix.width(s) == 1500)
 
@@ -462,7 +464,7 @@ import EmiraMotion
     /// ladder: it clears the override and takes the next rung after wherever the ladder was left — not a
     /// guess at which rung the grown width was nearest.
     @Test func cycleWidthClearsAGrowAndResumesTheLadder() {
-        let config = Config(transitionMode: .off)            // ⅓ / ½ / ⅔
+        let config = EngineFix.laddered(Config(transitionMode: .off))   // ⅓ / ½ / ⅔
         var s = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))]).0
 
         (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
@@ -478,7 +480,7 @@ import EmiraMotion
     /// An expelled window keeps the width it is on screen at, override included — otherwise a grown
     /// column would silently snap back to its ladder rung as a side effect of a structural edit.
     @Test func anExpelledWindowCarriesItsGrownWidthIntoItsNewColumn() {
-        let config = Config(transitionMode: .off)
+        let config = EngineFix.laddered(Config(transitionMode: .off))
         var s = EngineFix.run(EngineFix.booted(config: config), [.windowCreated(EngineFix.snapshot(1))]).0
         (s, _) = Engine.reduce(s, .command(.grow(.points(200))))
         (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(2)))

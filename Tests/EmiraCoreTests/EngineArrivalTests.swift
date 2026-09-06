@@ -31,7 +31,7 @@ import EmiraMotion
     @Test func newStandardWindowIsFocusedAndPlaced() {
         // No capture capability ⇒ no cover, so the window is placed in the same batch. (With a cover
         // available the same arrival animates — see `GhostWindowTests`.)
-        let snap = Config(transitionMode: .off)
+        let snap = EngineFix.laddered(Config(transitionMode: .off))
         let (s, fx) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(EngineFix.snapshot(1)))
         // One column, one window, focused, placed to a ⅓-width tile at the working-area origin.
         #expect(s.world.focusedWindow == WindowId(1))
@@ -69,7 +69,8 @@ import EmiraMotion
 
     @Test func dragEndedReassertsLayout() {
         // A tiled window the user dragged off-target snaps back on release.
-        var (s, _) = EngineFix.run(EngineFix.booted(), [.windowCreated(EngineFix.snapshot(1))])
+        var (s, _) = EngineFix.run(EngineFix.booted(config: EngineFix.laddered()),
+                                   [.windowCreated(EngineFix.snapshot(1))])
         (s, _) = Engine.reduce(s, .windowFrameChanged(WindowId(1), Rect(x: 700, y: 500, width: 200, height: 200)))
         let (_, fx) = Engine.reduce(s, .dragEnded)
         let placed = EngineFix.placement(of: WindowId(1), in: fx)
@@ -187,16 +188,37 @@ import EmiraMotion
     // opened afterwards is the app's default and belongs on the ladder.
 
     /// A window emira met already open is tiled at its own width, not at ⅓.
-    @Test func aWindowAdoptedAtBootKeepsTheWidthItAlreadyHad() {
+    /// A boot adoption is silent. `Effect.focus` activates the window's app, so announcing one per
+    /// window of a scan brings every app on the machine forward in turn and leaves the desktop focused
+    /// on whichever the enumerator returned last — the workspace path already says so, this is the other.
+    @Test func theLaunchScanAdoptsWithoutAnnouncingFocus() {
         let snap = Config(transitionMode: .off)
+        var s = EngineFix.booted(config: snap)
+        var announced: [WindowId] = []
+        for i in 1...3 {
+            let (next, fx) = Engine.reduce(s, .windowCreated(
+                EngineFix.snapshot(UInt64(i), bundle: "com.app\(i)", wasAlreadyOpen: true)))
+            s = next
+            announced += fx.compactMap { if case .focus(let w) = $0 { return w } else { return nil } }
+        }
+        #expect(announced.isEmpty)
+        #expect(s.layout.columns.count == 3)          // …adopted all the same
+
+        // A window opened *now* is one the user opened, and it is still brought forward.
+        let (_, fx) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(4)))
+        #expect(fx.contains(.focus(WindowId(4))))
+    }
+
+    @Test func aWindowAdoptedAtBootKeepsTheWidthItAlreadyHad() {
+        let snap = EngineFix.laddered(Config(transitionMode: .off))
         let adopted = EngineFix.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500),
                                          wasAlreadyOpen: true)
         let (s, fx) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(adopted))
 
         #expect(EngineFix.width(s) == 640)
         #expect(s.layout.columns[0].widthOverride == .proportion(0.64))
-        // …and it is tiled there: only the *position* changes, so the arrival never resizes a window
-        // the user did not ask to resize.
+        // …and it is tiled at that width, the column's own height aside. The seeded rung is what this
+        // asserts; whether something shadows it is `EngineSoloFullscreenTests`.
         let placed = EngineFix.placement(of: WindowId(1), in: fx)
         #expect(placed != nil)
         #expect(EngineFix.approx(placed!, Rect(x: 0, y: 0, width: 640, height: 800)))
@@ -218,7 +240,7 @@ import EmiraMotion
     /// The seed is a *fraction*, like every other width on the strip — which is what makes the clamp
     /// survive the display changing under it.
     @Test func anAdoptedWidthTracksTheMonitorTheWayAPresetDoes() {
-        let snap = Config(transitionMode: .off)
+        let snap = EngineFix.laddered(Config(transitionMode: .off))
         let half = EngineFix.snapshot(1, frame: Rect(x: 0, y: 0, width: 500, height: 800),
                                       wasAlreadyOpen: true)
         var (s, _) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(half))
@@ -232,7 +254,7 @@ import EmiraMotion
     /// A window born under a running daemon has no arrangement to preserve: its width is whatever its
     /// app defaults to, and the ladder is where it belongs.
     @Test func aWindowOpenedAfterBootStillTakesTheFirstPreset() {
-        let snap = Config(transitionMode: .off)
+        let snap = EngineFix.laddered(Config(transitionMode: .off))
         let born = EngineFix.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500))
         let (s, _) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(born))
 
@@ -256,7 +278,7 @@ import EmiraMotion
 
     /// Total against a window with no width to keep — the preset answers.
     @Test func anAdoptedWindowWithNoWidthFallsBackToThePreset() {
-        let snap = Config(transitionMode: .off)
+        let snap = EngineFix.laddered(Config(transitionMode: .off))
         let empty = EngineFix.snapshot(1, frame: Rect(x: 0, y: 0, width: 0, height: 0), wasAlreadyOpen: true)
         let (s, _) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(empty))
 

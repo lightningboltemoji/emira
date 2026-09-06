@@ -36,18 +36,32 @@ public struct Fullscreen: Sendable, Equatable, Codable {
         }
     }
 
+    /// Who took the column to full width, and therefore what may take it back off. `asked` is the
+    /// `fullscreen` verb and outlives a neighbour arriving; `solo` is the strip's own rule
+    /// (`applySoloFullscreen`) and is lifted the moment the strip stops being empty around it.
+    public enum Origin: Sendable, Equatable, Codable {
+        case asked
+        case solo
+    }
+
     public var stack: Stack?
     public var anchor: Anchor?
+    public var origin: Origin
 
-    public init(stack: Stack? = nil, anchor: Anchor? = nil) {
+    public init(stack: Stack? = nil, anchor: Anchor? = nil, origin: Origin = .asked) {
         self.stack = stack
         self.anchor = anchor
+        self.origin = origin
     }
 
     /// Fullscreen with nothing to undo — what a new column inherits when a window carries the full width
     /// into an expel or another workspace, where the arrangement it would restore to is not the one it
     /// is going to.
     public static let plain = Fullscreen()
+
+    /// The same, for a column whose width is owed to `origin` — what the two rebuilds carry across, so
+    /// a lone window taken elsewhere arrives as the strip's rule rather than as the user's verb.
+    static func plain(_ origin: Origin) -> Fullscreen { Fullscreen(origin: origin) }
 }
 
 /// One column's structure: its stable id, the ordered window stack (top→bottom), and its width
@@ -440,7 +454,7 @@ public struct Layout: Sendable, Equatable, Codable {
             columns.insert(ColumnLayout(id: columnIds.mint(), windowIds: [id],
                                         widthPreset: source?.widthPreset ?? 0,
                                         widthOverride: source?.widthOverride,
-                                        fullscreen: source?.isFullscreen == true ? .plain : nil),
+                                        fullscreen: source?.fullscreen.map { .plain($0.origin) }),
                            at: at)
             at += 1
         }
@@ -490,6 +504,20 @@ public struct Layout: Sendable, Equatable, Codable {
     public mutating func setFullscreen(_ record: Fullscreen?, ofColumn id: ColumnId) {
         guard let i = columnIndex(withId: id) else { return }
         columns[i].fullscreen = record
+    }
+
+    /// The strip's own fullscreen: one *window* alone on the strip takes it whole, and gives it back the
+    /// moment it has company. A seed — applied where the population changes and never re-asserted, so a
+    /// width verb's answer stands until the next arrival or departure. `false` lifts what it raised.
+    mutating func applySoloFullscreen(_ enabled: Bool) {
+        let solo = enabled && columns.count == 1 && columns[0].windowIds.count == 1
+        for i in columns.indices {
+            if solo && columns[i].fullscreen == nil {
+                columns[i].fullscreen = .plain(.solo)
+            } else if !solo && columns[i].fullscreen?.origin == .solo {
+                columns[i].fullscreen = nil
+            }
+        }
     }
 
     // Structural mutation (the strip's editing primitives)
@@ -578,7 +606,7 @@ public struct Layout: Sendable, Equatable, Codable {
         columns.insert(ColumnLayout(id: columnIds.mint(), windowIds: [window],
                                     widthPreset: source.widthPreset,
                                     widthOverride: source.widthOverride,
-                                    fullscreen: source.isFullscreen ? .plain : nil),
+                                    fullscreen: source.fullscreen.map { .plain($0.origin) }),
                        at: to)
         return LayoutEdit(moved: true, destroyedColumn: nil)
     }

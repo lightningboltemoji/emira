@@ -402,6 +402,21 @@ public struct State: Sendable, Equatable, Codable {
         monitors.assign(destination)
         return edit
     }
+
+    /// Hand `names` to the solo rule (`Layout.applySoloFullscreen`). Called where a strip's population
+    /// changes, and nowhere else: a pass over a strip this edit did not touch would re-assert the rule
+    /// over a width the user has since chosen, which is why the sites name the strips they moved.
+    mutating func applySoloFullscreen(on names: WorkspaceName...) {
+        for name in names { workspaces[name].applySoloFullscreen(config.fullscreenWhenAlone) }
+    }
+
+    /// The same over every materialized strip — `configChanged` alone, where the setting itself moved
+    /// and the intent is global. Turning it off is the same call, and lifts every shadow it raised.
+    mutating func applySoloFullscreenEverywhere() {
+        for name in workspaces.materialized {
+            workspaces[name].applySoloFullscreen(config.fullscreenWhenAlone)
+        }
+    }
 }
 
 /// The pure reducer. Stateless namespace — all state travels through the `State` value.
@@ -699,8 +714,12 @@ public enum Engine {
             s.world.setFocus(snapshot.id)   // a new window takes focus (truth tracked always)
             guard !before.isEmpty else { return (s, []) }   // no display known: nothing to place
             // Bound to a local first — the same tuple-evaluation-order trap as `.command` above.
+            // A boot adoption is silent, as it is on the workspace path: a window the user opened is one
+            // to bring forward, but announcing focus for each of a scan's would activate every app on
+            // the machine in turn and leave the desktop wherever the enumerator happened to end.
             let effects = arriveOnStrip(&s, snapshot.id, beside: beside, old: before,
-                                        width: rule.width, keepingWidth: snapshot.wasAlreadyOpen)
+                                        width: rule.width, keepingWidth: snapshot.wasAlreadyOpen,
+                                        announcingFocus: !snapshot.wasAlreadyOpen)
             return (s, effects)
 
         case .windowDestroyed(let id):
@@ -812,6 +831,9 @@ public enum Engine {
             // Into the live animator, not just stored: `Motion` seeds the spring only at construction,
             // so a feel-only change would otherwise wait for the next daemon start.
             s.motion.setScrollSpring(config.scrollSpring)
+            // The one pass over every strip: the setting itself moved, so the reload is what the user
+            // is watching for, in both directions.
+            s.applySoloFullscreenEverywhere()
             if let focused = s.world.focusedWindow {
                 let effects = reveal(&s, focused, center: config.centerFocusedColumn)
                 return (s, effects)
@@ -1666,6 +1688,8 @@ public enum Engine {
         guard edit.moved else { return [] }
         if let dead = edit.destroyedColumn { s.motion.removeColumnWidthAnimator(dead) }
         s.workspaces[lastFocusOf: destination] = moved
+        // Both ends: the source may be down to its last window and the destination up off its first.
+        s.applySoloFullscreen(on: s.monitors.shown, destination)
 
         if follow {
             return switchWorkspace(&s, to: destination, focusing: moved, mover: moved,
@@ -2479,6 +2503,15 @@ public enum Engine {
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
 
         let column = s.layout.columns[index]      // a copy; never re-read after a mutation
+        // `fullscreen on` over the strip's own rule is the user adopting it: nothing moves, because the
+        // column is already full, but the record stops being the rule's and the next window opened
+        // leaves it alone. Without this there is no way to say it about a window that is already full.
+        if column.fullscreen?.origin == .solo, toggle.resolved(current: true) {
+            var record = column.fullscreen ?? .plain
+            record.origin = .asked
+            s.layout.setFullscreen(record, ofColumn: column.id)
+            return []
+        }
         // Before anything is written: `fullscreen on` twice must not overwrite the record with the
         // arrangement fullscreen itself created.
         guard toggle.resolved(current: column.isFullscreen) != column.isFullscreen else { return [] }
@@ -2789,6 +2822,10 @@ public enum Engine {
         // Before the geometry below is read, so an adopted window travels to its place on the strip
         // rather than also resizing on the way.
         seedWidth(&s, id, to: width, keepingExisting: keepingWidth)
+        // After the seed and not before it: a seed chooses the rung, and the rule shadows whatever rung
+        // the column ended up on. Reversed, `setWidthOverride` would clear the shadow and every seeded
+        // column would be exempt — which is a statement about the width stack, not about arriving.
+        s.applySoloFullscreen(on: s.monitors.shown)
 
         let opened = s.world.windows[id]?.frame
         let seeded = opened.map { frame in old.map { $0.including(id, at: frame) } } ?? old
@@ -2833,6 +2870,9 @@ public enum Engine {
         seedWidth(&s, snapshot.id, to: width, keepingExisting: snapshot.wasAlreadyOpen)
         s.move(window: snapshot.id, to: destination,
                insertingAfter: s.workspaces[lastFocusOf: destination])
+        // The destination alone: the strip in view held this window for one statement and is back to
+        // the population it had, so a pass over it would re-seed a width the user has since chosen.
+        s.applySoloFullscreen(on: destination)
 
         guard !snapshot.wasAlreadyOpen else { return reassertTruthPlane(&s) }
         // Focus is set *inside* the switch, never before it: `switchWorkspace` reads the current focus
@@ -2890,6 +2930,9 @@ public enum Engine {
         // The departed window's own lag is measured against a layout that no longer places it.
         s.motion.removeWindowAnimator(id)
         s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        // Before the geometry below is read, so a survivor left alone widens under the same cover the
+        // departure opens rather than snapping after it.
+        s.applySoloFullscreen(on: s.monitors.shown)
 
         // Focus may have gone with it. Choose the successor *before* framing the strip, since that is
         // what the viewport aims at, and take the neighbour — the front of the strip would scroll home.

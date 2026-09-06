@@ -386,7 +386,8 @@ import Testing
     /// `width` is on `width-presets`' scale, so `0.5` is half the content area — 500 pt of the 1000-pt
     /// display these tests lay out against, rather than the ½ preset by coincidence.
     @Test func widthSeedsTheColumnItOpens() {
-        let config = Self.config([WindowRule(appId: "com.test.app", width: .proportion(0.75))])
+        let config = EngineFix.laddered(Self.config([WindowRule(appId: "com.test.app",
+                                                                width: .proportion(0.75))]))
         let s = EngineFix.booted(config: config)
         let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
@@ -398,7 +399,8 @@ import Testing
     /// A value over 1 is points, not a fraction — the same reading `width-presets` gives it, shared
     /// rather than restated so the two spellings of a width cannot drift apart.
     @Test func aWidthOverOneIsPoints() {
-        let config = Self.config([WindowRule(appId: "com.test.app", width: .fixed(420))])
+        let config = EngineFix.laddered(Self.config([WindowRule(appId: "com.test.app",
+                                                                width: .fixed(420))]))
         let s = EngineFix.booted(config: config)
         let (after, _) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 

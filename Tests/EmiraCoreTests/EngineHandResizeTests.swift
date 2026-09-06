@@ -325,7 +325,7 @@ import EmiraMotion
 
     /// The width half of the same fact.
     @Test func aColumnDrawnToFullWidthIsFullWidthOnEveryDisplay() {
-        var s = Self.twoDisplays(1)
+        var s = Self.twoDisplays(1, config: EngineFix.laddered(EngineFix.halfWidthSnap))
         (s, _) = Self.drag(s, WindowId(1), to: Rect(x: 0, y: 0, width: 1000, height: 800))
         #expect(s.layout.columns[0].widthOverride == .proportion(1.0))
 

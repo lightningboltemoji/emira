@@ -364,6 +364,10 @@ public struct Config: Sendable, Equatable, Codable {
     public var glideSpring: SpringParams
     /// Whether a focus change centers the focused column or does the minimal scroll that reveals it.
     public var centerFocusedColumn: Bool
+    /// Whether a strip holding exactly one window gives it the whole strip. A width preset is a share of
+    /// something to share, and a lone window has nothing to share with; the rung comes back the moment a
+    /// second window opens. Seeded at arrivals and departures only (`Layout.applySoloFullscreen`).
+    public var fullscreenWhenAlone: Bool
     /// Whether `grow` and `shrink` catch where the columns on screen sit flush with the viewport, a
     /// second press pushing past. Nothing is remembered between presses: being *in* the notch is what
     /// the second press reads, so the geometry carries the intent the way a stored flag would.
@@ -442,6 +446,7 @@ public struct Config: Sendable, Equatable, Codable {
         // layers have not reached. Spelled as stiffness for `.smooth`'s reason.
         glideSpring: SpringParams = SpringParams(stiffness: 100, dampingRatio: 1),
         centerFocusedColumn: Bool = false,
+        fullscreenWhenAlone: Bool = true,
         resizeDetent: Bool = false,
         interactiveResize: Bool = true,
         systemFocusEvents: SystemFocusEvents = .respect,
@@ -469,6 +474,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.moveSpring = moveSpring
         self.glideSpring = glideSpring
         self.centerFocusedColumn = centerFocusedColumn
+        self.fullscreenWhenAlone = fullscreenWhenAlone
         self.resizeDetent = resizeDetent
         self.interactiveResize = interactiveResize
         self.systemFocusEvents = systemFocusEvents
