@@ -390,7 +390,7 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
 | ------------------- | -------------------------------------- | ------------------------------------------------------- |
 | `holdTimeout`       | an AX set never landed                 | close, `endTransition`, re-place                        |
 | `coverUnavailable`  | the capture plane produced no base     | abandon **before anything moved**, snap                 |
-| `axFailed`          | the app refused or timed out the write | mark the window's frame unverified, resolve its landing |
+| `axFailed`          | the write's result is not believable   | mark the window's frame unverified, resolve its landing |
 | `abandonTransition` | a switch handed no before-geometry     | close, with `finishStructuralEdit` placing behind it    |
 | `screensChanged`    | the ground the strip stands on moved   | close **every** cover, `endTransition` each, re-place   |
 
@@ -401,11 +401,14 @@ nobody can see. A report that changes **nothing** is exempt, and has to be — `
 arrives redundantly, and closing a cover mid-raise there would write the truth plane with nothing on
 the glass to hide it.
 
-`axFailed` records that _we don't know where the window is_. Placement writes its target into `World`
-optimistically, which is what keeps a repeated idle event from re-emitting forever; a timed-out write generally
-cannot read the frame back to correct it, so the lie would stand as truth and the placement diff would skip the
-window forever. Marking it unverified makes that predicate answer `false`. Deliberately **not** a retry —
-nothing is scheduled — so a hung app costs one extra set per real event instead of a busy loop.
+`axFailed` records that _we don't know where the window is_ — which is a refused write **and** an accepted one
+whose read-back did not answer, since a landing that carries no frame is evidence of nothing. Placement writes
+its target into `World` optimistically, which is what keeps a repeated idle event from re-emitting forever, so
+the guess would otherwise stand as truth and the placement diff would skip the window forever: a column laid
+out around a width its window refused, with no `SizeCorrection` on file to say so. The observers do not repair
+it either — an app that refuses a resize *without moving* posts nothing for `WorldWatcher` to read. Marking it
+unverified makes that predicate answer `false`. Deliberately **not** a retry — nothing is scheduled — so a hung
+app costs one extra set per real event instead of a busy loop.
 
 A snap-path event arriving mid-transition (a `windowCreated` during a scroll) **redirects** the session rather
 than returning nothing. Every such path goes through the same opens-or-redirects call the command paths use.

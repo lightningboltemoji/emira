@@ -229,6 +229,32 @@ import EmiraCore
         #expect(events.events == [.axFailed(id)])
     }
 
+    @Test("a write that went through but could not be read back is not a landing")
+    func aWriteWithNoReadBackIsNotALanding() {
+        // `AXWindow.place(at:)` reads the window back over the same messaging timeout the sets ran
+        // under, so an app that took both writes and then went busy answers
+        // `(accepted: true, actual: nil)`. The sets happened; where they left the window is unknown.
+        //
+        // Reported as `axLanded` this is the one shape nothing else can catch: the frame
+        // `writeTruthPlane` wrote optimistically would stand as truth, `isAlreadyPlaced` would match it
+        // forever, and a window that refused the size *without moving* posts no AX notification for the
+        // watcher to correct it with. The strip would then be laid out around a width no window in it
+        // has — permanently, with no `SizeCorrection` on file to say why.
+        let registry = WindowRegistry()
+        let id = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.landing = { WindowLanding(id: $0.record.id, accepted: true, frame: nil) }
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.setFrame(id, Self.rect(0))], feedback: events.sink)
+
+        // `axFailed`, whose whole job is `World.unverified`: the recorded frame is a guess, and the
+        // next placement pass asks again. It marks the landing too, so one unreadable window cannot
+        // hold a cover open.
+        #expect(events.events == [.axFailed(id)])
+    }
+
     @Test("a window that both refused the write and drifted reports both facts")
     func aRefusedWriteThatAlsoDriftedReportsBoth() {
         let registry = WindowRegistry()

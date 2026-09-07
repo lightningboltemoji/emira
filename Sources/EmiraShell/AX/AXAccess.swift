@@ -212,19 +212,20 @@ public struct AXWindow: @unchecked Sendable {
     ///
     /// `accepted` is the app's verdict on the *write* (`Event.axFailed`); `actual` is where it ended up,
     /// which may differ — a terminal snapping to character cells accepts every write and lands
-    /// elsewhere. `actual` is `nil` only if the window stopped answering mid-set.
+    /// elsewhere. `actual` is `nil` whenever the window stopped answering, on either read.
     func place(at rect: Rect) -> (accepted: Bool, actual: Rect?) {
         var accepted = setSize(rect.size)
         accepted = setPosition(rect.origin) && accepted
-        guard var actual = frame else { return (accepted, nil) }
-        guard !sameFrame(actual, rect) else { return (accepted, actual) }
+        guard let landed = frame else { return (accepted, nil) }
+        guard !sameFrame(landed, rect) else { return (accepted, landed) }
         // One corrective pass, same order: the size write may have been clamped against the *old*
         // position and can succeed now. Bounded at one — an app that refuses twice is asserting a
         // constraint we are not entitled to override.
         accepted = setSize(rect.size) && accepted
         accepted = setPosition(rect.origin) && accepted
-        actual = frame ?? actual
-        return (accepted, actual)
+        // `landed` cannot stand in for a read that fails here: it predates two writes whose whole
+        // purpose is to move the window, so a corrective pass that worked would report as drift.
+        return (accepted, frame)
     }
 
     /// Main + focused + front of its own stack. All three, because apps honor different subsets.

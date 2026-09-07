@@ -127,7 +127,9 @@ public enum Event: Sendable, Equatable, Codable {
     /// (`Effect.park`), so this is not a `placementCorrected` and never becomes a `SizeCorrection`.
     case parkCorrected(WindowId, requested: Rect, actual: Rect)
 
-    /// A `setFrame`/`park` was refused or timed out — the write did not happen at all.
+    /// A `setFrame`/`park` whose result the core may not believe: the write was refused or timed out, or
+    /// it went through and the window could not be read back afterwards. Either way the frame placement
+    /// wrote optimistically is a guess (`World.unverified`), and the next pass re-issues the set.
     case axFailed(WindowId)
 
     /// A `capture(win)` produced pixels the cover can be built from — the window's own still, or, under

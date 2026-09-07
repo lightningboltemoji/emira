@@ -140,6 +140,10 @@ public final class AXExecutor: Executor {
     ///  · `axLanded`/`axFailed` for the *write*, not the geometry. A terminal that quantizes to character
     ///    cells accepts every set and lands short every time; `axFailed` means the app said no.
     ///
+    ///    **A landing with no frame is one of them**: the read-back runs under the same messaging
+    ///    timeout the sets did, so an app that took both writes and then went busy leaves where they put
+    ///    it unknown, and the optimistic frame in `World` unverified.
+    ///
     /// Order matters: truth first, then the verdict. `axLanded` can close a transition and snap the
     /// viewport, and the frame it snaps against should already be the real one.
     private static func report(_ landings: [WindowLanding], for moves: [WindowMove],
@@ -153,7 +157,8 @@ public final class AXExecutor: Executor {
                     ? .parkCorrected(landing.id, requested: move.target, actual: actual)
                     : .placementCorrected(landing.id, requested: move.target, actual: actual))
             }
-            feedback(landing.accepted ? .axLanded(landing.id) : .axFailed(landing.id))
+            let confirmed = landing.accepted && landing.frame != nil
+            feedback(confirmed ? .axLanded(landing.id) : .axFailed(landing.id))
         }
     }
 
