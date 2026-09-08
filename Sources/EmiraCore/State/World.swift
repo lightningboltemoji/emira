@@ -318,6 +318,22 @@ public struct World: Sendable, Equatable, Codable {
         }
     }
 
+    /// The newest window `monitor` is showing, by `focusedAt` — the top of the focus stack, over the same
+    /// record `StackOrder` reads. On screen and on one display, because a memory of a window in the Dock,
+    /// scrolled away, or on another screen is not somewhere a departure can hand focus.
+    public func lastFocusedOnScreen(on monitor: MonitorId?) -> WindowId? {
+        guard let monitor else { return nil }
+        return focusedAt
+            .filter { id, _ in
+                guard isOnScreen(id), let frame = windows[id]?.frame else { return false }
+                // The centre, as hoisting asks it: a window half off an edge is still on the screen
+                // holding the rest of it.
+                return self.monitor(at: frame.center) == monitor
+            }
+            // `focusClock` is monotonic and written once per move, so there are no ties to break.
+            .max { $0.value < $1.value }?.key
+    }
+
     /// Move the strip memory without moving focus — what `setFocus` cannot say, for a window that carries
     /// focus *off* the strip and leaves a place behind it. Refuses a window that is not on the strip,
     /// which is `setFocus`'s own guard and the invariant `pruneStripFocus` keeps.

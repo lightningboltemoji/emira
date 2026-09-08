@@ -318,6 +318,57 @@ import EmiraMotion
         #expect(fx.contains(.focus(WindowId(1))))
     }
 
+    /// Nesting, which is the whole of what the focus stack buys over the strip memory: a dialog opens
+    /// out of a dialog, and closing the inner one comes back to the outer rather than skipping past it
+    /// to the strip. Nothing off the strip is ever `lastStripFocus`, so the memory cannot answer this.
+    @Test func closingADialogReturnsToTheDialogItOpenedOutOf() {
+        var s = EngineFix.world(2)                          // w1 | w2, w2 focused
+        (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3, role: .dialog)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
+        (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(4, role: .dialog)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(4), origin: .system))
+        s = EngineFix.settle(s)
+        #expect(s.layout.columns.count == 2)                // neither dialog holds a column
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(4)))
+        #expect(s.world.focusedWindow == WindowId(3))       // *not* w2, the strip place behind both
+        #expect(fx.contains(.focus(WindowId(3))))
+    }
+
+    /// The stack is asked of the screen, not of history: a window in the Dock is a memory of somewhere
+    /// focus cannot be handed, however recently it held it.
+    @Test func theStackSkipsAWindowInTheDock() {
+        var s = EngineFix.world(2)                          // w1 | w2, w2 focused
+        (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3, role: .dialog)))
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(3), origin: .system))
+        (s, _) = Engine.reduce(s, .windowMinimized(WindowId(2)))   // newer than w1, and unreachable
+        s = EngineFix.settle(s)
+        #expect(s.world.focusedWindow == WindowId(3))
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
+        #expect(s.world.focusedWindow == WindowId(1))
+        #expect(fx.contains(.focus(WindowId(1))))
+    }
+
+    /// From the other side: the strip's last column closing hands focus to a float standing in the
+    /// open, which is the only thing left to focus. The positional clauses have nothing to answer with
+    /// and the strip memory went with the column.
+    @Test func theLastColumnClosingHandsFocusToAFloatStandingInTheOpen() {
+        var s = EngineFix.world(2)                          // w1 | w2, w2 focused
+        (s, _) = Engine.reduce(s, .command(.float(.on)))    // w2 floats, still focused
+        (s, _) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
+        s = EngineFix.settle(s)
+        #expect(s.layout.allWindowIds == [WindowId(1)])
+
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(1)))
+        #expect(s.layout.columns.isEmpty)
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(fx.contains(.focus(WindowId(2))))
+    }
+
     /// Totality: a float closing over an empty strip focuses nothing. Focus on nothing is a resting
     /// state (§4), and the last resort has nothing to reach for.
     @Test func closingTheLastFloatLeavesFocusNowhere() {

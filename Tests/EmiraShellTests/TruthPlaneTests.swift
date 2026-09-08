@@ -242,6 +242,19 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
             == [WindowIdentity.Rejection(observed: 0, reason: .ambiguous)])
     }
 
+    /// `WindowListEntry.current()` needs a window server, so what is pinned is the decision it turns
+    /// on: an open/save panel stands at the modal-panel level, and a window the join never sees is one
+    /// emira scans for forever.
+    @Test func theListCoversEveryLevelAnAppsOwnWindowsStandAt() {
+        for key in [CGWindowLevelKey.normalWindow, .floatingWindow, .modalPanelWindow] {
+            #expect(WindowListEntry.windowLevels.contains(Int(CGWindowLevelForKey(key))), "\(key)")
+        }
+        // Above them is chrome nothing binds to, and admitting it could only cost the join ambiguity.
+        for key in [CGWindowLevelKey.dockWindow, .mainMenuWindow, .statusWindow, .popUpMenuWindow] {
+            #expect(!WindowListEntry.windowLevels.contains(Int(CGWindowLevelForKey(key))), "\(key)")
+        }
+    }
+
     @Test func anUnambiguousOffScreenWindowStillBinds() {
         // A minimized window, or one on another Space, has no on-screen entry at all — and is still
         // identifiable, because nothing competes.

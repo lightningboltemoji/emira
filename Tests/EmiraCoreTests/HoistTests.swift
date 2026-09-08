@@ -156,6 +156,48 @@ import Testing
         #expect(Self.shown(s) == [WindowId(2), WindowId(3)])
     }
 
+    /// The arrival's own rank, and what it stops. A float emira does not focus has no `focusedAt`
+    /// entry unless the arrival writes one, and with none it ranks *behind* the window it opened out
+    /// of — its own app's, which is precisely rule 3's test. The picture would go up over a window the
+    /// user is looking at, filmed before the app had drawn anything into it.
+    @Test func aFloatIsNotHoistedByTheWindowItOpenedOutOf() {
+        var config = EngineFix.fullWidth
+        config.windowRules = [WindowRule(smallerThanFocused: 0.8, fromFocusedApp: true, float: true)]
+        var s = EngineFix.booted(config: config)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1))]).0
+        // Small enough for the rule, and over the full-width column it opened out of.
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(2, frame: Self.float))]).0
+
+        #expect(s.world.isFloatedByChoice(WindowId(2)))     // the rule fired…
+        #expect(s.world.focusedWindow == WindowId(1))       // …without the dialog stealing focus
+        #expect(Self.shown(s).isEmpty)
+        #expect(s.hoists.map(\.state) == [.standby])
+    }
+
+    /// The stacking record outlives focus leaving every managed window, which is a different fact and
+    /// the one an app reports while opening a window emira has not bound yet.
+    @Test func aStaleNilFocusReportDoesNotBuryAFreshFloat() {
+        var config = EngineFix.fullWidth
+        config.windowRules = [WindowRule(smallerThanFocused: 0.8, fromFocusedApp: true, float: true)]
+        var s = EngineFix.booted(config: config)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1)),
+                              .windowCreated(EngineFix.snapshot(2, frame: Self.float))]).0
+        s = EngineFix.run(s, [.focusChanged(nil, origin: .system)]).0
+        #expect(Self.shown(s).isEmpty)
+    }
+
+    /// …and the record is asked of the screen rather than written unconditionally: a window that
+    /// arrives in the Dock is on top of nothing, so it keeps the rank a desktop nothing has focused
+    /// gives it.
+    @Test func aMinimizedArrivalIsOnTopOfNothing() {
+        var s = EngineFix.booted(config: EngineFix.fullWidth)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1))]).0
+        let minimized = WindowSnapshot(id: WindowId(2), bundleId: "com.test.app", title: "w",
+                                       role: .standard, frame: Self.float, isMinimized: true)
+        s = EngineFix.run(s, [.windowCreated(minimized)]).0
+        #expect(s.world.focusedAt[WindowId(2)] == nil)
+    }
+
     /// Nothing has been focused, so nothing is known to be behind anything: the float is prepared and
     /// shows nothing. The conservative answer at boot, and it falls out of the rank rather than being a
     /// case.

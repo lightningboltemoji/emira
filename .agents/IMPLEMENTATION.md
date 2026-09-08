@@ -899,14 +899,36 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   unit test and appends in reality every time.
 - **A departure hands focus to the place it vacated** (`Engine.successor`): a surviving stackmate in the same
   column, else whichever column now stands at the departed one's index, else — for a window that was already
-  off the strip, a float or a dialog — `stripAnchor`, and only then the strip's front. The first two clauses
-  are positional and a window with no column has neither, so the anchor is the whole of its answer.
+  off the strip, a float or a dialog — the **focus stack**, and only then `stripAnchor` and the strip's front.
+  The first two clauses are positional and a window with no column has neither, so the rest is the whole of
+  its answer.
+
+  **The stack is `World.focusedAt`, read as a stack rather than as an order** (`World.lastFocusedOnScreen`):
+  the newest window the acting monitor is still showing. That is what makes a dialog closing return to
+  whatever it opened out of *to any depth* — a picker over a settings window over the strip unwinds one step
+  at a time — where `stripAnchor` cannot, since by construction it only ever answers with a window that holds
+  a column. Asked **on screen and on one display**, because a memory of a window in the Dock, scrolled away,
+  or on another screen is not somewhere focus can be handed. `stripAnchor` still answers behind it, for the
+  strip place that has since scrolled out of view.
+
+  It is reached from the other side too: **a strip emptied of its last column hands focus to a float standing
+  in the open**, which is the only thing left to focus. `move-to-monitor` staying behind is the one departure
+  that does not consult it — the placement pass is what retires the moved window from `placedOnScreen`, so
+  until it runs the newest thing on screen is the window just sent away.
 - **`World.focusedAt` is the stacking order**, and it is the third thing focus is recorded for. macOS
   stacks by what was focused last — an app's activation lifts all of its windows above every other app's,
   and within an app the newest focus is on top — so a counter written on every focus change reconstructs
   the order without asking the window server, whose own answer costs a `CGWindowListCopyWindowInfo` that
   blocks for as long as another app's animation runs. Written only when focus actually *moves*: re-asserting
   it onto the window that already has it raises nothing, and our own echo is exactly that.
+
+  **An arrival off the strip writes it without a focus** (`World.noteActivation`, from `windowCreated`).
+  Every other way to the top is a focus change emira either made or was told about; a window it does not
+  place is neither, since emira focuses only what it places and the app's own report about a window still
+  being bound resolves to `nil`. With no rank a fresh float sits under every window of its own app, which
+  is hoisting's third rule, so its picture goes up the instant it opens. Only the stacking half is
+  written — the taxonomy floats every dialog and popover, and most take no focus — and only for a window
+  that arrives **on screen**: one arriving into the Dock or under a hidden app is on top of nothing.
 - **`World.lastStripFocus` is a place, not a window that once held focus.** It is dropped the moment its
   window leaves the strip (`pruneStripFocus`, on destroy, float, minimize and `Cmd-H`) and moved onto the
   place a departing window vacated (`noteStripFocus`, from `departFromStrip`, which is the only moment the
@@ -1137,6 +1159,14 @@ match — a nearest-position match always answers, and a wrong answer is permane
 the same scan against the same two lists: `WindowIdentity.bind` (which window-list entry is this AX window) and
 `WindowIdentity.succeed` (which arriving window is standing where a departed one stood). Both are pure.
 
+**The list is read at every level an app's own windows stand at** (`WindowListEntry.windowLevels`) — normal,
+floating, and the modal-panel level an open/save panel is presented on. Above them is chrome nothing binds to,
+and the width is the safe direction anyway: uniqueness means an extra candidate turns a match into a visible
+rejection, never a wrong answer. A window AX lists and the read cannot see is the expensive case, because it
+makes "every on-screen window is managed" unsatisfiable and the heartbeat below asks forever — and asking is a
+`kAXWindowsAttribute` read into the app, which some toolkits answer by taking key back off a panel the user is
+typing in.
+
 **`WindowRegistry.rebind` is the only thing that re-points a binding**, and it buys native tab groups: keeping
 the `WindowId` makes a tab switch _unobservable to the core_, so the column, its width, its workspace and its
 float state survive one without a single `Event`. Three maps move together or the seam leaks — number, element,
@@ -1196,7 +1226,7 @@ milliseconds instead of at the next tick, and running out no longer means giving
 the app does — the one witness a beachballed app cannot keep quiet. Absence from `CGWindowListCopyWindowInfo`
 is therefore a death certificate, and a stronger one than any evidence the AX paths hold, where silence has a
 second reading. Two edges make it safe. It is absence from the list *entirely*, never `isOnScreen`: an ordinary
-desktop carries far more off-screen layer-0 entries than on-screen ones — background tabs, other Spaces, the
+desktop carries far more off-screen entries than on-screen ones — background tabs, other Spaces, the
 Dock — and each is a live window, which is exactly why the *discovery* direction filters on the opposite sense.
 And an empty list is a failed read rather than an empty desktop, so it is refused before it can retire the
 strip. Removal goes through `vanish`, so a window that closed unheard still gets the succession its

@@ -73,7 +73,7 @@ public struct WindowListEntry: Sendable, Equatable {
     /// The current window list, ordinary application windows only.
     ///
     /// `.optionAll` rather than `.optionOnScreenOnly` because a minimized window still needs an identity
-    /// and is by definition not on screen; `.excludeDesktopElements` plus `kCGWindowLayer == 0` drops the
+    /// and is by definition not on screen; `.excludeDesktopElements` plus `windowLevels` drops the
     /// desktop, Dock and menu bar, leaving the set AX also describes. Needs no Screen Recording grant —
     /// only `kCGWindowName` is gated, and titles come from AX instead.
     public static func current() -> [WindowListEntry] {
@@ -82,7 +82,7 @@ public struct WindowListEntry: Sendable, Equatable {
             return []
         }
         return raw.compactMap { info in
-            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+            guard let layer = info[kCGWindowLayer as String] as? Int, windowLevels.contains(layer),
                   let number = info[kCGWindowNumber as String] as? CGWindowID,
                   let pid = info[kCGWindowOwnerPID as String] as? pid_t,
                   let bounds = info[kCGWindowBounds as String] as? [String: Any],
@@ -95,6 +95,11 @@ public struct WindowListEntry: Sendable, Equatable {
                 isOnScreen: info[kCGWindowIsOnscreen as String] as? Bool ?? false)
         }
     }
+
+    /// The levels an app's own windows stand at: normal, floating, and the modal-panel level an
+    /// open/save panel is presented on. Above them is chrome nothing binds to. Widening cannot mis-bind
+    /// — a match must be *unique*, so an extra candidate turns a match into a visible rejection.
+    static let windowLevels: ClosedRange<Int> = 0...Int(CGWindowLevelForKey(.modalPanelWindow))
 }
 
 // The join (pure)

@@ -703,8 +703,13 @@ public enum Engine {
             let rule = WindowRules.outcome(for: WindowArrival(snapshot, from: anchor),
                                            in: s.config.windowRules)
             if let float = rule.float { s.world.setFloating(snapshot.id, float) }
-            // A non-tiling window (dialog/panel/sheet/float) is the app's to position.
-            guard s.world.participatesInStrip(snapshot.id) else { return (s, []) }
+            // A non-tiling window (dialog/panel/sheet/float) is the app's to position — and it opened
+            // *on top*, which off the strip nothing else records. `noteActivation` and not `setFocus`:
+            // the taxonomy floats every dialog and popover, and most of those take no focus at all.
+            guard s.world.participatesInStrip(snapshot.id) else {
+                if s.world.isOnScreen(snapshot.id) { s.world.noteActivation(snapshot.id) }
+                return (s, [])
+            }
             // A rule may send it to another workspace entirely, in which case it never joins the strip
             // in view and this arrival has nothing to animate.
             if let assigned = rule.workspace, assigned != s.monitors.shown {
@@ -1698,7 +1703,10 @@ public enum Engine {
 
         // Staying: focus left with the window, so it lands on the neighbour — or, on an emptied strip, off
         // the strip entirely, which `handleFocus`'s entry condition recovers from.
-        let heir = successor(s.layout, column: column, at: index, anchor: stripAnchor(s))
+        //
+        // No stack to consult: the placement pass below is what retires the moved window from
+        // `placedOnScreen`, so until it runs the newest thing on screen is the window we just sent away.
+        let heir = successor(s.layout, column: column, at: index, recent: nil, anchor: stripAnchor(s))
         s.world.setFocus(heir)
         let effects = finishStructuralEdit(&s, edit, focused: heir, mover: moved, animatingFrom: old,
                                            travelling: moved)
@@ -2895,17 +2903,19 @@ public enum Engine {
     }
 
     /// Where focus lands when the window holding it leaves the strip: a surviving stackmate in the same
-    /// column, else whichever column now occupies the departed one's place, else — for a window that had
-    /// no place at all — `anchor`, the last place focus held on this strip. `nil` only for an empty strip.
+    /// column, else whichever column now occupies the departed one's place, else `recent` — the top of
+    /// the focus stack — and only then `anchor`, the last place focus held on this strip.
     ///
-    /// The first two clauses are positional, and a window off the strip has neither a column nor an
-    /// index, so the third is the whole of a float's answer.
+    /// The first two clauses are positional, and a window with no place has neither a column nor an
+    /// index, so the rest is the whole of a float's answer.
     private static func successor(_ layout: Layout, column: ColumnId?, at index: Int?,
-                                  anchor: WindowId?) -> WindowId? {
+                                  recent: WindowId?, anchor: WindowId?) -> WindowId? {
         if let column, let i = layout.columnIndex(withId: column) {
             return layout.columns[i].windowIds.first   // the column outlived the window: stay in it
         }
-        guard let index, !layout.columns.isEmpty else { return anchor ?? layout.allWindowIds.first }
+        guard let index, !layout.columns.isEmpty else {
+            return recent ?? anchor ?? layout.allWindowIds.first
+        }
         return layout.columns[Swift.min(index, layout.columns.count - 1)].windowIds.first
     }
 
@@ -2937,7 +2947,9 @@ public enum Engine {
         // Focus may have gone with it. Choose the successor *before* framing the strip, since that is
         // what the viewport aims at, and take the neighbour — the front of the strip would scroll home.
         var refocus: [Effect] = []
-        if let next = successor(s.layout, column: column, at: index, anchor: stripAnchor(s)) {
+        if let next = successor(s.layout, column: column, at: index,
+                                recent: s.world.lastFocusedOnScreen(on: s.monitors.focused),
+                                anchor: stripAnchor(s)) {
             if s.world.focusedWindow == nil {
                 s.world.setFocus(next)
                 refocus = [.focus(next)]
