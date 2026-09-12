@@ -1,12 +1,18 @@
 import Foundation
 
-// Turns the strip/column/park math into concrete per-window target frames: a window gets its tiled
-// frame if its column is on screen, or a park slot if its column is scrolled off the viewport.
+// One workspace's arrangement, and the concrete per-window target frames it resolves to.
 //
-// Structure lives here (which columns, which windows stack in each); monitor- and config-dependent
-// metrics arrive per call in `LayoutMetrics` and are never stored. Columns sit in virtual-strip space
-// (infinite x, origin 0), pulled into the viewport as `contentArea.minX + (stripX − scrollOffset)`;
-// parked windows are already in screen space. Top-left origin throughout (Geometry.swift).
+// **Structure and geometry are two things here, and only the second has a kind.** The structure —
+// which columns, which windows stack in each, what width each intends — is the same under either
+// layout, and so are the four editing primitives, `reconcile`, `adopt` and `remove`. The geometry
+// switches on `Layout.Kind`: `strip` resolves through `Strip`, an infinite ribbon of columns pulled
+// into the viewport at a scroll offset; `stack` resolves through `Stack`, a diagonal cascade over the
+// content area that never scrolls and never parks a window it is showing.
+//
+// Monitor- and config-dependent metrics arrive per call in `LayoutMetrics` and are never stored.
+// Strip columns sit in virtual-strip space (infinite x, origin 0), pulled into the viewport as
+// `contentArea.minX + (stripX − scrollOffset)`; parked windows are already in screen space. Top-left
+// origin throughout (Geometry.swift).
 
 /// What a fullscreen column remembers so the toggle can undo itself: the stack the window was expelled
 /// from, and where the viewport was looking. Never a width — the width underneath comes back by being
@@ -373,25 +379,58 @@ public struct ColumnAllocator: Sendable, Equatable, Codable {
     }
 }
 
-/// The arrangement of one strip: its ordered columns. Structure only; frames are computed on demand
-/// from a `scrollOffset` + `LayoutMetrics`. Value type, `Codable` for state dumps / replay.
+/// The arrangement of one workspace: its ordered columns, and which geometry they resolve through.
+/// Structure only; frames are computed on demand from a `scrollOffset` + `LayoutMetrics`. Value type,
+/// `Codable` for state dumps / replay.
 ///
 /// It mints nothing of its own — new `ColumnId`s come from a `ColumnAllocator` the caller passes in —
 /// which is what makes its `Equatable` purely *structural*.
 public struct Layout: Sendable, Equatable, Codable {
+
+    /// The two arrangements a workspace can be in. A stored field on `Layout` and not on
+    /// `LayoutMetrics`: metrics are a *display's*, and a display owns many workspaces while showing
+    /// one, so a metrics-borne kind would lay every parked workspace out in the shown one's layout.
+    public enum Kind: String, Sendable, Equatable, Codable, CaseIterable {
+        /// An infinite horizontal ribbon of columns, scrolled through a viewport. Windows never
+        /// overlap and are never clipped to fit.
+        case strip
+        /// A diagonal cascade over the content area. Every tile is the same size, that size is a
+        /// function of how many there are, and tiles overlap.
+        case stack
+    }
+
     /// The columns, left→right. `private(set)` so the structural invariant — every column non-empty,
     /// each window in at most one — is maintained only through the mutators below.
     public private(set) var columns: [ColumnLayout]
 
-    /// An empty strip — no columns. Populate via `reconcile`.
-    public init() {
+    /// Which geometry the columns resolve through. Seeded from `layout.default` at materialisation,
+    /// changed by the `layout` verb, and not persisted across a restart. **`stack` reads through the
+    /// column partition to the flat window list and never writes to it**, so a switch there and back
+    /// is lossless.
+    public private(set) var kind: Kind
+
+    /// Change which geometry this workspace resolves through. **Structure-preserving**: no column is
+    /// created, merged or written to. The one thing it lifts is a `solo` fullscreen, which is the
+    /// strip's own rule and on a cascade would be a shadow nothing ever takes back off.
+    public mutating func setKind(_ kind: Kind) {
+        guard kind != self.kind else { return }
+        self.kind = kind
+        for i in columns.indices where columns[i].fullscreen?.origin == .solo {
+            columns[i].fullscreen = nil
+        }
+    }
+
+    /// An empty workspace — no columns. Populate via `reconcile`.
+    public init(kind: Kind = .strip) {
         self.columns = []
+        self.kind = kind
     }
 
     /// Construct from an explicit column arrangement. Supplied ids are taken as given; keeping the
     /// allocator past them is the caller's job, which `Workspaces.init(focused:strips:)` does once.
-    public init(columns: [ColumnLayout]) {
+    public init(columns: [ColumnLayout], kind: Kind = .strip) {
         self.columns = columns
+        self.kind = kind
     }
 
     public var isEmpty: Bool { columns.isEmpty }
@@ -406,13 +445,16 @@ public struct Layout: Sendable, Equatable, Codable {
         columns.firstIndex { $0.id == id }
     }
 
-    /// Every window on the strip in *layout* order — left→right, top→bottom. Distinct from
-    /// `World.stripWindowIds`, which is id-sorted.
+    /// Every window here in *layout* order — left→right, top→bottom, and under `stack` the diagonal
+    /// from the back slot forward. Distinct from `World.tiledWindowIds`, which is id-sorted.
+    ///
+    /// **Not a z-order.** It was one by accident while nothing tiled overlapped; a cover stacks its
+    /// layers in `Engine.scopeUnion`'s order, which reads the desktop's own (`StackOrder`).
     public var allWindowIds: [WindowId] {
         columns.flatMap(\.windowIds)
     }
 
-    /// Sync the column structure to the strip's current membership: departures are dropped along with
+    /// Sync the column structure to this workspace's current membership: departures are dropped with
     /// any column they empty, newcomers arrive as fresh single-window columns. Surviving columns keep
     /// their id and stack order, so animation identity and the user's arrangement outlive enumeration
     /// churn. Total. Called by `Workspaces.reconcile`, which composes it from the two halves below.
@@ -420,7 +462,7 @@ public struct Layout: Sendable, Equatable, Codable {
     /// - Parameter anchor: the window a newcomer opens **beside**; `nil`, or a window with no column of
     ///   its own, appends at the far end. It must be the window focused *before* the newcomer arrived,
     ///   which by the time this runs has no column to sit beside yet.
-    public mutating func reconcile(stripWindowIds ids: [WindowId],
+    public mutating func reconcile(tiledWindowIds ids: [WindowId],
                                    insertingAfter anchor: WindowId? = nil,
                                    columnIds: inout ColumnAllocator) {
         removeWindows(notIn: Set(ids))
@@ -509,7 +551,11 @@ public struct Layout: Sendable, Equatable, Codable {
     /// The strip's own fullscreen: one *window* alone on the strip takes it whole, and gives it back the
     /// moment it has company. A seed — applied where the population changes and never re-asserted, so a
     /// width verb's answer stands until the next arrival or departure. `false` lifts what it raised.
+    ///
+    /// **`strip` only.** A lone tile on a cascade already *is* the region, so the record would be one
+    /// nothing reads — and lifting it on the next arrival would be a shadow moving under no width.
     mutating func applySoloFullscreen(_ enabled: Bool) {
+        guard kind == .strip else { return }
         let solo = enabled && columns.count == 1 && columns[0].windowIds.count == 1
         for i in columns.indices {
             if solo && columns[i].fullscreen == nil {
@@ -611,7 +657,8 @@ public struct Layout: Sendable, Equatable, Codable {
         return LayoutEdit(moved: true, destroyedColumn: nil)
     }
 
-    /// The resolved `Strip` for these columns against `metrics` — the handle for the reducer's scroll math.
+    /// The resolved `Strip` for these columns against `metrics` — the handle for the reducer's scroll
+    /// math, and the `strip` arm's whole geometry. Meaningless under `stack`, which resolves no widths.
     ///
     /// `widths` overrides individual columns with a width in **points**, for one caller only: the
     /// presentation plane mid-`cycleWidth`, where a column sits part-way between two presets.
@@ -709,37 +756,30 @@ public struct Layout: Sendable, Equatable, Codable {
     }
 
     /// The **truth-plane** placement: where the *real* window sits at rest, for every window at
-    /// `scrollOffset`. On-viewport columns tile, off-viewport ones park; a parked window keeps its
-    /// tiled *size*, since parking repositions and never resizes. Exhaustive over the strip.
+    /// `scrollOffset`. What the viewport shows is tiled and the rest parks; a parked window keeps its
+    /// tiled *size*, since parking repositions and never resizes. Exhaustive over the workspace.
+    ///
+    /// Composed from `naturalFrames` and `visibleWindowIds` rather than resolving the geometry a third
+    /// time, which is what makes it total over both kinds: **nothing parks on a shown `stack`
+    /// workspace**, because everything on a cascade is on screen and that set answers so.
     ///
     /// **The ordinal run is an input *and* an output, because uniqueness is a property of the whole
     /// workspace set.** Every window on every unfocused workspace is parked too, so a range local to one
-    /// strip would hand two windows the same nub, silently breaking both the ±2 pt first-sight identity
-    /// join and the no-overlap invariant. The cursor comes back rather than being counted from the
-    /// outside because a window with a park floor skips the ordinals whose nubs are too short for it.
+    /// workspace would hand two windows the same nub, silently breaking both the ±2 pt first-sight
+    /// identity join and the no-overlap invariant. The cursor comes back rather than being counted from
+    /// the outside because a window with a park floor skips the ordinals whose nubs are too short.
     public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics,
                              parkingFrom cursor: inout Int) -> [WindowId: Rect] {
-        let area = metrics.contentArea
-        let s = strip(metrics: metrics)
-        // Physical: a column with pixels anywhere on the display is tiled, including one bleeding into
-        // the outer-gap margin.
-        let view = metrics.physicalViewport(at: scrollOffset)
-        let visible = Set(s.visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
+        let natural = naturalFrames(scrollOffset: scrollOffset, metrics: metrics)
+        let visible = Set(visibleWindowIds(scrollOffset: scrollOffset, metrics: metrics))
         let lot = metrics.parkingLot
-        let dx = area.minX - scrollOffset      // strip x → screen x for on-viewport columns
-        let stripFrames = columnStripFrames(s, area: area, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]
-        for (i, column) in columns.enumerated() {
-            if visible.contains(i) {
-                for (w, f) in zip(column.windowIds, stripFrames[i]) {
-                    frames[w] = f.offsetBy(dx: dx, dy: 0)
-                }
-            } else {
-                for (w, f) in zip(column.windowIds, stripFrames[i]) {
-                    frames[w] = Self.park(w, size: f.size, in: lot, at: &cursor, metrics: metrics)
-                }
-            }
+        // Layout order, because the ordinals are handed out along it and a run has to be reproducible.
+        for id in allWindowIds {
+            guard let frame = natural[id] else { continue }
+            frames[id] = visible.contains(id) ? frame
+                : Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)
         }
         return frames
     }
@@ -750,19 +790,18 @@ public struct Layout: Sendable, Equatable, Codable {
         return targetFrames(scrollOffset: scrollOffset, metrics: metrics, parkingFrom: &cursor)
     }
 
-    /// **Every** window on this strip parked, continuing the run at `cursor` — what an *unfocused*
-    /// workspace is. Sizes come from this strip's own geometry, so a window that switches workspaces
-    /// changes address, not shape.
+    /// **Every** window on this workspace parked, continuing the run at `cursor` — what an *unfocused*
+    /// workspace is, under either kind, since parking is not layout-dependent. Sizes come from this
+    /// workspace's own geometry, so a window that switches workspaces changes address, not shape.
     public func parkedFrames(metrics: LayoutMetrics, parkingFrom cursor: inout Int) -> [WindowId: Rect] {
-        let s = strip(metrics: metrics)
+        // The offset is arbitrary: parking takes the size, and no kind's sizes depend on the scroll.
+        let natural = naturalFrames(scrollOffset: 0, metrics: metrics)
         let lot = metrics.parkingLot
-        let stripFrames = columnStripFrames(s, area: metrics.contentArea, metrics: metrics)
 
         var frames: [WindowId: Rect] = [:]
-        for (i, column) in columns.enumerated() {
-            for (w, f) in zip(column.windowIds, stripFrames[i]) {
-                frames[w] = Self.park(w, size: f.size, in: lot, at: &cursor, metrics: metrics)
-            }
+        for id in allWindowIds {
+            guard let frame = natural[id] else { continue }
+            frames[id] = Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)
         }
         return frames
     }
@@ -783,11 +822,23 @@ public struct Layout: Sendable, Equatable, Codable {
     /// the reconstruction layers animate to while the hidden real window teleports; the two agree
     /// exactly for on-viewport windows, so the cross-fade at settle lands pixel-on-pixel.
     ///
+    /// **The kind switch, and the one place the two geometries diverge.** Everything else here composes
+    /// from this and `visibleWindowIds`.
+    ///
     /// `widths` carries a `cycleWidth`'s in-flight column widths. Passing them here and nowhere else is
     /// the whole of the resize animation: the resizing column's layers grow with it and every column to
-    /// its right slides, because their strip positions accumulate from the same widths.
+    /// its right slides, because their strip positions accumulate from the same widths. Under `stack`
+    /// there is no width to be in flight and it is ignored, as `scrollOffset` is.
     public func naturalFrames(scrollOffset: Double, metrics: LayoutMetrics,
                               widths: [ColumnId: Double] = [:]) -> [WindowId: Rect] {
+        switch kind {
+        case .strip: return stripFrames(scrollOffset: scrollOffset, metrics: metrics, widths: widths)
+        case .stack: return stackFrames(metrics: metrics)
+        }
+    }
+
+    private func stripFrames(scrollOffset: Double, metrics: LayoutMetrics,
+                             widths: [ColumnId: Double]) -> [WindowId: Rect] {
         let area = metrics.contentArea
         let s = strip(metrics: metrics, widths: widths)
         let dx = area.minX - scrollOffset
@@ -802,10 +853,29 @@ public struct Layout: Sendable, Equatable, Codable {
         return frames
     }
 
-    /// The windows whose columns overlap the viewport at `scrollOffset`, in layout order — the reducer's
-    /// `.setFrame` vs `.park` switch. Against the **physical** viewport, so a column bleeding into the
-    /// outer-gap margin counts as on screen.
+    /// The cascade, over the **content area** — the same logical viewport the strip lives in, so a pin
+    /// takes its band off a stack workspace with no new arithmetic. Read through the column partition
+    /// to the flat window list and never written back to it. A fullscreen column takes the region
+    /// whole: the cascade's *zoom in on this one*, over a derived size.
+    private func stackFrames(metrics: LayoutMetrics) -> [WindowId: Rect] {
+        let region = metrics.contentArea
+        let ids = allWindowIds
+        var frames = Dictionary(uniqueKeysWithValues:
+            zip(ids, Stack.frames(count: ids.count, in: region)))
+        for column in columns where column.isFullscreen {
+            for id in column.windowIds { frames[id] = region }
+        }
+        return frames
+    }
+
+    /// The windows the viewport is showing at `scrollOffset`, in layout order — the reducer's
+    /// `.setFrame` vs `.park` switch.
+    ///
+    /// Under `strip`, the windows whose columns overlap the **physical** viewport, so a column bleeding
+    /// into the outer-gap margin counts as on screen. Under `stack`, **everything**: a cascade lays
+    /// every tile inside the content area, so nothing on a shown one is ever parked.
     public func visibleWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
+        guard kind == .strip else { return allWindowIds }
         let view = metrics.physicalViewport(at: scrollOffset)
         return windowIds(inColumns: strip(metrics: metrics)
             .visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
@@ -823,7 +893,12 @@ public struct Layout: Sendable, Equatable, Codable {
     /// a retarget widens the scope correctly but its stills take a capture round trip, and the layers
     /// cross into the newcomer before they land. Deliberately not `visibleWindowIds`' business, whose
     /// complement the reducer parks — a shouldered answer there would place two parked columns.
+    ///
+    /// Under `stack` it is **everything on the workspace**, for any `(from, to)`: nothing scrolls, and
+    /// the edits that open a cover there resize every tile at once. The capture head is `n` calls, and
+    /// what bounds it is that a focus change opens no cover at all.
     public func sweptWindowIds(from: Double, to: Double, metrics: LayoutMetrics) -> [WindowId] {
+        guard kind == .strip else { return allWindowIds }
         let strip = strip(metrics: metrics)
         // The *same* physical viewport `visibleWindowIds` uses, which is why both go through
         // `physicalViewport`. A scope narrower than the park set is a window on screen with no layer.
@@ -832,8 +907,7 @@ public struct Layout: Sendable, Equatable, Codable {
         return windowIds(inColumns: strip.shoulderedColumnIndices(swept))
     }
 
-    /// The windows in the given column indices, flattened in layout order — also the cover's z-order,
-    /// bottom→top.
+    /// The windows in the given column indices, flattened in layout order.
     private func windowIds(inColumns indices: [Int]) -> [WindowId] {
         let wanted = Set(indices)
         return columns.enumerated()
@@ -846,11 +920,17 @@ public struct Layout: Sendable, Equatable, Codable {
     // All three frame against the **logical** viewport (`contentArea.width`) — the opposite choice from
     // the visibility queries above, because "reveal this column" means put it inside the margin rather
     // than flush against the screen edge.
+    //
+    // **Under `stack` every one of them is the constant `0`**, and that is how a cascade goes inert
+    // without a branch in the gesture path: `driveTrackpadScroll` clamps through the layout and comes
+    // back where it started, and `reveal` / `scrollReveal` compute `end == start` and take their
+    // existing "already in view → snap, no cover" exits.
 
     /// The minimal scroll offset that reveals the window's column, from the current `offset`.
-    /// `nil` if the window isn't on the strip.
+    /// `nil` if the window isn't here.
     public func scrollOffsetToReveal(window id: WindowId, from offset: Double, metrics: LayoutMetrics) -> Double? {
         guard let i = columnIndex(ofWindow: id) else { return nil }
+        guard kind == .strip else { return 0 }
         return strip(metrics: metrics).offsetToReveal(i, viewportWidth: metrics.contentArea.width, from: offset)
     }
 
@@ -859,7 +939,8 @@ public struct Layout: Sendable, Equatable, Codable {
     /// strip's ends honouring it *means* showing space past the last column. The reducer applies this
     /// on the non-centering path only.
     public func clampScrollOffset(_ offset: Double, metrics: LayoutMetrics) -> Double {
-        strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.contentArea.width)
+        guard kind == .strip else { return 0 }
+        return strip(metrics: metrics).clampOffset(offset, viewportWidth: metrics.contentArea.width)
     }
 
     /// The nearest offset at which a column edge lies flush with a viewport edge — where a magnetized
@@ -868,15 +949,17 @@ public struct Layout: Sendable, Equatable, Codable {
     /// a magnet ignoring it would fight the next focus command.
     public func magnetScrollOffset(nearest offset: Double, metrics: LayoutMetrics,
                                    centered: Bool) -> Double {
-        strip(metrics: metrics).magnetOffset(nearest: offset,
-                                             viewportWidth: metrics.contentArea.width,
-                                             centered: centered)
+        guard kind == .strip else { return 0 }
+        return strip(metrics: metrics).magnetOffset(nearest: offset,
+                                                    viewportWidth: metrics.contentArea.width,
+                                                    centered: centered)
     }
 
     /// The scroll offset that centers the window's column. `nil` if the window isn't on the strip.
     /// The reducer picks reveal vs. center from config.
     public func scrollOffsetToCenter(window id: WindowId, metrics: LayoutMetrics) -> Double? {
         guard let i = columnIndex(ofWindow: id) else { return nil }
+        guard kind == .strip else { return 0 }
         return strip(metrics: metrics).offsetToCenter(i, viewportWidth: metrics.contentArea.width)
     }
 
@@ -890,5 +973,17 @@ public struct Layout: Sendable, Equatable, Codable {
                                     metrics: LayoutMetrics, center: Bool) -> Double? {
         center ? scrollOffsetToCenter(window: id, metrics: metrics)
                : scrollOffsetToReveal(window: id, from: offset, metrics: metrics)
+    }
+
+    /// How far the column with `id` may travel before a viewport edge crosses a column edge, and where
+    /// `grow`/`shrink` catch under `layout.resize-detent` — `Strip.resizeDetent`, keyed by column so
+    /// that the caller need not know which geometry answered. `nil` where nothing catches, and always
+    /// `nil` under `stack`, which has no width to travel and nothing to scroll.
+    public func resizeDetent(ofColumn id: ColumnId, growing: Bool, metrics: LayoutMetrics,
+                             offset: Double, centered: Bool) -> Double? {
+        guard kind == .strip, let index = columnIndex(withId: id) else { return nil }
+        return strip(metrics: metrics).resizeDetent(ofColumn: index, growing: growing,
+                                                    viewportWidth: metrics.contentArea.width,
+                                                    offset: offset, centered: centered)
     }
 }

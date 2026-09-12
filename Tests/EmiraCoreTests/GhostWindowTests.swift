@@ -167,11 +167,11 @@ import EmiraMotion
     @Test func aNewWindowStillOpensBesideTheFocusedColumnWhenFocusWentNilFirst() {
         // The product's actual event order: an app focuses its brand-new window *before* emira has
         // adopted it, so the observer resolves that element to no id and `focusChanged(nil)` lands first.
-        // Anchoring on live focus alone appends every ⌘N at the far end; `lastStripFocus` survives it.
+        // Anchoring on live focus alone appends every ⌘N at the far end; `lastTiledFocus` survives it.
         var s = Self.booted()
         (s, _) = Self.run(s, (1...3).map { .windowCreated(Self.snap($0)) })
         (s, _) = Self.run(s, [.focusChanged(WindowId(1), origin: .system)])
-        #expect(s.world.lastStripFocus == WindowId(1))
+        #expect(s.world.lastTiledFocus == WindowId(1))
 
         (s, _) = Self.run(s, [.focusChanged(nil, origin: .system), .windowCreated(Self.snap(4))])
         #expect(s.layout.columns.map(\.windowIds)

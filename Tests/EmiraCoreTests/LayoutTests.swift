@@ -37,7 +37,7 @@ import Testing
     @Test func reconcileAppendsNewcomersAsSingleWindowColumns() {
         var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20, w30], columnIds: &ids)
+        layout.reconcile(tiledWindowIds: [w10, w20, w30], columnIds: &ids)
         #expect(layout.columns.count == 3)
         #expect(layout.columns.map(\.windowIds) == [[w10], [w20], [w30]])  // one each, input order
         #expect(layout.allWindowIds == [w10, w20, w30])
@@ -46,9 +46,9 @@ import Testing
     @Test func reconcileDropsDepartedWindowsAndEmptyColumns() {
         var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20, w30], columnIds: &ids)
+        layout.reconcile(tiledWindowIds: [w10, w20, w30], columnIds: &ids)
         let idOfW20Column = layout.columns[1].id
-        layout.reconcile(stripWindowIds: [w10, w30], columnIds: &ids)       // w20 gone → its column emptied → dropped
+        layout.reconcile(tiledWindowIds: [w10, w30], columnIds: &ids)       // w20 gone → its column emptied → dropped
         #expect(layout.columns.map(\.windowIds) == [[w10], [w30]])
         #expect(layout.columnIndex(withId: idOfW20Column) == nil)
     }
@@ -57,7 +57,7 @@ import Testing
         var ids = ColumnAllocator(next: 5)
         // A two-window column survives a churn that only adds a newcomer: same column id, same stack.
         var layout = Layout(columns: [ColumnLayout(id: ColumnId(7), windowIds: [w20, w21])])
-        layout.reconcile(stripWindowIds: [w20, w21, w40], columnIds: &ids)
+        layout.reconcile(tiledWindowIds: [w20, w21, w40], columnIds: &ids)
         #expect(layout.columns[0].id == ColumnId(7))       // identity preserved
         #expect(layout.columns[0].windowIds == [w20, w21]) // arrangement preserved
         #expect(layout.columns[1].windowIds == [w40])      // newcomer appended as its own column
@@ -68,9 +68,9 @@ import Testing
     @Test func reconcileIsIdempotentForAnUnchangedSet() {
         var ids = ColumnAllocator(next: 5)
         var layout = Layout()
-        layout.reconcile(stripWindowIds: [w10, w20], columnIds: &ids)
+        layout.reconcile(tiledWindowIds: [w10, w20], columnIds: &ids)
         let before = layout.columns
-        layout.reconcile(stripWindowIds: [w10, w20], columnIds: &ids)
+        layout.reconcile(tiledWindowIds: [w10, w20], columnIds: &ids)
         #expect(layout.columns == before)                  // no churn, no new columns minted
     }
 
@@ -394,14 +394,14 @@ import Testing
 
     /// The load-bearing one: every `Engine` handler reconciles at its top, so an arrangement `reconcile`
     /// undoes is a command that does nothing at all — and it would look correct in isolation.
-    /// `World.stripWindowIds` is id-sorted, deliberately unrelated to layout order, so that is the input.
+    /// `World.tiledWindowIds` is id-sorted, deliberately unrelated to layout order, so that is the input.
     @Test func aStructuralMutationSurvivesTheNextReconcile() {
         var ids = ColumnAllocator(next: 5)
         var layout = fourColumns()
         layout.extract(window: w21, toNewColumnAt: 0, columnIds: &ids)
         layout.moveColumn(ColumnId(1), to: 3)
         let arranged = layout
-        layout.reconcile(stripWindowIds: [w10, w20, w21, w30, w40], columnIds: &ids)   // id order, as World supplies
+        layout.reconcile(tiledWindowIds: [w10, w20, w21, w30, w40], columnIds: &ids)   // id order, as World supplies
         #expect(layout == arranged)
     }
 
@@ -799,11 +799,76 @@ import Testing
     }
 
     /// `Layout`'s serialized state is purely structural — the allocator watermark lives in `Workspaces`,
-    /// and `WorkspaceTests.aRoundTrippedSetMintsTheSameNextColumnId` pins it.
+    /// and `WorkspaceTests.aRoundTrippedSetMintsTheSameNextColumnId` pins it. The kind rides with it,
+    /// so a dump replays into the arrangement it was taken from.
     @Test func layoutRoundTripsThroughCodable() throws {
-        let layout = fourColumns()
-        let data = try JSONEncoder().encode(layout)
-        let back = try JSONDecoder().decode(Layout.self, from: data)
-        #expect(back == layout)
+        for kind in Layout.Kind.allCases {
+            var layout = fourColumns()
+            layout.setKind(kind)
+            let data = try JSONEncoder().encode(layout)
+            let back = try JSONDecoder().decode(Layout.self, from: data)
+            #expect(back == layout)
+            #expect(back.kind == kind)
+        }
+    }
+
+    // Total over both kinds
+    //
+    // The geometry answers differently per kind; that it answers *at all*, for every window and for an
+    // empty workspace, is a property of the type rather than of either arrangement.
+
+    @Test(arguments: Layout.Kind.allCases)
+    func everyGeometryQueryIsTotalOverBothKinds(kind: Layout.Kind) {
+        var layout = fourColumns()
+        layout.setKind(kind)
+        let m = metrics
+
+        for offset in [-500.0, 0, 450, 5_000] {
+            let target = layout.targetFrames(scrollOffset: offset, metrics: m)
+            let natural = layout.naturalFrames(scrollOffset: offset, metrics: m)
+            #expect(Set(target.keys) == Set(layout.allWindowIds))
+            #expect(Set(natural.keys) == Set(layout.allWindowIds))
+            // A tiled window's two answers agree exactly, which is what lets the cross-fade land
+            // pixel-on-pixel; the rest is parked and deliberately somewhere else.
+            for id in layout.visibleWindowIds(scrollOffset: offset, metrics: m) {
+                #expect(target[id] == natural[id])
+            }
+            #expect(Set(layout.sweptWindowIds(from: offset, to: 0, metrics: m))
+                        .isSubset(of: Set(layout.allWindowIds)))
+        }
+
+        var cursor = 0
+        #expect(Set(layout.parkedFrames(metrics: m, parkingFrom: &cursor).keys)
+                    == Set(layout.allWindowIds))
+        #expect(cursor == layout.allWindowIds.count)
+    }
+
+    @Test(arguments: Layout.Kind.allCases)
+    func anEmptyWorkspaceAnswersEmptyUnderBothKinds(kind: Layout.Kind) {
+        let layout = Layout(kind: kind)
+        var cursor = 0
+        #expect(layout.isEmpty)
+        #expect(layout.targetFrames(scrollOffset: 0, metrics: metrics).isEmpty)
+        #expect(layout.naturalFrames(scrollOffset: 0, metrics: metrics).isEmpty)
+        #expect(layout.parkedFrames(metrics: metrics, parkingFrom: &cursor).isEmpty)
+        #expect(layout.visibleWindowIds(scrollOffset: 0, metrics: metrics).isEmpty)
+        #expect(layout.sweptWindowIds(from: 0, to: 900, metrics: metrics).isEmpty)
+        #expect(layout.scrollOffsetToReveal(window: w10, from: 0, metrics: metrics) == nil)
+        #expect(layout.clampScrollOffset(400, metrics: metrics) == 0)
+    }
+
+    /// **A cascade's scroll answers are the constant `0`**, which is how the gesture path goes inert
+    /// without a branch in it: a clamp comes back where it started and a reveal computes `end == start`.
+    @Test func aCascadeAnswersEveryScrollTargetWithZero() {
+        var layout = fourColumns()
+        layout.setKind(.stack)
+        #expect(layout.clampScrollOffset(1_234, metrics: metrics) == 0)
+        #expect(layout.magnetScrollOffset(nearest: 1_234, metrics: metrics, centered: false) == 0)
+        #expect(layout.scrollOffsetToReveal(window: w40, from: 900, metrics: metrics) == 0)
+        #expect(layout.scrollOffsetToCenter(window: w40, metrics: metrics) == 0)
+        #expect(layout.resizeDetent(ofColumn: ColumnId(1), growing: true, metrics: metrics,
+                                    offset: 0, centered: false) == nil)
+        // …and a window that is not here still answers `nil`, which is a different question.
+        #expect(layout.scrollOffsetToReveal(window: WindowId(999), from: 0, metrics: metrics) == nil)
     }
 }

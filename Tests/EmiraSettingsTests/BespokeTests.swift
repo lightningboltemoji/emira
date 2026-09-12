@@ -160,8 +160,12 @@ import EmiraCore
     @Test func theOuterGapRowFollowsTheOtherGaps() throws {
         let slab = ControlSlab()
         slab.show(try Draft(""))
+        // From the first gap rather than from the top of the tab, so a setting added above the gaps
+        // is not a failure of the thing this is about.
         let keys = slab.controls.map(\.key)
-        #expect(keys.prefix(3) == ["layout.column-gap", "layout.window-gap", "layout.outer-gap"])
+        let gaps = try #require(keys.firstIndex(of: "layout.column-gap"))
+        #expect(Array(keys[gaps...].prefix(3))
+                    == ["layout.column-gap", "layout.window-gap", "layout.outer-gap"])
 
         // …and the document agrees, which is what `after` is for.
         let document = ConfigSchema.document

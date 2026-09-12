@@ -59,7 +59,8 @@ extension GuideInput {
                                         })
                   },
                   frames: frames,
-                  focus: scene.focus)
+                  focus: scene.focus,
+                  divides: scene.kind == .strip)
     }
 }
 

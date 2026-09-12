@@ -633,6 +633,24 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(report?.summary.contains("noCandidate") == true)
     }
 
+    /// **A scan announces back to front**, because the core's only record of stacking is the order
+    /// focus reports arrive in and a scan focuses nothing: adopting along the window server's own
+    /// front-to-back list, reversed, is what makes `World.focusedAt` describe the desktop it found
+    /// rather than tie every window at zero.
+    @Test func aScanAnnouncesTheDesktopBackToFront() {
+        let (source, _, enumerator) = populated()
+        // Front to back, as `CGWindowListCopyWindowInfo` answers — deliberately not the order the two
+        // apps' AX answers come back in.
+        source.entries = [entry(3, pid: 200, frame: rect(1400)), entry(1, pid: 100, frame: rect(0)),
+                          entry(4, pid: 200, frame: rect(2100)), entry(2, pid: 100, frame: rect(700))]
+        var report: AXEnumerator.Report?
+
+        enumerator.enumerate { report = $0 }
+
+        // The list has b1 in front, then a1, b2, a2 — so the announcement runs the other way.
+        #expect(report?.snapshots.map(\.title) == ["a2", "b2", "a1", "b1"])
+    }
+
     @Test func aSecondEnumerationAdoptsNothingAndAnnouncesNothing() {
         // Re-enumeration must be idempotent and silent: a re-scan is the standing response to "a
         // window appeared in this app", so re-announcing the app's other windows would hand focus to
@@ -647,8 +665,10 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(registry.count == 4)
         #expect(first?.snapshots.count == 4)
         #expect(second?.snapshots.isEmpty == true)
-        // Still bound, still the same ids — refreshed rather than re-born.
-        #expect(second?.rebound == first?.snapshots.map(\.id))
+        // Still bound, still the same ids — refreshed rather than re-born. As a set, because the two
+        // lists are in different orders on purpose: `rebound` is the order AX answered in, while
+        // `snapshots` is the order the desktop stacks them.
+        #expect(Set(second?.rebound ?? []) == Set(first?.snapshots.map(\.id) ?? []))
         #expect(second?.boundWindows == 4)
         #expect(second?.summary.contains("4/4 windows bound") == true)
     }

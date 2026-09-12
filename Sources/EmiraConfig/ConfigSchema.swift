@@ -537,6 +537,11 @@ public enum ConfigSchema {
     """
 
     private static let layout: [Setting] = [
+        Setting("layout.default", \.defaultLayout, .word,
+                label: "Default layout",
+                help: "The layout a workspace starts in.",
+                section: .layout),
+
         Setting("layout.column-gap", \.columnGap, .number(atLeast: 0, unit: .points),
                 label: "Column gap", help: "Points between adjacent columns on the strip.",
                 section: .layout),

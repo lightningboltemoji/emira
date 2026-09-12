@@ -41,8 +41,8 @@ import Testing
                                     isMinimized: true))
 
         #expect(world.windows[WindowId(1)]?.isMinimized == true)
-        #expect(!world.participatesInStrip(WindowId(1)))
-        #expect(world.stripWindowIds.isEmpty)
+        #expect(!world.participatesInTiling(WindowId(1)))
+        #expect(world.tiledWindowIds.isEmpty)
         // Still truth, and still ref-counted: the app exists, the window just isn't tiled.
         #expect(world.apps["com.apple.Safari"] != nil)
     }
@@ -119,13 +119,13 @@ import Testing
         world.insert(Self.snap(3, "org.x.Term", role: .standard))         // tiles
         world.setMinimized(WindowId(3), true)                             // now leaves the strip
 
-        #expect(world.participatesInStrip(WindowId(1)))
-        #expect(!world.participatesInStrip(WindowId(2)))
-        #expect(!world.participatesInStrip(WindowId(3)))
-        #expect(world.stripWindowIds == [WindowId(1)])
+        #expect(world.participatesInTiling(WindowId(1)))
+        #expect(!world.participatesInTiling(WindowId(2)))
+        #expect(!world.participatesInTiling(WindowId(3)))
+        #expect(world.tiledWindowIds == [WindowId(1)])
 
         world.setMinimized(WindowId(3), false)                            // restored → rejoins
-        #expect(world.stripWindowIds == [WindowId(1), WindowId(3)])
+        #expect(world.tiledWindowIds == [WindowId(1), WindowId(3)])
     }
 
     /// Cmd-H hides *all* of an app's windows at once via the shared `AppState` flag.
@@ -134,31 +134,31 @@ import Testing
         world.insert(Self.snap(1, "com.apple.Safari"))
         world.insert(Self.snap(2, "com.apple.Safari"))
         world.insert(Self.snap(3, "org.x.Term"))
-        #expect(world.stripWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(world.tiledWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
 
         world.setAppHidden("com.apple.Safari", true)
-        #expect(world.stripWindowIds == [WindowId(3)])   // only the other app survives
-        #expect(!world.participatesInStrip(WindowId(1)))
+        #expect(world.tiledWindowIds == [WindowId(3)])   // only the other app survives
+        #expect(!world.participatesInTiling(WindowId(1)))
 
         world.setAppHidden("com.apple.Safari", false)
-        #expect(world.stripWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(world.tiledWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
     }
 
     @Test func setAppHiddenOnUnknownAppIsANoOp() {
         var world = World()
         world.insert(Self.snap(1, "com.apple.Safari"))
         world.setAppHidden("com.nonexistent", true)      // no such app → no-op
-        #expect(world.stripWindowIds == [WindowId(1)])
+        #expect(world.tiledWindowIds == [WindowId(1)])
     }
 
-    /// `stripWindowIds` must be deterministically ordered (by id) regardless of insertion order —
+    /// `tiledWindowIds` must be deterministically ordered (by id) regardless of insertion order —
     /// the layout engine and golden replays depend on it, and dictionary iteration is not stable.
-    @Test func stripWindowIdsAreSortedRegardlessOfInsertionOrder() {
+    @Test func tiledWindowIdsAreSortedRegardlessOfInsertionOrder() {
         var world = World()
         for id: UInt64 in [7, 3, 10, 1, 5] {
             world.insert(Self.snap(id, "com.apple.Safari"))
         }
-        #expect(world.stripWindowIds == [1, 3, 5, 7, 10].map { WindowId($0) })
+        #expect(world.tiledWindowIds == [1, 3, 5, 7, 10].map { WindowId($0) })
     }
 
     @Test func focusStoresAndClearsAndResolvesToRecord() {

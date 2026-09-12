@@ -531,7 +531,9 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         source.entries = [entry(1), entry(2, frame: docFrame, pid: textEdit.pid)]
         var first: AXEnumerator.Report?
         enumerator.enumerate(apps: [ghostty, textEdit]) { first = $0 }
-        let ghosttyId = first!.snapshots.first { $0.bundleId == ghostty.bundleId }!.id
+        // By title: `tab` stamps Ghostty's bundle id on both apps' windows, and the announcement
+        // order is the desktop's rather than the scan's.
+        let ghosttyId = first!.snapshots.first { $0.title == "term" }!.id
 
         // Ghostty switches tab cleanly; TextEdit answers with a window the list cannot place.
         source.windowsByPid = [ghostty.pid: [tab(3, title: "term two")],

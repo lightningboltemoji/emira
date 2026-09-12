@@ -6,6 +6,10 @@
 
 [layout]
 
+# The layout a workspace starts in.
+# One of "strip", "stack".
+default = "strip"
+
 # Points between adjacent columns on the strip.
 # In points, must be at least 0.
 column-gap = 0

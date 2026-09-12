@@ -121,7 +121,7 @@ import Testing
         }
 
         mutating func reconcile(_ ids: [WindowId], insertingAfter anchor: WindowId? = nil) {
-            workspaces.reconcile(stripWindowIds: ids, onto: shown, insertingAfter: anchor)
+            workspaces.reconcile(tiledWindowIds: ids, onto: shown, insertingAfter: anchor)
         }
 
         func targetFrames(_ metrics: LayoutMetrics) -> [WindowId: Rect] {
@@ -255,7 +255,7 @@ import Testing
 
         var bare = Layout()
         var ids = ColumnAllocator()
-        bare.reconcile(stripWindowIds: [w1, w2, w3], columnIds: &ids)
+        bare.reconcile(tiledWindowIds: [w1, w2, w3], columnIds: &ids)
 
         #expect(d.strip == bare)
         #expect(d.workspaces.allWindowIds == bare.allWindowIds)
@@ -426,13 +426,13 @@ import Testing
     /// *same* next id — a round-trip that dropped it would silently re-issue one.
     @Test func aRoundTrippedSetMintsTheSameNextColumnId() throws {
         var ws = Workspaces()
-        ws.reconcile(stripWindowIds: [w1, w2, w3], onto: a)   // mints 1, 2, 3
+        ws.reconcile(tiledWindowIds: [w1, w2, w3], onto: a)   // mints 1, 2, 3
         var back = try JSONDecoder().decode(Workspaces.self, from: try JSONEncoder().encode(ws))
         #expect(back == ws)
 
         let churn = [w1, w2, w3, w4]
-        ws.reconcile(stripWindowIds: churn, onto: a)
-        back.reconcile(stripWindowIds: churn, onto: a)
+        ws.reconcile(tiledWindowIds: churn, onto: a)
+        back.reconcile(tiledWindowIds: churn, onto: a)
         #expect(back[a].columns.last?.id == ws[a].columns.last?.id)
         #expect(back[a].columns.last?.id == ColumnId(4))
     }
@@ -443,7 +443,7 @@ import Testing
     /// authority a reader could catch disagreeing.
     @Test func theEncodedShapeIsLegible() throws {
         var ws = Workspaces()
-        ws.reconcile(stripWindowIds: [w1], onto: a)
+        ws.reconcile(tiledWindowIds: [w1], onto: a)
         ws[scrollOffsetOf: a] = 1200
         ws[lastFocusOf: a] = w1
         let encoder = JSONEncoder()
@@ -467,7 +467,7 @@ import Testing
 
     @Test func readingLayoutIsReadingTheShownStrip() {
         var s = State()
-        s.workspaces.reconcile(stripWindowIds: [w1, w2], onto: s.monitors.shown)
+        s.workspaces.reconcile(tiledWindowIds: [w1, w2], onto: s.monitors.shown)
         #expect(s.layout == s.workspaces[s.monitors.shown])
         #expect(s.layout.allWindowIds == [w1, w2])
     }
@@ -476,9 +476,9 @@ import Testing
     /// `s.layout.moveColumn(…)`-style mutation keep working.
     @Test func writingLayoutWritesTheShownStripAndOnlyThat() {
         var s = State()
-        s.workspaces.reconcile(stripWindowIds: [w1, w2], onto: s.monitors.shown)
+        s.workspaces.reconcile(tiledWindowIds: [w1, w2], onto: s.monitors.shown)
         s.show(WorkspaceName("3")!)
-        s.workspaces.reconcile(stripWindowIds: [w1, w2], onto: s.monitors.shown)   // both still on `1`
+        s.workspaces.reconcile(tiledWindowIds: [w1, w2], onto: s.monitors.shown)   // both still on `1`
 
         s.layout = Layout(columns: [ColumnLayout(id: ColumnId(99), windowIds: [WindowId(9)])])
         #expect(s.workspaces[WorkspaceName("3")!].columns.map(\.id) == [ColumnId(99)])
@@ -499,13 +499,13 @@ import Testing
     @Test func theSingleStripInitializerResumesTheAllocatorPastTheSuppliedIds() {
         let layout = Layout(columns: [ColumnLayout(id: ColumnId(7), windowIds: [w1])])
         var s = State(world: World(), layout: layout, motion: Motion(), config: Config())
-        s.workspaces.reconcile(stripWindowIds: [w1, w2], onto: s.monitors.shown)
+        s.workspaces.reconcile(tiledWindowIds: [w1, w2], onto: s.monitors.shown)
         #expect(s.layout.columns.map(\.id) == [ColumnId(7), ColumnId(8)])
     }
 
     @Test func stateRoundTripsWithItsWorkspaceSet() throws {
         var s = State()
-        s.workspaces.reconcile(stripWindowIds: [w1, w2], onto: s.monitors.shown)
+        s.workspaces.reconcile(tiledWindowIds: [w1, w2], onto: s.monitors.shown)
         s.show(WorkspaceName("a")!)
         let back = try JSONDecoder().decode(State.self, from: try JSONEncoder().encode(s))
         #expect(back == s)

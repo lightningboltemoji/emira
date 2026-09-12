@@ -74,10 +74,18 @@ keybindings need the identical `argv ↔ Command` mapping and `EmiraConfig` cann
 there is **no `swift-argument-parser`**: the grammar is "verb, then at most one word", and `exec` — the one verb
 whose argument is a _shell_ line — gets everything after its own word, unsplit.
 
+**A verb is one list for the whole machine, whatever a workspace is doing.** `layout strip|stack` puts the
+focused workspace into an arrangement, and eight of the other verbs have no meaning in one of them —
+everything about a column's width, a window's height, and which column a window belongs to. Each of those is
+a `guard` returning nothing, with a test saying so and a row in §6's table; none of them is removed from
+`usage`, which is `emira --help` and cannot be per workspace. That is the rule above bent as far as it goes
+and no further: **every verb does something somewhere**, and where it does nothing it does *nothing* rather
+than something surprising.
+
 **The table is `Vocabulary`, and the grammar in it is data.** A surface that must _offer_ the vocabulary
 rather than read it can call neither `usage` nor `parse`, since both answer only once something has been typed.
 So a `Verb` carries its argument as a **shape**, `Verb.Argument`, and the printed grammar is derived from it.
-Five shapes carry twenty-three verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
+Five shapes carry twenty-four verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
 control, never per verb** — and each reads its choices off the type that parses them back. It is top-level
 rather than nested in `Command`: a consumer of the _spellings_ is not a consumer of the reducer's input.
 
@@ -352,6 +360,12 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
   screenshot requests, so every shouldered window adds ~25 ms to the head of every scroll, whatever its size.
   That number is the reason `SCKCapturer` takes its batch one capture at a time rather than through a task
   group — overlapping requests does not hide the serialization, it inflates each request to ~41 ms.
+- **A cover's layer order is the desktop's, not the layout's.** `Engine.scopeUnion` builds a session's
+  window list bottom→top, and inside one workspace it takes layout order for a `strip` — nothing there
+  overlaps, so any order produces the same pixels — and `State.stackingOrder` for a `stack`, whose tiles do.
+  That is a **read** of the order emira already reconstructs from its focus reports, never an assertion of
+  one: no fence, no confirmation round trip, no focus debt, which is the whole difference between this and
+  pinning. `Layout.allWindowIds` therefore claims to be layout order and nothing more.
 - **A scope grows and never shrinks.** A retarget _widens_ the scope, captures what that adds, and grows the
   raised cover (`Effect.extendCover`) when the still lands. Nothing is removed: a window the old destination
   swept is mid-flight on both planes.
@@ -576,14 +590,79 @@ written after the snapshot puts a sideways term into a slide that is vertical.
 
 ### Layout
 
-`Layout` is ONE strip: columns → windows, and their target geometry. It exposes **four structural editing
-primitives** — `moveColumn`, `moveWindowWithinColumn`, `move(window:toColumn:at:)`, `extract(window:toNewColumnAt:)`.
-Twelve command cases compose out of them. **Each is atomic over the invariants**, and that is what chose the set:
-"non-empty columns" and "no duplicate windows" cannot be maintained by a reducer composing "remove from column"
-then "insert column", because the state between the two calls is invalid.
+`Layout` is ONE workspace's arrangement: columns → windows, a `Kind`, and the target geometry the two resolve
+to. It exposes **four structural editing primitives** — `moveColumn`, `moveWindowWithinColumn`,
+`move(window:toColumn:at:)`, `extract(window:toNewColumnAt:)`. Twelve command cases compose out of them.
+**Each is atomic over the invariants**, and that is what chose the set: "non-empty columns" and "no duplicate
+windows" cannot be maintained by a reducer composing "remove from column" then "insert column", because the
+state between the two calls is invalid.
 
 The decision tree lives in the reducer beside `handleFocus`, which already makes the distinction: _alone in its
 column ⇒ the column moves or consumes; with stackmates ⇒ it pops out._
+
+**The structure is layout-independent and the geometry is not.** The columns, the ids, the width and height
+intents, `reconcile`, `adopt`, `remove` and all four primitives are the same under either kind; what switches
+is `naturalFrames`, and everything else composes from it and `visibleWindowIds`. `strip` resolves through
+`Strip`, an infinite ribbon of columns pulled into the viewport at a scroll offset; `stack` resolves through
+`Stack`, a diagonal cascade over the content area. `Column` was already the geometry *inside* one column, so
+this is that split one container out.
+
+**The kind is a stored field on `Layout`, and that is the whole of the state change.** Not on
+`LayoutMetrics`, which is a *display's* — a display owns many workspaces while showing one, so a
+metrics-borne kind would lay every parked workspace out in the shown one's arrangement. Not a `protocol`
+existential either: `State` is `Equatable + Codable + Sendable` end to end and replay depends on it, and two
+implementations neither of which anyone outside `EmiraCore` can add buy nothing for an `any`. Storing it here
+reaches every call site for free — `Workspaces[name]` carries it, `StripPlacement` carries it, `dumpState`
+serialises it — and not one existing signature changed.
+
+**`Stack` is `Strip`'s counterpart, and it holds no state at all.** `n` equal tiles staggered down and right
+from the content area's top-left, sized as the region less the whole spread, so a tile's size is a function
+of `n` and an arrival or a departure resizes every window on the workspace. Two floors bound the compression
+and both are live at once: below `minimumSize` the stagger gives way first, and it stops at
+`minimumStagger` — `WindowRegistry` binds by ±2 pt uniqueness and every tile here is the same size, so two
+tiles closer than that are two windows nothing can tell apart. It is deliberately **not** `Cascade`, which
+answers a different question (rescue every parked window into one readable pile before the daemon dies) and
+shares only the word and a stagger.
+
+**A cascade reads through the column partition to the flat window list and never writes to it.** So switching
+to `stack` and back finds the columns and their widths exactly as they were, and no width intent is ever
+touched — the one thing `setKind` lifts is a `solo` fullscreen, which is the strip's own rule and would
+otherwise stand as one tile covering a cascade with nothing to lift it. A window moved between two workspaces
+in different kinds carries a width nothing there reads and finds it again on the way back, which is better
+than dropping it.
+
+**What the verbs mean, per kind.** Everything not listed is identical under both — `float`, `pin`,
+`focus-pinned`, every workspace and monitor verb, and the window rules, all of which are about being *off* a
+workspace or about *which* one.
+
+| Verb / setting | `strip` | `stack` |
+| --- | --- | --- |
+| `focus left/up` | previous column / up the column | previous slot along the diagonal |
+| `focus right/down` | next column / down the column | next slot along the diagonal |
+| `move-window *` | reorder the column / pop out | mirrors focus — swap with the neighbouring slot |
+| `consume-or-expel *` | merge / split columns | **inert** — a slot holds one window |
+| `cycle-width` · `grow` · `shrink` | the column's width | **inert** — tile size is a function of `n` |
+| `cycle-height` | the window's height in its column | **inert** |
+| `center-column` | scrolls to centre | **inert** — nothing scrolls |
+| `fullscreen` | the column takes the strip's width | the tile takes the whole region |
+| trackpad scroll | drives the viewport | **inert** — no cover is opened for it |
+| `[focus] follows-mouse` · `[mouse] follows-focus` | as documented | **inert** (see *Focus policy*) |
+| `[layout] interactive-resize` | adopts a hand-drawn size | **inert** — the drag reverts |
+| `[layout] resize-detent` · `center-focused-column` · `width-presets` · `height-presets` | as documented | **inert** |
+
+**Most of that is degeneration rather than branching.** A cascade's scroll answers are the constant `0` —
+`clampScrollOffset`, `scrollOffsetToReveal/Center`, `magnetScrollOffset`, `resizeDetent → nil` — so
+`driveTrackpadScroll` clamps through the layout and comes back where it started, `reveal` and `scrollReveal`
+compute `end == start` and take their existing *already in view → snap, no cover* exits, and `restingOffset`
+answers the offset the viewport already has. The branches that remain are the places the two genuinely
+disagree: focus and `move-window` walk a diagonal rather than two axes, the inert verbs guard, the two
+pointer dials decline, and a trackpad gesture opens no cover for a viewport it cannot move.
+
+**A layout change is a structural edit in `finishStructuralEdit`'s exact sense.** Before and after are two
+different arrangements with no number to interpolate, which is precisely what the per-window displacement
+already animates — so `layout stack` needs no new `Effect`, no new `Event`, no new animated quantity and no
+new transition machinery. It rides the cover it already has, with no `mover`, because every tile is
+travelling.
 
 **Three areas, and every geometry query picks one.** `LayoutMetrics.nominalArea` is the working area inset
 by the outer gaps; `contentArea` is that minus each pin's band and the column gap beside it; `screenArea` is
@@ -617,11 +696,14 @@ a hand resize) shadows a preset index (from `cycle-width`). Because it shadows r
 underneath needs no memory and no restore policy. Percentages are of the **working area**, not of the column's
 own width, so `grow`/`shrink` are exact inverses.
 
-**Two things raise the top of that stack, and `Fullscreen.Origin` is which.** `asked` is the verb; `solo` is the
-rule that a strip holding exactly one window gives it the whole strip (`layout.fullscreen-when-alone`, on by
+**Two things raise the top of that stack, and `Fullscreen.Origin` is which.** `asked` is the verb, and it is
+the one size-changing verb a cascade keeps — *zoom in on this one*, a shadow over a derived size, with
+`Fullscreen.plain` as the record since there is nothing to expel and nothing to scroll back to. `solo` is the
+strip's own rule that a strip holding exactly one window gives it the whole strip (`layout.fullscreen-when-alone`, on by
 default). Only a `solo` record is lifted when the strip gains company, so the verb still means what it meant.
 `Layout.applySoloFullscreen` is the whole policy, and it is a **seed**: it runs at the four sites where a strip's
-population moves — `arriveOnStrip`, `departFromStrip`, `moveToWorkspace`, `arriveOnWorkspace` — and nowhere else,
+population moves — `arriveOnLayout`, `departFromLayout`, `moveToWorkspace`, `arriveOnWorkspace` — plus
+`handleSetLayout`, where a workspace becoming a strip again makes the rule's premise live, and nowhere else,
 so a width verb's answer on a lone window stands until the next arrival or departure. Each site names the strips
 it touched rather than walking all 36, because `arriveOnWorkspace` puts a rule-assigned newcomer on the strip in
 view for one statement before moving it off, and a pass there would read that transient as company. It runs
@@ -756,6 +838,12 @@ displays by a name, rather than a second opinion about which display is looking 
 - **Membership and stacking are two queries.** `allWindowIds` answers which windows exist, in name order;
   `windowIds(inPlacementOrder:)` answers what stacks over what, the shown addresses first. One order served
   both while there was one screen looking at one strip.
+- **`layout.default` is held here, not passed at each materialisation.** Six sites can be the first to
+  touch an address — `materialize`, `reconcile`, both initialisers and all three subscript setters — and
+  "an address never materialized answers as an empty workspace" is true in *one* place, which is the whole
+  reason nothing branches on whether a workspace exists. So `Workspaces.defaultKind` is the layout a fresh
+  one takes, written by `configChanged`. It is a **seed and not a leash**, exactly as a window rule is: a
+  workspace already in existence keeps the kind it has, and the verb is what moves it.
 - **`naturalFrames` answers for one display's strips**, since it is what a cover draws: the address that
   screen shows, plus the ones it owns sliding a screen above and below. A strip another display holds is
   drawn by that display's cover, at its metrics and its offset.
@@ -881,34 +969,45 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   Asked of the display holding the destination, since a cover on the other screen answers about neither;
   before that display's cover is up nothing has moved and the truth plane still names where the window _was_,
   so there is no destination to have reached.
-- **Focus off the strip is an entry condition, not a dead end.** A focus command with no column to start from
-  re-enters at the near end: `right` at the leftmost column, `left` at the rightmost.
+- **The two pointer dials answer to the layout.** Both assume windows that are somewhere *distinct*, and a
+  cascade puts every tile in one region with thin exposed bands — hovering would thrash focus across them
+  and a warp would jitter the cursor inside the same rectangle on every focus change. So both go inert on a
+  `stack` workspace, and **the guard is the reducer's**: a layout is per workspace and moves under the
+  pointer, so the shell keeps its motion monitor installed and keeps reporting crossings, and the core drops
+  them. `Event.pointerEntered` is a fact and `[focus] follows-mouse` is policy — §3's model case, and the
+  same split that leaves the trackpad tap installed while the gesture goes inert by arithmetic.
+  `applyEnvironment` is the wrong place for it too: that clamps a setting against a *capability*, once, and
+  a layout is neither.
+- **Focus off a workspace is an entry condition, not a dead end.** A focus command with no column to start
+  from re-enters at the near end: `right` at the leftmost column, `left` at the rightmost. On a cascade
+  `left`/`up` enter at the deepest slot and `right`/`down` at the shallowest, which is the same sentence
+  read along a diagonal.
 - **A pin is a virtual column outside the near end.** `focus left` at column 0 with a left pin lands on it;
   `focus right` off that pin re-enters where the user was working, else the near end. The other three
   directions from a pin go nowhere — the strip is one way and the display's own edge the other.
   `focus-pinned` cycles left, right, strip, skipping the sides that are empty.
-- **Returning to the strip never moves it.** `Engine.stripReentry` is the one expression for "which
-  window does a pin hand focus back to", and two things read it: `enterStrip` moves focus there, and
+- **Returning to the strip never moves it.** `Engine.layoutReentry` is the one expression for "which
+  window does a pin hand focus back to", and two things read it: `enterLayout` moves focus there, and
   `restingOffset` frames the strip there the moment a window is pinned. A pin holds focus without holding
   a column, so without this the edit leaves the offset wherever it was and the return scrolls — a move
   nobody asked for and nobody can predict. A float is deliberately not this: emira does not place one, so
   re-framing would slide the strip under a window standing still.
-- `Engine.stripAnchor` — "where was the user working", used when focus rests on nothing. It reads
-  `World.lastStripFocus` rather than live focus, because an app focuses its brand-new window before emira has
+- `Engine.tiledAnchor` — "where was the user working", used when focus rests on nothing. It reads
+  `World.lastTiledFocus` rather than live focus, because an app focuses its brand-new window before emira has
   adopted it, so a `focusChanged(nil)` lands a moment _before_ the creation; anchoring on live focus passes a
   unit test and appends in reality every time.
 - **A departure hands focus to the place it vacated** (`Engine.successor`): a surviving stackmate in the same
   column, else whichever column now stands at the departed one's index, else — for a window that was already
-  off the strip, a float or a dialog — the **focus stack**, and only then `stripAnchor` and the strip's front.
+  off the strip, a float or a dialog — the **focus stack**, and only then `tiledAnchor` and the strip's front.
   The first two clauses are positional and a window with no column has neither, so the rest is the whole of
   its answer.
 
   **The stack is `World.focusedAt`, read as a stack rather than as an order** (`World.lastFocusedOnScreen`):
   the newest window the acting monitor is still showing. That is what makes a dialog closing return to
   whatever it opened out of *to any depth* — a picker over a settings window over the strip unwinds one step
-  at a time — where `stripAnchor` cannot, since by construction it only ever answers with a window that holds
+  at a time — where `tiledAnchor` cannot, since by construction it only ever answers with a window that holds
   a column. Asked **on screen and on one display**, because a memory of a window in the Dock, scrolled away,
-  or on another screen is not somewhere focus can be handed. `stripAnchor` still answers behind it, for the
+  or on another screen is not somewhere focus can be handed. `tiledAnchor` still answers behind it, for the
   strip place that has since scrolled out of view.
 
   It is reached from the other side too: **a strip emptied of its last column hands focus to a float standing
@@ -929,9 +1028,9 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   is hoisting's third rule, so its picture goes up the instant it opens. Only the stacking half is
   written — the taxonomy floats every dialog and popover, and most take no focus — and only for a window
   that arrives **on screen**: one arriving into the Dock or under a hidden app is on top of nothing.
-- **`World.lastStripFocus` is a place, not a window that once held focus.** It is dropped the moment its
-  window leaves the strip (`pruneStripFocus`, on destroy, float, minimize and `Cmd-H`) and moved onto the
-  place a departing window vacated (`noteStripFocus`, from `departFromStrip`, which is the only moment the
+- **`World.lastTiledFocus` is a place, not a window that once held focus.** It is dropped the moment its
+  window leaves the strip (`pruneTiledFocus`, on destroy, float, minimize and `Cmd-H`) and moved onto the
+  place a departing window vacated (`noteTiledFocus`, from `departFromLayout`, which is the only moment the
   vacated column and index are still known). Without both halves the memory dangles on a window that has
   floated away, and the departure clause above has nothing to reach for.
 
@@ -951,12 +1050,12 @@ a ratio measures how violently a column would have to distort it. Both fail rath
 to read: the first window on a workspace, and every window the launch scan adopted, where the anchor would be
 whichever window the scan reached first rather than anything a user chose.
 
-**An arrival has two anchors, and they answer different questions.** `Engine.stripAnchor` answers "which
-column does this open beside", so it insists on a column, and reads `World.lastStripFocus`.
+**An arrival has two anchors, and they answer different questions.** `Engine.tiledAnchor` answers "which
+column does this open beside", so it insists on a column, and reads `World.lastTiledFocus`.
 `Engine.arrivalAnchor` answers "what did this window open out of", which needs a window on screen and nothing
 more, so it reads `World.lastFocus` — the same shelter from the transient `nil`, without the column. Sharing
 the first would make the mechanism silent in exactly the states where a small window is most likely: neither a
-float nor a full-screen window is ever `lastStripFocus`, so working in either leaves the ratio measured
+float nor a full-screen window is ever `lastTiledFocus`, so working in either leaves the ratio measured
 against a window the user left behind, or against nothing at all.
 
 All three actions are **seeds into somewhere the user can already reach**: `workspace` is the move
@@ -974,7 +1073,7 @@ animated out like a close, position remembered.
 
 **A pinned window is one emira places and no strip holds** (`World.pins` → `LayoutMetrics.pins`). It sits at
 an edge of one display, full height, and every workspace that display shows is laid out beside it. The record
-is `World`'s beside `floating` because `participatesInStrip` has to read it and four things inside `World`
+is `World`'s beside `floating` because `participatesInTiling` has to read it and four things inside `World`
 read *that*; the two are exclusive, stated in `setPin`/`setFloating`, because both mean *off the strip* and
 two records of it would be two authorities on membership. Hoisting then excludes a pin for free — a hoist is
 only ever a float **by choice**.
@@ -1791,6 +1890,13 @@ is `span`'s sentence and the row's own truncation rather than the width's. What 
 sentence would state is nothing, so `enabled`, whose sentence is which guide it turns on, stays written per
 guide.
 
+**A value read once is still a setting, and `layout.default` is the one that says so.** Every other key here
+is live: the reload re-resolves the geometry against it, and the desktop rearranges. This one is the layout a
+workspace materializes in, so a reload changes what the *next* address becomes and leaves every existing one
+alone — the same shape a window rule has, and for the same reason. Nothing about the schema, the document or
+the editor knows the difference; what would go wrong if it did is a settings window promising a change the
+desktop is right not to make.
+
 **Setting something to its default unsets it.** An absent key already means the default, and a file that writes
 it down pins it against ever changing. The fork lives on `ConfigDocument.set(_ setting:to:)` rather than at a
 call site, because a `Setting` is what knows its own default and a bare key does not — and two consumers now
@@ -1893,7 +1999,8 @@ emira/
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
     │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
-    │   └── Layout/      Layout · Workspaces · Strip · Column · Presets · Cascade · Park
+    │   └── Layout/      Layout (the kind) · Workspaces · Strip · Stack · Column · Presets
+    │                    Cascade (the quit pile, not a layout) · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
@@ -1951,10 +2058,12 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 
 - **`EmiraMotionTests`** — `SpringTests`, `AnimatorTests`, `EasingTests`: feed synthetic `dt`, assert
   convergence, no overshoot past tolerance, and that `retarget()` preserves velocity.
-- **`EmiraCoreTests` / layout** — `StripTests` (scroll math, visibility, detents), `PresetTests`, `ColumnTests`
-  (height water-fill and its bounds), `ParkTests`, `DesktopParkingTests`, `LayoutTests`, `WorkspaceTests`,
-  `MonitorTests`, `OuterGapTests`, `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast,
-  exhaustive.
+- **`EmiraCoreTests` / layout** — `StripTests` (scroll math, visibility, detents), `StackTests` (the
+  cascade's arithmetic and its two floors), `PresetTests`, `ColumnTests` (height water-fill and its bounds),
+  `ParkTests`, `DesktopParkingTests`, `LayoutTests`, `WorkspaceTests`, `MonitorTests`, `OuterGapTests`,
+  `CascadeTests`, `GeometryTests`. One suite per question. Pure, fast, exhaustive. `LayoutTests` sweeps the
+  total geometry queries over **both kinds**, which is what says the type answers for every window and for
+  an empty workspace whichever arrangement it is in.
 
   `MonitorTests`, `MonitorCommandTests`, `DesktopParkingTests` and the reducer's `MonitorSessionTests` earn
   their place the way `WorkspaceTests` does: everything they assert — an address orphaned by a departure, the
@@ -1967,8 +2076,12 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   `EngineRefusalTests`,
   `EngineStructuralEditTests`, `EnginePointerTests`, `EngineWarpTests`, `EngineConfigReplayTests`,
   `MonitorSessionTests`, `GuideRingTests`, `SystemFocusEventTests`, `TransitionModeTests`,
-  `WorkspaceCommandTests`, `RulesTests`,
-  `GhostWindowTests` — all over the shared scripted world in **`EngineFix`**. A fixture there is just a way of
+  `WorkspaceCommandTests`, `RulesTests`, `LayoutKindTests`,
+  `GhostWindowTests` — all over the shared scripted world in **`EngineFix`**. `LayoutKindTests` is the seam
+  the second layout hangs on: placement, focus without a cover, `move-window` swapping slots, an arrival and
+  a departure resizing the whole workspace, nothing parked and nothing scrolled, the cover ordered by the
+  desktop rather than the slots, a lossless round trip through `layout stack` and back, and every inert verb
+  asserted to leave the state itself unchanged. A fixture there is just a way of
   saying "a desktop in this shape"; the scenarios that motivated the whole design are written as scripts:
 
   ```
@@ -2038,7 +2151,10 @@ interrupt/retarget brain is verified with no AX, CA or SCK in sight.
 
 **What the suite does not cover**, and what therefore needs the daemon actually running: anything about the
 window server (whether a cover composed before a teleport, whether a warp posts an event, what an app does with
-a size it dislikes), and anything visual. Per `CLAUDE.md`: running the daemon and moving windows is never an
+a size it dislikes), and anything visual — which now includes the two a cascade adds. Whether the cover is
+pixel-identical at both ends of a transition over **overlapping** tiles is the fidelity claim §5 rests on and
+the suite can only assert the order, not the pixels. And §5's soft failure — click the window either side of
+a third and look at what is left of it — is a judgement to make by looking. Per `CLAUDE.md`: running the daemon and moving windows is never an
 interruption.
 
 ---

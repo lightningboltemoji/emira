@@ -87,8 +87,8 @@ public final class AXEnumerator {
     /// The outcome of one enumeration — the snapshots to dispatch, plus enough detail to explain the gap
     /// between "windows on the screen" and "windows emira manages".
     public struct Report: Sendable {
-        /// Taken into management for the *first time*, in binding order — dispatch these as
-        /// `windowCreated`, and only these.
+        /// Taken into management for the *first time*, **back to front** — dispatch these as
+        /// `windowCreated`, and only these, in this order.
         public let snapshots: [WindowSnapshot]
         /// Re-met: already managed, id unchanged, AX element refreshed.
         public let rebound: [WindowId]
@@ -239,10 +239,35 @@ public final class AXEnumerator {
             if outcome.isIncomplete { incompleteApps.append(target) }
         }
 
-        return Report(snapshots: snapshots, rebound: rebound, succeeded: succeeded.sorted(),
-                      departed: departed, undescribed: undescribed, apps: apps,
-                      incompleteApps: incompleteApps, seenWindows: seenWindows,
+        return Report(snapshots: ordered(snapshots, along: apps.lazy.compactMap { answers[$0.pid] }
+                                                          .first?.entries ?? []),
+                      rebound: rebound,
+                      succeeded: succeeded.sorted(), departed: departed, undescribed: undescribed,
+                      apps: apps, incompleteApps: incompleteApps, seenWindows: seenWindows,
                       unbound: unbound, unclaimed: unclaimed)
+    }
+
+    /// `snapshots` in the order the desktop stacks them, back to front — along `entries`, the window
+    /// server's own front-to-back list, reversed.
+    ///
+    /// A scan focuses nothing, and the order focus reports arrive in is the core's only record of
+    /// stacking (`World.focusedAt`), so adopting this way is what seeds it with the order the desktop
+    /// is already in. A window the list does not mention goes furthest back: it is off screen. The
+    /// list is the one each answer was already read alongside, taken from the first app in `apps`
+    /// order so the answer is deterministic.
+    private func ordered(_ snapshots: [WindowSnapshot],
+                         along entries: [WindowListEntry]) -> [WindowSnapshot] {
+        guard snapshots.count > 1 else { return snapshots }
+        let depth = Dictionary(entries.enumerated().map { ($1.number, $0) },
+                               uniquingKeysWith: { first, _ in first })
+        func rank(_ snapshot: WindowSnapshot) -> Int {
+            registry.record(snapshot.id).flatMap { depth[$0.number] } ?? Int.max
+        }
+        // The id breaks the tie the list cannot: two windows it does not list at all.
+        return snapshots.sorted { a, b in
+            let (x, y) = (rank(a), rank(b))
+            return x == y ? a.id < b.id : x > y
+        }
     }
 
     /// What one app's answer resolved to. Aggregated into the `Report` by `finish`.

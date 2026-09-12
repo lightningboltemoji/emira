@@ -23,7 +23,7 @@ import Testing
         var s = Self.world()
         s.world.setFocus(WindowId(2))
         let (after, _) = Self.pin(s, .left)
-        #expect(!after.world.participatesInStrip(WindowId(2)))
+        #expect(!after.world.participatesInTiling(WindowId(2)))
         #expect(after.layout.columnIndex(ofWindow: WindowId(2)) == nil)
         #expect(after.world.focusedWindow == WindowId(2))
         #expect(after.world.isPinned(WindowId(2)))
@@ -35,7 +35,7 @@ import Testing
         var s = Self.world()
         s.world.setFocus(WindowId(2))
         let (after, _) = Self.pin(s, .left)
-        #expect(after.world.lastStripFocus == WindowId(1))
+        #expect(after.world.lastTiledFocus == WindowId(1))
     }
 
     @Test func pinOffPutsItBackOnTheStrip() {
@@ -43,7 +43,7 @@ import Testing
         s.world.setFocus(WindowId(2))
         let (pinned, fx) = Self.pin(s, .left)
         let (after, _) = Self.pin(EngineFix.settle(pinned, fx), .off)
-        #expect(after.world.participatesInStrip(WindowId(2)))
+        #expect(after.world.participatesInTiling(WindowId(2)))
         #expect(after.layout.columnIndex(ofWindow: WindowId(2)) != nil)
         #expect(!after.world.isPinned(WindowId(2)))
     }
@@ -89,7 +89,7 @@ import Testing
         let (after, _) = Self.pin(settled, .left)
         #expect(after.world.pinned(on: MonitorId(1), .left) == WindowId(3))
         #expect(!after.world.isPinned(WindowId(2)))
-        #expect(after.world.participatesInStrip(WindowId(2)))
+        #expect(after.world.participatesInTiling(WindowId(2)))
     }
 
     /// Both mean *off the strip*, so a second record of it would be a second authority on membership.
@@ -159,7 +159,7 @@ import Testing
         let (pinned, fx) = Self.pin(s, .left)
         var settled = EngineFix.settle(pinned, fx)
         settled.world.setFocus(WindowId(3))
-        settled.world.noteStripFocus(WindowId(3))
+        settled.world.noteTiledFocus(WindowId(3))
         let (onPin, pfx) = EngineFix.run(settled, [.command(.focusPinned)])
         #expect(onPin.world.focusedWindow == WindowId(2))
         let (after, _) = EngineFix.run(EngineFix.settle(onPin, pfx), [.command(.focus(.right))])

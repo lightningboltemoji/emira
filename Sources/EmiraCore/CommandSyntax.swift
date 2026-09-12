@@ -45,7 +45,7 @@ public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
 // `Direction(rawValue:)` were two statements of one fact, and now there is one.
 //
 // The shape is `Argument`, and the rule is `Setting.Kind`'s one vocabulary over: **one case per shape of
-// control, never per verb.** Five cases carry twenty-three verbs.
+// control, never per verb.** Five cases carry twenty-four verbs.
 
 /// The command vocabulary: every verb emira answers to, and the grammar of what each one takes.
 ///
@@ -109,7 +109,7 @@ public struct Verb: Sendable {
     public func matches(_ word: String) -> Bool { word == name || aliases.contains(word) }
 
     /// What a verb takes after its name — **one case per shape of control**, which is why five of them
-    /// cover twenty-three verbs. A case serving a single verb is the sign the table has stopped paying for
+    /// cover twenty-four verbs. A case serving a single verb is the sign the table has stopped paying for
     /// itself; `.line` sits at that edge and earns it by being the only genuinely open argument here.
     public enum Argument: Sendable, Equatable {
         /// Nothing. The verb is the whole command, and a word after it is a typo.
@@ -182,6 +182,7 @@ extension Command {
         case .shrink(let delta):              return ["shrink", delta.word]
         case .cycleHeight:                    return ["cycle-height"]
         case .consumeOrExpel(let direction):  return ["consume-or-expel", direction.rawValue]
+        case .setLayout(let kind):            return ["layout", kind.rawValue]
         case .fullscreen(let toggle):         return ["fullscreen", toggle.rawValue]
         case .float(let toggle):              return ["float", toggle.rawValue]
         case .pin(let intent):                return ["pin", intent.rawValue]
@@ -248,6 +249,10 @@ extension Vocabulary {
         Verb("consume-or-expel", argument: .direction,
              summary: "Pull a window into or out of the column.",
              build: { verb, args in .consumeOrExpel(try direction(args, verb: verb)) }),
+
+        Verb("layout", argument: .layoutKind,
+             summary: "Put the focused workspace into a layout.",
+             build: { verb, args in .setLayout(try layoutKind(args, verb: verb)) }),
 
         Verb("center-column", summary: "Centre the focused column in the viewport.",
              build: bare(.centerColumn)),
@@ -367,6 +372,14 @@ extension Vocabulary {
         return toggle
     }
 
+    /// `strip|stack` — which arrangement the focused workspace takes. Required: a bare `layout` names
+    /// no arrangement, and the one a workspace happens to be in is not something to guess back.
+    private static func layoutKind(_ args: [String], verb: Verb) throws -> Layout.Kind {
+        let word = try only(args, verb: verb)
+        guard let kind = Layout.Kind(rawValue: word) else { throw badArgument(word, verb: verb) }
+        return kind
+    }
+
     /// `left|toggle-left|right|toggle-right|off` — which edge, and whether pressing it again lets go.
     /// Required, unlike `toggle`'s: a bare `pin` names no side and there is nothing sensible to default
     /// it to.
@@ -458,6 +471,9 @@ extension Verb.Argument {
 
     /// `<left|toggle-left|right|toggle-right|off>`. No default: a side is not something to guess.
     static let pin = Verb.Argument.words(PinIntent.allCases.map(\.rawValue), default: nil)
+
+    /// `<strip|stack>`. No default, for `pin`'s reason.
+    static let layoutKind = Verb.Argument.words(Layout.Kind.allCases.map(\.rawValue), default: nil)
 
     /// One of the 36 addresses, or a relative motion. The relatives are spelled the way `words` emits
     /// them; `usage` compresses the accepted set, aliases and all.

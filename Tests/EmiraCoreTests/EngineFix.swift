@@ -35,6 +35,14 @@ enum EngineFix {
         return laddered
     }
 
+    /// `config` with new workspaces starting as a cascade — the layout an address materializes in, so
+    /// a world built on it is stacked from its first window rather than switched afterwards.
+    static func stacked(_ config: Config = Config()) -> Config {
+        var stacked = config
+        stacked.defaultLayout = .stack
+        return stacked
+    }
+
     /// A fresh state that already knows about one display.
     static func booted(config: Config = Config(), display: Rect = displayFrame) -> State {
         let (s, _) = Engine.reduce(State(config: config),

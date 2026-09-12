@@ -12,20 +12,29 @@ The investigation, the rejected alternative and the number that settled an argum
 
 ## 1. The model
 
-- **An infinite horizontal strip of columns.** Windows live in columns arranged left to right on a
-  conceptually infinite ribbon; you scroll the ribbon to bring columns into view.
-- **Columns stack windows vertically**, and cycle through preset widths and heights. Windows never overlap,
-  and are never clipped to fit.
+- **A workspace is a surface, and a surface has a layout.** There are two of them, and `strip` is the
+  default and the identity of the project. Which one a workspace is in is a property of the workspace,
+  changed by a verb — never of the display, which owns many workspaces while showing one.
+- **`strip` is an infinite horizontal ribbon of columns.** Windows live in columns arranged left to right;
+  you scroll the ribbon to bring columns into view. Columns stack windows vertically, and cycle through
+  preset widths and heights. **Windows never overlap, and are never clipped to fit.** That belongs here,
+  under this layout, rather than one rung up: it was never a claim about emira, only a property of the one
+  arrangement there was, true in the accidental sense that nothing existed to contradict it.
+- **`stack` is a diagonal cascade over the working area.** Every tile is the same size, and that size is a
+  function of how many tiles there are — so nothing on it resizes, nothing on it scrolls, and an arrival
+  moves every window on the workspace. It keeps the second half of the strip's promise and gives up the
+  first: a cascade overlaps, and still never clips.
 - **36 workspaces at fixed addresses** — `1`–`9`, then `0`, then `a`–`z`, the order the keys sit in — each its
-  own infinite strip, one focused and the rest parked. A fixed address space rather than a GNOME-style dynamic
-  one: no creation policy, no deletion policy, nothing to collapse, which is strictly less machinery. Nobody
-  counts workspaces from zero on a keyboard-driven window manager; they press the key at the left end of the
-  number row, so `1` is the launch address and `0` is the tenth.
-- **A window's workspace is _derived_ from the strip holding it.** There is one authority on where a window
-  is, and nothing may hold a second opinion about it.
-- **A pinned window is on no strip, and therefore on no workspace.** It is held at an edge of a display,
-  and every workspace that display shows is laid out beside it rather than under it. The strip's *area*
-  shrinks by the band; what a width **means** does not, so pinning moves the strip and re-proportions
+  own surface, one shown per display and the rest parked. A fixed address space rather than a GNOME-style
+  dynamic one: no creation policy, no deletion policy, nothing to collapse, which is strictly less machinery.
+  Nobody counts workspaces from zero on a keyboard-driven window manager; they press the key at the left end
+  of the number row, so `1` is the launch address and `0` is the tenth.
+- **A window's workspace is _derived_ from the layout holding it.** There is one authority on where a window
+  is, and nothing may hold a second opinion about it — which is also what settles where the kind lives: the
+  workspace is the thing that holds the windows, so the layout is a property of it.
+- **A pinned window is on no layout, and therefore on no workspace.** It is held at an edge of a display,
+  and every workspace that display shows is laid out beside it rather than under it. The tiled *area*
+  shrinks by the band; what a width **means** does not, so pinning moves the arrangement and re-proportions
   nothing.
 
 **The order of the two goods.** If placement isn't instant and correct, we've failed. If we can _also_ make
@@ -150,7 +159,9 @@ happen on.
   drawn small, with a marker travelling to whichever end you are at rather than a fixed frame that can only
   ever show you the middle of itself; it is the cover's own projection at another scale, so an off-screen
   column, a workspace switch and an animated resize all appear in it without any of them being implemented
-  twice. The **names** guide answers the same question with words instead of geometry — one per column, the
+  twice. A cascade's own extent is one working area, so its minimap is a 1:1 miniature with the marker
+  permanently full — still the answer to *what is where*, which is the half a cascade needs most. The
+  **names** guide answers the same question with words instead of geometry — one per column, the
   focused one filled — for a strip you navigate by what is on it rather than by where it is. Neither may
   outgrow the screen it is answering about, and each concedes in its own vocabulary: the minimap takes a
   smaller scale, and the row of names crowds its words, then gives up the columns furthest from you once
@@ -184,7 +195,8 @@ happen on.
   you opened, and going there is already what a Dock click does.
 - **A width is a share, and a lone window has nobody to share with.** A preset answers _how much of this do
   the others get_, so on a workspace with one window on it the question has no content and the ladder's
-  first rung is simply a smaller desktop. The first window takes the whole strip and the second puts both
+  first rung is simply a smaller desktop. It is the strip's rule and only the strip's: a lone tile on a
+  cascade already is the whole of the area, so there is nothing for the seed to say. The first window takes the whole strip and the second puts both
   on the ladder. It is a **seed and not a mode**, which is the same promise the rules make: the width verbs
   take a lone window off it and what they choose stands, until the next arrival or departure hands the strip
   back to the rule — a width _derived_ from the strip's shape would make every one of those keys dead on the
@@ -229,6 +241,13 @@ happen on.
   wide as its windows will actually be. The asymmetry with a _move_ drag is deliberate and not an oversight —
   a size is a number the strip already holds, while dragging a window somewhere would have to mean _insert
   here_, and emira does not yet have an answer to where.
+- **A layout owes placement, and an inert verb is written down rather than discovered.** Eight verbs and
+  three settings have no meaning on a cascade — everything about a column's width, a window's height, and
+  which column a window belongs to — and every one of them is admitted, answered `ok`, and does *nothing*.
+  Inert must mean nothing happens, never something surprising happens, so each is a guard with a test
+  behind it and a row in the table `IMPLEMENTATION` §6 keeps. What is not on offer is a verb that means one
+  thing here and something else there: `emira --help` is one list for the whole machine, and a vocabulary
+  that changed under the user would be two window managers again.
 - **No state without an exit.** emira will not enter a condition it has no way out of — it hides the pointer
   only while it can see the motion that would unhide it, rather than on a timeout that would also fire on
   somebody who is merely reading.
@@ -299,6 +318,15 @@ happen on.
   notification arrives with the dead process, far too late to close the strip over the window. Reading them
   on demand cannot stand in, since a focus report lands ahead of the answer it would need — so a departure
   is an observation like any other, and the app's death is the backstop rather than the signal.
+- **A layout may _read_ the stacking order; it may never assert one.** The order is macOS's, reconstructed
+  from the focus reports emira already folds (`State.stackingOrder`), and it is what a cover's layers and a
+  cascade's guide tiles are drawn in — because a cover stacking a cascade in slot order while macOS stacks
+  it in focus order is a visible cut at both ends of every transition. Asserting one is the thing a pin
+  pays a focus round trip for, and nothing about a layout is worth that. What it costs is that **which band
+  of a buried tile you can see is macOS's answer, not ours**: click two windows either side of a third and
+  that third is reduced to two corner squares. Placement is never wrong, nothing is unreachable, and
+  focusing the window repairs it — which is §4's bargain again, since the only mechanism that would prevent
+  it is focusing every window in slot order after every edit.
 - **A screenshot costs per call, not per pixel, and the window server serializes them.** A covered
   transition's head cost is therefore linear in how many columns it scopes and independent of display size —
   so anything that narrows the scope is worth more than anything that makes one capture cheaper.

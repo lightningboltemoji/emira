@@ -1,26 +1,26 @@
 import Foundation
 
-// The 36 workspaces — named `1`…`9`, `0`, then `a`…`z` (`WorkspaceName`) — each its own infinite
-// horizontal strip. A window's workspace is *derived*, never stored: it is on the strip whose `Layout`
-// contains it, so there is no assignment map that can disagree with the layouts.
+// The 36 workspaces — named `1`…`9`, `0`, then `a`…`z` (`WorkspaceName`) — each its own surface with
+// its own `Layout`. A window's workspace is *derived*, never stored: it is on the surface whose
+// `Layout` contains it, so there is no assignment map that can disagree with the layouts.
 //
-// **Which strip is on screen is not a fact this container holds.** A workspace is shown because a
-// *monitor* shows it (`Monitors`), so every query that depends on the difference between the strip in
+// **Which surface is on screen is not a fact this container holds.** A workspace is shown because a
+// *monitor* shows it (`Monitors`), so every query that depends on the difference between the layout in
 // view and the parked remainder takes the shown address as an argument. That is the whole of what
 // keeps `Workspaces` a pure structure joined to the displays by a name, rather than a second opinion
 // about which display is looking at what.
 //
 // The set is sparse and never pruned — a name materializes when first shown or first given a window,
-// and an unmaterialized name answers as an empty strip, so nothing branches on whether a workspace
+// and an unmaterialized name answers as an empty layout, so nothing branches on whether a workspace
 // "exists". Every ordered view sorts by `WorkspaceName`, whose `Comparable` is the key order
 // `1`…`9`, `0`, `a`…`z` and *not* alphabetical. One `ColumnAllocator` and one park-ordinal run serve
 // the whole set (see `ColumnAllocator`, `targetFrames`).
 
-/// One materialized workspace: its strip, plus the two things it remembers about having been looked at.
-/// Not reachable as a value — `Workspaces` exposes the three fields as three accessors, so no caller
-/// can hold a stale copy beside the container that owns it.
+/// One materialized workspace: its layout, plus the two things it remembers about having been looked
+/// at. Not reachable as a value — `Workspaces` exposes the three fields as three accessors, so no
+/// caller can hold a stale copy beside the container that owns it.
 struct WorkspaceState: Sendable, Equatable, Codable {
-    /// The strip. The only field of the three that means anything while the workspace is on screen.
+    /// The arrangement. The only one of the three that means anything while it is on screen.
     var layout: Layout
 
     /// The viewport offset focus was last taken away at — per-workspace scroll memory, `0` for a
@@ -55,6 +55,12 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// that mint — which is why those live here rather than on the `Layout` projection.
     private var columnIds: ColumnAllocator
 
+    /// The layout an address materializes in (`layout.default`), written by `configChanged`. Held here
+    /// rather than passed to each of the six sites that can be the first to touch a workspace, so that
+    /// "an unmaterialized address answers as an empty workspace" stays true in one place. A seed: an
+    /// address that already exists keeps the kind it has.
+    public var defaultKind: Layout.Kind = .strip
+
     /// Which height preset each window is pinned to (`cycleHeight`); absent means auto. Kept for the
     /// whole set rather than per strip, so a window carries its height to another workspace without
     /// `move` having to remember to bring it — the same reason one `ColumnAllocator` serves all 36.
@@ -71,9 +77,16 @@ public struct Workspaces: Sendable, Equatable, Codable {
 
     /// A fresh set: one materialized, empty address, nothing else. The launch state, and the address
     /// `Monitors` starts out showing.
-    public init(materializing name: WorkspaceName = .first) {
-        self.strips = [name: WorkspaceState()]
+    public init(materializing name: WorkspaceName = .first, kind: Layout.Kind = .strip) {
+        self.defaultKind = kind
+        self.strips = [name: WorkspaceState(layout: Layout(kind: kind))]
         self.columnIds = ColumnAllocator()
+    }
+
+    /// A workspace as this set materializes one — empty, in the default layout. Static so that the
+    /// three subscript setters can seed with it without overlapping their own access to `strips`.
+    private static func fresh(_ kind: Layout.Kind) -> WorkspaceState {
+        WorkspaceState(layout: Layout(kind: kind))
     }
 
     /// Construct from explicit strips, materializing `showing` whether or not `strips` mentions it.
@@ -84,6 +97,8 @@ public struct Workspaces: Sendable, Equatable, Codable {
     public init(showing name: WorkspaceName, strips: [WorkspaceName: Layout]) {
         self.strips = strips.mapValues { WorkspaceState(layout: $0) }
         self.strips[name] = self.strips[name] ?? WorkspaceState()
+        // The supplied layouts carry their own kind; an address this initializer materializes takes
+        // the launch default, which is what `defaultKind` is until `configChanged` writes one.
         let highest = strips.values.flatMap { $0.columns.map(\.id.raw) }.max() ?? 0
         self.columnIds = ColumnAllocator(next: highest + 1)
     }
@@ -91,8 +106,8 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// The strip at `name` — an **empty** strip for an address never materialized, so no caller
     /// branches on existence. Assigning materializes it, and never un-materializes.
     public subscript(name: WorkspaceName) -> Layout {
-        get { strips[name]?.layout ?? Layout() }
-        set { strips[name, default: WorkspaceState()].layout = newValue }
+        get { strips[name]?.layout ?? Layout(kind: defaultKind) }
+        set { strips[name, default: Self.fresh(defaultKind)].layout = newValue }
     }
 
     /// Where `name`'s viewport rested when focus last left it, and where it resumes when focus returns.
@@ -100,7 +115,7 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// assigning does.
     public subscript(scrollOffsetOf name: WorkspaceName) -> Double {
         get { strips[name]?.scrollOffset ?? 0 }
-        set { strips[name, default: WorkspaceState()].scrollOffset = newValue }
+        set { strips[name, default: Self.fresh(defaultKind)].scrollOffset = newValue }
     }
 
     /// Which of `name`'s windows had focus when focus last left it, or `nil` — never focused, left with
@@ -108,14 +123,14 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// switch *into* `name` focuses this window, and a window moved *to* `name` opens beside it.
     public subscript(lastFocusOf name: WorkspaceName) -> WindowId? {
         get { strips[name]?.lastFocus }
-        set { strips[name, default: WorkspaceState()].lastFocus = newValue }
+        set { strips[name, default: Self.fresh(defaultKind)].lastFocus = newValue }
     }
 
-    /// Give `name` a strip if it has none. What a monitor showing an address for the first time does,
+    /// Give `name` a layout if it has none. What a monitor showing an address for the first time does,
     /// and deliberately nothing else — storing the outgoing memory and seeding the incoming viewport
     /// read `Motion` and `World`, which a layout container knows nothing about.
     public mutating func materialize(_ name: WorkspaceName) {
-        if strips[name] == nil { strips[name] = WorkspaceState() }
+        if strips[name] == nil { strips[name] = Self.fresh(defaultKind) }
     }
 
     /// The address a `WorkspaceRef` names, from `here` — the address the acting monitor is showing —
@@ -169,9 +184,11 @@ public struct Workspaces: Sendable, Equatable, Codable {
         materialized.flatMap { self[$0].allWindowIds }
     }
 
-    /// Every window on every strip, back-to-front: `placementOrder(shown:)`, then layout order inside
-    /// each strip. What a cover's layer bindings and the quit cascade stack in — the strips on screen
-    /// at the bottom, the parked remainder above them in name order.
+    /// Every window on every workspace in **placement order**: `placementOrder(shown:)`, then layout
+    /// order inside each. The workspaces on screen first, the parked remainder after them in name
+    /// order — what the quit cascade piles in, and the order `Engine.scopeUnion` builds a cover's
+    /// bindings from. Within one workspace it is a stacking order only where nothing overlaps, which
+    /// is why `scopeUnion` re-orders a `stack` workspace's run rather than taking this verbatim.
     public func windowIds(inPlacementOrder shown: [WorkspaceName]) -> [WindowId] {
         placementOrder(shown: shown).flatMap { self[$0].allWindowIds }
     }
@@ -198,15 +215,15 @@ public struct Workspaces: Sendable, Equatable, Codable {
     // need it, they live here rather than being reached through `State.layout`. Every other structural
     // edit is a fact about one strip and goes through the projection unchanged.
 
-    /// Sync every strip to the system's current strip membership. The asymmetry *is* the model:
-    /// **departures leave every strip**, while **newcomers join one strip only** — `home`, the address
-    /// the acting monitor is showing — beside `anchor`. Projected onto every strip instead, the first
+    /// Sync every layout to the system's current tiled membership. The asymmetry *is* the model:
+    /// **departures leave every workspace**, while **newcomers join one only** — `home`, the address
+    /// the acting monitor is showing — beside `anchor`. Projected onto every layout instead, the first
     /// workspace switch would treat every window on every other workspace as a newcomer and suck the
     /// lot onto the one in view.
     ///
-    /// Also clears a remembered focus no longer on its own strip, making that an invariant of the
+    /// Also clears a remembered focus no longer on its own layout, making that an invariant of the
     /// container rather than a check somebody has to remember at the switch.
-    public mutating func reconcile(stripWindowIds ids: [WindowId], onto home: WorkspaceName,
+    public mutating func reconcile(tiledWindowIds ids: [WindowId], onto home: WorkspaceName,
                                    insertingAfter anchor: WindowId? = nil) {
         materialize(home)
         let keep = Set(ids)
@@ -220,7 +237,7 @@ public struct Workspaces: Sendable, Equatable, Codable {
         // Windows living on another workspace are subtracted before the home strip is reconciled, so
         // it sees them as neither members nor newcomers — what keeps step 2 from undoing step 1.
         var strip = self[home]
-        strip.reconcile(stripWindowIds: ids.filter { !elsewhere.contains($0) },
+        strip.reconcile(tiledWindowIds: ids.filter { !elsewhere.contains($0) },
                         insertingAfter: anchor, columnIds: &columnIds)
         self[home] = strip
 

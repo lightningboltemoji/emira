@@ -110,6 +110,10 @@ public enum PointerFocus: Sendable, Equatable {
 /// A mock desktop's arrangement, and which of its windows has focus.
 public struct Scene: Sendable, Equatable {
     public let columns: [MockColumn]
+    /// Which arrangement the set is in — `strip`'s ribbon or `stack`'s cascade. A property of the set
+    /// rather than of the draft, so one row on the panel can show a cascade without every other row
+    /// on the tab following it there.
+    public let kind: Layout.Kind
     /// The focused window. The strip frames its column, so this is what the scroll offset derives from.
     public let focus: WindowId
     /// Whether the real guide is drawn on this set, small. Only the Guide section wants one.
@@ -127,11 +131,12 @@ public struct Scene: Sendable, Equatable {
     /// geometry — a mark claiming an alignment that is not there would be the one lie in the window.
     public let asksFlush: Mark.Edge?
 
-    public init(columns: [MockColumn], focus: WindowId,
+    public init(columns: [MockColumn], focus: WindowId, kind: Layout.Kind = .strip,
                 pointer: MockPointer? = nil, pointerFocus: PointerFocus = .none,
                 floats: [MockFloat] = [], cue: Cue? = nil, asksFlush: Mark.Edge? = nil,
                 hasGuide: Bool = false) {
         self.columns = columns
+        self.kind = kind
         self.focus = focus
         self.pointer = pointer
         self.pointerFocus = pointerFocus
@@ -144,13 +149,17 @@ public struct Scene: Sendable, Equatable {
     /// This set with one thing about it changed. Every mutator below goes through it, so a field added
     /// to `Scene` cannot be silently dropped by the one copy that forgot to carry it.
     private func with(columns: [MockColumn]? = nil, focus: WindowId? = nil,
-                      pointer: MockPointer? = nil, cue: Cue?? = nil,
+                      kind: Layout.Kind? = nil, pointer: MockPointer? = nil, cue: Cue?? = nil,
                       asksFlush: Mark.Edge?? = nil) -> Scene {
-        Scene(columns: columns ?? self.columns, focus: focus ?? self.focus,
+        Scene(columns: columns ?? self.columns, focus: focus ?? self.focus, kind: kind ?? self.kind,
               pointer: pointer ?? self.pointer, pointerFocus: pointerFocus,
               floats: floats, cue: cue ?? self.cue, asksFlush: asksFlush ?? self.asksFlush,
               hasGuide: hasGuide)
     }
+
+    /// The same set arranged the other way — what the `layout` verb does, and what `layout.default`
+    /// previews by handing this the draft's own answer.
+    public func laidOut(_ kind: Layout.Kind) -> Scene { with(kind: kind) }
 
     /// The same set with the badge showing something else, or nothing.
     public func showing(cue: Cue?) -> Scene { with(cue: .some(cue)) }
@@ -196,7 +205,7 @@ public struct Scene: Sendable, Equatable {
         Layout(columns: columns.map {
             ColumnLayout(id: $0.id, windowIds: $0.windows.map(\.id), widthPreset: $0.widthPreset,
                          widthOverride: $0.widthOverride)
-        })
+        }, kind: kind)
     }
 
     /// The same set with `focus` moved. What a take's `focusLeft`/`focusRight` beat produces.

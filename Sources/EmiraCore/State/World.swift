@@ -14,11 +14,11 @@ public struct WindowState: Sendable, Equatable, Codable {
     public let bundleId: String
     /// Mutable (apps rewrite it); never used for identity after binding.
     public var title: String
-    /// The window's tiling role. Only `.standard` joins the strip.
+    /// The window's tiling role. Only `.standard` is tiled.
     public var role: WindowRole
     /// Last-known truth frame in top-left virtual-strip coordinates (the shell Y-flips at its edge).
     public var frame: Rect
-    /// A minimized window *leaves the strip*, like a close.
+    /// A minimized window *stops being tiled*, like a close.
     public var isMinimized: Bool
 
     public init(
@@ -34,7 +34,7 @@ public struct WindowState: Sendable, Equatable, Codable {
     }
 
     /// What the window's *role* says about tiling, before the user gets a say. `World.isFloating`
-    /// overrides it and `World.participatesInStrip` combines both with `AppState.isHidden`.
+    /// overrides it and `World.participatesInTiling` combines both with `AppState.isHidden`.
     public var isTileable: Bool { role.tiles && !isMinimized }
 }
 
@@ -86,7 +86,7 @@ public struct SizeCorrection: Sendable, Equatable, Codable {
 /// every window at once) is one shared truth rather than a flag denormalized onto each window.
 public struct AppState: Sendable, Equatable, Codable {
     public let bundleId: String
-    /// When `true`, all of the app's windows leave the strip.
+    /// When `true`, all of the app's windows stop being tiled.
     public var isHidden: Bool
 
     public init(bundleId: String, isHidden: Bool = false) {
@@ -145,7 +145,7 @@ public struct PinPlacement: Sendable, Equatable, Codable {
 /// focus integrity and app ref-counting, hold from outside.
 public struct World: Sendable, Equatable, Codable {
     /// Every live window, keyed by id. Dictionary order is nondeterministic — always derive ordered views
-    /// (e.g. `stripWindowIds`) by sorting, never by iterating this directly.
+    /// (e.g. `tiledWindowIds`) by sorting, never by iterating this directly.
     public private(set) var windows: [WindowId: WindowState]
     /// Every app with at least one live window. Reference-counted against `windows`.
     public private(set) var apps: [String: AppState]
@@ -172,7 +172,7 @@ public struct World: Sendable, Equatable, Codable {
     /// The windows the last placement pass put **on the glass** — every other window it placed is parked
     /// at its sliver. Recorded by `Engine.writeTruthPlane` rather than derived, because deriving it needs
     /// both a scroll offset and the layout it was measured against, and the two come apart: through a
-    /// transition's capture head the strip can be restructured with no real window moving. `isOnScreen`
+    /// transition's capture head the layout can be restructured with no real window moving. `isOnScreen`
     /// reads it, which is how `[focus] system-events` judges a report against where the windows *are*.
     public private(set) var placedOnScreen: Set<WindowId>
     /// The user's explicit float/tile answer per window, where they have given one — `Command.float`.
@@ -181,21 +181,21 @@ public struct World: Sendable, Equatable, Codable {
     /// outlive a re-enumeration. Absent means "follow the role"; see `isFloating`.
     public private(set) var floating: [WindowId: Bool]
     /// The windows held at a display's edge — `Command.pin`. Beside `floating` and keyed the same way
-    /// because it is the same *kind* of fact: the user's answer about whether a window is on the strip
-    /// at all, which is what `participatesInStrip` reads. **At most one window per (display, side)**,
+    /// because it is the same *kind* of fact: the user's answer about whether a window is tiled at
+    /// all, which is what `participatesInTiling` reads. **At most one window per (display, side)**,
     /// which `setPin` is the only writer of.
     public private(set) var pins: [WindowId: PinPlacement]
-    /// The last window focus rested on that belongs to the strip — "where was the user working", against
+    /// The last window focus rested on that is tiled — "where was the user working", against
     /// `focusedWindow`'s "what is focused", which goes `nil` routinely for a moment because an app focuses
     /// a new window *before* we adopt it. A new column opens beside *this*: without it, ⌘N raced that
-    /// transient `nil` and appended at the far end of the strip.
+    /// transient `nil` and appended at the far end of the layout.
     ///
     /// It names a *place* the user can be handed back to, not merely a window that once had focus:
-    /// `pruneStripFocus` drops it when its window leaves the strip, `noteStripFocus` moves it on.
-    public private(set) var lastStripFocus: WindowId?
+    /// `pruneTiledFocus` drops it when its window stops being tiled, `noteTiledFocus` moves it on.
+    public private(set) var lastTiledFocus: WindowId?
     /// The last window focus rested on, **whatever kind of window it was** — the same shelter from that
     /// transient `nil`, one constraint looser, because a float and a full-screen window are both windows
-    /// a user works in and neither is ever `lastStripFocus`. What an arrival is measured against.
+    /// a user works in and neither is ever `lastTiledFocus`. What an arrival is measured against.
     public private(set) var lastFocus: WindowId?
     /// When each window last took focus — the whole of what emira knows about **stacking**, and it is
     /// derived rather than read: the window server's own answer costs a `CGWindowListCopyWindowInfo`
@@ -217,7 +217,7 @@ public struct World: Sendable, Equatable, Codable {
         self.placedOnScreen = []
         self.floating = [:]
         self.pins = [:]
-        self.lastStripFocus = nil
+        self.lastTiledFocus = nil
         self.lastFocus = nil
     }
 
@@ -225,7 +225,7 @@ public struct World: Sendable, Equatable, Codable {
 
     /// Fold `Event.windowCreated`: record the window and ensure its app exists (a repeat id overwrites).
     /// `isMinimized` is carried through rather than assumed `false` — launch enumeration meets windows
-    /// mid-life, and one already in the Dock must land off the strip at once.
+    /// mid-life, and one already in the Dock must land untiled at once.
     public mutating func insert(_ snapshot: WindowSnapshot) {
         windows[snapshot.id] = WindowState(
             id: snapshot.id, bundleId: snapshot.bundleId, title: snapshot.title,
@@ -247,7 +247,7 @@ public struct World: Sendable, Equatable, Codable {
         floating[id] = nil
         pins[id] = nil
         focusedAt[id] = nil
-        pruneStripFocus()
+        pruneTiledFocus()
         if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
             apps[window.bundleId] = nil
@@ -304,7 +304,7 @@ public struct World: Sendable, Equatable, Codable {
         let previous = focusedWindow
         focusedWindow = id
         if let id { lastFocus = id }
-        if let id, participatesInStrip(id) { lastStripFocus = id }
+        if let id, participatesInTiling(id) { lastTiledFocus = id }
         // The stacking record, written wherever focus is, and unconditional on kind: a float taking
         // focus is the event that puts it back on top, and it is the one this exists to catch.
         //
@@ -334,12 +334,12 @@ public struct World: Sendable, Equatable, Codable {
             .max { $0.value < $1.value }?.key
     }
 
-    /// Move the strip memory without moving focus — what `setFocus` cannot say, for a window that carries
-    /// focus *off* the strip and leaves a place behind it. Refuses a window that is not on the strip,
-    /// which is `setFocus`'s own guard and the invariant `pruneStripFocus` keeps.
-    public mutating func noteStripFocus(_ id: WindowId) {
-        guard participatesInStrip(id) else { return }
-        lastStripFocus = id
+    /// Move the tiled memory without moving focus — what `setFocus` cannot say, for a window that
+    /// carries focus *off* the layout and leaves a place behind it. Refuses a window that is not tiled,
+    /// which is `setFocus`'s own guard and the invariant `pruneTiledFocus` keeps.
+    public mutating func noteTiledFocus(_ id: WindowId) {
+        guard participatesInTiling(id) else { return }
+        lastTiledFocus = id
     }
 
     /// Record that `id`'s app was brought to the front without moving focus — `setFocus`'s stacking half
@@ -351,24 +351,24 @@ public struct World: Sendable, Equatable, Codable {
         focusedAt[id] = focusClock
     }
 
-    /// Drop the strip memory when it names a window that is no longer on the strip — the invariant that
-    /// separates `lastStripFocus` from `lastFocus`, kept here rather than re-argued at every read. Called
+    /// Drop the tiled memory when it names a window that is no longer tiled — the invariant that
+    /// separates `lastTiledFocus` from `lastFocus`, kept here rather than re-argued at each read. Called
     /// by each of the four mutators that can break it: destroy, float, minimize, `Cmd-H`.
-    private mutating func pruneStripFocus() {
-        guard let id = lastStripFocus, !participatesInStrip(id) else { return }
-        lastStripFocus = nil
+    private mutating func pruneTiledFocus() {
+        guard let id = lastTiledFocus, !participatesInTiling(id) else { return }
+        lastTiledFocus = nil
     }
 
     /// Fold `Event.windowMinimized` / `Event.windowDeminimized`.
     public mutating func setMinimized(_ id: WindowId, _ minimized: Bool) {
         windows[id]?.isMinimized = minimized
-        pruneStripFocus()
+        pruneTiledFocus()
     }
 
-    /// Fold an app-level hide/unhide (`Cmd-H`): every window of the app leaves / rejoins the strip at once.
+    /// Fold an app-level hide/unhide (`Cmd-H`): every window of the app leaves / rejoins at once.
     public mutating func setAppHidden(_ bundleId: String, _ hidden: Bool) {
         apps[bundleId]?.isHidden = hidden
-        pruneStripFocus()
+        pruneTiledFocus()
     }
 
     /// Fold `Event.screensChanged`. Order follows `infos` (authoritative); persisting ids carry their
@@ -406,9 +406,10 @@ public struct World: Sendable, Equatable, Codable {
 
     // Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)
 
-    /// Whether a window is currently on the tiled strip: it exists, its own state permits tiling, and its
+    /// Whether a window is currently tiled — on some workspace's layout: it exists, its own state
+    /// permits tiling, and its
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
-    public func participatesInStrip(_ id: WindowId) -> Bool {
+    public func participatesInTiling(_ id: WindowId) -> Bool {
         guard let window = windows[id], !window.isMinimized, !isFloating(id),
               !isPinned(id) else { return false }
         return !isAppHidden(of: id)
@@ -416,14 +417,14 @@ public struct World: Sendable, Equatable, Codable {
 
     /// Whether `Cmd-H` has hidden the app owning `id` — the one reason a window is nowhere on the screen
     /// that is a fact about its app rather than about itself. The reader matching `setAppHidden`, so the
-    /// flag is consulted in one spelling by both the strip test and the on-screen one.
+    /// flag is consulted in one spelling by both the tiling test and the on-screen one.
     public func isAppHidden(of id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
         return apps[window.bundleId]?.isHidden ?? false
     }
 
     /// Whether this window floats: the user's explicit answer where they have given one, else what the
-    /// role says. Distinct from "off the strip" — minimizing and `Cmd-H` also take a window off, and
+    /// role says. Distinct from "untiled" — minimizing and `Cmd-H` take a window off the layout too, and
     /// neither of them is a float.
     public func isFloating(_ id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
@@ -439,22 +440,22 @@ public struct World: Sendable, Equatable, Codable {
         windows[id] != nil && floating[id] == true
     }
 
-    /// Whether the user can see `id` right now. Not the same question as `participatesInStrip`, and the
-    /// difference is the whole of this function: **off the strip and off the screen are different sets.**
-    /// A float is off the strip and plainly visible; a minimized window is off the strip and in the Dock.
+    /// Whether the user can see `id` right now. Not the same question as `participatesInTiling`, and the
+    /// difference is the whole of this function: **untiled and off the screen are different sets.**
+    /// A float is untiled and plainly visible; a minimized window is untiled and in the Dock.
     ///
     /// For a window emira *does* place the answer is the `.setFrame`-vs-`.park` switch, and the last
     /// placement pass already made it: `placedOnScreen` is that decision, kept. Asking it rather than
     /// re-deriving it is what keeps the question "where is this window" from being answered with where
     /// it is *going* — the viewport describes the destination for the whole of a reveal — or with where
-    /// it would be under a strip that has been restructured since it was last placed. Membership
-    /// subsumes the workspace test too: a pass parks everything off the focused strip.
+    /// it would be under a layout that has been restructured since it was last placed. Membership
+    /// subsumes the workspace test too: a pass parks everything off the focused workspace.
     public func isOnScreen(_ id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
-        // Nowhere on the screen for a reason that has nothing to do with the strip.
+        // Nowhere on the screen for a reason that has nothing to do with the layout.
         guard !window.isMinimized, !isAppHidden(of: id) else { return false }
         // A window emira does not place is wherever its app put it, which is in view.
-        guard participatesInStrip(id) else { return true }
+        guard participatesInTiling(id) else { return true }
         return placedOnScreen.contains(id)
     }
 
@@ -467,20 +468,32 @@ public struct World: Sendable, Equatable, Codable {
     /// corner, where a stray sweep would otherwise switch workspaces.
     ///
     /// **Floats and dialogs before tiled windows**, since emira declines an opinion about where a float
-    /// sits. That is as far as `World` sees: it knows frames, not stacking, so an *unmanaged* window over
-    /// a tiled one still resolves to the tiled one.
+    /// sits. That is as far as `World` sees: an *unmanaged* window over a tiled one still resolves to
+    /// the tiled one.
     ///
-    /// One pass and no intermediate arrays — this runs at the refresh rate for as long as the setting is
-    /// on. Ties break on the lowest id, a dictionary's order being no order, and only floats can tie.
+    /// **Two candidates of one kind are separated by `StackOrder`**, since the answer wanted is the
+    /// window the pointer is actually over; two windows nothing has focused are ordered by id, a
+    /// dictionary's order being no order. One pass and no intermediate arrays — this runs at the
+    /// refresh rate — and the order is built only once a second candidate of a kind turns up.
     public func window(at point: Point) -> WindowId? {
+        var order: StackOrder?
+        func isInFront(_ candidate: WindowId, of incumbent: WindowId?) -> Bool {
+            guard let incumbent else { return true }
+            let stack = order ?? StackOrder(self)
+            order = stack
+            if stack.isInFront(candidate, of: incumbent) { return true }
+            if stack.isInFront(incumbent, of: candidate) { return false }
+            return candidate < incumbent
+        }
+
         var float: WindowId?
         var tiled: WindowId?
         for window in windows.values where window.frame.contains(point) && isOnScreen(window.id) {
             let id = window.id
             if isFloating(id) {
-                float = float.map { min($0, id) } ?? id
-            } else {
-                tiled = tiled.map { min($0, id) } ?? id
+                if isInFront(id, of: float) { float = id }
+            } else if isInFront(id, of: tiled) {
+                tiled = id
             }
         }
         return float ?? tiled
@@ -493,14 +506,14 @@ public struct World: Sendable, Equatable, Codable {
         guard windows[id] != nil else { return }
         floating[id] = isFloating
         // The two are exclusive, and the exclusion is stated here rather than argued at each verb:
-        // both mean *off the strip*, and two records of that would be two authorities on membership.
+        // both mean *untiled*, and two records of that would be two authorities on membership.
         if isFloating { pins[id] = nil }
-        pruneStripFocus()
+        pruneTiledFocus()
     }
 
-    // Pinning (a window the display holds, on no strip at all)
+    // Pinning (a window the display holds, on no workspace at all)
 
-    /// Whether this window is held at a display's edge. The hot read — `participatesInStrip` asks it
+    /// Whether this window is held at a display's edge. The hot read — `participatesInTiling` asks it
     /// once per window per placement pass — which is why the table is keyed by window and not by side.
     public func isPinned(_ id: WindowId) -> Bool { pins[id] != nil }
 
@@ -531,10 +544,10 @@ public struct World: Sendable, Equatable, Codable {
         floating[id] = nil
         pins[id] = PinPlacement(monitor: monitor, side: side, widthPreset: widthPreset,
                                 widthOverride: widthOverride)
-        pruneStripFocus()
+        pruneTiledFocus()
     }
 
-    /// Fold `pin off`: the window rejoins the strip. Total.
+    /// Fold `pin off`: the window rejoins the layout. Total.
     public mutating func clearPin(_ id: WindowId) { pins[id] = nil }
 
     /// Re-record a pin's width intent — `grow`/`shrink` write the override, `cycle-width` the index and
@@ -559,9 +572,9 @@ public struct World: Sendable, Equatable, Codable {
         }
     }
 
-    /// The windows currently on the strip, sorted by id for deterministic layout and replay.
-    public var stripWindowIds: [WindowId] {
-        windows.keys.filter(participatesInStrip).sorted()
+    /// Every tiled window, sorted by id for deterministic layout and replay.
+    public var tiledWindowIds: [WindowId] {
+        windows.keys.filter(participatesInTiling).sorted()
     }
 
     /// The ids of every live window owned by `bundleId`, sorted — what app-level operations read.

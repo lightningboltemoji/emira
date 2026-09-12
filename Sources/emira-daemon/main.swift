@@ -653,8 +653,9 @@ var isManaging = false
     // lands back on the main actor after its windows have already been dispatched and placed.
     watcher.start { report in
         log("enumerated \(report.summary)")
-        log("managing \(runtime.state.layout.columns.count) columns on workspace "
-            + "\(runtime.state.monitors.shown) of \(runtime.state.workspaces.materialized.count), "
+        log("managing \(runtime.state.layout.allWindowIds.count) windows on "
+            + "\(runtime.state.layout.kind.rawValue) workspace \(runtime.state.monitors.shown) "
+            + "of \(runtime.state.workspaces.materialized.count), "
             + "\(runtime.state.world.monitors.count) display(s)")
     }
 }

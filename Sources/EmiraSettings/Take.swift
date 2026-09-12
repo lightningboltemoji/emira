@@ -86,6 +86,9 @@ public enum Beat: Sendable, Equatable {
     /// A pause with a cause: `animation.cover = exact` waits for a capture round trip before it can
     /// raise anything, and the wait is one of the two things that setting is a trade between.
     case coverHead
+    /// Put the set into the other arrangement — the `layout` verb, whose whole content is the geometry
+    /// and which therefore needs no second thing on screen to explain it.
+    case setLayout(Layout.Kind)
 }
 
 /// What a setting demonstrates: a set, where it is looked at from, and optionally a script over it.
@@ -238,6 +241,8 @@ extension Beat {
             return scene.moving { $0.isPressed = down }
         case .hidePointer(let hidden):
             return scene.moving { $0.isHidden = hidden }
+        case .setLayout(let kind):
+            return scene.laidOut(kind)
         case .cue(let cue):
             return scene.showing(cue: cue)
         case .flushMark(let showing):
@@ -284,7 +289,7 @@ extension Beat {
     var movesTheDesktop: Bool {
         switch self {
         case .focus, .focusLeft, .focusRight, .cycleWidth, .widthPreset, .widthOverride, .heightPreset,
-             .moveColumn, .grow, .scrub, .systemFocus, .dragEdge:
+             .moveColumn, .grow, .scrub, .systemFocus, .dragEdge, .setLayout:
             return true
         default:
             return false

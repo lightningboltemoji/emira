@@ -137,6 +137,13 @@ public enum Catalog {
                                 (2.6, .widthOverride(.proportion(0.35), column: ColumnId(71)))],
                         period: 4.0)
 
+        // The workspace changing arrangement, which is the whole of what the verb does — so the take
+        // is the two layouts and the travel between them, over the set every other Layout row uses.
+        case "layout":
+            return Take(scene: Scenes.threeColumns,
+                        beats: [(0.9, .setLayout(.stack)), (2.6, .setLayout(.strip))],
+                        period: 4.0)
+
         // The strip's full width, and back — **not macOS's full screen**, which is the confusion the
         // picture is there to settle: the neighbours scroll out of view rather than a new Space opening.
         case "fullscreen":
@@ -265,6 +272,13 @@ public enum Catalog {
             return Take(scene: Scenes.threeColumns, mark: .outerGap(.bottom), showsFocus: false)
         case "layout.outer-gap-right":
             return Take(scene: Scenes.threeColumns, mark: .outerGap(.right), showsFocus: false)
+
+        // **The arrangement is its own picture**, and the draft is what decides which one: the same
+        // three windows as a ribbon and as a cascade, re-derived under the hand with nothing playing.
+        // `column-gap`'s mechanism over a bigger change — and no ring, because what the setting names
+        // is where a *workspace* starts rather than anything about the focused window.
+        case "layout.default":
+            return Take(scene: Scenes.threeColumns.laidOut(config.defaultLayout), showsFocus: false)
 
         // Where a reveal comes to rest. Three screens of strip, so the column being revealed starts
         // partly off the right edge: under `off` it slides in and stops flush against that edge, and

@@ -330,6 +330,10 @@ public struct PreviewGuideSettings: GuideTable, Sendable, Equatable, Codable {
 
 /// The pure configuration values the reducer reads.
 public struct Config: Sendable, Equatable, Codable {
+    /// The layout a workspace starts in. A seed and not a leash: it is read once, when an address
+    /// materializes, and the `layout` verb moves any workspace afterwards. Nothing is persisted, so a
+    /// restart puts every workspace back on it.
+    public var defaultLayout: Layout.Kind
     /// The column width presets `cycleWidth` steps through. A column stores an *index* into this
     /// cycle, resolved to points against the monitor's `Extent` at layout time — the content area and
     /// `columnGap` — so a "½" column stays ½ on any display and two of them tile it exactly.
@@ -433,6 +437,7 @@ public struct Config: Sendable, Equatable, Codable {
     public var windowRules: [WindowRule]
 
     public init(
+        defaultLayout: Layout.Kind = .strip,
         widthPresets: PresetCycle = .defaultWidths,
         heightPresets: PresetCycle = .defaultHeights,
         columnGap: Double = 0,
@@ -464,6 +469,7 @@ public struct Config: Sendable, Equatable, Codable {
         keys: [KeyBinding] = [],
         windowRules: [WindowRule] = []
     ) {
+        self.defaultLayout = defaultLayout
         self.widthPresets = widthPresets
         self.heightPresets = heightPresets
         self.columnGap = columnGap

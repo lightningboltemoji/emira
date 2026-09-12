@@ -149,7 +149,7 @@ import Testing
     }
 
     /// And the other half: a minimized window is off the strip too, and it is in the Dock. Asking
-    /// `participatesInStrip` alone would admit this one for the float's reason, which is why the
+    /// `participatesInTiling` alone would admit this one for the float's reason, which is why the
     /// predicate tests the two facts that are not about the strip *first*.
     @Test func onScreenRefusesAMinimizedWindowEvenThoughItIsOffTheStripLikeAFloat() {
         var s = world(2, .onScreen)
@@ -170,8 +170,8 @@ import Testing
         var s = world(2, .onScreen)
         s = run(s, [systemEvent(WindowId(2))]).0
         s.world.setAppHidden("com.test.app", true)
-        s.workspaces.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
-        #expect(!s.world.participatesInStrip(WindowId(1)))
+        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
+        #expect(!s.world.participatesInTiling(WindowId(1)))
 
         expectRefused(s, systemEvent(WindowId(1)))
     }
@@ -285,7 +285,7 @@ import Testing
 
         s = run(s, [systemEvent(nil)]).0
         #expect(s.world.focusedWindow == nil, "the clear is honoured — focus really is on nothing")
-        #expect(s.world.lastStripFocus == anchor, "but where the user was is not forgotten")
+        #expect(s.world.lastTiledFocus == anchor, "but where the user was is not forgotten")
 
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(1)))
         #expect(fx == [.restoreFocus(anchor)], "refused, and focus goes back where the user was")
@@ -297,7 +297,7 @@ import Testing
     /// taking the desktop to a workspace the user had just navigated away from. Nothing here can leave
     /// the desktop keyless: emitting no `.focus` is emira declining to move, and macOS's own focus stands.
     ///
-    /// This also proves the anchor's **focused-strip gate**. `lastStripFocus` outlives its window being
+    /// This also proves the anchor's **focused-strip gate**. `lastTiledFocus` outlives its window being
     /// moved to another workspace, so here it names one two strips away. Ungated it would answer, and the
     /// `.focus` a refusal emits comes back as our own echo — which reveals, and reveals *across
     /// workspaces*. Restoring focus to a stale anchor is the desktop-switch this guard exists to prevent,
@@ -308,7 +308,7 @@ import Testing
         let home = s.monitors.shown
         #expect(s.layout.columns.isEmpty, "nothing on the focused strip to anchor to")
         #expect(s.world.focusedWindow == nil)
-        #expect(s.world.lastStripFocus == WindowId(1), "a stale anchor, now two strips away")
+        #expect(s.world.lastTiledFocus == WindowId(1), "a stale anchor, now two strips away")
 
         // A report naming the *other* window over there, so the stale anchor is not simply the subject.
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(2)))

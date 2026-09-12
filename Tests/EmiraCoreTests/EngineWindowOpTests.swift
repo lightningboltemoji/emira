@@ -90,7 +90,7 @@ import EmiraMotion
         (s, fx) = Engine.reduce(s, .command(.float(.toggle)))
 
         #expect(s.world.isFloating(WindowId(2)))
-        #expect(!s.world.participatesInStrip(WindowId(2)))
+        #expect(!s.world.participatesInTiling(WindowId(2)))
         #expect(s.layout.columns.count == 1)        // the survivor closed ranks
         #expect(s.world.focusedWindow == WindowId(2))   // still focused, just not tiled
         // No `.focus` handoff: nothing lost focus, so nothing needs to be given it.
@@ -245,7 +245,7 @@ import EmiraMotion
         ])
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .windowMinimized(WindowId(2)))
-        #expect(s.world.stripWindowIds == [WindowId(1)])    // w2 left the strip
+        #expect(s.world.tiledWindowIds == [WindowId(1)])    // w2 left the strip
         #expect(s.layout.columns.count == 1)
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(fx.contains(.focus(WindowId(1))))
@@ -259,7 +259,7 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .windowMinimized(WindowId(2)))
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .windowDeminimized(WindowId(2)))
-        #expect(s.world.stripWindowIds.contains(WindowId(2)))
+        #expect(s.world.tiledWindowIds.contains(WindowId(2)))
         #expect(s.world.focusedWindow == WindowId(2))
         #expect(fx.contains(.focus(WindowId(2))))
     }
@@ -276,7 +276,7 @@ import EmiraMotion
         (s, _) = Engine.reduce(s, .command(.float(.on)))    // w3 floats, still focused
         s = EngineFix.settle(s)
         #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2)])
-        #expect(s.world.lastStripFocus == WindowId(2))      // the place it vacated, not the window that left
+        #expect(s.world.lastTiledFocus == WindowId(2))      // the place it vacated, not the window that left
 
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
@@ -285,7 +285,7 @@ import EmiraMotion
     }
 
     /// The commoner case, and the one macOS sometimes backfills for us: a dialog opens over w2, the app
-    /// focuses it, and dismissing it comes back to w2. Nothing off the strip is ever `lastStripFocus`,
+    /// focuses it, and dismissing it comes back to w2. Nothing off the strip is ever `lastTiledFocus`,
     /// so the memory was never the dialog and this needs only the placeless clause.
     @Test func closingADialogFocusesTheWindowItOpenedOver() {
         var s = EngineFix.world(2)                          // w1 | w2, w2 focused
@@ -310,7 +310,7 @@ import EmiraMotion
 
         (s, _) = Engine.reduce(s, .windowDestroyed(WindowId(2)))
         #expect(s.world.focusedWindow == WindowId(3))       // the float still holds focus
-        #expect(s.world.lastStripFocus == WindowId(1))      // w2's place, now w1's
+        #expect(s.world.lastTiledFocus == WindowId(1))      // w2's place, now w1's
 
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .windowDestroyed(WindowId(3)))
@@ -320,7 +320,7 @@ import EmiraMotion
 
     /// Nesting, which is the whole of what the focus stack buys over the strip memory: a dialog opens
     /// out of a dialog, and closing the inner one comes back to the outer rather than skipping past it
-    /// to the strip. Nothing off the strip is ever `lastStripFocus`, so the memory cannot answer this.
+    /// to the strip. Nothing off the strip is ever `lastTiledFocus`, so the memory cannot answer this.
     @Test func closingADialogReturnsToTheDialogItOpenedOutOf() {
         var s = EngineFix.world(2)                          // w1 | w2, w2 focused
         (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(3, role: .dialog)))

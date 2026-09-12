@@ -267,7 +267,7 @@ import Testing
     /// re-derived against a viewport that describes a destination rather than a position.
     @Test func aParkedWindowIsNotVisited() throws {
         var s = EngineFix.world(3, config: Self.followingSnapped)
-        let parked = try #require(s.world.stripWindowIds.first { !s.world.placedOnScreen.contains($0) })
+        let parked = try #require(s.world.tiledWindowIds.first { !s.world.placedOnScreen.contains($0) })
 
         s.pointer.pendingWarp = parked
         let (next, effects) = Engine.reduce(s, .tick(dt: 1.0 / 120))
@@ -341,7 +341,7 @@ import Testing
         config.mouseFollowsFocus = .exceptHover
         config.focusFollowsMouse = true
         var s = EngineFix.world(3, config: config)
-        let target = try #require(s.world.stripWindowIds.first)
+        let target = try #require(s.world.tiledWindowIds.first)
         s = EngineFix.settle(Engine.reduce(s, .command(.focus(.right))).0)
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(target))
@@ -357,7 +357,7 @@ import Testing
         config.mouseFollowsFocus = .force
         config.focusFollowsMouse = true
         var s = EngineFix.world(3, config: config)
-        let target = try #require(s.world.stripWindowIds.first)
+        let target = try #require(s.world.tiledWindowIds.first)
         s = EngineFix.settle(Engine.reduce(s, .command(.focus(.right))).0)
 
         let (_, effects) = Engine.reduce(s, .pointerEntered(target))
@@ -370,7 +370,7 @@ import Testing
         var config = Self.followingSnapped
         config.mouseFollowsFocus = .exceptHover
         let s = EngineFix.world(3, config: config)
-        let target = s.world.stripWindowIds.first { $0 != s.world.focusedWindow }
+        let target = s.world.tiledWindowIds.first { $0 != s.world.focusedWindow }
 
         let (next, effects) = Engine.reduce(s, .focusChanged(target, origin: .system))
         #expect(next.world.focusedWindow == target)
@@ -403,7 +403,7 @@ import Testing
         let owed = try #require(commanded.pointer.pendingWarp)
         #expect(commanded.motion.isTransitioning)
 
-        let hovered = try #require(s.world.stripWindowIds.first { $0 != owed })
+        let hovered = try #require(s.world.tiledWindowIds.first { $0 != owed })
         let (next, effects) = Engine.reduce(commanded, .pointerEntered(hovered))
         #expect(next.world.focusedWindow == hovered)
         #expect(Self.warps(effects).isEmpty)

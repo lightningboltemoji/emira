@@ -350,7 +350,7 @@ import Testing
         let (after, fx) = EngineFix.run(s, [arrival(1, bundle: "com.test.app")])
 
         #expect(after.world.isFloating(WindowId(1)))
-        #expect(!after.world.participatesInStrip(WindowId(1)))
+        #expect(!after.world.participatesInTiling(WindowId(1)))
         #expect(after.workspaces.workspace(of: WindowId(1)) == nil)
         // Where the window *goes* is the app's to decide, so nothing places it. The one effect is the
         // hoist plane being told the float exists, which builds its stand-in against the burial to come.
@@ -494,7 +494,7 @@ import Testing
         (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
 
         #expect(after.world.isFloating(WindowId(2)))
-        #expect(!after.world.participatesInStrip(WindowId(2)))
+        #expect(!after.world.participatesInTiling(WindowId(2)))
         #expect(after.workspaces.workspace(of: WindowId(2)) == nil)
 
         #expect(after.workspaces[.first].allWindowIds == [WindowId(1)])
@@ -539,7 +539,7 @@ import Testing
 
     /// Live focus reads `nil` at exactly the moment a window arrives — an app focuses its new window
     /// before emira has adopted it — so what the rules read is the *last* window focus rested on, and
-    /// `lastStripFocus` is not that: floating w1 emptied the strip, so there is no place left for it to
+    /// `lastTiledFocus` is not that: floating w1 emptied the strip, so there is no place left for it to
     /// name and it holds nothing at all. `lastFocus` is what still remembers the window.
     @Test func theAnchorSurvivesTheFocusRace() {
         let s = EngineFix.booted(config: Self.floatSmallOnes)
@@ -547,7 +547,7 @@ import Testing
         (after, _) = EngineFix.run(after, [.command(.float(.on)),
                                            .focusChanged(nil, origin: .system)])
         #expect(after.world.focusedWindow == nil)
-        #expect(after.world.lastStripFocus == nil)
+        #expect(after.world.lastTiledFocus == nil)
         #expect(after.world.lastFocus == WindowId(1))
 
         (after, _) = EngineFix.run(after, [opens(2, 150, 100)])
@@ -581,7 +581,7 @@ import Testing
         #expect(!after.world.isFloating(WindowId(2)))
     }
 
-    /// At boot there is no app that "already had focus" — `lastStripFocus` is whichever window the scan
+    /// At boot there is no app that "already had focus" — `lastTiledFocus` is whichever window the scan
     /// reached first — so both matchers abstain rather than comparing against noise.
     @Test func theLaunchScanNeverFloatsOnTheseMatchers() {
         let s = EngineFix.booted(config: Self.floatSmallOnes)

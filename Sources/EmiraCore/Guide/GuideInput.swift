@@ -40,9 +40,14 @@ public struct GuideInput: Equatable, Sendable {
     /// indicator's own rect** — the strip is laid out in screen space with the scroll already applied,
     /// so the screen you are on is this rect whatever the strip is doing.
     public let workingArea: Rect
-    /// The shown strip, in strip order. What divides, what a names cell stands for, and what the
-    /// panel's extent is measured from.
+    /// The shown workspace's columns, **in drawing order**: strip order for a ribbon, and the
+    /// desktop's own stacking order for a cascade, whose tiles overlap.
     public let columns: [Column]
+    /// Whether adjacent columns share an edge to draw a separator down. False for a cascade:
+    /// overlapping tiles have no shared edges, so the line would be drawn through a window rather than
+    /// between two. Carried here rather than the model learning about layouts — what a guide needs to
+    /// know is whether its columns divide, not which arrangement produced them.
+    public let divides: Bool
     /// Windows with a frame that the shown strip does not place — a neighbouring workspace sliding
     /// vertically through the panel during a switch. They draw a tile and divide nothing.
     public let passing: [Window]
@@ -56,17 +61,19 @@ public struct GuideInput: Equatable, Sendable {
 
     public init(workingArea: Rect, columns: [Column], passing: [Window] = [],
                 frames: [WindowId: Rect], focus: WindowId? = nil,
-                focusDisplacement: Rect = .zero) {
+                focusDisplacement: Rect = .zero, divides: Bool = true) {
         self.workingArea = workingArea
         self.columns = columns
+        self.divides = divides
         self.passing = passing
         self.frames = frames
         self.focus = focus
         self.focusDisplacement = focusDisplacement
     }
 
-    /// The shown strip's extent in screen space — the bounding box of what is on it, and empty for a
-    /// strip with no windows. What the panel sizes itself against.
+    /// The shown workspace's extent in screen space — the bounding box of what is on it, and empty for
+    /// one with no windows. What the panel sizes itself against. A cascade's is one working area, which
+    /// makes its minimap a 1:1 miniature with the viewport marker permanently full.
     public var strip: Rect {
         columns.lazy.flatMap(\.windows)
             .compactMap { frames[$0.id] }

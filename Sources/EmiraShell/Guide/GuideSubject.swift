@@ -36,9 +36,21 @@ extension GuideInput {
         // The **shown** strip, not every workspace's: a long strip on a workspace you cannot see would
         // otherwise size the guide for one you can. During a switch this is already the strip being
         // switched *to*, which is the one the guide should be sizing itself for.
-        let columns = state.workspaces[shown].columns.map { column in
+        let drawn = state.workspaces[shown]
+        var columns = drawn.columns.map { column in
             GuideInput.Column(id: column.id,
                               windows: column.windowIds.compactMap { GuideInput.Window(state, $0) })
+        }
+        // **A cascade's tiles overlap, so the guide draws them in the desktop's order** — the cover's
+        // rule at the guide's scale. Keyed on the column's first window, which for the singleton
+        // columns a cascade is built from is the tile itself.
+        if drawn.kind == .stack {
+            let ranks = Dictionary(uniqueKeysWithValues:
+                state.stackingOrder(of: drawn.allWindowIds).enumerated().map { ($1, $0) })
+            func rank(_ column: GuideInput.Column) -> Int {
+                column.windows.first.flatMap { ranks[$0.id] } ?? -1
+            }
+            columns.sort { rank($0) < rank($1) }
         }
         let placed = Set(state.workspaces[shown].allWindowIds)
         let passing = frames.keys.sorted().filter { !placed.contains($0) }
@@ -52,7 +64,8 @@ extension GuideInput {
 
         self.init(workingArea: metrics.workingArea, columns: columns, passing: passing,
                   frames: frames, focus: focus,
-                  focusDisplacement: state.motion.focusRingDisplacement)
+                  focusDisplacement: state.motion.focusRingDisplacement,
+                  divides: drawn.kind == .strip)
     }
 }
 

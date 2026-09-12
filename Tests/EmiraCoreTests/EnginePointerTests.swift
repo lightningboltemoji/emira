@@ -132,7 +132,7 @@ import Testing
     @Test func aHoveredFocusHidesNothing() throws {
         var s = EngineFix.world(3, config: Config(widthPresets: PresetCycle([.proportion(1.0)]),
                                                   focusFollowsMouse: true, hidesCursor: true))
-        let target = try #require(s.world.stripWindowIds.first)
+        let target = try #require(s.world.tiledWindowIds.first)
         s = EngineFix.settle(Engine.reduce(s, .command(.focus(.right))).0)
         s = EngineFix.settle(Engine.reduce(s, .pointerWoke).0)
 
@@ -311,7 +311,7 @@ import Testing
     /// stray sweep there would otherwise switch workspaces.
     @Test func aParkedNubIsNotHoverable() throws {
         let s = Self.world()
-        let parked = try #require(s.world.stripWindowIds.first { !s.world.placedOnScreen.contains($0) })
+        let parked = try #require(s.world.tiledWindowIds.first { !s.world.placedOnScreen.contains($0) })
         let nub = try #require(s.world.windows[parked]?.frame)
         #expect(s.world.window(at: nub.center) != parked)
     }
@@ -339,11 +339,9 @@ import Testing
         #expect(s.world.window(at: frame.center) == WindowId(99))
     }
 
-    /// Two floats on the same point is the only tie the hit test can be handed — the strip does not
-    /// overlap itself — and it breaks on the lowest id rather than on whichever way the dictionary
-    /// happened to enumerate. A stacking order is the one thing `World` cannot see; determinism is what
-    /// it can offer instead.
-    @Test func twoOverlappingFloatsResolveToTheSameOneEveryTime() throws {
+    /// Overlapping candidates go to the one macOS has in front, which `StackOrder` reads off the focus
+    /// reports emira already folds — here the last dialog to open, whatever order the ids run in.
+    @Test func theFrontmostOfTwoOverlappingFloatsWins() throws {
         var s = Self.world()
         let tiled = try #require(s.world.placedOnScreen.sorted().first)
         let frame = try #require(s.world.windows[tiled]?.frame)
@@ -351,14 +349,25 @@ import Testing
             let float = EngineFix.snapshot(raw, role: .dialog, frame: frame)
             s = EngineFix.settle(Engine.reduce(s, .windowCreated(float)).0)
         }
-        #expect(s.world.window(at: frame.center) == WindowId(97))
+        #expect(s.world.window(at: frame.center) == WindowId(99))
+    }
+
+    /// …and where the order genuinely ties — two windows nothing has ever focused, which is the boot
+    /// desktop — the answer is still the same one every time, a dictionary's order being no order.
+    @Test func twoUnfocusedOverlappingFloatsResolveToTheSameOneEveryTime() {
+        let frame = Rect(x: 100, y: 100, width: 400, height: 300)
+        var world = World()
+        for raw in [UInt64(98), 97, 99] {
+            world.insert(EngineFix.snapshot(raw, role: .dialog, frame: frame))
+        }
+        #expect(world.window(at: frame.center) == WindowId(97))
     }
 
     // The crossing, reduced
 
     @Test func aCrossingMovesFocusAndRevealsIt() throws {
         var s = Self.world()
-        let target = try #require(s.world.stripWindowIds.first)
+        let target = try #require(s.world.tiledWindowIds.first)
         s = EngineFix.settle(Engine.reduce(s, .command(.focus(.right))).0)
         #expect(s.world.focusedWindow != target)
 
@@ -385,7 +394,7 @@ import Testing
         let frame = Rect(x: 100, y: 100, width: 300, height: 200)
         s = EngineFix.settle(Engine.reduce(s, .windowCreated(
             EngineFix.snapshot(99, role: .dialog, frame: frame))).0)
-        s = EngineFix.settle(Engine.reduce(s, .pointerEntered(try #require(s.world.stripWindowIds.first))).0)
+        s = EngineFix.settle(Engine.reduce(s, .pointerEntered(try #require(s.world.tiledWindowIds.first))).0)
         let offset = s.viewport.offset.current
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(WindowId(99)))
@@ -396,7 +405,7 @@ import Testing
     @Test func withTheSettingOffACrossingChangesNothing() throws {
         var s = EngineFix.world(3, config: Config(widthPresets: PresetCycle([.proportion(1.0)]),
                                                   transitionMode: .off))
-        let target = try #require(s.world.stripWindowIds.first)
+        let target = try #require(s.world.tiledWindowIds.first)
         s = EngineFix.settle(Engine.reduce(s, .command(.focus(.right))).0)
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(target))

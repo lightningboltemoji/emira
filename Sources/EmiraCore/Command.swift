@@ -159,6 +159,9 @@ public enum Command: Sendable, Codable, Equatable {
     /// Toggle (or force) the focused *column* to the strip's full width. Not macOS's native full screen
     /// (no new Space) — neighbours just scroll out of view, and toggling off restores the exact width.
     case fullscreen(Toggle)
+    /// Put the focused workspace into a layout. Per workspace, seeded from `layout.default`, and not
+    /// remembered across a restart.
+    case setLayout(Layout.Kind)
     /// Toggle (or force) floating (untiled) for the focused window.
     case float(Toggle)
     /// Hold the focused window at an edge of the acting display, where every workspace can see it —

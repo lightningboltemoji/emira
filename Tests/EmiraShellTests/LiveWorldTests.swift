@@ -274,6 +274,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
                   scanned(pid: 200, seed: 3, bundle: "com.apple.TextEdit", title: "two",
                           frame: rect(1400))],
         ]
+        // **Front to back**, as `CGWindowListCopyWindowInfo` answers — so "term" is the window in
+        // front, and a scan announces it *last* (`AXEnumerator.Report.snapshots`).
         windows.entries = [WindowListEntry(number: 1, pid: 100, frame: rect(0)),
                            WindowListEntry(number: 2, pid: 200, frame: rect(700)),
                            WindowListEntry(number: 3, pid: 200, frame: rect(1400))]
@@ -335,7 +337,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.windows.entries.append(
             WindowListEntry(number: 9, pid: 100, frame: rect(2100), isOnScreen: true))
         world.watcher.handle(.windowAppeared(100))
-        #expect(world.created.map(\.title) == ["term", "one", "two"], "nothing invented")
+        #expect(world.created.map(\.title) == ["two", "one", "term"], "nothing invented")
         #expect(world.scheduler.pending == 1, "a retry is scheduled")
 
         // By the retry, AX describes it — and it is adopted, once.
@@ -343,7 +345,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
             scanned(pid: 100, seed: 9, bundle: "com.mitchellh.ghostty", title: "new", frame: rect(2100)))
         world.scheduler.fire()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two", "new"])
+        #expect(world.created.map(\.title) == ["two", "one", "term", "new"])
         #expect(world.registry.count == 4)
     }
 
@@ -371,7 +373,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.start()
 
         #expect(world.source.started)
-        #expect(world.created.map(\.title) == ["term", "one", "two"])
+        // Back to front: the boot scan adopts along the window list reversed, so the desktop's own
+        // stacking is what `World.focusedAt` ends up describing.
+        #expect(world.created.map(\.title) == ["two", "one", "term"])
         #expect(world.source.watchedApps.sorted() == [100, 200])
         // AX delivers destroyed/moved/resized/miniaturized only for registrations made against the
         // window element, so they are registered per app.
@@ -421,7 +425,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         let fresh = world.recorder.events.dropFirst(beforeCount)
         #expect(fresh.count == 1)
-        #expect(world.created.map(\.title) == ["term", "one", "two", "three"])
+        #expect(world.created.map(\.title) == ["two", "one", "term", "three"])
         #expect(world.registry.count == 4)
     }
 
@@ -466,7 +470,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.appLaunched(ScanTarget(pid: 300, bundleId: "com.apple.Safari")))
 
         #expect(world.source.watchedApps.contains(300))
-        #expect(world.created.map(\.title) == ["term", "one", "two", "web"])
+        #expect(world.created.map(\.title) == ["two", "one", "term", "web"])
     }
 }
 
@@ -481,14 +485,14 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.windows.entries.removeAll { $0.number == 3 }   // "two" is not listed yet
 
         world.watcher.start()
-        #expect(world.created.map(\.title) == ["term", "one"])
+        #expect(world.created.map(\.title) == ["one", "term"])
         #expect(world.scheduler.pending == 1)
         #expect(world.scheduler.delays == [WorldWatcher.rescanDelay])
 
         world.windows.entries.append(WindowListEntry(number: 3, pid: 200, frame: rect(1400)))
         world.scheduler.fire()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two"])
+        #expect(world.created.map(\.title) == ["one", "term", "two"])
         #expect(world.scheduler.pending == 0)               // bound, so nothing more is scheduled
     }
 
@@ -502,7 +506,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.windows.entries.append(WindowListEntry(number: 3, pid: 200, frame: rect(1400)))
         world.scheduler.fire()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two"])
+        #expect(world.created.map(\.title) == ["one", "term", "two"])
         #expect(world.created.map(\.wasAlreadyOpen) == [true, true, true])
     }
 
@@ -517,7 +521,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         while world.scheduler.fire() > 0 { rounds += 1 }
 
         #expect(rounds == WorldWatcher.maxScanAttempts - 1)
-        #expect(world.created.map(\.title) == ["term", "one"])
+        #expect(world.created.map(\.title) == ["one", "term"])
     }
 
     @Test func aRetryOnlyRevisitsTheAppsTheScanCovered() {
@@ -540,7 +544,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.windows.entries.append(WindowListEntry(number: 6, pid: 100, frame: rect(2800)))
         world.scheduler.fire()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two"])
+        #expect(world.created.map(\.title) == ["two", "one", "term"])
     }
 
     @Test func anAppThatIsNotReadyToBeObservedIsRetriedRatherThanGoingDeaf() {
@@ -1471,7 +1475,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.heartbeat.beat()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two", "three"])
+        #expect(world.created.map(\.title) == ["two", "one", "term", "three"])
     }
 
     @Test func aWindowFoundByReconciliationIsOneWeMetAlreadyOpen() {
@@ -1503,7 +1507,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.heartbeat.beat()
 
-        #expect(world.created.map(\.title) == ["term", "one", "two", "web"])
+        #expect(world.created.map(\.title) == ["two", "one", "term", "web"])
         #expect(world.source.watchedApps.contains(300))   // and it is observed from now on
     }
 

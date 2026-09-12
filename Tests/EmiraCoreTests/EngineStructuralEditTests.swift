@@ -253,7 +253,7 @@ import EmiraMotion
         // covers the shared `ColumnAllocator`, so a handler that minted a `ColumnId` on its way to doing
         // nothing is caught here too.
         var reconciled = s.workspaces
-        reconciled.reconcile(stripWindowIds: s.world.stripWindowIds, onto: s.monitors.shown)
+        reconciled.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         for command in Self.structuralCommands {
             let (n, fx) = Engine.reduce(s, .command(command))
             #expect(fx.isEmpty, "\(command)")
@@ -564,7 +564,7 @@ import EmiraMotion
             let ids = s.layout.allWindowIds
             #expect(s.layout.columns.allSatisfy { !$0.windowIds.isEmpty }, "empty column: \(command)")
             #expect(Set(ids).count == ids.count, "duplicate window: \(command)")
-            #expect(Set(ids) == Set(s.world.stripWindowIds), "layout/world drift: \(command)")
+            #expect(Set(ids) == Set(s.world.tiledWindowIds), "layout/world drift: \(command)")
             let focused = try! #require(s.world.focusedWindow)
             #expect(s.layout.columnIndex(ofWindow: focused) != nil, "focus stranded: \(command)")
         }

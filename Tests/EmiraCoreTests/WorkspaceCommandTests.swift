@@ -52,9 +52,9 @@ import Testing
     /// visited-then-emptied ones. Being materialized is not being occupied.
     @Test func theOccupiedMotionsSkipEmptyAddressesIncludingVisitedOnes() {
         var ws = Workspaces()
-        ws.reconcile(stripWindowIds: [w1], onto: name("3"))     // "3" holds a window
+        ws.reconcile(tiledWindowIds: [w1], onto: name("3"))     // "3" holds a window
         ws.materialize(name("5"))                               // materialized, and left empty
-        ws.reconcile(stripWindowIds: [w1, w2], onto: name("8")) // "8" holds one too
+        ws.reconcile(tiledWindowIds: [w1, w2], onto: name("8")) // "8" holds one too
 
         #expect(ws.materialized == [.first, name("3"), name("5"), name("8")])
         #expect(ws.resolve(.nextOccupied, from: .first, within: anywhere) == name("3"))

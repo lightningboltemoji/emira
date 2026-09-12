@@ -160,7 +160,7 @@ import EmiraCore
             case .line:                    return "\(verb.name) ghostty"
             }
         }
-        // One letter per verb — twenty-six of them against twenty-three verbs, and every one legal.
+        // One letter per verb — twenty-six of them against twenty-four verbs, and every one legal.
         let letters = "abcdefghijklmnopqrstuvwxyz".map(String.init)
         let lines = zip(letters, spellings).map { "ctrl-alt-\($0.0) = \"\($0.1)\"" }
         #expect(lines.count == Vocabulary.verbs.count, "not every verb got a chord")

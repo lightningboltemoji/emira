@@ -67,9 +67,10 @@ public struct GuideLayout: Equatable, Sendable {
     /// Every tile the panel draws, sorted by window, so a rebuild of the layer pool is driven by the id
     /// *set* changing and never by dictionary iteration order.
     public let tiles: [GuideTile]
-    /// Where the strip divides, panel-local: a line down each boundary between adjacent columns and one
-    /// across each boundary between windows stacked in a column. **Degenerate by construction** — a
-    /// boundary is a line, so a column's has no width and a stack's no height.
+    /// Where the arrangement divides, panel-local: a line down each boundary between adjacent columns
+    /// and one across each boundary between windows stacked in a column. **Degenerate by construction**
+    /// — a boundary is a line, so a column's has no width and a stack's no height. Empty where the
+    /// columns do not divide, which is every cascade: overlapping tiles share no edges.
     public let separators: [Rect]
     /// The focused window's rectangle plus the ring's in-flight travel, panel-local — or `nil` when
     /// focus is on nothing the strip places.
@@ -81,12 +82,12 @@ public struct GuideLayout: Equatable, Sendable {
     /// Derives the tile order and the separators from the columns, so neither can be a second opinion
     /// about the structure they come from.
     public init(panel: Rect, columns: [GuideColumn], passing: [GuideTile] = [],
-                ring: Rect? = nil, viewport: Rect) {
+                ring: Rect? = nil, viewport: Rect, divides: Bool = true) {
         self.panel = panel
         self.columns = columns
         self.passing = passing
         self.tiles = (columns.flatMap(\.tiles) + passing).sorted { $0.window < $1.window }
-        self.separators = GuideModel.boundaries(of: columns)
+        self.separators = divides ? GuideModel.boundaries(of: columns) : []
         self.ring = ring
         self.viewport = viewport
     }
@@ -161,7 +162,8 @@ public enum GuideModel {
             .map { projection.project($0.displaced(by: input.focusDisplacement)) }
 
         return GuideLayout(panel: projection.panel, columns: columns, passing: passing,
-                           ring: ring, viewport: projection.project(input.workingArea))
+                           ring: ring, viewport: projection.project(input.workingArea),
+                           divides: input.divides)
     }
 
     /// A tile with its separation taken out of it. Never more than a quarter of an extent, so a tile at

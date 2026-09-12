@@ -68,7 +68,9 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     }
 
     public private(set) var phase: Phase
-    /// The scoped window set, in z-order (bottom→top) — both the capture set and the `axLanded` wait set.
+    /// The scoped window set, bottom→top in the order the **desktop** stacks it — supplied by the
+    /// caller (`Engine.scopeUnion`), never derived from the layout. Both the capture set and the
+    /// `axLanded` wait set.
     /// Grows, never shrinks: a retarget can sweep in windows the session wasn't scoped for (which would
     /// otherwise be holes in the cover), and removing one abandons a layer and a teleport mid-flight.
     public private(set) var windows: [WindowId]

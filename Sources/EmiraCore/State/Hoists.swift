@@ -99,6 +99,21 @@ struct StackOrder {
 
 extension State {
 
+    /// `ids` ordered bottom→top the way the **desktop** stacks them, with the id breaking the one tie
+    /// `StackOrder` can be handed — two windows nothing has ever focused.
+    ///
+    /// **A read of an order emira already reconstructs, never an assertion of one.** Two things need
+    /// it, and both draw a surface whose tiles overlap: a cover's layer order (`Engine.scopeUnion`)
+    /// and a cascade's guide tiles.
+    public func stackingOrder(of ids: [WindowId]) -> [WindowId] {
+        let order = StackOrder(world)
+        return ids.sorted { lower, upper in
+            if order.isInFront(upper, of: lower) { return true }
+            if order.isInFront(lower, of: upper) { return false }
+            return lower < upper
+        }
+    }
+
     /// Every on-screen float and whether its picture is showing, bottom→top. Cheap on the common
     /// desktop — one dictionary scan where nothing is floated by choice — because the post-pass that
     /// calls it runs on every event, including a display-link tick.

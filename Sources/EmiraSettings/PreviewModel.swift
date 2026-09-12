@@ -416,8 +416,8 @@ public enum PreviewModel {
 
     /// The focused column grown by `delta`, with the detent applied where the setting asks for it.
     ///
-    /// **The reducer's own arithmetic**: `Strip.resizeDetent` is where a notch lives, and a detent only
-    /// ever shortens a delta — it catches, it never pulls.
+    /// **The reducer's own arithmetic**: `Layout.resizeDetent` is where a notch is asked for, and a
+    /// detent only ever shortens a delta — it catches, it never pulls.
     private static func grown(_ scene: Scene, by delta: SizeDelta, config: Config,
                               metrics: LayoutMetrics, offset: Double) -> Scene {
         guard let column = scene.focusedColumn else { return scene }
@@ -425,10 +425,9 @@ public enum PreviewModel {
         let available = metrics.contentArea.width
         let from = layout.resolvedWidth(ofColumn: column.id, metrics: metrics) ?? 0
         var travel = delta.resolved(available: available)
-        if config.resizeDetent, let index = layout.columnIndex(withId: column.id),
-           let notch = layout.strip(metrics: metrics)
-               .resizeDetent(ofColumn: index, growing: travel > 0, viewportWidth: available,
-                             offset: offset, centered: config.centerFocusedColumn) {
+        if config.resizeDetent,
+           let notch = layout.resizeDetent(ofColumn: column.id, growing: travel > 0, metrics: metrics,
+                                           offset: offset, centered: config.centerFocusedColumn) {
             travel = min(travel, notch)
         }
         let width = min(max(from + travel, 1), available)
