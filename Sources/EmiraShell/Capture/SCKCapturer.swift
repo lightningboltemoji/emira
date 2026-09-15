@@ -11,7 +11,9 @@ import EmiraCore
 //    on screen or not, occluded or not — which is what makes a parked column, sitting at its 1 px
 //    sliver, capturable at all. A screen-region capture could never do this.
 //  · `SCContentFilter(display:excludingWindows:)` captures the display *minus* the windows we are about
-//    to animate. Get the exclusion wrong and the window appears twice, once frozen and once sliding.
+//    to animate. The base's holes and the cover's stand-ins are one set: a window excluded that nothing
+//    draws appears twice, once frozen and once sliding, and a scoped window the content read never
+//    named appears once, frozen, while the strip travels around it.
 //
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
@@ -107,21 +109,27 @@ private enum Piece: Sendable {
 /// Fetch the shareable content once, then fan the captures out, handing each back as it lands.
 ///
 /// One `SCShareableContent` read, because it is a window-server round trip and one per window would put
-/// the enumeration cost back at the head of the transition. `onScreenWindowsOnly: true` is safe for a
-/// parked column because macOS never lets a window leave the screen entirely — it keeps its ~1 px sliver
-/// and stays in this list.
+/// the enumeration cost back at the head of the transition.
 ///
 /// `windows` is both lists at once: what to photograph, and what the base has to have a hole where. A
 /// cover belongs to one display, so the windows it shows and the windows its own base must not contain
 /// are the same set — plus `base.departed`, which is a hole and nothing more.
+///
+/// **The read is `onScreenWindowsOnly` until it comes up short.** A scoped window the read does not
+/// carry is neither photographed nor cut out of the base, and stands frozen in it for the whole cover;
+/// the long read costs ~10 ms, so it is asked for only when the short one is missing one of `windows`.
 private func grab(windows: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
                   base: BaseRequest?,
                   deliver: @Sendable (Piece) async -> Void) async {
-    let content: SCShareableContent
+    var content: SCShareableContent
     do {
         content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        if !windows.isSubset(of: Set(content.windows.map(\.windowID))) {
+            content = try await SCShareableContent.excludingDesktopWindows(true,
+                                                                           onScreenWindowsOnly: false)
+        }
     } catch {
         // Overwhelmingly: the Screen Recording grant is missing or has lapsed. `CaptureService` acks
         // either way, so delivering nothing at all is a complete answer.

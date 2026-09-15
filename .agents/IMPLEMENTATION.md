@@ -1463,7 +1463,11 @@ carry the plural:
   filmed once *per cover*, which is what carries each destination overlay's backing scale — a still filmed at
   2× shown on a 1× overlay pops on the cross-fade. Photographing and cutting out of the base are one list
   again for the same reason: the windows a cover shows and the windows its own base must not contain are the
-  same set. The hole has two members the film list cannot name. A window management has let go of is on the
+  same set. That binds the **content read** and not just the filter over it — `isOnScreen` is no more a
+  liveness test here than it is for the registry above, and a scoped window the read omits is neither filmed
+  nor cut, so it stands frozen in the base while the cover travels around it. The short
+  `onScreenWindowsOnly` answer is taken while it carries every window the cover was scoped to draw, and the
+  whole list is read when it does not. The hole has two members the film list cannot name. A window management has let go of is on the
   glass for the length of its fade, and the close that let it go is very often the edit opening the cover — so
   `WindowRegistry` keeps every forgotten number as _departed_ until reconciliation finds it unlisted, and a
   head batch cuts them all (`BaseRequest.departed`) while filming none. And everything above `Overlay.level`
