@@ -109,4 +109,103 @@ import Testing
         #expect(Self.windows(settled).count == 1)
         #expect(!Self.windows(settled).contains(settled.world.focusedWindow!))
     }
+
+    /// Nothing is held on a desktop that raises no cover: both columns are already on the glass, the
+    /// focus change moves no window, and the veil has nothing to wait for.
+    @Test func anUncoveredFocusChangeMovesTheVeilAtOnce() {
+        let s = Self.world(2)
+        let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(!next.motion.isTransitioning, "two ½-width columns both fit, so nothing scrolls")
+        #expect(Self.setScrims(effects) != nil)
+    }
+
+    // The gate — `settleScrims`' half of D8.
+
+    static func setScrims(_ effects: [Effect]) -> [ScrimBinding]? {
+        for effect in effects { if case .setScrims(let bindings) = effect { return bindings } }
+        return nil
+    }
+
+    /// A world where the next `focus left` genuinely scrolls. Three ½-width columns on a 1000-wide
+    /// viewport shows two, so focus reaching the third is a cover rather than a bare focus write — and
+    /// two on the glass is what leaves a scrim standing to hold.
+    static func aboutToScroll() -> State {
+        let s = world(3)
+        return EngineFix.settle(s, Engine.reduce(s, .command(.focus(.left))).1)
+    }
+
+    /// **A covered transition's veil moves behind its cover.** A capture head is time with no cover in
+    /// it: focus has moved in the core, and nothing on the glass has. The scrim is what the desktop
+    /// looks like, and during the head it still looks like the old one — so the old set stands.
+    @Test func aCoveredTransitionHoldsTheVeilThroughItsCaptureHead() {
+        var s = Self.aboutToScroll()
+        let before = s.scrims
+        #expect(!before.isEmpty)
+
+        let (capturing, opening) = Engine.reduce(s, .command(.focus(.left)))
+        s = capturing
+        #expect(s.motion.phase(of: MonitorId(1)) == .capturing, "the command opened a cover")
+        #expect(s.world.focusedWindow != before.first?.window, "…and focus has already moved")
+        #expect(Self.setScrims(opening) == nil, "the veil moved while the desktop stood still")
+        #expect(s.scrims == before)
+    }
+
+    /// And through the raise, which is the moment that matters to the cover: `Reconstruction` reads the
+    /// veil off the scrim plane when it *builds* a layer, so a set applied before `coverOnScreen` would
+    /// put this transition's focus change on stand-ins filmed under the old one.
+    @Test func theVeilIsStillTheOldOneWhenTheCoverIsBuilt() {
+        var s = Self.aboutToScroll()
+        let before = s.scrims
+        var effects: [Effect] = []
+        func feed(_ event: Event) { let (n, f) = Engine.reduce(s, event); s = n; effects = f }
+
+        feed(.command(.focus(.left)))
+        for window in s.motion.transition(of: MonitorId(1))?.windows ?? [] { feed(.captureReady(window)) }
+        #expect(s.motion.phase(of: MonitorId(1)) == .raising)
+        #expect(effects.contains { if case .beginTransition = $0 { true } else { false } },
+                "the batch that builds the cover")
+        #expect(Self.setScrims(effects) == nil)
+        #expect(s.scrims == before)
+    }
+
+    /// The release: the cover is on the glass, the reals teleport behind it, and the new set rides in
+    /// the same batch — under the cover, where every other correction a transition makes is made.
+    @Test func theVeilLandsInTheBatchThatTeleportsTheReals() {
+        var s = Self.aboutToScroll()
+        let before = s.scrims
+        var effects: [Effect] = []
+        func feed(_ event: Event) { let (n, f) = Engine.reduce(s, event); s = n; effects = f }
+
+        feed(.command(.focus(.left)))
+        for window in s.motion.transition(of: MonitorId(1))?.windows ?? [] { feed(.captureReady(window)) }
+        feed(.coverOnScreen(MonitorId(1)))
+
+        let landed = try! #require(Self.setScrims(effects), "the held set is paid at the teleport")
+        #expect(landed != before)
+        #expect(effects.contains { if case .setFrame = $0 { true } else { false } },
+                "…in the batch that moves the reals, not one of its own")
+        #expect(s.scrims == landed)
+        #expect(!landed.map(\.window).contains(s.world.focusedWindow!))
+    }
+
+    /// The set is one effect for the whole desktop, so holding one display must not take another's
+    /// answer down with it. The right display is idle throughout and keeps answering for itself.
+    @Test func aHeldDisplayDoesNotHoldTheOtherOne() {
+        var config = MonitorSessionTests.fullWidth
+        config.unfocusedOpacity = 0.7
+        // `moveToWorkspace` sends a window without following it, so this leaves one window on the
+        // right with a scrim standing on it and focus still on the left's strip.
+        var s = MonitorSessionTests.desktop(3, config: config)
+        s = MonitorSessionTests.sendToRight(s)
+        let right = MonitorSessionTests.right
+        let standing = s.scrims.filter { $0.monitor == right }
+        #expect(!standing.isEmpty)
+
+        let (capturing, _) = Engine.reduce(s, .command(.focus(.left)))
+        s = capturing
+        #expect(!s.motion.mayPlace(on: MonitorSessionTests.left))
+        #expect(s.motion.mayPlace(on: right))
+        #expect(s.scrims.filter { $0.monitor == right } == standing,
+                "the idle display's own answer is unchanged, not dropped with the held one's")
+    }
 }

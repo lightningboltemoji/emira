@@ -523,8 +523,17 @@ public enum Engine {
     /// `settleHoists`' reason, and after it: what is unfocused and on the glass is the product of focus
     /// and the placement pass, with no one verb to hang it on. Emitted only on a change, so a tick
     /// costs nothing — and on a desktop that has not turned this on, nothing at all.
+    ///
+    /// **D8's gate, for D8's reason.** A display whose cover is not on the glass moves no window
+    /// (`writeTruthPlane`), and a scrim is appearance, which is the same claim: it keeps the set it is
+    /// drawing, exactly as it keeps its share of `placedOnScreen`, and pays it at the teleport.
     private static func settleScrims(into s: inout State, effects: inout [Effect]) {
-        let next = s.scrimBindings()
+        let fresh = s.scrimBindings()
+        let held = Set(s.monitors.ids.filter { !s.motion.mayPlace(on: $0) })
+        // The splice keeps each display's own run in order, which is the only order there is: a scrim
+        // belongs to one screen, so between two of them there was never one.
+        let next = held.isEmpty ? fresh
+            : fresh.filter { !held.contains($0.monitor) } + s.scrims.filter { held.contains($0.monitor) }
         guard next != s.scrims else { return }
         s.scrims = next
         effects.append(.setScrims(next))

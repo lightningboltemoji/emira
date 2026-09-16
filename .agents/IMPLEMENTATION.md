@@ -1251,6 +1251,15 @@ widget therefore ticks late behind a window you are looking through. A new `unfo
 the throttle does not pace, because a radius change does not leave the standing photograph stale — it leaves it
 wrong.
 
+**A set describes a desktop, so a covered transition's does not arrive ahead of one**
+(`Engine.settleScrims`). The veil is appearance, and the rule for when appearance may change is the rule for
+when a window may move: a display whose cover is not on the glass keeps the set it is drawing and takes the
+new one in the batch that teleports the reals — the same hold `writeTruthPlane` makes over that display's
+share of `placedOnScreen`. Held, the set is painted under the cover and revealed by the cross-fade together
+with the geometry it belongs to. Emitted at the command it would land in the capture head instead, where the
+veil steps over a desktop that has not begun to move. It is also what makes `Reconstruction.veil`'s "as it
+was filmed" true: the plane still holds the old answer at the moment a layer is built.
+
 **The mask has two inputs and only one of them is an effect**, so the other is asked for
 (`Scrims.restack`). The bindings arrive as `setScrims`; the stacking they are masked against belongs to the
 window server and moves on its own — a transition's AX writes land *after* the core described them, so a set
