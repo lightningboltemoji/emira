@@ -59,6 +59,10 @@ system-events = "respect"
 # Focus a window when the pointer crosses into it.
 follows-mouse = false
 
+# How opaque an unfocused window looks; 1 is off, and below it the desktop shows through.
+# Must be at least 0.
+unfocused-opacity = 1
+
 [mouse]
 
 # Hide the cursor on events such as focus change.

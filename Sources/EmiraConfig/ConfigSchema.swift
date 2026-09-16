@@ -591,6 +591,14 @@ public enum ConfigSchema {
                 label: "Focus follows the mouse",
                 help: "Focus a window when the pointer crosses into it.",
                 section: .focus),
+
+        // Under `[focus]` and not an appearance table of its own: it is what *unfocused* looks like,
+        // and the thing a reader is hunting for is "the ways emira shows you where focus is".
+        Setting("focus.unfocused-opacity", \.unfocusedOpacity, .number(atLeast: 0, unit: .bare),
+                label: "Unfocused opacity",
+                help: "How opaque an unfocused window looks; 1 is off, and below it the desktop shows "
+                    + "through.",
+                section: .focus),
     ]
 
     /// The pointer plane. `hide` is also a *capability* — the shell clamps it off when macOS cannot do

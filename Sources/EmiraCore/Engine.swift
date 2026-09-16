@@ -36,6 +36,9 @@ public struct State: Sendable, Equatable, Codable {
     /// The floats the shell is drawing over the desktop, bottom→top — the decision *kept*, for the
     /// reason `World.placedOnScreen` is kept. `settleHoists` re-derives it and emits the difference.
     public var hoists: [HoistBinding]
+    /// The windows the shell is drawing the desktop back over, bottom→top — kept for `hoists`' reason,
+    /// and re-derived by `settleScrims` on the same terms.
+    public var scrims: [ScrimBinding] = []
     /// The focus a command asked for while a pin was being brought to the top, per display. Kept on
     /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
@@ -446,6 +449,7 @@ public enum Engine {
         hidePointer(on: event, into: &next, effects: &effects)
         warpPointer(on: event, from: state, into: &next, effects: &effects)
         settleHoists(into: &next, effects: &effects)
+        settleScrims(into: &next, effects: &effects)
         return (next, effects)
     }
 
@@ -513,6 +517,17 @@ public enum Engine {
         guard next != s.hoists else { return }
         s.hoists = next
         effects.append(.setHoists(next))
+    }
+
+    /// Bring the see-through windows into line with the desktop this batch produced. A post-pass for
+    /// `settleHoists`' reason, and after it: what is unfocused and on the glass is the product of focus
+    /// and the placement pass, with no one verb to hang it on. Emitted only on a change, so a tick
+    /// costs nothing — and on a desktop that has not turned this on, nothing at all.
+    private static func settleScrims(into s: inout State, effects: inout [Effect]) {
+        let next = s.scrimBindings()
+        guard next != s.scrims else { return }
+        s.scrims = next
+        effects.append(.setScrims(next))
     }
 
     /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch

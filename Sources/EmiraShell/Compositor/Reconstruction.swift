@@ -51,6 +51,17 @@ public final class Reconstruction: CoverSurface {
     /// How a fast stand-in is smeared across its step. Read every frame, so a reload lands at once.
     public var motionBlur = MotionBlur()
 
+    /// How see-through a window is on the desktop this cover replaces (`Scrims.veil(of:)`) — `0` for
+    /// every window until somebody turns the setting on.
+    ///
+    /// The desktop's veil, not the core's intent, and read when a layer is *built*: the same moment,
+    /// and for the same reason, as `LayerBinding.isFocused`. A stand-in stands for the window as it was
+    /// filmed, and this transition's own focus change reaches it through the cross-fade at the end.
+    ///
+    /// Real alpha and not a scrim of our own: these are layers we own over a base that holds the
+    /// desktop, so on this plane transparency is simply transparency.
+    public var veil: @MainActor (WindowId) -> Double = { _ in 0 }
+
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
                 animation: WindowAnimation = .stretch) {
         self.overlay = overlay
@@ -155,6 +166,9 @@ public final class Reconstruction: CoverSurface {
         // the two macOS draws is the binding's to say — the stand-in for the focused window carries the
         // key window's shadow and the rest carry the other, exactly as the desktop underneath does.
         WindowShadow.of(focused: binding.isFocused).apply(to: root)
+        // On `root` rather than on the pad: the shadow is here, and a window you can see through casts
+        // a lighter one. The pad is the smear's, and dimming that would fade the trail, not the window.
+        root.opacity = Float(1 - min(max(veil(window), 0), 1))
 
         let cover: CoverLayer
         switch animation {

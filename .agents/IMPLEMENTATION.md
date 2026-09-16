@@ -210,20 +210,22 @@ and the executors themselves, acking their own effects.
 
 **Effect execution splits by plane.** `CompositingExecutor` splits a batch into **maximal contiguous
 same-plane runs** — never partitioned, because emission order is the reducer's to decide — and routes each to
-its executor. There are six planes:
+its executor. There are seven planes:
 
 | Plane        | Executor                              | Machinery                                            |
 | ------------ | ------------------------------------- | ---------------------------------------------------- |
 | presentation | `Reconstruction` (via `CoverSurface`) | Core Animation, main thread, instant                 |
 | capture      | `CaptureService`                      | ScreenCaptureKit, own queue, deadline-bounded        |
 | hoist        | `HoistPanels` (via `HoistPlane`)      | one `NSWindow` per hoisted float, outside every cover |
+| scrim        | `Scrims` (via `ScrimPlane`)           | one `NSWindow` per display, under every cover        |
 | truth        | `AXExecutor`                          | AX Mach IPC, serial per-app queues, slow, may refuse |
 | pointer      | `PointerExecutor`                     | CoreGraphics on the cursor itself                    |
 | system       | `ShellLauncher`                       | `/bin/sh -c`, fire and forget                        |
 
-**The hoist plane is the presentation plane outside a transition**, and it is its own plane because
-nothing it does is a cover's: no base, no session, no ack the reducer counts down, and windows that
-outlive every transition. `Effect.setHoists` carries the whole set and the plane diffs it.
+**The hoist and scrim planes are the presentation plane outside a transition**, and each is its own
+plane because nothing it does is a cover's: no base, no session, no ack the reducer counts down, and
+windows that outlive every transition. `Effect.setHoists` and `Effect.setScrims` each carry the whole
+set and each plane diffs it.
 
 What the router cannot supply is "cover before teleport" — that is a fact about the _display_, not about
 emission order, so it is a phase in the core fenced by `Event.coverOnScreen`, and the two never share a batch.
@@ -1188,6 +1190,65 @@ alternatives is a screenshot on a timer for a window nobody is looking at, or an
 screen-recording indicator lit for as long as the window floats. A hoisted float's content is therefore
 frozen, and a float that comes forward and goes back is filmed again.
 
+### Scrims
+
+**An unfocused window is drawn see-through, and the blend is the real one** (`State.scrimBindings` →
+`Effect.setScrims`). emira cannot set a foreign window's alpha, but compositing what is *behind* a window
+over the top of it at `v` is the same arithmetic as that window being transparent at `1 − v` — so this is
+transparency reached from the other side rather than an imitation of it. `[focus] unfocused-opacity` is the
+number, `1` and off by default.
+
+**What it can get wrong is never the blend, only the backdrop.** The shell holds one photograph per display
+(`DesktopCapturer`): the display with **every** window taken out of it, leaving wallpaper, icons and widgets.
+Hence the one rule — **a window is drawn see-through only where the desktop is what lies behind it.** Where
+another window is behind, the photograph would replace a real window with wallpaper and the depth of the
+desktop reads inside out. So the effect belongs to the strip and says so: `strip` promises windows never
+overlap, and that promise is what makes one photograph the true backdrop for every window on the surface.
+
+**The decline is a region, because the rule is one.** A window behind stamps its overlap back to opaque after
+the scrim is painted, rather than disqualifying the whole frame — so a float takes the patch of the tile it
+covers and no more, and a cascade keeps the effect on whatever a `stack` tile leaves exposed. Standing in for
+the rest needs a photograph per window, refilmed whenever anything behind anything redraws. The scope follows
+from the same shape: the mask is a raster the size of the display, so an overlap out beyond the screen edge
+stamps nothing and decides nothing — which is what keeps a column hanging off the viewport, its frame running
+through the parking lot in the corner, from forfeiting its transparency to a sliver a pixel wide. A window
+*in front* is not a decline and costs nothing — those pixels are not on the screen, so the mask paints over
+them.
+
+**The core names windows and the shell decides which it can back**, which is the seam `capture` already sits
+on. The physical stacking of the desktop includes the windows emira never placed, and that is the window
+server's fact rather than the layout's, so the decline is made where that fact lives — one
+`CGWindowListCopyWindowInfo` in z-order per rebuild, which is the only public list that carries one.
+
+**The photograph is refilmed only when the desktop is quiet** — at build, on a display change, and after a
+cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change: the window server serializes
+screenshots, and a focus change is also a cover, whose batch is the one latency anybody can feel. A desktop
+widget therefore ticks late behind a window you are looking through.
+
+**The mask has two inputs and only one of them is an effect**, so the other is asked for
+(`Scrims.restack`). The bindings arrive as `setScrims`; the stacking they are masked against belongs to the
+window server and moves on its own — a transition's AX writes land *after* the core described them, so a set
+reaches the glass painted against where the windows still were, and holds that reading for as long as the
+bindings do. It is asked at the top of `CompositingExecutor.dismiss`, which is the moment both facts have
+settled *and* the cover is still hiding the scrim: the transition closed because the AX sets landed, so the
+window server is current, and the repaint lands behind the cover instead of being revealed by it. One window
+list and one repaint per transition, and a repaint that changes nothing stops at `ScrimWindow.setRegions`.
+
+**A mask swap is a cut, not a fade.** `ScrimWindow.cut` is a layer of ours rather than a view's, so no
+delegate suppresses Core Animation's implicit animation and every repaint would dissolve the old mask into
+the new over a quarter second — a correction the eye reads as the window becoming transparent by itself. It
+is written with actions off. The only fade a scrim owns is `ScrimWindow.fadeDuration`, on the window's alpha.
+
+**The cover carries the same veil** (`Reconstruction.veil`, read from `Scrims.veil(of:)` when a layer is
+built). A cover is a photograph of the desktop it replaces, so stand-ins that drew every window opaque would
+flash every unfocused window solid for the length of every covered transition. On that plane the layers are
+ours over a base that holds the desktop, so it is `root.opacity` and nothing else — and a layer carries the
+veil for the whole window even where the scrim declined part of it, because the cover is the one plane that
+does not need the decline: its backdrop there is the layer of the window that is really behind. It is read at build time
+for `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed — and this
+transition's own focus change reaches it through the cross-fade at the end. Asking the scrim plane rather
+than deciding again is what keeps the two planes to one decision.
+
 ---
 
 ## 7. The shell, subsystem by subsystem
@@ -1495,9 +1556,19 @@ the float's silhouette rather than a synthesized approximation, and a panel carr
 `.canJoinAllSpaces` nor `.fullScreenAuxiliary` belongs to the Space it was ordered in on — which is the whole
 of "do not follow the user into a full-screen app", with nothing observing Spaces to get it wrong.
 
-Levels, top down: `GuidePanel` at `.floating + 2`, `HoistPanel` at `+ 1`, `Overlay` at `.floating`. A hoisted
-float is over the cover, because a float that stays on top through a scroll is the point, and under the
-guides, because they answer *where am I* about the desktop the hoist is part of.
+**`ScrimWindow` is one window per display, which is the opposite shape and the opposite reason.** A scrim
+takes no clicks at all (`ignoresMouseEvents`), so it is free to be one surface — and one surface is what
+makes its occlusion exact: its mask is painted back to front over the window server's own ordering, so a
+window in front of a see-through one punches its own hole by being painted after it, with nothing
+reasoning about which rectangles overlap which. Per-window veils ride in the mask's alpha, so the window
+stays at `alpha 1` and one surface serves any number of windows at any number of strengths.
+
+Levels, top down: `GuidePanel` at `.floating + 2`, `HoistPanel` at `+ 1`, `Overlay` at `.floating`,
+`ScrimWindow` at `− 1`. A hoisted float is over the cover, because a float that stays on top through a
+scroll is the point, and under the guides, because they answer *where am I* about the desktop the hoist is
+part of. A scrim is under the cover because a cover must hide it outright: the reconstruction carries its
+own transparency (`Reconstruction.veil`), and a scrim left showing would tint it wherever a real window
+stood before it teleported.
 
 **The menu bar is the exception, because it is one item for a desktop of several.** `StatusModel.title` is a
 single character and goes to the address the user is on; the rest go to the tooltip after it
@@ -2003,6 +2074,7 @@ emira/
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
     │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
+    │   │                Hoists · Scrims (the two standing presentation-plane sets)
     │   └── Layout/      Layout (the kind) · Workspaces · Strip · Stack · Column · Presets
     │                    Cascade (the quit pile, not a layout) · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
@@ -2027,9 +2099,11 @@ emira/
     │   │                Observation · AXObservers · FocusIntent · EnhancedUI
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
+    │   │                DesktopCapturer (one display with every window taken out of it)
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)
+    │   │                Scrim(s) (the see-through unfocused windows — one surface per display)
     │   ├── Guide/       GuideSubject (State → GuideInput) · Guide · GuidePanel · GuideIcons
     │   │                GuideNames
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples

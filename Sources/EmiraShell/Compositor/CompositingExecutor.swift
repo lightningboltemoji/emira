@@ -111,6 +111,10 @@ public final class CompositingExecutor: Executor {
         /// not inside a transition's frame, owes no ack, and is drawn in windows of its own that
         /// outlive every cover.
         case hoist
+        /// The see-through unfocused windows. Its own plane for the hoist plane's reasons, and one
+        /// more: a scrim is *standing*, so it belongs to no transition at all — it is what the desktop
+        /// looks like between them.
+        case scrim
         /// The cursor. Not the presentation plane: it composites above our overlay as it does above
         /// every other window, which is the whole reason it needs hiding at all.
         case pointer
@@ -147,6 +151,7 @@ public final class CompositingExecutor: Executor {
 
     private let surface: any CoverPlane
     private let hoists: any HoistPlane
+    private let scrims: any ScrimPlane
     private let store: any CaptureStore
     private let truth: any Executor
     private let pointer: any Executor
@@ -161,9 +166,11 @@ public final class CompositingExecutor: Executor {
     /// `store` is the same object that backs `surface`'s pixels.
     public init(surface: any CoverPlane, hoists: any HoistPlane, store: any CaptureStore,
                 truth: any Executor, pointer: any Executor,
+                scrims: any ScrimPlane = NoScrims(),
                 launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
         self.hoists = hoists
+        self.scrims = scrims
         self.store = store
         self.truth = truth
         self.pointer = pointer
@@ -187,6 +194,13 @@ public final class CompositingExecutor: Executor {
                 for effect in run.effects {
                     guard case .setHoists(let bindings) = effect else { continue }
                     hoists.setHoists(bindings, feedback: feedback)
+                }
+            case .scrim:
+                // Last wins, for `setHoists`' reason: the core emits the whole set, so two in a batch
+                // would be a decision superseded before it reached the screen.
+                for effect in run.effects {
+                    guard case .setScrims(let bindings) = effect else { continue }
+                    scrims.setScrims(bindings)
                 }
             case .truth:        truth.execute(run.effects, feedback: feedback)
             case .pointer:      pointer.execute(run.effects, feedback: feedback)
@@ -239,6 +253,8 @@ public final class CompositingExecutor: Executor {
             return .capture
         case .setHoists:
             return .hoist
+        case .setScrims:
+            return .scrim
         case .setFrame, .park, .focus, .restoreFocus, .confirmFocus, .raise, .closeWindow:
             return .truth
         case .setCursorHidden, .warpPointer:
@@ -293,8 +309,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .setHoists, .focus, .restoreFocus, .confirmFocus,
-                 .raise, .closeWindow,
+            case .setFrame, .park, .capture, .setHoists, .setScrims, .focus, .restoreFocus,
+                 .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
             }
@@ -313,6 +329,10 @@ public final class CompositingExecutor: Executor {
         // opens a *new* cover on that display and must take its own base, not inherit the fading one's
         // desktop.
         let token = store.closeCover(on: monitor)
+        // Before the cover starts moving, not after it lands: the transition closed because the AX
+        // sets landed, so the window server is current now — and the cover still hides the scrim, so
+        // the repaint lands where nobody can see it.
+        scrims.restack()
         surface.dismiss(on: monitor, over: dismissalDuration) { [onCoverDismissed, store] in
             // Released only once the cover is *down* — `CALayer.contents` holds the stills for the
             // whole cross-fade. And only *these* stills: `discard` ignores a superseded token.

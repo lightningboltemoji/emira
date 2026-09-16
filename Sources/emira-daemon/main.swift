@@ -316,8 +316,14 @@ launcher.onOutcome = { log("exec: \($0)") }
 let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
                               scheduler: DispatchScheduler())
 
+/// The scrim plane — the see-through unfocused windows. One object for the desktop like the hoist
+/// plane, and for a sharper version of its reason: a scrim *is* one display's photograph, so the
+/// surfaces are per display and the rule that drives them is not. `syncDisplays` builds them.
+let desktopCapturer = DesktopCapturer()
+let scrims = Scrims(filmer: desktopCapturer, identify: { [weak registry] in registry?.id(forNumber: $0) })
+
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
-                                   truth: truth, pointer: pointer, launcher: launcher)
+                                   truth: truth, pointer: pointer, scrims: scrims, launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below,
@@ -347,6 +353,11 @@ capture.onBatchResolved = { report in
 }
 
 executor.onCoverDismissed = { monitor, frames, seconds in
+    // The one moment the capture plane is reliably idle *and* the desktop may have moved underneath —
+    // a workspace switch, a window closing over a widget. Throttled inside, so a burst of transitions
+    // costs one photograph rather than one each, and never taken on the way *into* a transition, where
+    // it would queue behind the cover's own batch (`Scrims`).
+    scrims.desktopMayHaveChanged()
     let head = captureHeadMs[monitor] ?? 0
     log(String(format: "transition:%@ %d frames in %.0f ms (%.0f fps); %.0f ms capture head → %.0f ms",
                on(monitor), frames, seconds * 1000, Double(frames) / max(seconds, 0.001),
@@ -507,6 +518,7 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     for entry in parts.values {
         entry.reconstruction.animation = config.windowAnimation
         entry.reconstruction.motionBlur = config.motionBlur
+        entry.reconstruction.veil = { [weak scrims] in scrims?.veil(of: $0) ?? 0 }
     }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
@@ -601,14 +613,19 @@ applyShellConfig(config)
     // Every panel is built against one flip line and one backing scale, so a reconfiguration rebuilds
     // them exactly as it rebuilds an overlay — and it re-applies the set itself, since the core has no
     // reason to re-emit one that did not change just because the screens did.
-    hoistPanels.setDisplays(
-        geometry: displays.geometry,
-        scales: Dictionary(uniqueKeysWithValues: zip(displays.monitors, displays.screens)
-            .map { ($0.id, $1.backingScaleFactor) }))
+    let scales = Dictionary(uniqueKeysWithValues: zip(displays.monitors, displays.screens)
+        .map { ($0.id, $1.backingScaleFactor) })
+    hoistPanels.setDisplays(geometry: displays.geometry, scales: scales)
+    // The scrims go the same way and for the same reason — a surface is fixed to one screen at
+    // construction — and each new one films its own display's desktop as it is built.
+    desktopCapturer.setScales(scales)
+    scrims.setDisplays(zip(displays.monitors, displays.screens)
+        .map { ($0.id, $0.frame, $1.backingScaleFactor) }, geometry: displays.geometry)
     if let fastest = displays.fastest { clock.retarget(to: fastest) }
     for entry in parts.values {
         entry.reconstruction.animation = config.windowAnimation
         entry.reconstruction.motionBlur = config.motionBlur
+        entry.reconstruction.veil = { [weak scrims] in scrims?.veil(of: $0) ?? 0 }
     }
 }
 

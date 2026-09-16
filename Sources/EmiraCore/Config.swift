@@ -387,6 +387,12 @@ public struct Config: Sendable, Equatable, Codable {
     /// another source of focus changes — and unlike every other window manager's version of this, here
     /// focus *scrolls*, so the shell fires it on pointer motion alone and never on window motion.
     public var focusFollowsMouse: Bool
+    /// How opaque a window looks while it is not the focused one. `1` is off, and is the default: a
+    /// window manager must not start altering how somebody's apps look. Below it the shell draws the
+    /// desktop back over the window at `1 − this`, which *is* the window being that transparent
+    /// (`Scrims.swift`). A ceiling the file cannot spell — a `Bound` has floors and none — so anything
+    /// above 1 is clamped in the reducer rather than refused.
+    public var unfocusedOpacity: Double
     /// How a window's captured still is painted into the rect it occupies during a transition. Read
     /// by the compositor, never the reducer — the core's emitted geometry is identical under both,
     /// and the two differ only when a window's rect stops matching the still captured of it.
@@ -456,6 +462,7 @@ public struct Config: Sendable, Equatable, Codable {
         interactiveResize: Bool = true,
         systemFocusEvents: SystemFocusEvents = .respect,
         focusFollowsMouse: Bool = false,
+        unfocusedOpacity: Double = 1,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
         motionBlur: MotionBlur = MotionBlur(),
@@ -485,6 +492,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.interactiveResize = interactiveResize
         self.systemFocusEvents = systemFocusEvents
         self.focusFollowsMouse = focusFollowsMouse
+        self.unfocusedOpacity = unfocusedOpacity
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
         self.motionBlur = motionBlur

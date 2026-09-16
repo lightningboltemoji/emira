@@ -76,7 +76,7 @@ The single most important idea in the project. A window "moving" is two independ
 | Plane            | Mechanism                                                   | Speed                                       | Owns                                     |
 | ---------------- | ----------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
 | **Truth**        | the Accessibility API                                       | slow, bound to the target app's main thread | where a window really is                 |
-| **Presentation** | a layered reconstruction of the desktop, in overlays we own | instant, on the GPU compositor              | what the user sees during a transition — and, standing, where a float appears in the stack |
+| **Presentation** | a layered reconstruction of the desktop, in overlays we own | instant, on the GPU compositor              | what the user sees during a transition — and, standing, where a float appears in the stack and how solid an unfocused window looks |
 
 **Rearrange instantly on the truth plane; smooth it over on the presentation plane when a transition warrants
 it.** This is the inverse of the SIP-off design — there you would transform live foreign surfaces; here we
@@ -105,6 +105,17 @@ Four consequences, and they are the whole design:
   requires the app to re-lay-out and redraw, and **only the owning app can produce those pixels.** No trick
   removes that floor. All we choose is what to show while they are missing — a stretched still or a cropped
   one — and both are honest about the same absence; they differ over which lie they refuse to tell.
+
+**The plane's standing work is drawing what we are not allowed to change.** A float macOS has buried and an
+unfocused window we are not permitted to make transparent are the same problem, answered the same way: put the
+pixels in a window of our own. Transparency is the sharper case, because it is not a stand-in at all. Compositing
+what is _behind_ a window over the top of it is the identical blend to that window being transparent — the same
+arithmetic, arrived at from the other side — so nothing is approximated and the presentation plane's usual trade,
+a frozen still for smooth motion, is not being made. What such a thing can get wrong is never the blend; it is
+only ever the backdrop, and **the desktop is the true backdrop exactly where the desktop is what lies behind.**
+That is a second thing the strip's promise buys: windows that never overlap are windows one photograph of the
+desktop can stand behind, every one of them. A cascade is backed by itself, and declines wherever it is —
+_where_, because the claim is about a region and so is the answer to it.
 
 **The residual cost is content, never motion.** A snapshot layer's _content_ is frozen for a transition's
 length; its movement is always smooth. Keep transitions short.

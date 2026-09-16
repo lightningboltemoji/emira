@@ -36,6 +36,15 @@ public enum Effect: Sendable, Equatable, Codable {
     /// nothing, so a machine that cannot film a still simply never sees one appear.
     case setHoists([HoistBinding])
 
+    /// The windows to draw the desktop back over, bottom→top, so they read as transparent — and take
+    /// the scrim off every one not named. The whole set every time, which the shell diffs, as
+    /// `setHoists` is. Unacked and gating nothing: a machine with no Screen Recording grant has no
+    /// desktop photograph, and simply never shows one.
+    ///
+    /// **The shell may decline a binding it cannot back honestly.** Whether the desktop is really what
+    /// lies behind a window is the window server's fact, not the layout's — see `Scrims.swift`.
+    case setScrims([ScrimBinding])
+
     /// How far one display's cover must stay clear of each edge, so the windows pinned there stay live
     /// underneath it. **A band off the edge, not a hole in the middle**: a pin is full height and hard
     /// against its own edge, so the cover is a smaller rectangle rather than a masked one. The whole
