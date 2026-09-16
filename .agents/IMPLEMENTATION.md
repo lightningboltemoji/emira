@@ -1208,11 +1208,11 @@ frozen, and a float that comes forward and goes back is filmed again.
 
 ### Scrims
 
-**An unfocused window is drawn see-through, and the blend is the real one** (`State.scrimBindings` →
-`Effect.setScrims`). emira cannot set a foreign window's alpha, but compositing what is *behind* a window
-over the top of it at `v` is the same arithmetic as that window being transparent at `1 − v` — so this is
-transparency reached from the other side rather than an imitation of it. `[focus] unfocused-opacity` is the
-number, `1` and off by default.
+**An unfocused window is drawn see-through, from the other side** (`State.scrimBindings` →
+`Effect.setScrims`). emira cannot set a foreign window's alpha, but it can composite what is *behind* a window
+over the top of it, and the window server's own source-over does the blending. Drawn plainly at `v`, that is
+the same arithmetic as the window being transparent at `1 − v`; what is drawn is that, frosted and shaded (both
+below). `[focus] unfocused-opacity` is the number, `1` and off by default.
 
 **What it can get wrong is never the blend, only the backdrop.** The shell holds one photograph per display
 (`DesktopCapturer`): the display with **every** window taken out of it, leaving wallpaper, icons and widgets.
@@ -1228,6 +1228,18 @@ rather than every time a mask moves. The radius crosses into pixels with the pho
 clamped to the display's own extent first, or the blur reads transparency in from past the screen and leaves a
 band down every side where the window under it shows unveiled. At `unfocused-opacity = 1` it shows nothing at
 all, because there is no backdrop to frost.
+
+**The photograph is shaded, so a veil reads alike over every window** (`shaded`, `veilShade`). A plain mix
+adds the desktop's detail at one strength, in encoded values, whatever the window is — and the eye reads the
+same step as a luminance ratio of about 8× over a terminal's dark background and under 2× over white, so the
+desktop bleeds through a dark window several times louder. So `veilShade` of the veil *darkens* the window by
+the desktop's luma instead of mixing the desktop in. The photograph is stored premultiplied as `(1 − s)·D` over
+alpha `1 − s·luma(D)`, which the unchanged mask and source-over land as `W·(1 − v + v·s·luma(D)) + v·(1 − s)·D`:
+a white window is veiled exactly as a mix veils it, and a darker one shows the desktop in proportion to its
+own lightness, pixel by pixel, text included. One alpha per pixel can reach any `A·W + B` whose terms come from
+the desktop, and this is the member of that family that scales with the window — so it needs no pixel of the
+window at all. The arithmetic is in the photograph's encoded values because those are what the window server
+blends. It is baked in at film time beside the frost, and for the frost's reasons.
 
 **The decline is a region, because the rule is one.** A window behind stamps its overlap back to opaque after
 the scrim is painted, rather than disqualifying the whole frame — so a float takes the patch of the tile it
@@ -1279,12 +1291,14 @@ cuts.** That is what gives a focus change between two columns already on the gla
 raises no cover, and so has nothing else drawing it — the fade the covered case gets from
 `Reconstruction.refreshVeils`.
 
-**The cover carries the same veil** (`Reconstruction.veil`, read from `Scrims.veil(of:)` when a layer is
-built). A cover is a photograph of the desktop it replaces, so stand-ins that drew every window opaque would
-flash every unfocused window solid for the length of every covered transition. On that plane the layers are
-ours over a base that holds the desktop, so it is `root.opacity` and nothing else — and a layer carries the
-veil for the whole window even where the scrim declined part of it, because the cover is the one plane that
-does not need the decline: its backdrop there is the layer of the window that is really behind. It is read at build time
+**The cover carries the same veil, drawn through the same photograph** (`Reconstruction.veil` and
+`Reconstruction.backdrop`, read from `Scrims.veil(of:)` and `Scrims.backdrop(of:)` when a layer is built). A
+cover is a photograph of the desktop it replaces, so stand-ins that drew every window opaque would flash every
+unfocused window solid for the length of every covered transition. A stand-in is drawn opaque with the scrim's
+own photograph laid over it at the window's veil, cropped by `contentsRect` to wherever the stand-in stands on
+this frame — so the desktop behind stays put while the window travels, and both planes land one blend, frost
+and shade included. With no photograph there is no veil layer, and the stand-in is as opaque as a scrim with
+nothing to draw leaves its window. It is read at build time
 for `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed, which is what keeps
 the raise pixel-identical — and asked again by `Reconstruction.refreshVeils` whenever the plane's answer moves
 under a cover that is already up. Asking the scrim plane rather than deciding again is what keeps the two
@@ -1296,11 +1310,13 @@ scrim run). A transition's own set arrives at the teleport, so the stand-ins fad
 blit does not already cost. Left to the cross-fade instead, the whole change would land after the strip had
 come to rest, which is correct and reads as two events: the transition, and then the desktop catching up.
 
-**What the cover does not carry is the frost.** Its base is the real desktop and its stand-ins are real alpha
-over it, so for the length of a covered transition the backdrop behind a see-through window has its detail
-back. Frosting it there would take a blurred backdrop per stand-in, scrolled to wherever that stand-in has been
-moved to — and it would be a lie wherever it has moved over a window the base holds, which is the photograph
-per window this whole plane exists not to pay for.
+**What the cover does not carry is the decline.** A stand-in is veiled over its whole window and its
+photograph holds no windows, so wherever a stand-in stands over something other than the desktop — a `stack`
+tile over the one beneath it, a dialog emira floats by role left behind a scrolling column — the cover shows
+frosted wallpaper where that window is. Carrying the decline would take a mask per stand-in, rewritten every
+frame wherever the overlap slides, which is the offscreen pass `Overlay.setClearing` is shaped to avoid. It
+lasts only as long as the motion, over the scraps a cascade leaves exposed; a pin's band and a hoisted float
+are never under a stand-in at all.
 
 ---
 

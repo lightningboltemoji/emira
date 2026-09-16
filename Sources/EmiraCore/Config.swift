@@ -387,11 +387,9 @@ public struct Config: Sendable, Equatable, Codable {
     /// another source of focus changes — and unlike every other window manager's version of this, here
     /// focus *scrolls*, so the shell fires it on pointer motion alone and never on window motion.
     public var focusFollowsMouse: Bool
-    /// How opaque a window looks while it is not the focused one. `1` is off, and is the default: a
-    /// window manager must not start altering how somebody's apps look. Below it the shell draws the
-    /// desktop back over the window at `1 − this`, which *is* the window being that transparent
-    /// (`Scrims.swift`). A ceiling the file cannot spell — a `Bound` has floors and none — so anything
-    /// above 1 is clamped in the reducer rather than refused.
+    /// How opaque a window looks while it is not the focused one — `1`, off, by default, since a window
+    /// manager must not start altering how apps look. Below it the desktop is drawn back over the window
+    /// (`Scrims.swift`); above 1 is clamped in the reducer, as a `Bound` has floors and no ceiling.
     public var unfocusedOpacity: Double
     /// How far the desktop behind an unfocused window is blurred, in points; `0` is off. It frosts the
     /// backdrop and not the window, and shows only where `unfocusedOpacity` lets the desktop through.

@@ -120,6 +120,8 @@ public final class Scrims: ScrimPlane {
     private var surfaces: [MonitorId: any ScrimSurface] = [:]
     private var frames: [MonitorId: Rect] = [:]
     private var filmedAt: [MonitorId: Date] = [:]
+    /// The photograph each display's scrim is drawing, kept for the cover (`backdrop(of:)`).
+    private var photographs: [MonitorId: CGImage] = [:]
     /// Bumped per display by every film, so one answering after its surface was rebuilt owns nothing.
     private var filmGeneration: [MonitorId: Int] = [:]
 
@@ -196,6 +198,7 @@ public final class Scrims: ScrimPlane {
         surfaces.removeAll()
         frames.removeAll()
         filmedAt.removeAll()
+        photographs.removeAll()
         // A surface that has gone took its mask with it, so the next one has nothing to dissolve from.
         drawn.removeAll()
     }
@@ -222,22 +225,18 @@ public final class Scrims: ScrimPlane {
             // A film that failed leaves the standing photograph alone: an old desktop is a better
             // backdrop than none, and `nil` here would take every scrim on that display down.
             guard let image else { return self.filmedAt[monitor] = .distantPast }
+            self.photographs[monitor] = image
             self.surfaces[monitor]?.setDesktop(image)
         }
     }
 
-    /// What the desktop is drawing `window` at: the veil its scrim carries, or `0` for a window that is
-    /// opaque — focused, or one the photograph could not honestly back anywhere.
-    ///
-    /// **Read by the cover**, the one other thing that draws these windows. A cover is a photograph of
-    /// the desktop it replaces, so its stand-ins have to be as see-through as the windows were when it
-    /// went up. Asking here rather than deciding again is what keeps the two planes to one decision.
-    ///
-    /// A scrim is declined per region, so a window can be see-through over part of itself while a cover
-    /// layer has one opacity. The veil is reported regardless, because **the cover does not need the
-    /// decline**: where a scrim declines, the cover's backdrop is that window's own layer drawn beneath
-    /// this one, so a see-through stand-in shows what is really behind it.
+    /// What the desktop is drawing `window` at, or `0` for an opaque one. Read by the cover, so the two
+    /// planes keep one decision — and reported for the whole window even where the scrim declined part.
     public func veil(of window: WindowId) -> Double { applied[window] ?? 0 }
+
+    /// The photograph `monitor`'s scrim draws through, already frosted and shaded — what a cover's
+    /// stand-ins draw their veil from, so the two planes show one backdrop. `nil` before the first film.
+    public func backdrop(of monitor: MonitorId) -> CGImage? { photographs[monitor] }
 
     private func apply(_ bindings: [ScrimBinding]) {
         let stacked = stack()

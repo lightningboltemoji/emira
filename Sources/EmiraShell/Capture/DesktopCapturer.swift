@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import CoreImage
 import Foundation
@@ -23,6 +24,10 @@ import EmiraCore
 // window over it, and the backdrop is this photograph — so it is one Gaussian per film, on the capture
 // task, rather than a filter the render server re-runs behind a mask that moves on every focus change.
 // A radius change is therefore a photograph gone stale, which is `Scrims`' word for it already.
+//
+// **So is the shade** (`shaded`), for the same reason and one more: the photograph is the only input to
+// the blend that emira owns, so reshaping it is how the veil's blend is chosen at all — and the cover
+// draws the same image, so both planes blend alike.
 
 /// Films a display's desktop through ScreenCaptureKit. The `Scrims` plane's source of pixels.
 @MainActor
@@ -72,7 +77,7 @@ private func desktop(of display: CGDirectDisplayID, scale: CGFloat,
     guard let shot = try? await SCScreenshotManager.captureImage(contentFilter: filter,
                                                                  configuration: configuration)
     else { return nil }
-    return frosted(shot, sigma: sigma)
+    return frosted(shot, sigma: sigma).flatMap { shaded($0) }
 }
 
 /// Shared: a context compiles its kernels, so one per film would pay for them again every time. Working
@@ -95,4 +100,41 @@ func frosted(_ image: CGImage, sigma: Double) -> CGImage? {
     else { return image }
     return frostContext.createCGImage(output, from: source.extent, format: .BGRA8,
                                       colorSpace: image.colorSpace)
+}
+
+/// The share of the veil that **darkens** a window by the desktop's lightness rather than mixing the
+/// desktop in. A mix adds the desktop's detail to every window at one strength, which reads several
+/// times louder on a dark window than on a light one; the darkening share scales it by the window's own.
+let veilShade = 0.6
+
+/// `image` as the veil draws it: premultiplied `(1 − shade)·D` over alpha `1 − shade·luma(D)`, so a veil
+/// `v` over a window `W` lands `W·(1 − v + v·shade·luma(D)) + v·(1 − shade)·D`. In the image's encoded
+/// values, because those are what the window server blends. `nil` only if the buffer cannot be made.
+func shaded(_ image: CGImage, by shade: Double = veilShade) -> CGImage? {
+    guard shade > 0 else { return image }
+    guard let space = image.colorSpace,
+          let format = vImage_CGImageFormat(bitsPerComponent: 8, bitsPerPixel: 32, colorSpace: space,
+                                            bitmapInfo: CGBitmapInfo(rawValue:
+                                                CGImageAlphaInfo.premultipliedFirst.rawValue
+                                                | CGBitmapInfo.byteOrder32Big.rawValue)),
+          var buffer = try? vImage_Buffer(cgImage: image, format: format)
+    else { return nil }
+    defer { buffer.free() }
+
+    // Rows are the input channel and columns the output, both A, R, G, B: vImage multiplies row vectors.
+    let divisor: Int32 = 0x1000
+    let scale = Double(divisor)
+    func term(_ x: Double) -> Int16 { Int16((x * scale).rounded()) }
+    let keep = term(1 - shade)
+    let matrix: [Int16] = [
+        term(1),                  0,    0,    0,
+        term(-shade * 0.2126), keep,    0,    0,
+        term(-shade * 0.7152),    0, keep,    0,
+        term(-shade * 0.0722),    0,    0, keep,
+    ]
+    let rounding = [Int32](repeating: divisor / 2, count: 4)
+    guard vImageMatrixMultiply_ARGB8888(&buffer, &buffer, matrix, divisor, nil, rounding,
+                                        vImage_Flags(kvImageNoFlags)) == kvImageNoError
+    else { return nil }
+    return try? buffer.createCGImage(format: format)
 }

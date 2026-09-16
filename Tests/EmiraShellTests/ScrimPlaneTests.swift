@@ -421,3 +421,56 @@ import EmiraCore
     }
 
 }
+
+// The shade: how the photograph is prepared so a veil darkens a window by the desktop's lightness.
+
+@Suite struct ScrimShadeTests {
+
+    /// A flat grey, opaque.
+    static func grey(_ level: Int) -> CGImage {
+        let ctx = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 16,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                | CGBitmapInfo.byteOrder32Big.rawValue)!
+        ctx.setFillColor(gray: CGFloat(level) / 255, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        return ctx.makeImage()!
+    }
+
+    /// What a window of lightness `window` shows under the shaded photograph of `desktop` at veil `v`,
+    /// as the window server composites it: source-over, premultiplied, in encoded values.
+    static func composite(window: Double, desktop: Int, veil v: Double) throws -> Double {
+        let shaded = try #require(shaded(grey(desktop)))
+        let pixel = try #require(ScrimFrostTests.sample(shaded, x: 1, y: 1))
+        let alpha = Double(pixel.alpha) / 255, colour = Double(pixel.light) / 255
+        return window * (1 - v * alpha) + v * colour
+    }
+
+    /// A white window keeps the veil a plain mix would give it, so the number means what it says there.
+    @Test func aWhiteWindowIsVeiledAsAMixWouldVeilIt() throws {
+        for desktop in [0, 64, 128, 200, 255] {
+            let mixed = 0.5 + 0.5 * Double(desktop) / 255
+            #expect(abs(try Self.composite(window: 1, desktop: desktop, veil: 0.5) - mixed) < 1.5 / 255)
+        }
+    }
+
+    /// Over black, only the mixing share is left: the desktop shows at `1 − veilShade` of the mix.
+    @Test func aBlackWindowShowsOnlyTheMixingShare() throws {
+        let shown = try Self.composite(window: 0, desktop: 200, veil: 0.5)
+        #expect(abs(shown - 0.5 * (1 - veilShade) * 200 / 255) < 1.5 / 255)
+    }
+
+    /// The photograph stays premultiplied-valid: no channel exceeds its alpha, even on white.
+    @Test func noChannelExceedsItsAlpha() throws {
+        for desktop in [0, 128, 255] {
+            let image = try #require(shaded(Self.grey(desktop)))
+            let pixel = try #require(ScrimFrostTests.sample(image, x: 2, y: 2))
+            #expect(pixel.light <= pixel.alpha)
+        }
+    }
+
+    @Test func aShadeOfZeroIsTheFilmItself() {
+        let raw = Self.grey(90)
+        #expect(shaded(raw, by: 0) === raw)
+    }
+}

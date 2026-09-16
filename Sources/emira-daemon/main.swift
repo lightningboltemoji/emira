@@ -519,6 +519,7 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
         entry.reconstruction.animation = config.windowAnimation
         entry.reconstruction.motionBlur = config.motionBlur
         entry.reconstruction.veil = { [weak scrims] in scrims?.veil(of: $0) ?? 0 }
+        entry.reconstruction.backdrop = { [weak scrims] in scrims?.backdrop(of: $0) }
     }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
@@ -629,6 +630,7 @@ applyShellConfig(config)
         entry.reconstruction.animation = config.windowAnimation
         entry.reconstruction.motionBlur = config.motionBlur
         entry.reconstruction.veil = { [weak scrims] in scrims?.veil(of: $0) ?? 0 }
+        entry.reconstruction.backdrop = { [weak scrims] in scrims?.backdrop(of: $0) }
     }
 }
 

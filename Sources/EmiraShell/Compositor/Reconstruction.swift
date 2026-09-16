@@ -29,6 +29,9 @@ private struct CoverLayer {
     let still: CALayer?
     /// The still's size in points — unrecoverable from the layer tree once the layer is resized.
     let natural: Size
+    /// The scrim's photograph over the window at its veil, cropped to where the stand-in stands — `nil`
+    /// when there was no photograph to draw it from, and the stand-in is opaque.
+    let veil: CALayer?
 }
 
 /// The `CoverSurface` implementation: builds and animates the reconstruction inside an `Overlay`.
@@ -57,10 +60,11 @@ public final class Reconstruction: CoverSurface {
     /// The desktop's veil, not the core's intent. Read when a layer is *built*, for
     /// `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed, which is
     /// what keeps the raise pixel-identical — and asked again by `refreshVeils` when the answer moves.
-    ///
-    /// Real alpha and not a scrim of our own: these are layers we own over a base that holds the
-    /// desktop, so on this plane transparency is simply transparency.
     public var veil: @MainActor (WindowId) -> Double = { _ in 0 }
+
+    /// The photograph the scrim draws its veil through (`Scrims.backdrop(of:)`). A stand-in draws its
+    /// own through the same one rather than as real alpha, so both planes land the same blend and frost.
+    public var backdrop: @MainActor (MonitorId) -> CGImage? = { _ in nil }
 
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
                 animation: WindowAnimation = .stretch) {
@@ -139,16 +143,17 @@ public final class Reconstruction: CoverSurface {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for cover in layers.values {
+            guard let layer = cover.veil else { continue }
             let wanted = Self.opacity(at: veil(cover.window))
             // The presentation value, not the model's: a veil retargeted mid-fade starts from what is
             // on the screen rather than from where the last one was going.
-            let from = cover.root.presentation()?.opacity ?? cover.root.opacity
+            let from = layer.presentation()?.opacity ?? layer.opacity
             guard abs(wanted - from) > 0.001 else { continue }
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = from
             fade.duration = Self.veilDuration
-            cover.root.opacity = wanted
-            cover.root.add(fade, forKey: "veil")
+            layer.opacity = wanted
+            layer.add(fade, forKey: "veil")
         }
         CATransaction.commit()
     }
@@ -188,9 +193,9 @@ public final class Reconstruction: CoverSurface {
         // the two macOS draws is the binding's to say — the stand-in for the focused window carries the
         // key window's shadow and the rest carry the other, exactly as the desktop underneath does.
         WindowShadow.of(focused: binding.isFocused).apply(to: root)
-        // On `root` rather than on the pad: the shadow is here, and a window you can see through casts
-        // a lighter one. The pad is the smear's, and dimming that would fade the trail, not the window.
-        root.opacity = Self.opacity(at: veil(window))
+        // Measured off the capture, not a constant: a guessed radius goes stale with the next macOS.
+        let radius = CGFloat(surface.cornerRadius ?? Self.fallbackCornerRadius)
+        let veiling = backdrop(monitor).map { makeVeil(from: $0, for: window) }
 
         let cover: CoverLayer
         switch animation {
@@ -202,13 +207,16 @@ public final class Reconstruction: CoverSurface {
             // No `masksToBounds` and no `shadowPath`: a capture is transparent outside the window's
             // rounded corners, so CA derives the shadow from the contents' alpha. Clipping to bounds
             // would square it off and cut it away.
+            if let veiling {
+                // Nothing clips this mode's still but its own alpha, so the veil rounds itself.
+                veiling.cornerRadius = radius
+                veiling.masksToBounds = true
+                root.addSublayer(veiling)
+            }
             cover = CoverLayer(window: window, pad: pad, root: root, clip: nil, still: nil,
-                               natural: surface.frame.size)
+                               natural: surface.frame.size, veil: veiling)
 
         case .crop:
-            // Measured off the capture, not a constant: a guessed radius goes stale with the next macOS.
-            let radius = CGFloat(surface.cornerRadius ?? Self.fallbackCornerRadius)
-
             let clip = CALayer()
             clip.contentsScale = overlay.backingScale
             // `clip` is the window's extent and has to paint something: during a grow it is the only
@@ -227,13 +235,14 @@ public final class Reconstruction: CoverSurface {
             // trimming would throw away the title bar of a shortening window.
             still.contentsGravity = .resize
             clip.addSublayer(still)
+            if let veiling { clip.addSublayer(veiling) }
             root.addSublayer(clip)
 
             // `root` holds only the shadow and has no contents to derive one from, so the crop states
             // its silhouette outright. Re-stated every frame by `place`.
             root.shadowPath = Self.shadowPath(for: .zero, radius: radius)
             cover = CoverLayer(window: window, pad: pad, root: root, clip: clip, still: still,
-                               natural: surface.frame.size)
+                               natural: surface.frame.size, veil: veiling)
         }
 
         // A layer starts at its capture's own rect, where the crop is the identity, so neither mode
@@ -246,6 +255,16 @@ public final class Reconstruction: CoverSurface {
         return cover
     }
 
+    /// The scrim's photograph as a layer over one stand-in, at its window's veil. Placed by `place`.
+    private func makeVeil(from photograph: CGImage, for window: WindowId) -> CALayer {
+        let layer = CALayer()
+        layer.contents = photograph
+        layer.contentsGravity = .resize
+        layer.contentsScale = overlay.backingScale
+        layer.opacity = Self.opacity(at: veil(window))
+        return layer
+    }
+
     /// Put one stand-in at `rect` for this frame: the window's extent, and — in `.crop` — the part of
     /// its still that reaches.
     private func place(_ cover: CoverLayer, at rect: Rect) {
@@ -254,6 +273,14 @@ public final class Reconstruction: CoverSurface {
         // A placed layer is a shown one: `hideLayer` says "the core has no rect for this right now", so
         // being handed one is the whole of the answer coming back.
         cover.pad.layer.isHidden = false
+        if let veil = cover.veil {
+            veil.frame = CGRect(origin: .zero, size: frame.size)
+            // The photograph is the display's, so the crop is the stand-in's share of the display.
+            let display = overlay.displayFrame
+            veil.contentsRect = CGRect(x: frame.minX / display.width, y: frame.minY / display.height,
+                                       width: frame.width / display.width,
+                                       height: frame.height / display.height)
+        }
         guard let clip = cover.clip, let still = cover.still else { return }   // `.stretch`: that's all
         clip.frame = CGRect(origin: .zero, size: frame.size)
         // Always the still's own size, pinned to the window's top-left, overflowing a shrunk clip.
@@ -285,10 +312,10 @@ public final class Reconstruction: CoverSurface {
     /// `ScrimWindow.fadeDuration`'s for the same change off the cover.
     private static let veilDuration: TimeInterval = 0.12
 
-    /// A veil as the layer opacity that draws it, clamped: the backdrop showing through at `v` is the
-    /// window at `1 − v`, which on a plane of our own layers is simply alpha.
+    /// A veil as the opacity of the photograph drawn over the stand-in, clamped — the scrim's mask
+    /// value for the same window.
     private static func opacity(at veil: Double) -> Float {
-        Float(1 - min(max(veil, 0), 1))
+        Float(min(max(veil, 0), 1))
     }
 
     /// The silhouette the shadow is cast from — the window's whole extent, not the fraction the still
