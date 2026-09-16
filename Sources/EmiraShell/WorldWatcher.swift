@@ -27,9 +27,13 @@ import Foundation
 //    in between makes the answer news about the past, which the core would read as the user asking to
 //    go back. So a queued read on the focus path carries `FocusIntent.newest` from the moment it
 //    leaves, and an answer a later request overtook is dropped (`readFocus`, `resolveFocus`).
+// 7. A frame change with no hand anywhere near it is an app placing its own window, and the only news
+//    in it is where the window came to rest — so it too waits for the reports to stop, per window and
+//    with no bracket around it (`waitForStillness`).
 //
-// Cases 4 and 5 are the only deferrals here, and both are bounded. Everything else is bookkeeping, with
-// one rule: nothing keyed on a pid or a `WindowId` outlives the thing it is keyed on.
+// Cases 4, 5 and 7 are the deferrals here. The first two are bounded; the third is not, because what a
+// window still moving needs is not a deadline but the moment it stops. Everything else is bookkeeping,
+// with one rule: nothing keyed on a pid or a `WindowId` outlives the thing it is keyed on.
 
 /// Turns the live system into `Event`s: enumerates at boot, watches everything it adopts, and keeps the
 /// core's `World` in agreement with the desktop from then on. Holds no core state (it dispatches through
@@ -70,6 +74,11 @@ public final class WorldWatcher {
     /// reporting, one animating its own size. The wait holds the core's drag latch open with it; a
     /// settle capped out here adopts the last frame that did arrive.
     public static let dragSettleLimit: TimeInterval = 0.25
+
+    /// How long one window's frame reports must go quiet, with no hand on it, before the strip answers
+    /// where the app put it (`waitForStillness`). Twice the ~70 ms an app's own animation leaves between
+    /// reports in its ease-out tail. Uncapped: a window still moving has no right moment to re-place.
+    public static let stillnessQuiet: TimeInterval = 0.12
 
     private let source: any ObservationSource
     private let enumerator: AXEnumerator
@@ -153,6 +162,15 @@ public final class WorldWatcher {
     /// Whether a mouse-up is waiting to become `dragEnded` — see `beginSettle`.
     private var isSettling = false
 
+    /// Whether a mouse button is down right now. The other half of "no hand on it": a window moving
+    /// under a press is the drag's, whichever window the press was actually on.
+    private var isButtonDown = false
+
+    /// Windows waiting to go still, and which wait is current for each. A stamp per window for the
+    /// reason `quietId` is one: `DelayScheduler` does not cancel, so a superseded timer has to learn
+    /// that for itself.
+    private var stillness: [WindowId: Int] = [:]
+
     /// Which settle is open. Bumped once per mouse-up, so the limit scheduled with one settle cannot
     /// close the next.
     private var settleId = 0
@@ -235,6 +253,7 @@ public final class WorldWatcher {
                 reading.remove(id)
                 moved.remove(id)
                 vanishing.remove(id)
+                stillness[id] = nil
                 emit(.windowDestroyed(id))
             }
 
@@ -293,9 +312,11 @@ public final class WorldWatcher {
             // A press arriving mid-settle closes it first: the bracket the core reads is a latch, and
             // two `dragBegan`s either side of no `dragEnded` would arm it twice over one release.
             endSettle()
+            isButtonDown = true
             emit(.dragBegan)
 
         case .mouseUp:
+            isButtonDown = false
             beginSettle()
 
         case .pointerMoved(let point):
@@ -351,6 +372,7 @@ public final class WorldWatcher {
         // The element is dead either way, so stop reading it now rather than at retirement.
         reading.remove(id)
         moved.remove(id)
+        stillness[id] = nil
         // Nobody to ask: an app we hold no scan target for cannot produce a successor.
         guard let target = apps[record.pid] else {
             retire(id)
@@ -403,6 +425,7 @@ public final class WorldWatcher {
         registry.forget(id)
         reading.remove(id)
         moved.remove(id)
+        stillness[id] = nil
         minimized.remove(id)
         hidden[record.pid]?.remove(id)
         emit(.windowDestroyed(id))
@@ -716,6 +739,10 @@ public final class WorldWatcher {
     /// the reports it waits on carry no echo of our own.
     private func beginSettle() {
         endSettle()   // an up with no down under it: whatever was open belongs to the earlier release
+        // Ahead of the wait, and that is the whole point of it being its own event: a press that moved
+        // nothing is finished now, so an app resizing itself inside the wait below cannot be latched as
+        // the thing a hand drew.
+        emit(.dragReleased)
         isSettling = true
         settleId += 1
         let settle = settleId
@@ -748,6 +775,24 @@ public final class WorldWatcher {
         emit(.dragEnded)
     }
 
+    // Stillness (the frame change nobody asked for)
+
+    /// Start (or restart) the wait for one window's reports to stop, and announce where it put itself
+    /// when they do. Nothing is compared: whether the window is where it belongs is the layout's
+    /// question, and the shell holds no layout.
+    private func waitForStillness(of id: WindowId) {
+        let stamp = (stillness[id] ?? 0) + 1
+        stillness[id] = stamp
+        scheduler.schedule(after: Self.stillnessQuiet) { [weak self] in
+            guard let self, stillness[id] == stamp else { return }
+            stillness[id] = nil
+            // A press that landed while we waited makes this the drag's to answer; a read still out is
+            // the question already asked, and its answer restarts the wait.
+            guard !isButtonDown, !isSettling, !reading.contains(id), isLive(id) else { return }
+            emit(.windowSelfPlaced(id))
+        }
+    }
+
     // Frame reads (the coalescer)
 
     /// Read one window's frame, then honour at most one move that arrived while we were asking.
@@ -765,8 +810,10 @@ public final class WorldWatcher {
                 emit(.windowFrameChanged(id, frame))
             }
             // Whether or not it carried a frame, an answer is evidence the window was still moving —
-            // and a read that came back empty still has to stop holding the settle open.
+            // and a read that came back empty still has to stop holding the settle open. With no hand
+            // anywhere near it, the same evidence opens the window's own wait instead.
             if isSettling { waitForQuiet() }
+            else if !isButtonDown { waitForStillness(of: id) }
             guard moved.remove(id) != nil, isLive(id) else { return }
             readFrame(of: id)
         }

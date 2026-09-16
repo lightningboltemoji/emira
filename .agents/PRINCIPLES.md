@@ -251,7 +251,10 @@ happen on.
   cannot be honoured is honoured as far as it goes, on the same terms every other resize gets: a column is as
   wide as its windows will actually be. The asymmetry with a _move_ drag is deliberate and not an oversight —
   a size is a number the strip already holds, while dragging a window somewhere would have to mean _insert
-  here_, and emira does not yet have an answer to where.
+  here_, and emira does not yet have an answer to where. **An app resizing its own window is the opposite
+  case and gets the opposite answer**: nobody drew that rectangle, so it teaches the layout nothing and the
+  window goes back where the strip puts it — once it has stopped moving, because an app mid-animation is not
+  yet saying anything.
 - **A layout owes placement, and an inert verb is written down rather than discovered.** Eight verbs and
   three settings have no meaning on a cascade — everything about a column's width, a window's height, and
   which column a window belongs to — and every one of them is admitted, answered `ok`, and does *nothing*.

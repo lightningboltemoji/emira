@@ -30,6 +30,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// asked for.
     case windowFrameChanged(WindowId, Rect)
 
+    /// A window put itself somewhere and stopped — the frame reports went quiet with no hand on it
+    /// (`WorldWatcher.waitForStillness`). Not intent, so nothing is learned from it: the strip says
+    /// where a tiled window goes, and this is the notice that one is no longer there.
+    case windowSelfPlaced(WindowId)
+
     /// Keyboard focus moved to a window, or left every managed window (`nil`). Covers our own focus
     /// commands *and* external ones — Cmd-Tab, a Dock click. The core reveals it under a cover, exactly as
     /// `focus left` and `focus-workspace` do: a reveal is a move of the strip whoever asked for it.
@@ -47,6 +52,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// latches that itself (`Drag`). What this arms is the only interval in which a frame change is read
     /// as the user's intent rather than as an app answering back.
     case dragBegan
+
+    /// The button came up. Disarms a press nothing moved under, which is what keeps the wait below from
+    /// reading an app's own resize as a hand-drawn one: dragging a window reports frames *while the
+    /// button is down*, so a first movement arriving after this one is the app, not the user.
+    case dragReleased
 
     /// The end of a possible drag. A tiled window the user dragged *off* its target re-tiles; one the
     /// user *resized* has the size it was left at adopted into the layout.

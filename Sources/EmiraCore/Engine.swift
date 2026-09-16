@@ -760,10 +760,27 @@ public enum Engine {
 
         case .windowFrameChanged(let id, let frame):
             // External drift, usually a live drag. Don't fight it; `dragEnded` re-asserts the layout,
-            // or adopts the size the drag left behind.
+            // or adopts the size the drag left behind. A drift no hand drew is answered once the window
+            // stops, which arrives as `windowSelfPlaced`.
             let drifted = driftedUnderHand(s, id, frame)
             s.world.updateFrame(id, to: frame)
             if drifted { s.drag = .subject(id) }
+            return (s, [])
+
+        case .windowSelfPlaced(let id):
+            // A window off the strip is the app's to place, and a float that resized itself has drawn
+            // exactly what it is entitled to draw.
+            guard s.world.participatesInTiling(id) else { return (s, []) }
+            guard !alreadyRefused(s, id) else { return (s, []) }
+            // The pass itself is the comparison: `writeTruthPlane` diffs every window against the frame
+            // the layout gives it, so a window that put itself back where it belongs costs no write.
+            let effects = reassertTruthPlane(&s)
+            return (s, effects)
+
+        case .dragReleased:
+            // A press that moved nothing is over; one that latched a subject is not, since the subject's
+            // frames drain for some milliseconds afterwards and `dragEnded` is what reads them.
+            if s.drag.isArmed { s.drag = .idle }
             return (s, [])
 
         case .dragEnded:
@@ -3130,6 +3147,14 @@ public enum Engine {
         return !approximatelyEqual(known, frame)
     }
 
+    /// Whether the frame this window would be asked for again is the one its app already declined —
+    /// the rule `handleParkCorrected` keeps, for the other refusal an app can make.
+    private static func alreadyRefused(_ s: State, _ id: WindowId) -> Bool {
+        guard let refused = s.world.refusedFrames[id],
+              let target = s.workspaces.targetFrames(s.placements())[id] else { return false }
+        return approximatelyEqual(refused, target)
+    }
+
     /// Adopt the size a drag left the subject at as the layout's own intent — the column's width, the
     /// window's height, or both.
     ///
@@ -3248,6 +3273,14 @@ public enum Engine {
     private static func handlePlacementCorrected(_ s: inout State, _ id: WindowId,
                                                  requested: Rect, actual: Rect) -> [Effect] {
         s.world.updateFrame(id, to: actual)          // truth first, exactly as `windowFrameChanged` does
+
+        // The app took the size and not the place. A position teaches the geometry nothing — there is no
+        // bound to record and re-placing asks the identical question — so this is where that answer is
+        // written down instead, and `windowSelfPlaced` is what reads it.
+        if approximatelyEqualSize(actual.size, requested.size) {
+            s.world.noteRefusedFrame(id, requested)
+            return []
+        }
 
         // Whichever workspace holds the window, not the focused one: a parked window elsewhere is still
         // placed by us, and ignoring its refusal would re-set it on every event, forever.

@@ -754,6 +754,18 @@ reach all of them, or `targetFrames` and the visibility/sweep/scroll queries acc
 `World.parkFloors` is the same shape on the park path, and deliberately separate: a park answer says nothing
 about _size_ (a window refuses at a sliver what it accepts in view) and one thing about the window's _chrome_.
 
+`World.refusedFrames` is the third, and the only one that teaches the geometry nothing: an app that takes the
+size and not the place has stated no bound, so there is nothing for `LayoutMetrics` to carry. What it records is
+that the question has been asked and answered, which is what stops `windowSelfPlaced` asking it again — keyed on
+the frame, like a `SizeCorrection` is keyed on the question, so the next frame the layout wants is asked afresh.
+
+**A window that places itself is answered when it stops.** A frame change with no hand near it is an app
+moving its own window — leaving fullscreen, restoring a remembered size — and the strip's answer is the same
+re-place `dragEnded` makes, once the reports go quiet (`Event.windowSelfPlaced`, `WorldWatcher.stillnessQuiet`).
+Nothing is learned from it: a rectangle nobody drew is not intent, so the layout is unchanged and only the
+window moves. Waiting is what makes it one write rather than a fight — an app animating its own size reports at
+the refresh rate, and re-placing under each frame would write the layout over an animation still running.
+
 **There is one `ParkingLot` for the whole desktop, and the display arrangement picks it.** A nub is the corner
 of a window whose body hangs off the bottom right of the lot, so a screen sitting beyond that corner catches
 the body — the window is not parked, it is in view on another display. `ParkingLot.init(among:)` ranks the
@@ -766,10 +778,14 @@ rather than from the window's display, or a window parked on the far screen stat
 
 **A window resized by its own handle keeps that size, and `Drag` is the whole of what makes that safe.** AX
 reports a resize identically whoever asked for it and our own placements provoke one every time, so a frame
-change is evidence only inside the mouse-down/up bracket — and only for the **first** window to move inside it,
-since a placement pass mid-drag writes the stackmates and an app clamping one of those reports a frame change
-with the button still down. The observed size is taken as the intent directly rather than as a delta, which is
-also what makes it total over a window that was already refusing its target. Three consequences:
+change is evidence only while the **button is down** — and only for the **first** window to move in that
+interval, since a placement pass mid-drag writes the stackmates and an app clamping one of those reports a frame
+change with the button still down. A hand draws a size while it is holding the window, so the release
+(`Event.dragReleased`) ends the interval even though `dragEnded` comes later: what the wait between them is for
+is the subject's frames finishing, not a new subject. Without that an app resizing itself just after a click
+lands inside the bracket, and a self-animated one is adopted at a size it was only passing through. The observed
+size is taken as the intent directly rather than as a delta, which is also what makes it total over a window
+that was already refusing its target. Three consequences:
 
 - **Adoption is on release, not live.** The truth plane is the app's main thread, so re-tiling under every
   intermediate frame would trade writes with the drag at the rate of the slowest app in the column — and none of
@@ -1443,13 +1459,15 @@ was already using where they put it. The scan already in flight is one of those 
 left to announce is precisely what that scan missed — so the merge runs over it as well as over the ones
 coalesced behind it.
 
-**Observers speak `WorldObservation`, not `Event`.** Three cases decide the type: "a window appeared" is not a
+**Observers speak `WorldObservation`, not `Event`.** Four cases decide the type: "a window appeared" is not a
 window we can name (the notification carries an element with no window number, so the response is a re-scan),
 "a window moved" is not a frame (AX never says where to), and a mouse-up is not the end of a drag — the window
 under it goes on being resized by its app for some milliseconds afterwards, so the release is held until the
-frames stop arriving. All three responses are policy, and the last two are why the watcher owns a clock: a
-`WorldObservation` is a fact about the desktop and an `Event` is one the core can act on, which for anything
-the truth plane answers late is a fact that has to wait for its own answer.
+frames stop arriving — and a frame change with no hand near it at all is not an event either, since the only
+news in an app placing its own window is where it came to rest. All four responses are policy, and the last
+three are why the watcher owns a clock: a `WorldObservation` is a fact about the desktop and an `Event` is one
+the core can act on, which for anything the truth plane answers late is a fact that has to wait for its own
+answer.
 
 **The cover is the display, not the working area.** Our overlay is `.floating` (level 3), and everything above
 it — the menu bar at `.mainMenu` (24), the Dock, a notification banner — composites on top of it whatever it

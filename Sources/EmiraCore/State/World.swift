@@ -164,6 +164,10 @@ public struct World: Sendable, Equatable, Codable {
     /// fact about the window (its title bar, its toolbar) rather than about the slot it was asked for:
     /// keyed to one slot it would have to be re-learned every time the ordinal run renumbers.
     public private(set) var parkFloors: [WindowId: Double]
+    /// The tiled frame each window last refused to take, having taken the *size* in it and not the
+    /// place. A position is not a bound, so unlike `corrections` this changes nothing the layout asks
+    /// for — it stops `Engine.windowSelfPlaced` re-asking. Keyed on the question, so it self-invalidates.
+    public private(set) var refusedFrames: [WindowId: Rect]
     /// Windows whose recorded frame is a guess we know to be wrong. Placement writes its target into
     /// `windows` *optimistically* (which stops a repeated idle event re-emitting the same set forever) and
     /// a timed-out write usually can't be read back — so without this mark that guess stands as truth and
@@ -213,6 +217,7 @@ public struct World: Sendable, Equatable, Codable {
         self.focusedWindow = nil
         self.corrections = [:]
         self.parkFloors = [:]
+        self.refusedFrames = [:]
         self.unverified = []
         self.placedOnScreen = []
         self.floating = [:]
@@ -242,6 +247,7 @@ public struct World: Sendable, Equatable, Codable {
         if focusedWindow == id { focusedWindow = nil }
         corrections[id] = nil
         parkFloors[id] = nil
+        refusedFrames[id] = nil
         unverified.remove(id)
         placedOnScreen.remove(id)
         floating[id] = nil
@@ -289,6 +295,13 @@ public struct World: Sendable, Equatable, Codable {
     public mutating func noteParkFloor(_ id: WindowId, chrome: Double) {
         guard windows[id] != nil else { return }
         parkFloors[id] = chrome
+    }
+
+    /// Fold the half of `Event.placementCorrected` there is nothing to learn from: this window was asked
+    /// for `frame` and took everything about it except the place.
+    public mutating func noteRefusedFrame(_ id: WindowId, _ frame: Rect) {
+        guard windows[id] != nil else { return }
+        refusedFrames[id] = frame
     }
 
     /// Forget what these windows last answered, so the next placement asks afresh. A resize command is a

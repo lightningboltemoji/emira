@@ -646,7 +646,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.windowMoved(id))              // a read goes out on the app's lane
         world.watcher.handle(.mouseUp)                      // …and the button comes up while it is out
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan],
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan, .dragReleased],
                 "the release is held, not dropped")
 
         world.source.answerRead(rect(0, 0, w: 620, h: 800))
@@ -656,6 +656,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // which is the whole of the fix: `adoptDraggedSize` reads `World`, and `World` is now settled.
         #expect(Array(world.recorder.events.dropFirst(before)) == [
             .dragBegan,
+            .dragReleased,
             .windowFrameChanged(id, rect(0, 0, w: 620, h: 800)),
             .dragEnded,
         ])
@@ -675,12 +676,12 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.watcher.handle(.mouseDown)
         world.watcher.handle(.mouseUp)                      // nothing in flight, nothing dirty
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan, .dragReleased])
 
         world.watcher.handle(.windowMoved(id))              // the app reports, late
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
-            .dragBegan, .windowFrameChanged(id, rect(0, 0, w: 620, h: 800)),
+            .dragBegan, .dragReleased, .windowFrameChanged(id, rect(0, 0, w: 620, h: 800)),
         ], "the frame lands first")
 
         world.scheduler.fire(after: WorldWatcher.dragSettleQuiet)
@@ -751,11 +752,13 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.mouseUp)
         world.watcher.handle(.mouseDown)
 
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan, .dragEnded, .dragBegan])
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.dragBegan, .dragReleased, .dragEnded, .dragBegan])
 
         // …and the timers the closed settle left behind cannot close the one now open.
         world.scheduler.fire()
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.dragBegan, .dragEnded, .dragBegan])
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.dragBegan, .dragReleased, .dragEnded, .dragBegan])
     }
 
     /// A read that comes back empty is a window that closed mid-drag. It reports no frame, but it must
@@ -774,6 +777,135 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.scheduler.fire(after: WorldWatcher.dragSettleQuiet)
 
         #expect(world.recorder.events.last == .dragEnded)
+    }
+}
+
+//
+// The other thing a frame report can be: an app placing a window itself. Nothing brackets that one, so
+// the wait is per window and its end is the only news — a strip re-placed under every frame of an app's
+// own animation would fight it for the length of it.
+
+@Suite @MainActor struct WorldWatcherStillnessTests {
+
+    @Test func aWindowThatStopsMovingWithNoHandOnItIsAnnounced() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()                              // drain the boot scan's retries
+        world.source.frames[id] = rect(40, 40)
+
+        world.watcher.handle(.windowMoved(id))
+        #expect(world.recorder.events.last == .windowFrameChanged(id, rect(40, 40)))
+
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+        #expect(world.recorder.events.last == .windowSelfPlaced(id))
+    }
+
+    /// An app animating its own size reports at the refresh rate. Each report pushes the answer out
+    /// ahead of it, so the strip is told once — about where the window came to rest.
+    @Test func everyFrameOfASelfAnimatedResizePushesTheAnswerBack() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+
+        // Three reports inside one wait, each restarting it — the shape of an app animating its size.
+        for step in 1...3 {
+            world.source.frames[id] = rect(0, 0, w: Double(600 - step * 20), h: 400)
+            world.watcher.handle(.windowMoved(id))
+        }
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+
+        // Three waits came due; the two the later reports superseded expire silently.
+        let announced = world.recorder.events.filter { $0 == .windowSelfPlaced(id) }
+        #expect(announced.count == 1)
+        #expect(world.recorder.events.last == .windowSelfPlaced(id))
+    }
+
+    /// A press landing inside the wait makes the window the drag's to answer, and `dragEnded` is what
+    /// answers it. Two answers for one movement would re-place a window the user is still holding.
+    @Test func aPressInsideTheWaitTakesTheWindowBack() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+
+        world.watcher.handle(.windowMoved(id))
+        world.watcher.handle(.mouseDown)
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+    }
+
+    /// Nothing opens a wait while a button is down: every frame under a press is the drag's, and the
+    /// release has its own settle.
+    @Test func aWindowMovingUnderAPressOpensNoWait() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+
+        world.watcher.handle(.mouseDown)
+        world.watcher.handle(.windowMoved(id))
+
+        world.scheduler.fire()
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+    }
+
+    /// Nor during the settle the release opens — those frames are the subject still draining, and
+    /// `dragEnded` reads them.
+    @Test func aWindowDrainingIntoASettleOpensNoWait() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+
+        world.watcher.handle(.mouseDown)
+        world.watcher.handle(.mouseUp)
+        world.watcher.handle(.windowMoved(id))
+        world.scheduler.fire()
+
+        #expect(world.recorder.events.contains(.dragEnded))
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+    }
+
+    /// A window that closed while the wait was open says nothing — the same rule every deferral here
+    /// keeps, since its id is on its way off the strip.
+    @Test func aWindowThatDiedInsideTheWaitSaysNothing() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+
+        world.watcher.handle(.windowMoved(id))
+        world.watcher.handle(.appTerminated(100))
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+    }
+
+    /// A read still out on the lane is the question already asked. The wait stands down rather than
+    /// answering on a frame it is about to be told about, and the answer restarts it.
+    @Test func aWaitThatExpiresWithAReadOutStandsDown() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.holdsFrameReads = true
+
+        world.watcher.handle(.windowMoved(id))              // a read goes out
+        world.watcher.handle(.windowMoved(id))              // …and a second report sets the dirty bit
+        world.source.answerRead(rect(40, 40))               // the first answers, the re-read goes out
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+
+        world.source.answerRead(rect(80, 80))
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+        #expect(world.recorder.events.last == .windowSelfPlaced(id))
     }
 }
 
@@ -1096,7 +1228,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
             .windowMinimized(id), .windowDeminimized(id), .focusChanged(id, origin: .system),
-            .dragBegan, .dragEnded, .appActivated,
+            .dragBegan, .dragReleased, .dragEnded, .appActivated,
         ])
     }
 
@@ -1118,7 +1250,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.scheduler.fire()                              // the last release has nobody to close it
 
         #expect(Array(world.recorder.events.dropFirst(before))
-            == [.dragBegan, .dragEnded, .dragBegan, .dragEnded, .dragBegan, .dragEnded])
+            == [.dragBegan, .dragReleased, .dragEnded,
+                .dragBegan, .dragReleased, .dragEnded,
+                .dragBegan, .dragReleased, .dragEnded])
     }
 
     /// Straight through, with no threshold and no filtering of its own: unlike `pointerMoved`, an
