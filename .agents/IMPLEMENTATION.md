@@ -1255,9 +1255,9 @@ wrong.
 (`Engine.settleScrims`). The veil is appearance, and the rule for when appearance may change is the rule for
 when a window may move: a display whose cover is not on the glass keeps the set it is drawing and takes the
 new one in the batch that teleports the reals — the same hold `writeTruthPlane` makes over that display's
-share of `placedOnScreen`. Held, the set is painted under the cover and revealed by the cross-fade together
-with the geometry it belongs to. Emitted at the command it would land in the capture head instead, where the
-veil steps over a desktop that has not begun to move. It is also what makes `Reconstruction.veil`'s "as it
+share of `placedOnScreen`. Held, the set is painted under the cover and the stand-ins over it follow it there,
+so the veil travels with the geometry it belongs to. Emitted at the command it would land in the capture head
+instead, where the veil steps over a desktop that has not begun to move. It is also what makes `Reconstruction.veil`'s "as it
 was filmed" true: the plane still holds the old answer at the moment a layer is built.
 
 **The mask has two inputs and only one of them is an effect**, so the other is asked for
@@ -1269,10 +1269,15 @@ settled *and* the cover is still hiding the scrim: the transition closed because
 window server is current, and the repaint lands behind the cover instead of being revealed by it. One window
 list and one repaint per transition, and a repaint that changes nothing stops at `ScrimWindow.setRegions`.
 
-**A mask swap is a cut, not a fade.** `ScrimWindow.cut` is a layer of ours rather than a view's, so no
-delegate suppresses Core Animation's implicit animation and every repaint would dissolve the old mask into
-the new over a quarter second — a correction the eye reads as the window becoming transparent by itself. It
-is written with actions off. The only fade a scrim owns is `ScrimWindow.fadeDuration`, on the window's alpha.
+**A repaint is a cut or a dissolve, and the plane says which.** `ScrimWindow.cut` is a layer of ours rather
+than a view's, so no delegate suppresses Core Animation's implicit animation and every repaint alike would
+dissolve over a quarter second — a correction included, which the eye reads as the window deciding to become
+transparent by itself. Actions are off, and the dissolve is asked for by name: `Scrims` compares the veil it
+drew each window at last time against this time, per display, so **a veil that moved is an event and fades
+over `ScrimWindow.fadeDuration`, while a rectangle that moved under unchanged veils is a correction and
+cuts.** That is what gives a focus change between two columns already on the glass — which scrolls nothing,
+raises no cover, and so has nothing else drawing it — the fade the covered case gets from
+`Reconstruction.refreshVeils`.
 
 **The cover carries the same veil** (`Reconstruction.veil`, read from `Scrims.veil(of:)` when a layer is
 built). A cover is a photograph of the desktop it replaces, so stand-ins that drew every window opaque would
@@ -1280,9 +1285,16 @@ flash every unfocused window solid for the length of every covered transition. O
 ours over a base that holds the desktop, so it is `root.opacity` and nothing else — and a layer carries the
 veil for the whole window even where the scrim declined part of it, because the cover is the one plane that
 does not need the decline: its backdrop there is the layer of the window that is really behind. It is read at build time
-for `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed — and this
-transition's own focus change reaches it through the cross-fade at the end. Asking the scrim plane rather
-than deciding again is what keeps the two planes to one decision.
+for `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed, which is what keeps
+the raise pixel-identical — and asked again by `Reconstruction.refreshVeils` whenever the plane's answer moves
+under a cover that is already up. Asking the scrim plane rather than deciding again is what keeps the two
+planes to one decision.
+
+**A veil moves with the motion, not after it** (`CompositingExecutor` calls `refreshVeils` at the end of every
+scrim run). A transition's own set arrives at the teleport, so the stand-ins fade to it over
+`Reconstruction.veilDuration` while they are still travelling — a layer opacity on the GPU, costing nothing a
+blit does not already cost. Left to the cross-fade instead, the whole change would land after the strip had
+come to rest, which is correct and reads as two events: the transition, and then the desktop catching up.
 
 **What the cover does not carry is the frost.** Its base is the real desktop and its stand-ins are real alpha
 over it, so for the length of a covered transition the backdrop behind a see-through window has its detail

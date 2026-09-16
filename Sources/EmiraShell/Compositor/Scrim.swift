@@ -34,7 +34,8 @@ public protocol ScrimSurface: AnyObject {
     /// Show these windows as see-through, in the mask's own painting order (back to front), and hide
     /// the scrim entirely when the list is empty. `occluders` are the rectangles that must stay opaque
     /// — every other window on the display, painted after the ones that come before them in z-order.
-    func setRegions(_ regions: [ScrimRegion])
+    /// `fading` is whether this arrangement is an **event** rather than a correction — see `Scrims`.
+    func setRegions(_ regions: [ScrimRegion], fading: Bool)
     /// Load this display's desktop photograph, or `nil` to say there is none. A scrim with no
     /// photograph shows nothing: an empty tint is not what was asked for, and a black one is worse.
     func setDesktop(_ image: CGImage?)
@@ -141,21 +142,32 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         settle()
     }
 
-    public func setRegions(_ regions: [ScrimRegion]) {
+    public func setRegions(_ regions: [ScrimRegion], fading: Bool) {
         guard regions != self.regions else { return }
         self.regions = regions
         // Painted before the fade, so a scrim coming up is never shown holding the last arrangement.
-        repaint()
+        repaint(fading: fading)
         settle()
     }
 
-    /// **Actions off.** `cut` is ours rather than a view's, so nothing returns `NSNull` for `contents`
-    /// and Core Animation's default applies — every repaint would cross-fade the old mask into the new
-    /// over a quarter second. A mask is geometry; the one fade a scrim owns is `fadeDuration`.
-    private func repaint() {
+    /// **Actions off, and the dissolve asked for by name.** `cut` is ours rather than a view's, so
+    /// nothing returns `NSNull` for `contents` and Core Animation's own quarter-second would apply to
+    /// every repaint alike — a correction included. Which repaints are events is `Scrims`' answer.
+    private func repaint(fading: Bool) {
+        let next = Self.mask(regions, display: displayFrame, scale: scale)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cut.contents = Self.mask(regions, display: displayFrame, scale: scale)
+        // Nothing to dissolve from on the first mask a scrim ever holds; `settle` fades that in whole.
+        if fading, let previous = cut.contents {
+            let dissolve = CABasicAnimation(keyPath: "contents")
+            dissolve.fromValue = previous
+            dissolve.duration = Self.fadeDuration
+            cut.contents = next
+            cut.add(dissolve, forKey: "veil")
+        } else {
+            cut.removeAnimation(forKey: "veil")
+            cut.contents = next
+        }
         CATransaction.commit()
     }
 
@@ -172,7 +184,7 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         guard wanted != isShowing else { return }
         isShowing = wanted
         // A scrim that went away dropped its mask; coming back needs it before the fade, not after.
-        if wanted, cut.contents == nil { repaint() }
+        if wanted, cut.contents == nil { repaint(fading: false) }
         generation &+= 1
         let mine = generation
         NSAnimationContext.runAnimationGroup { context in

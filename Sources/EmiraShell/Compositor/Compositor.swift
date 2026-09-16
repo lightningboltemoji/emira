@@ -139,6 +139,12 @@ public final class Compositor: CoverPlane {
         surface(of: layer)?.refreshLayer(layer)
     }
 
+    /// Every surface, not a routed one: the set behind it names windows rather than layers, and a
+    /// window is drawn by whichever covers are showing it.
+    public func refreshVeils() {
+        for surface in surfaces.values { surface.refreshVeils() }
+    }
+
     public func elevate(_ layer: LayerId) {
         surface(of: layer)?.elevate(layer)
     }

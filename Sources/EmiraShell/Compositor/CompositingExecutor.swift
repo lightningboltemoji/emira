@@ -42,6 +42,10 @@ public protocol CoverSurface: AnyObject {
     /// stays. No-op for an absent layer, or one whose window still has nothing better to show.
     func refreshLayer(_ layer: LayerId)
 
+    /// Bring every stand-in to the veil the desktop is drawing its window at now, animated in place.
+    /// Geometry is untouched, as `refreshLayer` leaves it.
+    func refreshVeils()
+
     /// Move one layer to the top of the cover's z-order, where it stays until something else is
     /// elevated — which window slides *over* the one it trades places with. No-op for an absent layer.
     func elevate(_ layer: LayerId)
@@ -88,6 +92,10 @@ public protocol CoverPlane: AnyObject {
     /// Cross-fade one layer's contents to the window's own still, which has landed since the cover was
     /// built over a stand-in.
     func refreshLayer(_ layer: LayerId)
+
+    /// Bring every cover's stand-ins to the veils the desktop is drawing their windows at now. Whole
+    /// plane rather than one display: the scrim set that moves it is the whole desktop's.
+    func refreshVeils()
 
     /// Move one layer to the top of its cover's z-order.
     func elevate(_ layer: LayerId)
@@ -202,6 +210,10 @@ public final class CompositingExecutor: Executor {
                     guard case .setScrims(let bindings) = effect else { continue }
                     scrims.setScrims(bindings)
                 }
+                // A cover standing over that desktop follows it. The set a transition changes arrives
+                // at the teleport, so the veil moves *with* the motion rather than waiting behind the
+                // cross-fade for it to finish. A no-op when no cover is up, which is most of the time.
+                surface.refreshVeils()
             case .truth:        truth.execute(run.effects, feedback: feedback)
             case .pointer:      pointer.execute(run.effects, feedback: feedback)
             case .system:       for line in Self.execLines(run.effects) { launcher.launch(line) }

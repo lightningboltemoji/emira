@@ -16,7 +16,11 @@ import EmiraCore
         private(set) var desktop: CGImage?
         private(set) var isRetired = false
 
-        func setRegions(_ regions: [ScrimRegion]) { self.regions = regions }
+        private(set) var fades: [Bool] = []
+        func setRegions(_ regions: [ScrimRegion], fading: Bool) {
+            self.regions = regions
+            fades.append(fading)
+        }
         func setDesktop(_ image: CGImage?) { desktop = image }
         func retire() { isRetired = true }
     }
@@ -52,6 +56,23 @@ import EmiraCore
         let scrims = Scrims(filmer: filmer,
                             identify: { WindowId(UInt64($0)) },
                             stack: { stack },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(monitor, display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        return (scrims, surface)
+    }
+
+    /// A window-server answer two applies can see differently — what a correction is made of.
+    @MainActor final class Stack {
+        var panes: [StackedWindow]
+        init(_ panes: [StackedWindow]) { self.panes = panes }
+    }
+
+    static func plane(stack: Stack, filmer: InstantFilmer = InstantFilmer())
+        -> (Scrims, RecordingSurface) {
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: filmer,
+                            identify: { WindowId(UInt64($0)) },
+                            stack: { stack.panes },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(monitor, display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         return (scrims, surface)
@@ -239,6 +260,42 @@ import EmiraCore
         scrims.retireAll()
         #expect(surface.isRetired)
     }
+
+    // An event or a correction — which repaints dissolve.
+
+    static let left = Rect(x: 0, y: 0, width: 400, height: 700)
+    static let right = Rect(x: 500, y: 0, width: 400, height: 700)
+
+    /// **A veil that moves is something the user did**, so it fades. Focus crossing two columns that
+    /// are both already on the glass raises no cover, so this is the only thing drawing the change.
+    @Test func aVeilThatMovesIsAnEventAndFades() {
+        let (scrims, surface) = Self.plane(stack: Stack([Self.pane(1, Self.left),
+                                                         Self.pane(2, Self.right)]))
+        scrims.setScrims([Self.binding(1, Self.left)])
+        scrims.setScrims([Self.binding(2, Self.right)])
+        #expect(surface.fades.last == true)
+    }
+
+    /// **A rectangle that moves under unchanged veils is us catching up with the window server**, and a
+    /// correction that dissolves reads as the window deciding to change on its own.
+    @Test func aRectangleThatMovesUnderTheSameVeilsIsACorrectionAndCuts() {
+        let stack = Stack([Self.pane(1, Self.left), Self.pane(2, Self.right)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        scrims.setScrims([Self.binding(1, Self.left)])
+        let painted = surface.fades.count
+
+        stack.panes[1] = Self.pane(2, Rect(x: 550, y: 0, width: 400, height: 700))
+        scrims.restack()
+        #expect(surface.fades.count > painted, "the mask was repainted at all")
+        #expect(surface.fades.last == false)
+    }
+
+    /// The first mask a display's scrim holds has nothing to dissolve from — `settle` fades that one in
+    /// whole, on the window's own alpha.
+    @Test func theFirstMaskIsNotADissolve() {
+        let (surface) = Self.plane(stack: Stack([Self.pane(1, Self.left)])).1
+        #expect(surface.fades.first == false)
+    }
 }
 
 // The mask itself: the one image the whole effect is drawn through.
@@ -362,4 +419,5 @@ import EmiraCore
         let raw = Self.square(64)
         #expect(frosted(raw, sigma: 0) === raw)
     }
+
 }

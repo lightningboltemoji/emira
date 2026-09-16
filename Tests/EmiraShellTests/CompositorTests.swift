@@ -137,6 +137,9 @@ import EmiraCore
         func refreshLayer(_ layer: LayerId) {
             timeline.record("refresh(\(layer.raw))")
         }
+        func refreshVeils() {
+            timeline.record("veils")
+        }
         /// How long the last dismissal was asked to take — the number, where the timeline only keeps the
         /// fact that something left the screen.
         private(set) var dismissedOver: TimeInterval?
@@ -293,6 +296,30 @@ import EmiraCore
                 launcher, timeline, EventLog())
     }
 
+    /// The scrim plane as a record of calls, so a batch's order through it reads off the timeline.
+    @MainActor final class RecordingScrims: ScrimPlane {
+        let timeline: Timeline
+        init(_ timeline: Timeline) { self.timeline = timeline }
+        func setScrims(_ bindings: [ScrimBinding]) {
+            timeline.record("scrims(\(bindings.map { "\($0.window.raw)" }.joined(separator: ",")))")
+        }
+        func restack() { timeline.record("restack") }
+    }
+
+    /// The scrim plane's harness — the set and the cover over it, so a test can say in which order a
+    /// batch reached the two.
+    static func scrimHarness() -> (CompositingExecutor, RecordingPlane, Timeline, EventLog) {
+        let timeline = Timeline()
+        let surface = RecordingPlane(timeline)
+        return (CompositingExecutor(surface: surface, hoists: RecordingHoists(timeline),
+                                    store: RecordingStore(timeline),
+                                    truth: RecordingTruth(timeline),
+                                    pointer: RecordingPointer(timeline),
+                                    scrims: RecordingScrims(timeline),
+                                    launcher: RecordingLauncher(timeline)),
+                surface, timeline, EventLog())
+    }
+
     /// The pointer plane's harness — the cursor and the truth plane, so a test can say which one a
     /// batch reached.
     static func pointerHarness() -> (CompositingExecutor, RecordingPointer, RecordingTruth,
@@ -306,6 +333,25 @@ import EmiraCore
                                     truth: truth, pointer: pointer,
                                     launcher: RecordingLauncher(timeline)),
                 pointer, truth, timeline, EventLog())
+    }
+
+    /// **A set reaching the desktop reaches the cover standing over it, in that order.** The scrim plane
+    /// is the one authority on the veil; the cover asks it again rather than deciding again.
+    @Test func aScrimSetIsFollowedByTheCoversOwnVeils() {
+        let (executor, _, timeline, log) = Self.scrimHarness()
+        let binding = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
+        executor.execute([.setScrims([binding])], feedback: log.sink)
+        #expect(timeline.entries == ["scrims(1)", "veils"])
+    }
+
+    /// And the whole set is one decision, so the ask comes after the last one in a run rather than
+    /// after each — `setScrims` is last-wins for the reason the plane is.
+    @Test func oneRunOfSetsAsksTheCoverOnce() {
+        let (executor, _, timeline, log) = Self.scrimHarness()
+        let first = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
+        let second = ScrimBinding(window: WindowId(2), monitor: MonitorId(1), frame: .zero, veil: 0.3)
+        executor.execute([.setScrims([first]), .setScrims([second])], feedback: log.sink)
+        #expect(timeline.entries == ["scrims(1)", "scrims(2)", "veils"])
     }
 
     @Test func everyEffectIsAssignedToAPlane() {
@@ -721,6 +767,7 @@ import EmiraCore
         }
         func hideLayer(_ layer: LayerId) { timeline.record("hide\(name)(\(layer.raw))") }
         func refreshLayer(_ layer: LayerId) { timeline.record("refresh\(name)(\(layer.raw))") }
+        func refreshVeils() { timeline.record("veils\(name)") }
         func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
             dismissedOver = duration
             timeline.record("dismiss\(name)")

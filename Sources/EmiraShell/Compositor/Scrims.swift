@@ -138,6 +138,11 @@ public final class Scrims: ScrimPlane {
     /// carries its veil, for `veil(of:)`'s reason. Kept because a second plane reads it: `veil(of:)`.
     private var applied: [WindowId: Double] = [:]
 
+    /// The same, split by display and kept from the last apply — what tells an **event** from a
+    /// **correction**. A veil that moved is something the user did and fades; a rectangle that moved
+    /// under unchanged veils is us catching up with the window server, and cuts.
+    private var drawn: [MonitorId: [WindowId: Double]] = [:]
+
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
@@ -191,6 +196,8 @@ public final class Scrims: ScrimPlane {
         surfaces.removeAll()
         frames.removeAll()
         filmedAt.removeAll()
+        // A surface that has gone took its mask with it, so the next one has nothing to dissolve from.
+        drawn.removeAll()
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
@@ -240,8 +247,14 @@ public final class Scrims: ScrimPlane {
             guard let display = frames[monitor] else { continue }
             let regions = Self.regions(for: bindings.filter { $0.monitor == monitor },
                                        over: identified, on: display)
-            for (window, veil) in regions.drawn where veil > 0 { applied[window] = veil }
-            surface.setRegions(regions.mask)
+            var veils: [WindowId: Double] = [:]
+            for (window, veil) in regions.drawn where veil > 0 { veils[window] = veil }
+            applied.merge(veils) { first, _ in first }
+            // Per display, because a scrim is one screen's: a focus change on one is not an event on
+            // the other, whose mask is only ever being corrected.
+            let fading = drawn[monitor] != nil && veils != drawn[monitor]
+            drawn[monitor] = veils
+            surface.setRegions(regions.mask, fading: fading)
         }
     }
 

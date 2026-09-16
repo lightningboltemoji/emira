@@ -54,9 +54,9 @@ public final class Reconstruction: CoverSurface {
     /// How see-through a window is on the desktop this cover replaces (`Scrims.veil(of:)`) — `0` for
     /// every window until somebody turns the setting on.
     ///
-    /// The desktop's veil, not the core's intent, and read when a layer is *built*: the same moment,
-    /// and for the same reason, as `LayerBinding.isFocused`. A stand-in stands for the window as it was
-    /// filmed, and this transition's own focus change reaches it through the cross-fade at the end.
+    /// The desktop's veil, not the core's intent. Read when a layer is *built*, for
+    /// `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed, which is
+    /// what keeps the raise pixel-identical — and asked again by `refreshVeils` when the answer moves.
     ///
     /// Real alpha and not a scrim of our own: these are layers we own over a base that holds the
     /// desktop, so on this plane transparency is simply transparency.
@@ -131,6 +131,28 @@ public final class Reconstruction: CoverSurface {
         // either from these pixels could only move a hard edge by a rounding error.
     }
 
+    /// Bring every stand-in to the veil its window is drawn at now, animated in place — the desktop's
+    /// answer moves while a cover is up, and this is what carries the change while the layers are still
+    /// travelling. The animation is explicit for `refreshLayer`'s reason, plus one of its own: this runs
+    /// outside the transaction the blits share, where an implicit action applies its own quarter second.
+    public func refreshVeils() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for cover in layers.values {
+            let wanted = Self.opacity(at: veil(cover.window))
+            // The presentation value, not the model's: a veil retargeted mid-fade starts from what is
+            // on the screen rather than from where the last one was going.
+            let from = cover.root.presentation()?.opacity ?? cover.root.opacity
+            guard abs(wanted - from) > 0.001 else { continue }
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = from
+            fade.duration = Self.veilDuration
+            cover.root.opacity = wanted
+            cover.root.add(fade, forKey: "veil")
+        }
+        CATransaction.commit()
+    }
+
     public func dismiss(over duration: TimeInterval, completion: @escaping @MainActor () -> Void) {
         overlay.fadeOut(duration: duration) { [weak self] completed in
             // `completed == false` ⇒ a newer transition owns the layer tree; tearing it down here
@@ -168,7 +190,7 @@ public final class Reconstruction: CoverSurface {
         WindowShadow.of(focused: binding.isFocused).apply(to: root)
         // On `root` rather than on the pad: the shadow is here, and a window you can see through casts
         // a lighter one. The pad is the smear's, and dimming that would fade the trail, not the window.
-        root.opacity = Float(1 - min(max(veil(window), 0), 1))
+        root.opacity = Self.opacity(at: veil(window))
 
         let cover: CoverLayer
         switch animation {
@@ -258,6 +280,16 @@ public final class Reconstruction: CoverSurface {
     /// the cross-fade that ends a transition, because this one happens *during* the motion and its job
     /// is to be finished before the eye has settled anywhere.
     private static let refreshDuration: TimeInterval = 0.12
+
+    /// How long a stand-in takes to change veil — `refreshDuration`'s length for its reason, and
+    /// `ScrimWindow.fadeDuration`'s for the same change off the cover.
+    private static let veilDuration: TimeInterval = 0.12
+
+    /// A veil as the layer opacity that draws it, clamped: the backdrop showing through at `v` is the
+    /// window at `1 − v`, which on a plane of our own layers is simply alpha.
+    private static func opacity(at veil: Double) -> Float {
+        Float(1 - min(max(veil, 0), 1))
+    }
 
     /// The silhouette the shadow is cast from — the window's whole extent, not the fraction the still
     /// currently covers.
