@@ -1221,6 +1221,14 @@ another window is behind, the photograph would replace a real window with wallpa
 desktop reads inside out. So the effect belongs to the strip and says so: `strip` promises windows never
 overlap, and that promise is what makes one photograph the true backdrop for every window on the surface.
 
+**The photograph may be frosted, and the frost belongs to the backdrop rather than to the window.** `[focus]
+unfocused-blur` is a Gaussian in points, `0` and off by default, applied to the photograph as it is filmed
+(`DesktopCapturer`) — on the capture task, where the render is already off the main thread, and once per film
+rather than every time a mask moves. The radius crosses into pixels with the photograph's own scale, and it is
+clamped to the display's own extent first, or the blur reads transparency in from past the screen and leaves a
+band down every side where the window under it shows unveiled. At `unfocused-opacity = 1` it shows nothing at
+all, because there is no backdrop to frost.
+
 **The decline is a region, because the rule is one.** A window behind stamps its overlap back to opaque after
 the scrim is painted, rather than disqualifying the whole frame — so a float takes the patch of the tile it
 covers and no more, and a cascade keeps the effect on whatever a `stack` tile leaves exposed. Standing in for
@@ -1239,7 +1247,9 @@ server's fact rather than the layout's, so the decline is made where that fact l
 **The photograph is refilmed only when the desktop is quiet** — at build, on a display change, and after a
 cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change: the window server serializes
 screenshots, and a focus change is also a cover, whose batch is the one latency anybody can feel. A desktop
-widget therefore ticks late behind a window you are looking through.
+widget therefore ticks late behind a window you are looking through. A new `unfocused-blur` is the one refilm
+the throttle does not pace, because a radius change does not leave the standing photograph stale — it leaves it
+wrong.
 
 **The mask has two inputs and only one of them is an effect**, so the other is asked for
 (`Scrims.restack`). The bindings arrive as `setScrims`; the stacking they are masked against belongs to the
@@ -1264,6 +1274,12 @@ does not need the decline: its backdrop there is the layer of the window that is
 for `LayerBinding.isFocused`'s reason — a stand-in stands for the window as it was filmed — and this
 transition's own focus change reaches it through the cross-fade at the end. Asking the scrim plane rather
 than deciding again is what keeps the two planes to one decision.
+
+**What the cover does not carry is the frost.** Its base is the real desktop and its stand-ins are real alpha
+over it, so for the length of a covered transition the backdrop behind a see-through window has its detail
+back. Frosting it there would take a blurred backdrop per stand-in, scrolled to wherever that stand-in has been
+moved to — and it would be a lie wherever it has moved over a window the base holds, which is the photograph
+per window this whole plane exists not to pay for.
 
 ---
 

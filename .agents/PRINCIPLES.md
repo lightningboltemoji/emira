@@ -117,6 +117,12 @@ That is a second thing the strip's promise buys: windows that never overlap are 
 desktop can stand behind, every one of them. A cascade is backed by itself, and declines wherever it is —
 _where_, because the claim is about a region and so is the answer to it.
 
+**Frosting that backdrop is the one departure, and it is a choice rather than a slip.** `[focus]
+unfocused-blur` blurs the photograph before anything is drawn through it, which is the material macOS builds
+its own chrome out of and what a detailed wallpaper needs if the window standing on it is to be read at all.
+It changes what the backdrop _is_ and never the blend, so the arithmetic above is untouched: what gets
+composited is simply a desktop with its detail taken out.
+
 **The residual cost is content, never motion.** A snapshot layer's _content_ is frozen for a transition's
 length; its movement is always smooth. Keep transitions short.
 

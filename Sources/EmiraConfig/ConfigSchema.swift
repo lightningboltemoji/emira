@@ -599,6 +599,14 @@ public enum ConfigSchema {
                 help: "How opaque an unfocused window looks; 1 is off, and below it the desktop shows "
                     + "through.",
                 section: .focus),
+
+        // The other half of one material: `unfocused-opacity` is how much of the desktop shows, this
+        // is what the desktop showing through looks like.
+        Setting("focus.unfocused-blur", \.unfocusedBlur, .number(atLeast: 0, unit: .points),
+                label: "Unfocused blur",
+                help: "How blurred the desktop behind an unfocused window is; 0 is off, opacity 1 "
+                    + "shows none of it.",
+                section: .focus),
     ]
 
     /// The pointer plane. `hide` is also a *capability* — the shell clamps it off when macOS cannot do

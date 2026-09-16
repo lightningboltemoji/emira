@@ -393,6 +393,10 @@ public struct Config: Sendable, Equatable, Codable {
     /// (`Scrims.swift`). A ceiling the file cannot spell — a `Bound` has floors and none — so anything
     /// above 1 is clamped in the reducer rather than refused.
     public var unfocusedOpacity: Double
+    /// How far the desktop behind an unfocused window is blurred, in points; `0` is off. It frosts the
+    /// backdrop and not the window, and shows only where `unfocusedOpacity` lets the desktop through.
+    /// Read by the shell, never the reducer — the emitted geometry is identical under every setting.
+    public var unfocusedBlur: Double
     /// How a window's captured still is painted into the rect it occupies during a transition. Read
     /// by the compositor, never the reducer — the core's emitted geometry is identical under both,
     /// and the two differ only when a window's rect stops matching the still captured of it.
@@ -463,6 +467,7 @@ public struct Config: Sendable, Equatable, Codable {
         systemFocusEvents: SystemFocusEvents = .respect,
         focusFollowsMouse: Bool = false,
         unfocusedOpacity: Double = 1,
+        unfocusedBlur: Double = 0,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
         motionBlur: MotionBlur = MotionBlur(),
@@ -493,6 +498,7 @@ public struct Config: Sendable, Equatable, Codable {
         self.systemFocusEvents = systemFocusEvents
         self.focusFollowsMouse = focusFollowsMouse
         self.unfocusedOpacity = unfocusedOpacity
+        self.unfocusedBlur = unfocusedBlur
         self.windowAnimation = windowAnimation
         self.coverMode = coverMode
         self.motionBlur = motionBlur

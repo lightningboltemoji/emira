@@ -24,7 +24,10 @@ import EmiraCore
     /// A filmer that answers with a 1×1 image, immediately — enough for "there is a photograph".
     final class InstantFilmer: DesktopFilmer {
         var answers = true
-        func film(desktopOf monitor: MonitorId, then: @escaping @MainActor (CGImage?) -> Void) {
+        private(set) var films: [(monitor: MonitorId, radius: Double)] = []
+        func film(desktopOf monitor: MonitorId, blurredBy radius: Double,
+                  then: @escaping @MainActor (CGImage?) -> Void) {
+            films.append((monitor, radius))
             then(answers ? Self.pixel : nil)
         }
         static let pixel: CGImage = {
@@ -188,13 +191,47 @@ import EmiraCore
     }
 
     /// An old desktop is a better backdrop than none, and `nil` here would take every scrim down.
+    /// Driven through `setBlur` because it is the one refilm the throttle does not stand in the way
+    /// of: `desktopMayHaveChanged` inside `desktopMaxAge` of the build never reaches the filmer.
     @Test func aFailedFilmLeavesTheStandingPhotographAlone() {
         let filmer = InstantFilmer()
         let (scrims, surface) = Self.plane(stack: [], filmer: filmer)
         #expect(surface.desktop != nil)
         filmer.answers = false
-        scrims.desktopMayHaveChanged()
+        scrims.setBlur(5)
+        #expect(filmer.films.count == 2)
         #expect(surface.desktop != nil)
+    }
+
+    // The frost. The blur is baked into the film, so the radius has to reach the filmer.
+
+    /// A new radius does not make the standing photograph stale, it makes it wrong — so it is refilmed
+    /// at once, outside the throttle that paces a desktop which may merely have changed.
+    @Test func aNewRadiusRefilmsEveryDisplayAtOnce() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        #expect(filmer.films.map(\.radius) == [0])
+        scrims.setBlur(5)
+        #expect(filmer.films.map(\.radius) == [0, 5])
+    }
+
+    /// Most reloads leave it alone, and a full-screen capture per display is not what one of those costs.
+    @Test func theRadiusItAlreadyHasFilmsNothing() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        scrims.setBlur(0)
+        #expect(filmer.films.count == 1)
+    }
+
+    /// The plane holds the radius, not the photograph — so a display plugged in later films at it
+    /// without anybody re-applying the config.
+    @Test func aDisplayBuiltAfterTheRadiusWasSetFilmsAtIt() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        scrims.setBlur(5)
+        scrims.setDisplays([(MonitorId(2), Self.display, 2)],
+                           geometry: ScreenGeometry(flipHeight: 800))
+        #expect(filmer.films.last?.radius == 5)
     }
 
     @Test func retiringTakesEverySurfaceOffTheScreen() {
@@ -266,5 +303,63 @@ import EmiraCore
     @Test func aMaskWithNothingOnItIsEntirelyClear() throws {
         let mask = try #require(ScrimWindow.mask([], display: Self.display, scale: 1))
         #expect(Self.alpha(mask, x: 50, y: 40) == 0)
+    }
+}
+
+// The frost itself: the Gaussian baked into the photograph, and the edge it must not eat.
+
+@Suite struct ScrimFrostTests {
+
+    /// White, with a black square in the middle — a hard edge to soften and a flat border to check.
+    static func square(_ size: Int) -> CGImage {
+        let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8,
+                            bytesPerRow: size * 4, space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                | CGBitmapInfo.byteOrder32Big.rawValue)!
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        ctx.setFillColor(gray: 0, alpha: 1)
+        ctx.fill(CGRect(x: size / 4, y: size / 4, width: size / 2, height: size / 2))
+        return ctx.makeImage()!
+    }
+
+    /// Luminance and alpha at one pixel, 0–255. Redrawn into a known layout for the reason
+    /// `ScrimMaskTests.alpha` is: the channel order of an image Core Image made is not ours to assume.
+    static func sample(_ image: CGImage, x: Int, y: Int) -> (light: Int, alpha: Int)? {
+        let w = image.width, h = image.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                      | CGBitmapInfo.byteOrder32Big.rawValue)
+        else { return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data, x >= 0, x < w, y >= 0, y < h else { return nil }
+        let pixel = data.bindMemory(to: UInt8.self, capacity: w * h * 4) + (y * w * 4 + x * 4)
+        return (light: Int(pixel[1]), alpha: Int(pixel[0]))
+    }
+
+    /// The whole point: a busy backdrop comes out uniform, so what is overlaid on it stops competing.
+    @Test func aHardEdgeComesOutSoft() throws {
+        let frosted = try #require(frosted(Self.square(64), sigma: 6))
+        #expect(frosted.width == 64 && frosted.height == 64)          // the extent it was given
+        let inside = try #require(Self.sample(frosted, x: 32, y: 32)) // was black
+        let outside = try #require(Self.sample(frosted, x: 46, y: 32))// was white, 2 pt clear
+        #expect(inside.light > 20)
+        #expect(outside.light < 250)
+    }
+
+    /// Clamped to its own extent, or the blur reads transparency in from beyond the screen and leaves a
+    /// band down every side of the display where the backdrop is see-through and the window shows raw.
+    @Test func theDisplaysOwnEdgesStayOpaque() throws {
+        let frosted = try #require(frosted(Self.square(64), sigma: 6))
+        for (x, y) in [(0, 0), (63, 0), (0, 63), (63, 63), (32, 0), (0, 32)] {
+            #expect(Self.sample(frosted, x: x, y: y)?.alpha == 255)
+        }
+    }
+
+    /// Off is off: no context, no render, and the photograph the scrim draws is the one that was filmed.
+    @Test func aRadiusOfZeroIsNotAskedFor() throws {
+        let raw = Self.square(64)
+        #expect(frosted(raw, sigma: 0) === raw)
     }
 }

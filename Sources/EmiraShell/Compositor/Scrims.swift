@@ -89,8 +89,10 @@ public struct StackedWindow: Equatable, Sendable {
 /// Films one display's desktop — every window taken out of it. A seam for `SurfaceFilmer`'s reason.
 @MainActor
 public protocol DesktopFilmer: AnyObject {
-    /// Photograph `monitor`'s desktop, or answer `nil` — no grant, a departed display, a failed shot.
-    func film(desktopOf monitor: MonitorId, then: @escaping @MainActor (CGImage?) -> Void)
+    /// Photograph `monitor`'s desktop under a Gaussian of `radius` points, or answer `nil` — no grant,
+    /// a departed display, a failed shot. The blur is the film's because the backdrop is.
+    func film(desktopOf monitor: MonitorId, blurredBy radius: Double,
+              then: @escaping @MainActor (CGImage?) -> Void)
 }
 
 /// Every display's scrim, and the rule that keeps them matching the core's answer.
@@ -120,6 +122,11 @@ public final class Scrims: ScrimPlane {
     private var filmedAt: [MonitorId: Date] = [:]
     /// Bumped per display by every film, so one answering after its surface was rebuilt owns nothing.
     private var filmGeneration: [MonitorId: Int] = [:]
+
+    /// How far the photographs are blurred, in points — `[focus] unfocused-blur`, read out here for
+    /// `Reconstruction.motionBlur`'s reason: the core emits the same bindings under every setting of
+    /// it. Held by the plane rather than the filmer, because the plane is what a change makes stale.
+    private var blur: Double = 0
 
     /// The last set the core named, re-applied whenever the displays change under it — a surface is
     /// built against one screen, and the core has no reason to re-emit a set that did not change just
@@ -161,6 +168,15 @@ public final class Scrims: ScrimPlane {
         apply(bindings)
     }
 
+    /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
+    /// so a new radius is a standing photograph gone stale — refilmed at once and not on the throttle,
+    /// which paces a desktop that may have changed rather than one we know is wrong.
+    public func setBlur(_ radius: Double) {
+        guard radius != blur else { return }
+        blur = radius
+        for monitor in surfaces.keys { refilm(monitor) }
+    }
+
     /// Re-read the window server and repaint, against the set the core last named. **The mask has two
     /// inputs and only one of them arrives as an effect**: the stacking a set is masked against moves
     /// on its own, so without this the mask holds whatever the desktop was when the set arrived.
@@ -194,7 +210,7 @@ public final class Scrims: ScrimPlane {
         filmedAt[monitor] = Date()
         filmGeneration[monitor, default: 0] &+= 1
         let mine = filmGeneration[monitor] ?? 0
-        filmer.film(desktopOf: monitor) { [weak self] image in
+        filmer.film(desktopOf: monitor, blurredBy: blur) { [weak self] image in
             guard let self, self.filmGeneration[monitor] == mine else { return }
             // A film that failed leaves the standing photograph alone: an old desktop is a better
             // backdrop than none, and `nil` here would take every scrim on that display down.

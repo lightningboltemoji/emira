@@ -522,6 +522,9 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     }
     capture.mode = config.coverMode
     executor.transitionMode = config.transitionMode
+    // The scrim's backdrop, for the same reason: the core names the same windows at the same veil under
+    // every radius, and what changes is only what the photograph behind them looks like.
+    scrims.setBlur(config.unfocusedBlur)
     // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
     // warp under all three, and the position the upper two decide against is only readable out here.
     pointer.recentres = config.mouseFollowsFocus.recentres

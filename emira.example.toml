@@ -63,6 +63,10 @@ follows-mouse = false
 # Must be at least 0.
 unfocused-opacity = 1
 
+# How blurred the desktop behind an unfocused window is; 0 is off, opacity 1 shows none of it.
+# In points, must be at least 0.
+unfocused-blur = 0
+
 [mouse]
 
 # Hide the cursor on events such as focus change.
