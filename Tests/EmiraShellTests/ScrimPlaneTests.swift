@@ -397,10 +397,10 @@ import EmiraCore
 
     /// The whole point: a busy backdrop comes out uniform, so what is overlaid on it stops competing.
     @Test func aHardEdgeComesOutSoft() throws {
-        let frosted = try #require(frosted(Self.square(64), sigma: 6))
-        #expect(frosted.width == 64 && frosted.height == 64)          // the extent it was given
-        let inside = try #require(Self.sample(frosted, x: 32, y: 32)) // was black
-        let outside = try #require(Self.sample(frosted, x: 46, y: 32))// was white, 2 pt clear
+        let image = try #require(frosted(Self.square(64), sigma: 6))
+        #expect(image.width == 64 && image.height == 64)              // the extent it was given
+        let inside = try #require(Self.sample(image, x: 32, y: 32))   // was black
+        let outside = try #require(Self.sample(image, x: 46, y: 32))  // was white, 2 pt clear
         #expect(inside.light > 20)
         #expect(outside.light < 250)
     }
@@ -408,9 +408,9 @@ import EmiraCore
     /// Clamped to its own extent, or the blur reads transparency in from beyond the screen and leaves a
     /// band down every side of the display where the backdrop is see-through and the window shows raw.
     @Test func theDisplaysOwnEdgesStayOpaque() throws {
-        let frosted = try #require(frosted(Self.square(64), sigma: 6))
+        let image = try #require(frosted(Self.square(64), sigma: 6))
         for (x, y) in [(0, 0), (63, 0), (0, 63), (63, 63), (32, 0), (0, 32)] {
-            #expect(Self.sample(frosted, x: x, y: y)?.alpha == 255)
+            #expect(Self.sample(image, x: x, y: y)?.alpha == 255)
         }
     }
 
@@ -440,8 +440,8 @@ import EmiraCore
     /// What a window of lightness `window` shows under the shaded photograph of `desktop` at veil `v`,
     /// as the window server composites it: source-over, premultiplied, in encoded values.
     static func composite(window: Double, desktop: Int, veil v: Double) throws -> Double {
-        let shaded = try #require(shaded(grey(desktop)))
-        let pixel = try #require(ScrimFrostTests.sample(shaded, x: 1, y: 1))
+        let image = try #require(shaded(grey(desktop)))
+        let pixel = try #require(ScrimFrostTests.sample(image, x: 1, y: 1))
         let alpha = Double(pixel.alpha) / 255, colour = Double(pixel.light) / 255
         return window * (1 - v * alpha) + v * colour
     }
