@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: macos-26
+    runs-on: xcode-27
     # Every credential the job needs lives here, and the ref that may reach them is `main` or a `v*`
     # tag — a workflow run that is not one of the two channels cannot deploy at all.
     environment: production
@@ -131,9 +131,9 @@ jobs:
         if: github.ref_type != 'tag'
         run: |
           set -euo pipefail
-          notes="The current state of \`main\`, rebuilt on every push. **Not a release** — it is whatever just landed, and it is replaced without notice.
+          notes="**Not a stable release**. Rebuilt on every push to \`main\`.
 
-          Build \`$EMIRA_VERSION\` from commit $GITHUB_SHA."
+          \`v$EMIRA_VERSION\` from commit $GITHUB_SHA"
           git tag --force tip
           git push --force origin refs/tags/tip
           if gh release view tip >/dev/null 2>&1; then
