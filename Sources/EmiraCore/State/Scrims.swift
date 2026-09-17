@@ -57,7 +57,7 @@ extension State {
 
     /// Every on-screen window that is not the focused one, bottom→top, at the veil the config asks for.
     /// The guard is the first line because the post-pass that calls it runs on every event, including a
-    /// display-link tick, and `unfocusedOpacity` is 1 unless somebody turned this on.
+    /// display-link tick.
     ///
     /// `placedOnScreen` and not "every window", for `hoistBindings`' reason: it is the placement pass's
     /// own record of what it put on the glass, so a parked column at its sliver is out without anybody

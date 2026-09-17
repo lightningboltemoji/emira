@@ -177,7 +177,7 @@ import EmiraMotion
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .focusChanged(nil, origin: .system))
         #expect(s.world.focusedWindow == nil)
-        #expect(fx.isEmpty)
+        #expect(fx == [.setScrims(s.scrims)])
     }
 
 }

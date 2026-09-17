@@ -387,9 +387,8 @@ public struct Config: Sendable, Equatable, Codable {
     /// another source of focus changes — and unlike every other window manager's version of this, here
     /// focus *scrolls*, so the shell fires it on pointer motion alone and never on window motion.
     public var focusFollowsMouse: Bool
-    /// How opaque a window looks while it is not the focused one — `1`, off, by default, since a window
-    /// manager must not start altering how apps look. Below it the desktop is drawn back over the window
-    /// (`Scrims.swift`); above 1 is clamped in the reducer, as a `Bound` has floors and no ceiling.
+    /// How opaque a window looks while it is not the focused one; `1` is off. Above 1 is clamped in the
+    /// reducer, as a `Bound` has floors and no ceiling.
     public var unfocusedOpacity: Double
     /// How far the desktop behind an unfocused window is blurred, in points; `0` is off. It frosts the
     /// backdrop and not the window, and shows only where `unfocusedOpacity` lets the desktop through.
@@ -464,8 +463,8 @@ public struct Config: Sendable, Equatable, Codable {
         interactiveResize: Bool = true,
         systemFocusEvents: SystemFocusEvents = .respect,
         focusFollowsMouse: Bool = false,
-        unfocusedOpacity: Double = 1,
-        unfocusedBlur: Double = 0,
+        unfocusedOpacity: Double = 0.5,
+        unfocusedBlur: Double = 8,
         windowAnimation: WindowAnimation = .stretch,
         coverMode: CoverMode = .exact,
         motionBlur: MotionBlur = MotionBlur(),

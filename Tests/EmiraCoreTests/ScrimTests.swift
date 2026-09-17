@@ -17,11 +17,10 @@ import Testing
 
     static func windows(_ s: State) -> [WindowId] { s.scrims.map(\.window) }
 
-    // Off is the default, and the default is what a window manager owes somebody who asked for nothing.
+    // Off is opacity 1.
 
-    @Test func nothingIsSeeThroughUntilTheSettingAsksForIt() {
-        let s = EngineFix.world(2, config: EngineFix.halfWidth)
-        #expect(s.config.unfocusedOpacity == 1)
+    @Test func nothingIsSeeThroughAtFullOpacity() {
+        let s = Self.world(2, opacity: 1)
         #expect(s.scrims.isEmpty)
     }
 

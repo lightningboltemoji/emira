@@ -122,7 +122,7 @@ import EmiraMotion
             WindowId(1), requested: Rect(x: 0, y: 0, width: 200, height: 800), actual: stale))
         s = next
 
-        #expect(fx.isEmpty)
+        #expect(fx == [.setScrims(s.scrims)])
         #expect(s.world.corrections.isEmpty)
         #expect(s.world.windows[WindowId(1)]?.frame == stale)      // …but reality is reality
     }
@@ -339,7 +339,7 @@ import EmiraMotion
         // …on the presentation plane too, so the layer holding its still has nothing left to stretch.
         #expect(s.layout.naturalFrames(scrollOffset: 0, metrics: s.metrics()!)[WindowId(1)]?.height == 200)
         // …and it is already there, so it is not asked again — now, or on any later re-place.
-        #expect(fx.isEmpty)
+        #expect(fx == [.setScrims(s.scrims)])
         #expect(EngineFix.placement(of: WindowId(1), in: Engine.reduce(s, .dragEnded).1) == nil)
     }
 
