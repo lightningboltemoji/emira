@@ -43,7 +43,10 @@ public enum Effect: Sendable, Equatable, Codable {
     ///
     /// **The shell may decline a binding it cannot back honestly.** Whether the desktop is really what
     /// lies behind a window is the window server's fact, not the layout's — see `Scrims.swift`.
-    case setScrims([ScrimBinding])
+    ///
+    /// **`lifted` is a set a hand emptied** (`State.scrimBindings`): the mask on the glass was cut around
+    /// a window that is now moving, so the veils it takes away go at once rather than fading.
+    case setScrims([ScrimBinding], lifted: Bool)
 
     /// How far one display's cover must stay clear of each edge, so the windows pinned there stay live
     /// underneath it. **A band off the edge, not a hole in the middle**: a pin is full height and hard

@@ -207,8 +207,8 @@ public final class CompositingExecutor: Executor {
                 // Last wins, for `setHoists`' reason: the core emits the whole set, so two in a batch
                 // would be a decision superseded before it reached the screen.
                 for effect in run.effects {
-                    guard case .setScrims(let bindings) = effect else { continue }
-                    scrims.setScrims(bindings)
+                    guard case .setScrims(let bindings, let lifted) = effect else { continue }
+                    scrims.setScrims(bindings, lifted: lifted)
                 }
                 // A cover standing over that desktop follows it. The set a transition changes arrives
                 // at the teleport, so the veil moves *with* the motion rather than waiting behind the

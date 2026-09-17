@@ -536,7 +536,7 @@ public enum Engine {
             : fresh.filter { !held.contains($0.monitor) } + s.scrims.filter { held.contains($0.monitor) }
         guard next != s.scrims else { return }
         s.scrims = next
-        effects.append(.setScrims(next))
+        effects.append(.setScrims(next, lifted: s.drag.subject != nil))
     }
 
     /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch

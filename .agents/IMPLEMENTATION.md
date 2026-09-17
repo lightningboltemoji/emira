@@ -1305,10 +1305,12 @@ list and one repaint per transition, and a repaint that changes nothing stops at
 
 **A window in the hand lifts every veil** (`State.scrimBindings`). A mask is cut once per set, and a hand moves
 a window between sets: a dragged float leaves its hole where it was picked up, and a shrunk one leaves a hole
-larger than itself. So the set is empty from the frame report that latches `Drag.subject` until `dragEnded` —
-the veil fades off as the window starts to move and back on once it has stopped, cut against where it came to
-rest. `dragEnded` rather than the mouse-up is what makes that true: an app is still draining a resize when the
-button comes up (`WorldWatcher.beginSettle`). Tracking the window instead would be a window list and a
+larger than itself. So the set is empty from the frame report that latches `Drag.subject` until `dragEnded`.
+The veil comes off **at once** as the window starts to move — the set is marked `lifted`, and `ScrimWindow.lift`
+drops the mask and the window's alpha in one turn, because a fade would be a fade from the wrong holes. It
+comes back as an ordinary set once the window has stopped, cut against where it came to rest, and dissolves
+in from an empty mask exactly as a focus change dissolves. `dragEnded` rather than the mouse-up is what makes that true: an app is still draining a resize
+when the button comes up (`WorldWatcher.beginSettle`). Tracking the window instead would be a window list and a
 display-sized mask per frame report, and the hole would still trail the window by an AX round trip across
 everything it passes over. A press that moves nothing lifts nothing.
 
@@ -1320,7 +1322,18 @@ drew each window at last time against this time, per display, so **a veil that m
 over `ScrimWindow.fadeDuration`, while a rectangle that moved under unchanged veils is a correction and
 cuts.** That is what gives a focus change between two columns already on the glass — which scrolls nothing,
 raises no cover, and so has nothing else drawing it — the fade the covered case gets from
-`Reconstruction.refreshVeils`.
+`Reconstruction.refreshVeils`. The one event that cuts is a hand's lift (`Effect.setScrims`' `lifted`), and the
+core says so rather than the plane guessing: an empty set looks the same whether a hand emptied it or focus
+landed on the last veiled window.
+
+**Coming on and going off are the same dissolve, and the window's alpha is only a gate**
+(`ScrimWindow.present`). A scrim comes on by flipping its window to `alpha 1` at once and dissolving the mask
+in from `ScrimWindow.empty`, and goes off by dissolving to a mask with nothing see-through and flipping the
+window off when that lands. Fading the window's alpha instead looks like a different animation beside a veil
+moving: AppKit steps a window's alpha on the main thread at 60 Hz along a front-loaded curve (41% in the first
+frame, 83% by the third), and a busy main thread delays the whole of it, where a `contents` dissolve is linear
+and drawn by the render server at the display's rate. The dissolve has to start from an image: from no
+contents at all, Core Animation cuts.
 
 **The cover carries the same veil, drawn through the same photograph** (`Reconstruction.veil` and
 `Reconstruction.backdrop`, read from `Scrims.veil(of:)` and `Scrims.backdrop(of:)` when a layer is built). A

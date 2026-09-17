@@ -32,7 +32,7 @@ import Testing
         let (next, effects) = Engine.reduce(s, .configChanged(off))
         s = next
         #expect(s.scrims.isEmpty)
-        #expect(effects.contains(.setScrims([])))
+        #expect(effects.contains(.setScrims([], lifted: false)))
     }
 
     // What the set holds.
@@ -135,6 +135,7 @@ import Testing
         let (next, effects) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(float, Rect(
             x: 340, y: 320, width: 200, height: 200))])
         #expect(Self.setScrims(effects) == [])
+        #expect(Self.lifted(effects) == true, "the mask is already wrong, so it goes at once")
         #expect(next.scrims.isEmpty)
     }
 
@@ -153,6 +154,7 @@ import Testing
 
         let (landed, effects) = Engine.reduce(held, .dragEnded)
         #expect(Self.setScrims(effects) == before)
+        #expect(Self.lifted(effects) == false, "an ordinary set, which fades in")
         #expect(landed.scrims == before)
     }
 
@@ -180,7 +182,13 @@ import Testing
     // The gate — `settleScrims`' half of D8.
 
     static func setScrims(_ effects: [Effect]) -> [ScrimBinding]? {
-        for effect in effects { if case .setScrims(let bindings) = effect { return bindings } }
+        for effect in effects { if case .setScrims(let bindings, _) = effect { return bindings } }
+        return nil
+    }
+
+    /// Whether the set in `effects` is one a hand lifted, or `nil` for no set at all.
+    static func lifted(_ effects: [Effect]) -> Bool? {
+        for effect in effects { if case .setScrims(_, let lifted) = effect { return lifted } }
         return nil
     }
 

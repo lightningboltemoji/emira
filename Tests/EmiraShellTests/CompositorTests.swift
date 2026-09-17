@@ -300,8 +300,9 @@ import EmiraCore
     @MainActor final class RecordingScrims: ScrimPlane {
         let timeline: Timeline
         init(_ timeline: Timeline) { self.timeline = timeline }
-        func setScrims(_ bindings: [ScrimBinding]) {
-            timeline.record("scrims(\(bindings.map { "\($0.window.raw)" }.joined(separator: ",")))")
+        func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {
+            let windows = bindings.map { "\($0.window.raw)" }.joined(separator: ",")
+            timeline.record(lifted ? "lifted(\(windows))" : "scrims(\(windows))")
         }
         func restack() { timeline.record("restack") }
     }
@@ -340,7 +341,7 @@ import EmiraCore
     @Test func aScrimSetIsFollowedByTheCoversOwnVeils() {
         let (executor, _, timeline, log) = Self.scrimHarness()
         let binding = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
-        executor.execute([.setScrims([binding])], feedback: log.sink)
+        executor.execute([.setScrims([binding], lifted: false)], feedback: log.sink)
         #expect(timeline.entries == ["scrims(1)", "veils"])
     }
 
@@ -350,8 +351,16 @@ import EmiraCore
         let (executor, _, timeline, log) = Self.scrimHarness()
         let first = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
         let second = ScrimBinding(window: WindowId(2), monitor: MonitorId(1), frame: .zero, veil: 0.3)
-        executor.execute([.setScrims([first]), .setScrims([second])], feedback: log.sink)
+        executor.execute([.setScrims([first], lifted: false), .setScrims([second], lifted: false)],
+                         feedback: log.sink)
         #expect(timeline.entries == ["scrims(1)", "scrims(2)", "veils"])
+    }
+
+    /// Whether a hand emptied the set is the core's to say, and it reaches the plane as said.
+    @Test func aLiftedSetReachesThePlaneLifted() {
+        let (executor, _, timeline, log) = Self.scrimHarness()
+        executor.execute([.setScrims([], lifted: true)], feedback: log.sink)
+        #expect(timeline.entries == ["lifted()", "veils"])
     }
 
     @Test func everyEffectIsAssignedToAPlane() {

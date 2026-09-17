@@ -35,8 +35,9 @@ import EmiraCore
 /// half, and `CompositingExecutor` routes to a seam a test can stand in for.
 @MainActor
 public protocol ScrimPlane: AnyObject {
-    /// Draw exactly these windows see-through, and take the scrim off every one not named.
-    func setScrims(_ bindings: [ScrimBinding])
+    /// Draw exactly these windows see-through, and take the scrim off every one not named — at once
+    /// where the set is `lifted` (`Effect.setScrims`).
+    func setScrims(_ bindings: [ScrimBinding], lifted: Bool)
     /// Read the window server again and repaint, against the set last named. See `Scrims.restack`.
     func restack()
 }
@@ -47,7 +48,7 @@ public protocol ScrimPlane: AnyObject {
 @MainActor
 public final class NoScrims: ScrimPlane {
     public init() {}
-    public func setScrims(_ bindings: [ScrimBinding]) {}
+    public func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {}
     public func restack() {}
 }
 
@@ -174,9 +175,9 @@ public final class Scrims: ScrimPlane {
         apply(current)
     }
 
-    public func setScrims(_ bindings: [ScrimBinding]) {
+    public func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {
         current = bindings
-        apply(bindings)
+        apply(bindings, lifted: lifted)
     }
 
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
@@ -242,14 +243,21 @@ public final class Scrims: ScrimPlane {
     /// stand-ins draw their veil from, so the two planes show one backdrop. `nil` before the first film.
     public func backdrop(of monitor: MonitorId) -> CGImage? { photographs[monitor] }
 
-    private func apply(_ bindings: [ScrimBinding]) {
+    private func apply(_ bindings: [ScrimBinding], lifted: Bool = false) {
         let stacked = stack()
         let identified = stacked.map { (window: identify($0.number), pane: $0) }
         applied = [:]
         for (monitor, surface) in surfaces {
             guard let display = frames[monitor] else { continue }
-            let regions = Self.regions(for: bindings.filter { $0.monitor == monitor },
-                                       over: identified, on: display, cornerRadius: cornerRadius)
+            let mine = bindings.filter { $0.monitor == monitor }
+            // Recorded as nothing drawn, so the set that follows the release is an event and fades in.
+            if lifted, mine.isEmpty {
+                drawn[monitor] = [:]
+                surface.lift()
+                continue
+            }
+            let regions = Self.regions(for: mine, over: identified, on: display,
+                                       cornerRadius: cornerRadius)
             var veils: [WindowId: Double] = [:]
             for (window, veil) in regions.drawn where veil > 0 { veils[window] = veil }
             applied.merge(veils) { first, _ in first }

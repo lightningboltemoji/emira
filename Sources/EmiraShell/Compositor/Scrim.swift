@@ -36,6 +36,9 @@ public protocol ScrimSurface: AnyObject {
     /// — every other window on the display, painted after the ones that come before them in z-order.
     /// `fading` is whether this arrangement is an **event** rather than a correction — see `Scrims`.
     func setRegions(_ regions: [ScrimRegion], fading: Bool)
+    /// Take the scrim off the glass at once, holding no mask — the one it held was cut around a window
+    /// a hand is moving, and a fade would show it. The next `setRegions` fades the scrim back in.
+    func lift()
     /// Load this display's desktop photograph, or `nil` to say there is none. A scrim with no
     /// photograph shows nothing: an empty tint is not what was asked for, and a black one is worse.
     func setDesktop(_ image: CGImage?)
@@ -101,10 +104,19 @@ public final class ScrimWindow: NSObject, ScrimSurface {
 
     private var desktop: CGImage?
     private var regions: [ScrimRegion] = []
+    /// Whether the window is on the glass — a gate, flipped at once and never faded (`present`).
     private var isShowing = false
-    /// Bumped by every fade, so one still in flight when the next arrives owns nothing. `Overlay`'s
-    /// idiom.
+    /// Bumped by every flip of the gate, so a going-off that lands after the scrim came back on owns
+    /// nothing. `Overlay`'s idiom.
     private var generation = 0
+
+    /// A mask with nothing see-through, stretched over the display: what a scrim coming on dissolves
+    /// from, since a dissolve from no contents at all is a cut.
+    private static let empty: CGImage? = {
+        CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.alphaOnly.rawValue)?
+            .makeImage()
+    }()
 
     /// `display` is the whole screen in core (top-left) coordinates, and `scale` its backing scale, so
     /// the mask rasterizes at native resolution. Taken as numbers rather than as an `NSScreen` for the
@@ -147,33 +159,77 @@ public final class ScrimWindow: NSObject, ScrimSurface {
 
         super.init()
         window.contentView = view
-        // Ordered in now and left in forever, or the system's show-animation pops on the first fade in.
+        // Ordered in now and left in forever, or the system's show-animation pops the first time it is on.
         window.orderFrontRegardless()
     }
 
     public func setDesktop(_ image: CGImage?) {
         desktop = image
         host.contents = image
-        settle()
+        present(repainting: false, fading: true)
     }
 
     public func setRegions(_ regions: [ScrimRegion], fading: Bool) {
         guard regions != self.regions else { return }
         self.regions = regions
-        // Painted before the fade, so a scrim coming up is never shown holding the last arrangement.
-        repaint(fading: fading)
-        settle()
+        present(repainting: true, fading: fading)
     }
 
+    public func lift() {
+        regions = []
+        guard isShowing || cut.contents != nil else { return }
+        isShowing = false
+        generation &+= 1
+        drop()
+        window.alphaValue = 0
+    }
+
+    public func retire() {
+        generation &+= 1
+        isShowing = false
+        window.orderOut(nil)
+    }
+
+    /// Show the scrim where there is a photograph and something see-through. **The window's alpha is a
+    /// gate; every change anybody sees is the mask's dissolve**, which the render server draws linearly
+    /// where AppKit would step a window's alpha on the main thread at 60 Hz.
+    private func present(repainting: Bool, fading: Bool) {
+        let wanted = desktop != nil && regions.contains { $0.veil > 0 }
+        switch (isShowing, wanted) {
+        case (false, false):
+            return
+        case (true, true):
+            if repainting { repaint(from: fading ? cut.contents : nil) }
+        case (false, true):
+            isShowing = true
+            generation &+= 1
+            repaint(from: cut.contents ?? Self.empty)
+            window.alphaValue = 1
+        case (true, false):
+            isShowing = false
+            generation &+= 1
+            let mine = generation
+            let off: @MainActor @Sendable () -> Void = { [weak self] in
+                guard let self, generation == mine else { return }
+                window.alphaValue = 0
+                drop()
+            }
+            if repainting { repaint(from: fading ? cut.contents : nil, then: off) } else { off() }
+        }
+    }
+
+    /// Paint `regions` into the mask, dissolving from `previous` or cutting where there is none, and run
+    /// `then` once the dissolve has landed.
+    ///
     /// **Actions off, and the dissolve asked for by name.** `cut` is ours rather than a view's, so
     /// nothing returns `NSNull` for `contents` and Core Animation's own quarter-second would apply to
     /// every repaint alike — a correction included. Which repaints are events is `Scrims`' answer.
-    private func repaint(fading: Bool) {
+    private func repaint(from previous: Any?, then: (@MainActor @Sendable () -> Void)? = nil) {
         let next = Self.mask(regions, display: displayFrame, scale: scale)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        // Nothing to dissolve from on the first mask a scrim ever holds; `settle` fades that in whole.
-        if fading, let previous = cut.contents {
+        if let then { CATransaction.setCompletionBlock { MainActor.assumeIsolated(then) } }
+        if let previous {
             let dissolve = CABasicAnimation(keyPath: "contents")
             dissolve.fromValue = previous
             dissolve.duration = Self.fadeDuration
@@ -186,33 +242,14 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         CATransaction.commit()
     }
 
-    public func retire() {
-        generation &+= 1
-        isShowing = false
-        window.orderOut(nil)
-    }
-
-    /// Show or hide, on the one question that decides it: is there a photograph, and is anything
-    /// see-through on this display? Either answer missing is a scrim with nothing honest to draw.
-    private func settle() {
-        let wanted = desktop != nil && regions.contains { $0.veil > 0 }
-        guard wanted != isShowing else { return }
-        isShowing = wanted
-        // A scrim that went away dropped its mask; coming back needs it before the fade, not after.
-        if wanted, cut.contents == nil { repaint(fading: false) }
-        generation &+= 1
-        let mine = generation
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = Self.fadeDuration
-            window.animator().alphaValue = wanted ? 1 : 0
-        } completionHandler: {
-            MainActor.assumeIsolated {
-                // Nothing to release — the photograph outlives the fade — but a scrim that has gone
-                // has no reason to keep a mask the size of the display resident.
-                guard self.generation == mine, !self.isShowing else { return }
-                self.cut.contents = nil
-            }
-        }
+    /// Release the mask. A mask with no contents shows nothing, so this alone takes the scrim off; a
+    /// scrim that has gone has no reason to keep one the size of the display resident.
+    private func drop() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        cut.removeAnimation(forKey: "veil")
+        cut.contents = nil
+        CATransaction.commit()
     }
 
     /// The mask, the size of the display in pixels, painted **back to front** — so a window in front of
