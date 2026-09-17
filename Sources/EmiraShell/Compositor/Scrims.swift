@@ -278,7 +278,16 @@ public final class Scrims: ScrimPlane {
         var drawn: [(WindowId, Double)] = []
         for (index, entry) in here.enumerated() {
             guard let id = entry.window, let binding = veils[id] else {
-                regions.append(ScrimRegion(frame: entry.pane.frame, veil: 0, cornerRadius: cornerRadius))
+                // A window emira never adopted, standing wholly on a see-through one, is that window's
+                // sheet: veiled with it, as the cover's still of the window already draws it.
+                let beneath = here[(index + 1)...].first { $0.pane.frame.intersects(entry.pane.frame) }
+                let isSheet = entry.window == nil
+                    && beneath?.window.flatMap({ veils[$0] }) != nil
+                    && beneath?.pane.frame.intersection(entry.pane.frame) == entry.pane.frame
+                if !isSheet {
+                    regions.append(ScrimRegion(frame: entry.pane.frame, veil: 0,
+                                               cornerRadius: cornerRadius))
+                }
                 continue
             }
             // The rule. Anything still to come in a front-to-back walk is *behind* this window, and the

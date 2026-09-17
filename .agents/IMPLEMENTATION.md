@@ -1251,6 +1251,13 @@ through the parking lot in the corner, from forfeiting its transparency to a sli
 *in front* is not a decline and costs nothing — those pixels are not on the screen, so the mask paints over
 them.
 
+**A sheet is part of its window, so it is veiled with it** (`Scrims.regions`). A window emira never adopted,
+standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes
+that window's veil. The photograph standing in for the window behind the sheet is the one standing in for it
+everywhere else, so the whole window reads as see-through, sheet included — and it is how the cover already
+draws it, because a window's still carries its child windows. *Wholly* is what keeps a popup hanging off the
+edge of a window opaque, rather than veiled only where it overlaps.
+
 **The core names windows and the shell decides which it can back**, which is the seam `capture` already sits
 on. The physical stacking of the desktop includes the windows emira never placed, and that is the window
 server's fact rather than the layout's, so the decline is made where that fact lives — one

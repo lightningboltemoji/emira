@@ -171,6 +171,43 @@ import EmiraCore
         #expect(surface.regions.map(\.veil) == [0, 0.3, 0])
     }
 
+    /// A sheet is part of its window: a window emira never adopted, standing wholly on a see-through
+    /// one, is veiled with it rather than stamped opaque over it.
+    @Test func anUnmanagedWindowWhollyOnAScrimIsVeiledWithIt() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let sheet = Rect(x: 100, y: 100, width: 200, height: 100)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 == 77 ? nil : WindowId(UInt64($0)) },
+                            stack: { [Self.pane(77, sheet), Self.pane(1, scrimmed)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        scrims.setScrims([Self.binding(1, scrimmed)])
+
+        #expect(surface.regions.map(\.frame) == [scrimmed])
+        #expect(surface.regions.map(\.veil) == [0.3])
+    }
+
+    /// Only wholly, and only on a see-through window. A popup hanging off the edge of a scrimmed
+    /// window stays opaque rather than veiled where it overlaps, and so does a dialog on a focused one.
+    @Test func anUnmanagedWindowPartlyOnAScrimOrOnAnOpaqueWindowStillOccludes() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let focused = Rect(x: 420, y: 0, width: 400, height: 400)
+        let popup = Rect(x: 350, y: 100, width: 150, height: 100)
+        let dialog = Rect(x: 520, y: 100, width: 100, height: 100)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 >= 77 ? nil : WindowId(UInt64($0)) },
+                            stack: { [Self.pane(77, popup), Self.pane(78, dialog),
+                                      Self.pane(1, scrimmed), Self.pane(2, focused)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        scrims.setScrims([Self.binding(1, scrimmed)])
+
+        #expect(surface.regions.map(\.frame) == [focused, scrimmed, dialog, popup])
+        #expect(surface.regions.map(\.veil) == [0, 0.3, 0, 0])
+    }
+
     /// The mask has two inputs and only one of them is an effect. The stacking a set is masked against
     /// is the window server's and moves on its own — a transition's AX writes land after the core
     /// described them — so the plane can be asked to read it again with the set unchanged.
