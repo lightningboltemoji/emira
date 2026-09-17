@@ -62,9 +62,12 @@ extension State {
     /// `placedOnScreen` and not "every window", for `hoistBindings`' reason: it is the placement pass's
     /// own record of what it put on the glass, so a parked column at its sliver is out without anybody
     /// deriving a viewport.
+    ///
+    /// **Empty while a window is in the user's hand**: a mask is cut once per set, so a moving window's
+    /// hole would stay where it was picked up.
     public func scrimBindings() -> [ScrimBinding] {
         let veil = min(max(1 - config.unfocusedOpacity, 0), 1)
-        guard veil > 0 else { return [] }
+        guard veil > 0, drag.subject == nil else { return [] }
 
         let focused = world.focusedWindow
         let candidates = world.placedOnScreen.filter { $0 != focused }.sorted()

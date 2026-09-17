@@ -786,12 +786,14 @@ rather than from the window's display, or a window parked on the far screen stat
 reports a resize identically whoever asked for it and our own placements provoke one every time, so a frame
 change is evidence only while the **button is down** — and only for the **first** window to move in that
 interval, since a placement pass mid-drag writes the stackmates and an app clamping one of those reports a frame
-change with the button still down. A hand draws a size while it is holding the window, so the release
-(`Event.dragReleased`) ends the interval even though `dragEnded` comes later: what the wait between them is for
-is the subject's frames finishing, not a new subject. Without that an app resizing itself just after a click
-lands inside the bracket, and a self-animated one is adopted at a size it was only passing through. The observed
-size is taken as the intent directly rather than as a delta, which is also what makes it total over a window
-that was already refusing its target. Three consequences:
+change with the button still down. That window is latched whether it tiles or not, because the veil lifts for
+any window in the hand (*Scrims*); adoption is what asks for a tiled one under `interactive-resize`. A hand
+draws a size while it is holding the window, so the release (`Event.dragReleased`) ends the interval even though
+`dragEnded` comes later: what the wait between them is for is the subject's frames finishing, not a new subject.
+Without that an app resizing itself just after a click lands inside the bracket, and a self-animated one is
+adopted at a size it was only passing through. The observed size is taken as the intent directly rather than as
+a delta, which is also what makes it total over a window that was already refusing its target. Three
+consequences:
 
 - **Adoption is on release, not live.** The truth plane is the app's main thread, so re-tiling under every
   intermediate frame would trade writes with the drag at the rate of the slowest app in the column — and none of
@@ -1300,6 +1302,15 @@ bindings do. It is asked at the top of `CompositingExecutor.dismiss`, which is t
 settled *and* the cover is still hiding the scrim: the transition closed because the AX sets landed, so the
 window server is current, and the repaint lands behind the cover instead of being revealed by it. One window
 list and one repaint per transition, and a repaint that changes nothing stops at `ScrimWindow.setRegions`.
+
+**A window in the hand lifts every veil** (`State.scrimBindings`). A mask is cut once per set, and a hand moves
+a window between sets: a dragged float leaves its hole where it was picked up, and a shrunk one leaves a hole
+larger than itself. So the set is empty from the frame report that latches `Drag.subject` until `dragEnded` —
+the veil fades off as the window starts to move and back on once it has stopped, cut against where it came to
+rest. `dragEnded` rather than the mouse-up is what makes that true: an app is still draining a resize when the
+button comes up (`WorldWatcher.beginSettle`). Tracking the window instead would be a window list and a
+display-sized mask per frame report, and the hole would still trail the window by an AX round trip across
+everything it passes over. A press that moves nothing lifts nothing.
 
 **A repaint is a cut or a dissolve, and the plane says which.** `ScrimWindow.cut` is a layer of ours rather
 than a view's, so no delegate suppresses Core Animation's implicit animation and every repaint alike would

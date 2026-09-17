@@ -24,17 +24,17 @@ public enum Drag: Sendable, Equatable, Codable {
     /// moves no window ends here and goes back to `idle` on the release.
     case armed
 
-    /// A button is down and this window has moved under it — the one window a release may read an
-    /// intent from.
+    /// A button is down and this window has moved under it, tiled or not — the one window a release may
+    /// read an intent from, and the one every veil is lifted for (`State.scrimBindings`).
     case subject(WindowId)
 
-    /// The window a release would adopt, or `nil`.
+    /// The window in the user's hand, or `nil`.
     public var subject: WindowId? {
         guard case .subject(let id) = self else { return nil }
         return id
     }
 
-    /// Whether a frame change arriving now is a candidate for adoption. False once a subject is
+    /// Whether a frame change arriving now may latch the subject. False once a subject is
     /// latched — the second window to move under one press is being pushed, not dragged — and false
     /// again the moment the button comes up.
     public var isArmed: Bool { self == .armed }

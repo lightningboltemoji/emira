@@ -250,6 +250,27 @@ import EmiraCore
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
     }
 
+    /// **A veil set back down is cut where the windows are now.** The core lifts every veil while a
+    /// window is in the hand and names the same set again when it stops, so what moved is the stacking.
+    @Test func aVeilSetBackDownIsCutWhereTheHeldWindowCameToRest() {
+        let scrimmed = Rect(x: 0, y: 0, width: 600, height: 600)
+        let picked = Rect(x: 100, y: 100, width: 200, height: 200)
+        let dropped = Rect(x: 300, y: 250, width: 150, height: 120)
+        let stack = Stack([Self.pane(9, picked), Self.pane(1, scrimmed)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        scrims.setScrims([Self.binding(1, scrimmed)])
+        #expect(surface.regions.map(\.frame) == [scrimmed, picked])
+
+        scrims.setScrims([])
+        #expect(surface.regions.allSatisfy { $0.veil == 0 })
+        #expect(surface.fades.last == true)
+
+        stack.panes[0] = Self.pane(9, dropped)
+        scrims.setScrims([Self.binding(1, scrimmed)])
+        #expect(surface.regions.map(\.frame) == [scrimmed, dropped])
+        #expect(surface.fades.last == true)
+    }
+
     @Test func aWindowOnAnotherDisplayIsNotDrawnOnThisOne() {
         let here = Rect(x: 0, y: 0, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, here)])

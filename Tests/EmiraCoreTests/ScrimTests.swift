@@ -118,6 +118,65 @@ import Testing
         #expect(Self.setScrims(effects) != nil)
     }
 
+    // The hand — every veil is lifted while a window is moving under it.
+
+    /// Two veiled columns and a float in front of them, focused. The float is what the hand takes.
+    static func withFloat() -> (State, WindowId) {
+        let float = WindowId(9)
+        let s = EngineFix.run(world(2), [.windowCreated(EngineFix.snapshot(9, role: .dialog))]).0
+        return (s, float)
+    }
+
+    /// The mask is cut against the window server when a set arrives, so a hole left standing under a
+    /// moving float stays where the float was picked up.
+    @Test func aWindowInTheHandLiftsEveryVeil() {
+        let (s, float) = Self.withFloat()
+        #expect(!s.scrims.isEmpty)
+        let (next, effects) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(float, Rect(
+            x: 340, y: 320, width: 200, height: 200))])
+        #expect(Self.setScrims(effects) == [])
+        #expect(next.scrims.isEmpty)
+    }
+
+    /// Set back down at `dragEnded` and not the mouse-up: an app is still draining the resize when the
+    /// button comes up, and a veil cut then is cut around a window that has not finished moving.
+    @Test func theVeilIsSetBackDownOnceTheWindowHasStopped() {
+        let (s, float) = Self.withFloat()
+        let before = s.scrims
+        let moved = Rect(x: 340, y: 320, width: 160, height: 140)
+        var (held, _) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(float, moved)])
+
+        var draining: [Effect] = []
+        (held, draining) = EngineFix.run(held, [.dragReleased, .windowFrameChanged(float, moved)])
+        #expect(Self.setScrims(draining) == nil)
+        #expect(held.scrims.isEmpty)
+
+        let (landed, effects) = Engine.reduce(held, .dragEnded)
+        #expect(Self.setScrims(effects) == before)
+        #expect(landed.scrims == before)
+    }
+
+    /// A click moves nothing, and a veil that blinked on every one would be flicker.
+    @Test func aPressThatMovesNothingLeavesTheVeilDown() {
+        let (s, _) = Self.withFloat()
+        let (next, effects) = EngineFix.run(s, [.dragBegan, .dragReleased, .dragEnded])
+        #expect(Self.setScrims(effects) == nil)
+        #expect(next.scrims == s.scrims)
+    }
+
+    /// Lifted for any window in the hand, adopted or not: a tiled column dragged wider leaves its hole
+    /// behind exactly as a float does.
+    @Test func aTiledWindowInTheHandLiftsItWhateverTheSetting() throws {
+        var s = Self.world(2)
+        s.config.interactiveResize = false
+        let focused = try #require(s.world.focusedWindow)
+        let frame = try #require(s.world.windows[focused]?.frame)
+        let (next, effects) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(focused, Rect(
+            x: frame.minX, y: frame.minY, width: frame.width + 120, height: frame.height))])
+        #expect(Self.setScrims(effects) == [])
+        #expect(next.scrims.isEmpty)
+    }
+
     // The gate — `settleScrims`' half of D8.
 
     static func setScrims(_ effects: [Effect]) -> [ScrimBinding]? {

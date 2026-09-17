@@ -3150,8 +3150,7 @@ public enum Engine {
     /// is the app answering, not a second drag. And the window **actually moved** — the reducer writes
     /// its target into `World` optimistically, so a report matching what we already hold says nothing.
     private static func driftedUnderHand(_ s: State, _ id: WindowId, _ frame: Rect) -> Bool {
-        guard s.config.interactiveResize, s.drag.isArmed,
-              s.world.participatesInTiling(id), s.world.isOnScreen(id),
+        guard s.drag.isArmed, s.world.isOnScreen(id),
               let known = s.world.windows[id]?.frame else { return false }
         return !approximatelyEqual(known, frame)
     }
@@ -3177,7 +3176,7 @@ public enum Engine {
     private static func adoptDraggedSize(_ s: inout State) {
         // A cascade has no rung to write a drawn size to, so the next placement pass takes the window
         // back — which is what a *move* drag already gets, on the other axis.
-        guard let id = s.drag.subject,
+        guard s.config.interactiveResize, let id = s.drag.subject, s.world.participatesInTiling(id),
               let observed = s.world.windows[id]?.frame,
               let (name, column) = s.workspaces.column(containing: id),
               s.workspaces[name].kind == .strip,

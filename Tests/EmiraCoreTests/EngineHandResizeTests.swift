@@ -81,23 +81,34 @@ import EmiraMotion
         #expect(s.layout.columns[1].widthOverride == nil)      // the clamp, not a second drag
     }
 
-    /// A window emira does not place is already the app's to size, so nothing latches onto it and the
-    /// press releases having taught the strip nothing.
-    @Test func aWindowOffTheStripNeverBecomesTheSubject() {
+    /// A window emira does not place is already the app's to size. It is still in the hand, so it
+    /// latches, and the press releases having taught the strip nothing.
+    @Test func aWindowOffTheStripIsHeldButNeverAdopted() {
         var s = Self.columns(1)
         (s, _) = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(9, role: .dialog))])
+        let before = s.workspaces
+        var fx: [Effect] = []
         (s, _) = EngineFix.run(s, [.dragBegan,
                                    .windowFrameChanged(WindowId(9), Rect(x: 10, y: 10,
                                                                           width: 300, height: 300))])
-        #expect(s.drag == .armed)
+        #expect(s.drag == .subject(WindowId(9)))
+
+        (s, fx) = Engine.reduce(s, .dragEnded)
+        #expect(s.drag == .idle)
+        #expect(s.workspaces == before)
+        #expect(EngineFix.placement(of: WindowId(9), in: fx) == nil)
     }
 
-    /// The setting is one gate at the latch, so nothing downstream needs a second opinion about it.
+    /// The setting gates the adoption rather than the latch: the hand is on the window either way.
     @Test func theSettingRefusesTheAdoptionOutright() {
         let config = Config(widthPresets: PresetCycle([.proportion(0.5)]),
                             interactiveResize: false, transitionMode: .off)
         var s = Self.columns(2, config: config)
-        (s, _) = Self.drag(s, WindowId(2), to: Rect(x: 500, y: 0, width: 620, height: 800))
+        (s, _) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(WindowId(2), Rect(x: 500, y: 0,
+                                                                                      width: 620,
+                                                                                      height: 800))])
+        #expect(s.drag == .subject(WindowId(2)))
+        (s, _) = Engine.reduce(s, .dragEnded)
         #expect(s.layout.columns[1].widthOverride == nil)
     }
 
