@@ -1160,6 +1160,33 @@ import EmiraCore
         #expect(cache.byteCount == 0, "…pinned, so the budget is no longer about it")
     }
 
+    /// The scrim rounds a see-through window at rest, when no photograph need be left: with nothing
+    /// keeping stills, the last cover to let one go forgets it, and the radius measured off it stays.
+    @Test func aRadiusOutlivesThePhotographItWasMeasuredOff() {
+        let cache = SurfaceCache(keepsStills: false)
+        cache.record(Self.surface(1, radius: 17), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
+        cache.unpin(MonitorId(1))
+
+        #expect(cache.anySurface(for: WindowId(1)) == nil)
+        #expect(cache.cornerRadius(of: WindowId(1)) == 17)
+        #expect(cache.cornerRadius(of: WindowId(2)) == nil)
+    }
+
+    /// A film whose pixels could not say leaves the last answer standing, and an overtaken one does not
+    /// replace a newer one — recency is the radius's own, because its photograph may be gone.
+    @Test func aRadiusIsReplacedOnlyByALaterMeasurement() {
+        let cache = SurfaceCache(keepsStills: false)
+        cache.record(Self.surface(1, radius: 17), mintedAt: 9, for: WindowId(1), pinnedBy: nil)
+        cache.record(Self.surface(1, radius: nil), mintedAt: 10, for: WindowId(1), pinnedBy: nil)
+        cache.record(Self.surface(1, radius: 12), mintedAt: 7, for: WindowId(1), pinnedBy: nil)
+        #expect(cache.cornerRadius(of: WindowId(1)) == 17)
+
+        cache.record(Self.surface(1, radius: 0), mintedAt: 11, for: WindowId(1), pinnedBy: nil)
+        #expect(cache.cornerRadius(of: WindowId(1)) == 0)
+    }
+
+    /// A display change drops the photographs, whose freshness was a size on the old geometry. A radius
+    /// is in points and belongs to the window, so it stays.
     @Test func clearingDropsEverythingNoCoverIsShowing() {
         let cache = SurfaceCache(keepsStills: true)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
@@ -1169,6 +1196,7 @@ import EmiraCore
         #expect(cache.count == 1)                                 // the live cover's own stays
         #expect(cache.pinnedSurface(for: WindowId(2)) != nil)
         #expect(cache.byteCount == 0)
+        #expect(cache.cornerRadius(of: WindowId(1)) == 12)        // …and so does every radius
     }
 }
 

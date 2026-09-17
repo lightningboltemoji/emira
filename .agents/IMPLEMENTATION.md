@@ -451,6 +451,12 @@ taken of it, whether or not a cover is showing it — and matches on **size alon
 the geometry a size was computed against holds, so a display change drops the lot
 (`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
 
+**Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
+that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), ordered
+by its own batch, and outlives the pixels under every `CoverMode`, the budget and a display change. The scrim
+is what reads it (`SurfaceCache.cornerRadius(of:)`): it rounds a see-through window at rest, when no
+photograph need be left, and only a window no cover has filmed takes `Scrims.fallbackCornerRadius`.
+
 Capture resolution is an entitlement rather than a lifetime. A live cover _pins_ every photograph it paints;
 the last release reduces one to quarter scale in place rather than dropping it, and the reduction is both the
 memory budget (16× at rest) and the disclosure that keeps a photograph filmed minutes ago from passing for the
@@ -1241,15 +1247,22 @@ the desktop, and this is the member of that family that scales with the window �
 window at all. The arithmetic is in the photograph's encoded values because those are what the window server
 blends. It is baked in at film time beside the frost, and for the frost's reasons.
 
-**The decline is a region, because the rule is one.** A window behind stamps its overlap back to opaque after
-the scrim is painted, rather than disqualifying the whole frame — so a float takes the patch of the tile it
-covers and no more, and a cascade keeps the effect on whatever a `stack` tile leaves exposed. Standing in for
-the rest needs a photograph per window, refilmed whenever anything behind anything redraws. The scope follows
-from the same shape: the mask is a raster the size of the display, so an overlap out beyond the screen edge
-stamps nothing and decides nothing — which is what keeps a column hanging off the viewport, its frame running
-through the parking lot in the corner, from forfeiting its transparency to a sliver a pixel wide. A window
-*in front* is not a decline and costs nothing — those pixels are not on the screen, so the mask paints over
-them.
+**The decline is a region, because the rule is one.** A window behind is stamped back to opaque inside the
+see-through one's silhouette after the scrim is painted, rather than disqualifying the whole frame — so a
+float takes the patch of the tile it covers and no more, and a cascade keeps the effect on whatever a `stack`
+tile leaves exposed. Standing in for the rest needs a photograph per window, refilmed whenever anything behind
+anything redraws. The scope follows from the same shape: the mask is a raster the size of the display, so an
+overlap out beyond the screen edge stamps nothing and decides nothing — which is what keeps a column hanging
+off the viewport, its frame running through the parking lot in the corner, from forfeiting its transparency to
+a sliver a pixel wide. A window *in front* is not a decline and costs nothing — those pixels are not on the
+screen, so the mask paints over them.
+
+**Every region of the mask is a window's silhouette, rounded by that window's measured radius**
+(`ScrimRegion`). A see-through window stops at its corners because outside them is its own shadow, and an
+opaque one because outside them is whatever it stands on, which keeps the veil it was painted with. A decline
+is the window behind painted only within the see-through one's silhouette (`ScrimRegion.within`), so the
+corners of both shape it. Stamped square, an occluder or a decline leaves the window beneath unveiled in a
+sharp corner.
 
 **A sheet is part of its window, so it is veiled with it** (`Scrims.regions`). A window emira never adopted,
 standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes

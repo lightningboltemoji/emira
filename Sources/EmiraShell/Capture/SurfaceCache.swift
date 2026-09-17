@@ -20,6 +20,10 @@ import EmiraCore
 //     photograph is unreachable rather than wrong and the byte budget collects it. No window-lifecycle
 //     observation reaches this file.
 //
+// **A corner radius is not a photograph**, so it is kept beside them rather than in them: the scrim rounds a
+// see-through window at rest, long after its photograph may have been reduced, evicted or forgotten. Rule 3
+// holds for it too, and nothing collects it — it is a few bytes per window ever filmed.
+//
 // A photograph is written when it is taken and is never removed by the cover that took it: entitlement,
 // lifetime and recency are three relations over one key. The first two let pixels that were paid for
 // outlive the batch, the generation, and the ack that failed to place them. The third orders the
@@ -67,6 +71,9 @@ public final class SurfaceCache {
     /// can be about: counting a live cover's own would evict every stand-in on the desk to make room for
     /// pixels that are already on screen.
     private var bytes = 0
+    /// Every window's corner radius as last measured, and the batch that measured it. Outside `photos`,
+    /// so nothing that drops a photograph drops the radius with it.
+    private var corners: [WindowId: (radius: Double, mint: Int)] = [:]
 
     /// Whether a photograph outlives the cover that took it. Off, the last cover to let one go forgets
     /// it instead of reducing it. Two features want it on and neither is the other's, so the daemon
@@ -86,6 +93,10 @@ public final class SurfaceCache {
     /// and the pixels are taken only where they are newer than the ones already held.
     public func record(_ surface: CapturedSurface, mintedAt mint: Int, for id: WindowId,
                        pinnedBy monitor: MonitorId?) {
+        // Ordered by its own batch, because the photograph it was measured off may be long gone.
+        if let radius = surface.cornerRadius, mint > corners[id]?.mint ?? .min {
+            corners[id] = (radius, mint)
+        }
         let held = photos[id]
         guard mint > held?.mint ?? .min else {
             // A slower batch, answering with a film that has been overtaken. Its entitlement is still
@@ -159,6 +170,10 @@ public final class SurfaceCache {
     /// from. Deliberately *not* `surface(for:at:)`: that size match is load-bearing where a stand-in
     /// must not pass for the window, and in a minimap the trade reverses — a hole is the visible one.
     public func anySurface(for id: WindowId) -> CapturedSurface? { photos[id]?.surface }
+
+    /// The corner radius `id` was last measured at, in points, whatever became of the photograph it was
+    /// measured off — what the scrim rounds a see-through window by. `nil` for a window never measured.
+    public func cornerRadius(of id: WindowId) -> Double? { corners[id]?.radius }
 
     /// Drop every photograph nothing is showing — the Screen Recording grant lapsed, or the display
     /// changed under us, and they describe a desktop that no longer exists. A live cover's own stay:

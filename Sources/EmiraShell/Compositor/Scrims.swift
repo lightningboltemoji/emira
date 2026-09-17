@@ -104,16 +104,18 @@ public final class Scrims: ScrimPlane {
     /// a re-film is a full-screen capture we are unwilling to spend at any rate the eye would notice.
     static let desktopMaxAge: TimeInterval = 2
 
-    /// A window's corner rounding, in points. `Reconstruction.fallbackCornerRadius`'s value and its
-    /// caveat — a guessed radius goes stale with the next macOS — but a standing scrim has no capture
-    /// to measure one off, and what it costs is a corner-sized triangle of the window's own shadow
-    /// lightened by the veil.
-    static let cornerRadius: Double = 12
+    /// A window's corner rounding, in points, until a capture has measured it. A guess, and it goes stale
+    /// with the next macOS: what it costs is a corner-sized triangle of the window's shadow lightened by
+    /// the veil, or of the window left unveiled.
+    static let fallbackCornerRadius: Double = 12
 
     private let build: @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
     private let filmer: any DesktopFilmer
     /// Window number → the id the core knows it by, or `nil` for a window emira never adopted.
     private let identify: @MainActor (CGWindowID) -> WindowId?
+    /// A window's corner radius as a capture last measured it, or `nil` for one never filmed
+    /// (`SurfaceCache.cornerRadius(of:)`). A scrim films no window, so it asks the plane that does.
+    private let cornerRadius: @MainActor (WindowId) -> Double?
     /// The window server's own ordering. Injected so the rule can be tested without a desktop.
     private let stack: @MainActor () -> [StackedWindow]
 
@@ -147,11 +149,13 @@ public final class Scrims: ScrimPlane {
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
+                cornerRadius: @escaping @MainActor (WindowId) -> Double? = { _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
                 build: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
                     = { ScrimWindow(display: $0, scale: $1, geometry: $2) }) {
         self.filmer = filmer
         self.identify = identify
+        self.cornerRadius = cornerRadius
         self.stack = stack
         self.build = build
     }
@@ -245,7 +249,7 @@ public final class Scrims: ScrimPlane {
         for (monitor, surface) in surfaces {
             guard let display = frames[monitor] else { continue }
             let regions = Self.regions(for: bindings.filter { $0.monitor == monitor },
-                                       over: identified, on: display)
+                                       over: identified, on: display, cornerRadius: cornerRadius)
             var veils: [WindowId: Double] = [:]
             for (window, veil) in regions.drawn where veil > 0 { veils[window] = veil }
             applied.merge(veils) { first, _ in first }
@@ -271,8 +275,11 @@ public final class Scrims: ScrimPlane {
     /// clipped to the bitmap, and the bitmap is the display.
     static func regions(for bindings: [ScrimBinding],
                         over stacked: [(window: WindowId?, pane: StackedWindow)],
-                        on display: Rect) -> (mask: [ScrimRegion], drawn: [(WindowId, Double)]) {
+                        on display: Rect,
+                        cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil })
+        -> (mask: [ScrimRegion], drawn: [(WindowId, Double)]) {
         let veils = Dictionary(bindings.map { ($0.window, $0) }, uniquingKeysWith: { first, _ in first })
+        func radius(_ id: WindowId?) -> Double { id.flatMap(cornerRadius) ?? fallbackCornerRadius }
         let here = stacked.filter { $0.pane.frame.intersects(display) }
         var regions: [ScrimRegion] = []
         var drawn: [(WindowId, Double)] = []
@@ -286,18 +293,20 @@ public final class Scrims: ScrimPlane {
                     && beneath?.pane.frame.intersection(entry.pane.frame) == entry.pane.frame
                 if !isSheet {
                     regions.append(ScrimRegion(frame: entry.pane.frame, veil: 0,
-                                               cornerRadius: cornerRadius))
+                                               cornerRadius: radius(entry.window)))
                 }
                 continue
             }
             // The rule. Anything still to come in a front-to-back walk is *behind* this window, and the
-            // photograph does not hold it. Appended before the scrim because the list is reversed into
-            // painting order below, which puts these back over it; square, for an occluder's reason.
-            for hole in here[(index + 1)...].compactMap({ $0.pane.frame.intersection(binding.frame) }) {
-                regions.append(ScrimRegion(frame: hole, veil: 0, cornerRadius: 0))
+            // photograph does not hold it: stamped opaque inside this window's silhouette. Appended before
+            // the scrim because the list is reversed into painting order below, which puts it back over.
+            let silhouette = ScrimRegion.Silhouette(frame: binding.frame, cornerRadius: radius(id))
+            for behind in here[(index + 1)...] where behind.pane.frame.intersects(binding.frame) {
+                regions.append(ScrimRegion(frame: behind.pane.frame, veil: 0,
+                                           cornerRadius: radius(behind.window), within: silhouette))
             }
             regions.append(ScrimRegion(frame: binding.frame, veil: binding.veil,
-                                       cornerRadius: cornerRadius))
+                                       cornerRadius: silhouette.cornerRadius))
             drawn.append((id, binding.veil))
         }
         return (regions.reversed(), drawn)

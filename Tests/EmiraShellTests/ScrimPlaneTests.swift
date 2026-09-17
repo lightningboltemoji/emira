@@ -99,8 +99,26 @@ import EmiraCore
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, frame)])
         scrims.setScrims([Self.binding(1, frame)])
         #expect(surface.regions == [ScrimRegion(frame: frame, veil: 0.3,
-                                                cornerRadius: Scrims.cornerRadius)])
+                                                cornerRadius: Scrims.fallbackCornerRadius)])
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
+    }
+
+    /// A window stops at its own silhouette, so it is rounded by the radius a capture measured off it —
+    /// and only a window nothing has filmed takes the guess.
+    @Test func aWindowIsRoundedByItsMeasuredRadiusAndAnUnfilmedOneByTheFallback() {
+        let measured = Rect(x: 0, y: 0, width: 400, height: 400)
+        let unfilmed = Rect(x: 500, y: 0, width: 400, height: 400)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { WindowId(UInt64($0)) },
+                            cornerRadius: { $0 == WindowId(1) ? 17 : nil },
+                            stack: { [Self.pane(1, measured), Self.pane(2, unfilmed)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        scrims.setScrims([Self.binding(1, measured), Self.binding(2, unfilmed)])
+
+        #expect(surface.regions.map(\.frame) == [unfilmed, measured])
+        #expect(surface.regions.map(\.cornerRadius) == [Scrims.fallbackCornerRadius, 17])
     }
 
     /// The rule, and the whole reason the effect belongs to a layout where windows never overlap: the
@@ -111,13 +129,13 @@ import EmiraCore
     @Test func aWindowWithAnotherWindowBehindItIsDeclinedOnlyWhereThatWindowReaches() {
         let front = Rect(x: 0, y: 0, width: 400, height: 400)
         let behind = Rect(x: 200, y: 200, width: 400, height: 400)
-        let overlap = Rect(x: 200, y: 200, width: 200, height: 200)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, front), Self.pane(2, behind)])
         scrims.setScrims([Self.binding(1, front), Self.binding(2, behind)])
 
-        // Back to front: `2`, then `1` over it, then the patch of `1` that stands on `2` stamped back
-        // to opaque. Both are drawn — `1` in part, which is what the cover is told.
-        #expect(surface.regions.map(\.frame) == [behind, front, overlap])
+        // Back to front: `2`, then `1` over it, then `2` stamped back to opaque inside `1`'s silhouette.
+        // Both are drawn — `1` in part, which is what the cover is told.
+        #expect(surface.regions.map(\.frame) == [behind, front, behind])
+        #expect(surface.regions.map(\.within?.frame) == [nil, nil, front])
         #expect(surface.regions.map(\.veil) == [0.3, 0.3, 0])
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
         #expect(scrims.veil(of: WindowId(2)) == 0.3)
@@ -129,12 +147,12 @@ import EmiraCore
     @Test func anOverlapBeyondTheScreenEdgeDoesNotDisqualifyTheWindowOnIt() {
         let scrimmed = Rect(x: 400, y: 0, width: 800, height: 700)     // 200 pt past the right edge
         let parked = Rect(x: 999, y: 650, width: 800, height: 700)     // the nub in the corner
-        let nub = Rect(x: 999, y: 650, width: 201, height: 50)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, scrimmed), Self.pane(2, parked)])
         scrims.setScrims([Self.binding(1, scrimmed)])                  // the parked one is not on screen
 
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        #expect(surface.regions.map(\.frame) == [parked, scrimmed, nub])
+        #expect(surface.regions.map(\.frame) == [parked, scrimmed, parked])
+        #expect(surface.regions.map(\.within?.frame) == [nil, nil, scrimmed])
         #expect(surface.regions.map(\.veil) == [0, 0.3, 0])
     }
 
@@ -166,8 +184,8 @@ import EmiraCore
         scrims.setScrims([Self.binding(1, scrimmed)])
 
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        // The stranger is wholly inside the scrimmed window, so its own frame *is* the patch.
         #expect(surface.regions.map(\.frame) == [stranger, scrimmed, stranger])
+        #expect(surface.regions.map(\.within?.frame) == [nil, nil, scrimmed])
         #expect(surface.regions.map(\.veil) == [0, 0.3, 0])
     }
 
@@ -378,20 +396,43 @@ import EmiraCore
         #expect(Self.alpha(mask, x: 60, y: 40) == 0)
     }
 
-    /// An occluder takes its whole frame and a scrim stops at its silhouette — see `mask`. Four lit
-    /// crumbs in the corners of an opaque window is the worse of the two artefacts.
-    @Test func anOccluderIsSquareWhereAScrimIsRounded() throws {
+    /// A scrim stops at its silhouette, because outside its corner is its own shadow.
+    @Test func aScrimIsRoundedAtItsCorners() throws {
         let rounded = ScrimRegion(frame: Rect(x: 0, y: 0, width: 60, height: 60), veil: 1,
                                   cornerRadius: 12)
-        let square = ScrimRegion(frame: Rect(x: 0, y: 0, width: 60, height: 60), veil: 0,
-                                 cornerRadius: 12)
         let scrim = try #require(ScrimWindow.mask([rounded], display: Self.display, scale: 1))
-        #expect(Self.alpha(scrim, x: 1, y: 1) == 0)           // outside the corner: the window's shadow
+        #expect(Self.alpha(scrim, x: 1, y: 1) == 0)
         #expect(Self.alpha(scrim, x: 30, y: 30) == 255)
+    }
 
-        let over = try #require(ScrimWindow.mask([rounded, square], display: Self.display, scale: 1))
-        #expect(Self.alpha(over, x: 1, y: 1) == 0)            // and the occluder leaves no crumb
-        #expect(Self.alpha(over, x: 30, y: 30) == 0)
+    /// So does an occluder: outside its corner is the window it stands on. A float over an unfocused
+    /// window stamped square leaves that window unveiled in four sharp corners around it.
+    @Test func anOccluderIsRoundedAndLeavesTheVeilBeneathItsCorners() throws {
+        let scrim = ScrimRegion(frame: Rect(x: 0, y: 0, width: 80, height: 80), veil: 1,
+                                cornerRadius: 0)
+        let float = ScrimRegion(frame: Rect(x: 20, y: 20, width: 40, height: 40), veil: 0,
+                                cornerRadius: 12)
+        let mask = try #require(ScrimWindow.mask([scrim, float], display: Self.display, scale: 1))
+        #expect(Self.alpha(mask, x: 21, y: 21) == 255)        // outside the float's corner
+        #expect(Self.alpha(mask, x: 21, y: 40) == 0)          // along its edge
+        #expect(Self.alpha(mask, x: 40, y: 40) == 0)
+    }
+
+    /// A decline is the window behind, painted only inside the see-through window's silhouette. Where
+    /// the one in front rounds its corner, the one behind keeps the veil it was painted with.
+    @Test func aDeclineIsTheWindowBehindInsideTheOneInFront() throws {
+        let behind = ScrimRegion(frame: Rect(x: 0, y: 0, width: 50, height: 50), veil: 1,
+                                 cornerRadius: 0)
+        let front = ScrimRegion(frame: Rect(x: 20, y: 20, width: 60, height: 60), veil: 1,
+                                cornerRadius: 12)
+        let decline = ScrimRegion(frame: behind.frame, veil: 0, cornerRadius: 0,
+                                  within: .init(frame: front.frame, cornerRadius: front.cornerRadius))
+        let mask = try #require(ScrimWindow.mask([behind, front, decline], display: Self.display,
+                                                 scale: 1))
+        #expect(Self.alpha(mask, x: 21, y: 21) == 255)        // outside the front one's corner
+        #expect(Self.alpha(mask, x: 30, y: 30) == 0)          // where both stand
+        #expect(Self.alpha(mask, x: 10, y: 10) == 255)        // the one behind, alone
+        #expect(Self.alpha(mask, x: 60, y: 60) == 255)        // the one in front, alone
     }
 
     @Test func aMaskWithNothingOnItIsEntirelyClear() throws {

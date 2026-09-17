@@ -320,7 +320,9 @@ let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
 /// plane, and for a sharper version of its reason: a scrim *is* one display's photograph, so the
 /// surfaces are per display and the rule that drives them is not. `syncDisplays` builds them.
 let desktopCapturer = DesktopCapturer()
-let scrims = Scrims(filmer: desktopCapturer, identify: { [weak registry] in registry?.id(forNumber: $0) })
+let scrims = Scrims(filmer: desktopCapturer,
+                    identify: { [weak registry] in registry?.id(forNumber: $0) },
+                    cornerRadius: { [surfaceCache] in surfaceCache.cornerRadius(of: $0) })
 
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
                                    truth: truth, pointer: pointer, scrims: scrims, launcher: launcher)

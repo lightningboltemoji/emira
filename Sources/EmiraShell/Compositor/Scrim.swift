@@ -43,20 +43,35 @@ public protocol ScrimSurface: AnyObject {
     func retire()
 }
 
-/// One rectangle in the mask, in core (top-left, global) coordinates. `veil` is how much of the
-/// desktop shows there — `0` for a window that must stay opaque, which is how an occluder is spelled.
+/// One window's silhouette in the mask, in core (top-left, global) coordinates. `veil` is how much of
+/// the desktop shows there — `0` for a window that must stay opaque, which is how an occluder is spelled.
 public struct ScrimRegion: Equatable, Sendable {
     public let frame: Rect
     public let veil: Double
-    /// The window's own corner rounding, in points. Outside a rounded corner the frame holds the
-    /// window's *shadow*, which the desktop photograph — taken with the window gone — does not carry,
-    /// so painting the corner square would lighten the shadow by the veil.
+    /// The window's own corner rounding, in points. Outside a rounded corner the frame holds what is
+    /// beneath the window, so a square see-through one lightens its own shadow by the veil and a square
+    /// opaque one leaves the window under its corners unveiled.
     public let cornerRadius: Double
+    /// Another window's silhouette this one is painted only inside, or `nil` for all of it — how a
+    /// window behind a see-through one is declined where the two overlap and nowhere else.
+    public let within: Silhouette?
 
-    public init(frame: Rect, veil: Double, cornerRadius: Double) {
+    public init(frame: Rect, veil: Double, cornerRadius: Double, within: Silhouette? = nil) {
         self.frame = frame
         self.veil = veil
         self.cornerRadius = cornerRadius
+        self.within = within
+    }
+
+    /// A window's outline: its frame, rounded at the corners.
+    public struct Silhouette: Equatable, Sendable {
+        public let frame: Rect
+        public let cornerRadius: Double
+
+        public init(frame: Rect, cornerRadius: Double) {
+            self.frame = frame
+            self.cornerRadius = cornerRadius
+        }
     }
 }
 
@@ -216,28 +231,29 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         else { return nil }
         ctx.setBlendMode(.copy)
         ctx.clear(CGRect(x: 0, y: 0, width: width, height: height))
-        for region in regions {
+        // Every window stops at its silhouette, see-through or not: outside an occluder's corner is
+        // whatever lies beneath it, which keeps the veil it was painted with.
+        func outline(_ frame: Rect, _ cornerRadius: Double) -> CGPath {
             // Core is top-left and a bitmap context is bottom-left, so the rect is reflected about the
             // display's own mid-line — the same flip `ScreenGeometry.local(_:within:)` makes.
-            let box = CGRect(x: (region.frame.minX - display.minX) * Double(scale),
-                             y: (display.maxY - region.frame.maxY) * Double(scale),
-                             width: region.frame.width * Double(scale),
-                             height: region.frame.height * Double(scale))
-            ctx.setFillColor(gray: 1, alpha: CGFloat(min(max(region.veil, 0), 1)))
-            let radius = region.cornerRadius * Double(scale)
-            // **An occluder is square and a scrim is rounded**, and the asymmetry is deliberate. A
-            // see-through window stops at its own silhouette, because outside the corner the screen
-            // holds its shadow and the photograph does not. An occluder takes its whole frame, because
-            // outside *its* corner the screen holds its shadow over whatever is beneath — and four lit
-            // crumbs in the corners of an opaque window is a worse artefact than a veil three pixels
-            // short at the corner of a see-through one.
-            if radius > 0, region.veil > 0 {
-                ctx.addPath(CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius,
-                                   transform: nil))
-                ctx.fillPath()
-            } else {
-                ctx.fill(box)
+            let box = CGRect(x: (frame.minX - display.minX) * Double(scale),
+                             y: (display.maxY - frame.maxY) * Double(scale),
+                             width: frame.width * Double(scale),
+                             height: frame.height * Double(scale))
+            let radius = cornerRadius * Double(scale)
+            guard radius > 0 else { return CGPath(rect: box, transform: nil) }
+            return CGPath(roundedRect: box, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        }
+        for region in regions {
+            ctx.saveGState()
+            if let within = region.within {
+                ctx.addPath(outline(within.frame, within.cornerRadius))
+                ctx.clip()
             }
+            ctx.setFillColor(gray: 1, alpha: CGFloat(min(max(region.veil, 0), 1)))
+            ctx.addPath(outline(region.frame, region.cornerRadius))
+            ctx.fillPath()
+            ctx.restoreGState()
         }
         return ctx.makeImage()
     }
