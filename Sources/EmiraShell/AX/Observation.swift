@@ -51,9 +51,12 @@ public enum WorldObservation: Sendable, Equatable {
     /// A managed window came back from the Dock.
     case windowDeminimized(WindowId)
 
-    /// Keyboard focus landed on `window`, or on something emira does not manage (`nil` — a real answer,
-    /// not an error).
-    case focusMoved(WindowId?)
+    /// Keyboard focus landed on `window`.
+    case focusMoved(WindowId)
+
+    /// Keyboard focus landed on something of `app`'s that emira does not manage: a window it declined to
+    /// bind, or a sheet attached to one it does. Which, the watcher asks (`focusedWindow(of:)`).
+    case focusMovedUnmanaged(pid_t)
 
     /// A mouse button went down somewhere on the system — the start of a possible drag, and the only
     /// thing that distinguishes a window the *user* is resizing from one an app resized itself, or from
@@ -80,7 +83,7 @@ public enum WorldObservation: Sendable, Equatable {
 public enum FocusedWindowRead: Sendable, Equatable {
     /// No answer — busy, gone, or without AX. Evidence of nothing, and never to be read as `nil`.
     case unreadable
-    /// It named a window: one emira manages, or `nil` for one it does not.
+    /// It named a window: one emira manages or the one a focused sheet is attached to, else `nil`.
     case window(WindowId?)
 }
 

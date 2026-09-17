@@ -80,6 +80,11 @@ public final class WorldWatcher {
     /// reports in its ease-out tail. Uncapped: a window still moving has no right moment to re-place.
     public static let stillnessQuiet: TimeInterval = 0.12
 
+    /// How many times a focus read is asked before an unreadable answer is believed. An app putting up a
+    /// sheet stops answering AX until the sheet is in — ~280 ms, past one `AXClient.defaultTimeout` —
+    /// and the attempt queued behind the timeout lands just after it.
+    public static let maxFocusReadAttempts = 2
+
     private let source: any ObservationSource
     private let enumerator: AXEnumerator
     private let registry: WindowRegistry
@@ -308,6 +313,11 @@ public final class WorldWatcher {
         case .focusMoved(let id):
             resolveFocus(id)
 
+        case .focusMovedUnmanaged(let pid):
+            // Unanswered is still `nil`: the notification said focus left every managed window, and
+            // swallowing that leaves `World.focusedWindow` on one the user is no longer typing into.
+            readFocus(of: pid, unanswered: .window(nil))
+
         case .mouseDown:
             // A press arriving mid-settle closes it first: the bracket the core reads is a latch, and
             // two `dragBegan`s either side of no `dragEnded` would arm it twice over one release.
@@ -331,15 +341,23 @@ public final class WorldWatcher {
         }
     }
 
-    /// Ask which of an activated app's windows has focus — `NSWorkspace` names the app and nothing more.
-    /// Only for an app with windows under management, since the answer for any other is `nil` or
-    /// nothing; and only if no focus request overtakes the read on the lane (case 6 above).
-    private func readFocus(of pid: pid_t) {
+    /// Ask which of an app's windows has focus, for a report that named the app and no managed window.
+    /// Only for an app we track, and only if no focus request overtakes the read (case 6 above). An app
+    /// too busy to answer is taken to have said `unanswered`, which for an activation is nothing.
+    private func readFocus(of pid: pid_t, unanswered: FocusedWindowRead = .unreadable) {
         guard apps[pid] != nil else { return }
-        let asked = intent.newest
+        readFocus(of: pid, unanswered: unanswered, since: intent.newest, attempt: 1)
+    }
+
+    /// One attempt of `readFocus`. A retry keeps the first attempt's marker: the report left then.
+    private func readFocus(of pid: pid_t, unanswered: FocusedWindowRead, since asked: FocusIntent.Ticket,
+                           attempt: Int) {
         source.focusedWindow(of: pid) { [weak self] read in
-            guard let self, !isStopped, intent.isCurrent(asked),
-                  case .window(let id) = read else { return }
+            guard let self, !isStopped, intent.isCurrent(asked) else { return }
+            if read == .unreadable, attempt < Self.maxFocusReadAttempts {
+                return readFocus(of: pid, unanswered: unanswered, since: asked, attempt: attempt + 1)
+            }
+            guard case .window(let id) = read == .unreadable ? unanswered : read else { return }
             resolveFocus(id)
         }
     }

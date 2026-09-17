@@ -1274,11 +1274,76 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // leaves `World.focusedWindow` naming a window the user is no longer typing into.
         let world = LiveWorld()
         world.watcher.start()
+        world.source.focused[200] = .window(nil)
         let before = world.recorder.events.count
 
-        world.watcher.handle(.focusMoved(nil))
+        world.watcher.handle(.focusMovedUnmanaged(200))
 
+        #expect(world.source.focusReads == [200])
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil, origin: .system)])
+    }
+
+    @Test func focusLandingOnASheetStaysOnTheWindowItIsAttachedTo() {
+        // A sheet is not a window emira manages, and AppKit posts no focus change when one is dismissed.
+        // Reported as `nil`, focus would never come back to the window, which stays veiled as unfocused.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.watcher.handle(.focusMoved(one))
+        world.source.focused[200] = .window(one)       // the read resolves the sheet to its window
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMovedUnmanaged(200))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    @Test func anUnmanagedFocusTheAppCannotAnswerForStillLeavesTheManagedWindows() {
+        // Unlike an activation, which names no window: this notification already said focus is on
+        // something unmanaged, and a busy app is no reason to doubt it.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .unreadable
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMovedUnmanaged(200))
+
+        #expect(world.source.focusReads == Array(repeating: 200, count: WorldWatcher.maxFocusReadAttempts))
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil, origin: .system)])
+    }
+
+    @Test func aFocusReadThatTimesOutIsAskedAgainBeforeItIsBelieved() {
+        // The app that just put a sheet up is the one still animating it in, and a single read times
+        // out on it every time. Believed, the timeout would report the sheet's own window as unfocused.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.watcher.handle(.focusMoved(one))
+        world.source.holdsFocusReads = true
+        world.watcher.handle(.focusMovedUnmanaged(200))
+        let before = world.recorder.events.count
+
+        world.source.answerFocusRead(.unreadable)
+        #expect(world.recorder.events.count == before, "a timeout alone reports nothing")
+        world.source.answerFocusRead(.window(one))
+
+        #expect(world.source.focusReads == [200, 200])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    @Test func anUnmanagedFocusReadOvertakenByAFocusRequestNeverReachesTheCore() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let term = try! #require(world.id(titled: "term"))
+        world.source.holdsFocusReads = true
+        world.watcher.handle(.focusMovedUnmanaged(200))
+        _ = world.intent.request(term)
+        let before = world.recorder.events.count
+
+        world.source.answerFocusRead(.unreadable)
+
+        #expect(world.source.focusReads == [200], "not asked again")
+        #expect(world.recorder.events.count == before, "and not even the unanswered `nil`")
     }
 
     // Focus reports that are our own, arriving late

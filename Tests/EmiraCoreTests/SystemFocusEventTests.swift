@@ -189,14 +189,14 @@ import Testing
 
     /// …and still honours a float, which is not a grudging exception: emira already declines an opinion
     /// about where a float *sits*, and policing focus onto one is the same opinion. It is also what
-    /// keeps a modal save sheet usable, since at this layer a sheet and a Cmd-Tab are one notification.
+    /// keeps a modal dialog usable, since at this layer a dialog and a Cmd-Tab are one notification.
     @Test func ignoreStillAdmitsAWindowEmiraDoesNotPlace() {
         var s = world(2, .ignore)
-        let sheet = WindowId(9)
-        s = run(s, [.windowCreated(EngineFix.snapshot(9, role: .sheet))]).0
-        #expect(s.world.isFloating(sheet))
+        let dialog = WindowId(9)
+        s = run(s, [.windowCreated(EngineFix.snapshot(9, role: .dialog))]).0
+        #expect(s.world.isFloating(dialog))
 
-        expectAdmitted(s, systemEvent(sheet), sheet)
+        expectAdmitted(s, systemEvent(dialog), dialog)
     }
 
     /// The ladder is monotone, and it is asserted rather than argued: every window `ignore` admits,

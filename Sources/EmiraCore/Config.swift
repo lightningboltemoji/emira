@@ -52,9 +52,9 @@ public enum CoverMode: String, Sendable, Equatable, Codable, CaseIterable {
 /// you can see, or none.
 ///
 /// **What none means.** `ignore` still honours focus onto a window emira does not place — a float, a
-/// dialog, a sheet. Not an exception grudgingly made: emira already declines an opinion about where a
-/// float *sits*, and policing focus onto one is the same opinion. It is also what keeps a modal save
-/// sheet usable, since at this layer a sheet taking focus and a Cmd-Tab are the same notification.
+/// dialog, a panel. Not an exception grudgingly made: emira already declines an opinion about where a
+/// float *sits*, and policing focus onto one is the same opinion. It is also what keeps a modal dialog
+/// usable, since at this layer a dialog taking focus and a Cmd-Tab are the same notification.
 public enum SystemFocusEvents: String, Sendable, Equatable, Codable, CaseIterable {
     /// Every focus change is honoured — the strip reveals whatever the system focused.
     case respect

@@ -1420,6 +1420,16 @@ each read leaves and drops an answer `isCurrent` no longer holds for. The marker
 no clock — a lane that is merely slow is not a reason to doubt its answer — where the record `FocusIntent`
 keeps for the app's own notifications is bounded by its grace, and that is the half the grace still covers.
 
+**Focus in a sheet is focus in the window it is attached to.** A sheet is never in `AXWindows`, so the element
+`AXFocusedWindowChanged` names is one the registry does not know — and AppKit posts no focus change when the
+sheet goes away, so focus left on anything but its window never comes back to it. A notification naming an
+unknown element is therefore a question rather than an answer (`WorldObservation.focusMovedUnmanaged`), and it
+becomes the same read an activation costs, which names a focused element's `AXParent` when that is the window
+the registry knows. **A read that times out is asked once more** (`WorldWatcher.maxFocusReadAttempts`): an app
+putting up a sheet stops answering AX for longer than one `AXClient` timeout while the sheet comes in. Only
+then is the fallback believed — nothing for an activation, which named no window, and `nil` for a
+notification, which already said focus left the managed ones.
+
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The
 enhanced-UI flag is **read before it is written** and restored after — never introduced to an app that didn't

@@ -292,10 +292,11 @@ public final class AXObservationSource: ObservationSource {
     public func focusedWindow(of pid: pid_t,
                               then completion: @escaping @MainActor (FocusedWindowRead) -> Void) {
         client.perform(app: pid) { application in
-            application.focusedWindow()
-        } then: { [weak self] window in
-            guard let self, let window else { return completion(.unreadable) }
-            completion(.window(registry.id(for: window)))
+            application.focusedWindow().map { ($0, $0.parent) }
+        } then: { [weak self] read in
+            guard let self, let (window, parent) = read else { return completion(.unreadable) }
+            // A focused sheet is focus in the window it is attached to, which is the one emira manages.
+            completion(.window(registry.id(for: window) ?? parent.flatMap { registry.id(for: $0) }))
         }
     }
 
@@ -321,9 +322,13 @@ public final class AXObservationSource: ObservationSource {
             deliver?(.windowAppeared(element.ownerPid))
 
         case AXNotification.focusedWindowChanged:
-            // `nil` is a real answer: the user focused a window we declined to bind, and passing it on
-            // keeps `World.focusedWindow` honest rather than stuck on the last window we knew.
-            deliver?(.focusMoved(registry.id(for: element)))
+            // An element the registry does not know may still be focus in a window it does — a sheet —
+            // and only a read of the app can say which, so that is the watcher's to ask.
+            guard let id = registry.id(for: element) else {
+                deliver?(.focusMovedUnmanaged(element.ownerPid))
+                return
+            }
+            deliver?(.focusMoved(id))
 
         case AXNotification.uiElementDestroyed:
             guard let id = registry.id(for: element) else { return }

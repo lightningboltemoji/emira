@@ -165,7 +165,7 @@ happen on.
   desktop whose owner is focused on a nub in the corner. Two qualifications keep it honest: an app
   backfilling focus after a window closes is macOS guessing, not the user asking, and emira has already
   decided where focus goes; and _how much_ of macOS's own focus you still want is a dial, with focus onto
-  windows emira doesn't place always admitted, or a modal save sheet stops working.
+  windows emira doesn't place always admitted, or a modal dialog stops working.
 - **The main display is macOS's to name, and emira follows it.** Which screen holds the menu bar is a
   setting the user already has, in Displays settings, and a second opinion about which screen is theirs is
   the same mistake as a second opinion about where a window is. So the role moving carries the workspace

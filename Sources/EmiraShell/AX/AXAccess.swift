@@ -41,6 +41,9 @@ private enum AXKey {
     /// Whether the app is the active one. Written when AppKit's own activation is refused — see
     /// `AXWindowWriter.focus`.
     static let frontmost = "AXFrontmost"
+    /// What an element hangs from: the window, for a sheet; the application, for a window. Read upward,
+    /// so it is not the descent the file header rules out.
+    static let parent = "AXParent"
     /// The window's own close button. A window-level *attribute*, not a child walk — the one element
     /// below a window emira ever asks for, and the only public way to close a foreign window
     /// (`IMPLEMENTATION.md` §7's "never walk children" is about enumerating a tree, not naming a
@@ -139,6 +142,14 @@ public struct AXWindow: @unchecked Sendable {
 
     /// `AXWindow` for an ordinary window, `AXSheet`/`AXPopover` for the attached kinds.
     public var role: String? { copyAttribute(element, AXKey.role) as? String }
+
+    /// The element this one hangs from — the window a sheet is attached to. An ordinary window answers
+    /// its application, which is no window any registry holds, so a lookup can ask without the role.
+    var parent: AXWindow? {
+        guard let raw = copyAttribute(element, AXKey.parent),
+              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return AXWindow(raw as! AXUIElement)
+    }
 
     /// `AXStandardWindow`, `AXDialog`, `AXFloatingWindow`, … The primary input to the tiling taxonomy.
     public var subrole: String? { copyAttribute(element, AXKey.subrole) as? String }
