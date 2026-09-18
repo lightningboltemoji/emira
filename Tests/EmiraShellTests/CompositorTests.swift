@@ -300,11 +300,10 @@ import EmiraCore
     @MainActor final class RecordingScrims: ScrimPlane {
         let timeline: Timeline
         init(_ timeline: Timeline) { self.timeline = timeline }
-        func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {
+        func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
             let windows = bindings.map { "\($0.window.raw)" }.joined(separator: ",")
-            timeline.record(lifted ? "lifted(\(windows))" : "scrims(\(windows))")
+            timeline.record("\(change)@\(monitor.raw)(\(windows))")
         }
-        func restack() { timeline.record("restack") }
     }
 
     /// The scrim plane's harness — the set and the cover over it, so a test can say in which order a
@@ -340,27 +339,27 @@ import EmiraCore
     /// is the one authority on the veil; the cover asks it again rather than deciding again.
     @Test func aScrimSetIsFollowedByTheCoversOwnVeils() {
         let (executor, _, timeline, log) = Self.scrimHarness()
-        let binding = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
-        executor.execute([.setScrims([binding], lifted: false)], feedback: log.sink)
-        #expect(timeline.entries == ["scrims(1)", "veils"])
+        let binding = ScrimBinding(window: WindowId(1), veil: 0.3)
+        executor.execute([.setScrims(MonitorId(1), [binding], .dissolve)], feedback: log.sink)
+        #expect(timeline.entries == ["dissolve@1(1)", "veils"])
     }
 
     /// And the whole set is one decision, so the ask comes after the last one in a run rather than
     /// after each — `setScrims` is last-wins for the reason the plane is.
     @Test func oneRunOfSetsAsksTheCoverOnce() {
         let (executor, _, timeline, log) = Self.scrimHarness()
-        let first = ScrimBinding(window: WindowId(1), monitor: MonitorId(1), frame: .zero, veil: 0.3)
-        let second = ScrimBinding(window: WindowId(2), monitor: MonitorId(1), frame: .zero, veil: 0.3)
-        executor.execute([.setScrims([first], lifted: false), .setScrims([second], lifted: false)],
-                         feedback: log.sink)
-        #expect(timeline.entries == ["scrims(1)", "scrims(2)", "veils"])
+        let first = ScrimBinding(window: WindowId(1), veil: 0.3)
+        let second = ScrimBinding(window: WindowId(2), veil: 0.3)
+        executor.execute([.setScrims(MonitorId(1), [first], .dissolve),
+                          .setScrims(MonitorId(2), [second], .dissolve)], feedback: log.sink)
+        #expect(timeline.entries == ["dissolve@1(1)", "dissolve@2(2)", "veils"])
     }
 
     /// Whether a hand emptied the set is the core's to say, and it reaches the plane as said.
     @Test func aLiftedSetReachesThePlaneLifted() {
         let (executor, _, timeline, log) = Self.scrimHarness()
-        executor.execute([.setScrims([], lifted: true)], feedback: log.sink)
-        #expect(timeline.entries == ["lifted()", "veils"])
+        executor.execute([.setScrims(MonitorId(1), [], .cut)], feedback: log.sink)
+        #expect(timeline.entries == ["cut@1()", "veils"])
     }
 
     @Test func everyEffectIsAssignedToAPlane() {

@@ -224,8 +224,8 @@ its executor. There are seven planes:
 
 **The hoist and scrim planes are the presentation plane outside a transition**, and each is its own
 plane because nothing it does is a cover's: no base, no session, no ack the reducer counts down, and
-windows that outlive every transition. `Effect.setHoists` and `Effect.setScrims` each carry the whole
-set and each plane diffs it.
+windows that outlive every transition. `Effect.setHoists` carries the whole desktop's set and
+`Effect.setScrims` one display's, each every time, and each plane diffs it.
 
 What the router cannot supply is "cover before teleport" — that is a fact about the _display_, not about
 emission order, so it is a phase in the core fenced by `Event.coverOnScreen`, and the two never share a batch.
@@ -474,7 +474,7 @@ the entitlement an overtaken piece carries is recorded regardless, over whatever
 ## 6. State — what lives where
 
 ```swift
-State = World         // truth: displays (frame + struts), apps, windows, focus, frames, corrections
+State = World         // truth: displays (frame + struts), apps, windows, focus, frames, writes in flight, corrections
       + Workspaces    // structure: 36 strips, the shared ColumnId allocator
       + Monitors      // structure: which display owns which workspaces, shows which, and is focused
       + Motion        // animation: a viewport per display (offset + session), column widths, displacements
@@ -1249,22 +1249,20 @@ the desktop, and this is the member of that family that scales with the window �
 window at all. The arithmetic is in the photograph's encoded values because those are what the window server
 blends. It is baked in at film time beside the frost, and for the frost's reasons.
 
-**The decline is a region, because the rule is one.** A window behind is stamped back to opaque inside the
-see-through one's silhouette after the scrim is painted, rather than disqualifying the whole frame — so a
-float takes the patch of the tile it covers and no more, and a cascade keeps the effect on whatever a `stack`
-tile leaves exposed. Standing in for the rest needs a photograph per window, refilmed whenever anything behind
-anything redraws. The scope follows from the same shape: the mask is a raster the size of the display, so an
-overlap out beyond the screen edge stamps nothing and decides nothing — which is what keeps a column hanging
-off the viewport, its frame running through the parking lot in the corner, from forfeiting its transparency to
-a sliver a pixel wide. A window *in front* is not a decline and costs nothing — those pixels are not on the
-screen, so the mask paints over them.
+**The decline is a region, because the rule is one.** A window behind takes its overlap out of the
+see-through one's shape rather than disqualifying the whole frame — so a float takes the patch of the tile it
+covers and no more, and a cascade keeps the effect on whatever a `stack` tile leaves exposed. Standing in for
+the rest needs a photograph per window, refilmed whenever anything behind anything redraws. **The occluder and
+the decline are one subtraction** (`Scrims.veils`): a window *in front* is not a decline and costs nothing,
+those pixels not being on the screen at all, but it comes out of the shape the same way — so z-order decides
+nothing here, and only the sheet rule reads the walk. The scope follows from the surface: only what is on this
+display is in the walk at all, so a column hanging off the viewport, its frame running through the parking lot
+in the corner, forfeits a sliver a pixel wide and keeps the screen it is on.
 
-**Every region of the mask is a window's silhouette, rounded by that window's measured radius**
-(`ScrimRegion`). A see-through window stops at its corners because outside them is its own shadow, and an
-opaque one because outside them is whatever it stands on, which keeps the veil it was painted with. A decline
-is the window behind painted only within the see-through one's silhouette (`ScrimRegion.within`), so the
-corners of both shape it. Stamped square, an occluder or a decline leaves the window beneath unveiled in a
-sharp corner.
+**Every shape is a window's silhouette, rounded by that window's measured radius** (`Scrims.veils`). A
+see-through window stops at its corners because outside them is its own shadow, and what is taken out of it
+stops at *its* corners because outside those is whatever that window stands on — which keeps the veil beneath.
+Subtracted square, an occluder or a decline leaves the window beneath unveiled in a sharp corner.
 
 **A sheet is part of its window, so it is veiled with it** (`Scrims.regions`). A window emira never adopted,
 standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes
@@ -1285,55 +1283,90 @@ widget therefore ticks late behind a window you are looking through. A new `unfo
 the throttle does not pace, because a radius change does not leave the standing photograph stale — it leaves it
 wrong.
 
-**A set describes a desktop, so a covered transition's does not arrive ahead of one**
-(`Engine.settleScrims`). The veil is appearance, and the rule for when appearance may change is the rule for
-when a window may move: a display whose cover is not on the glass keeps the set it is drawing and takes the
-new one in the batch that teleports the reals — the same hold `writeTruthPlane` makes over that display's
-share of `placedOnScreen`. Held, the set is painted under the cover and the stand-ins over it follow it there,
-so the veil travels with the geometry it belongs to. Emitted at the command it would land in the capture head
-instead, where the veil steps over a desktop that has not begun to move. It is also what makes `Reconstruction.veil`'s "as it
-was filmed" true: the plane still holds the old answer at the moment a layer is built.
+**A set describes a desktop, so it does not arrive ahead of one** (`Engine.settleScrims`). The veil is
+appearance, and the rule for when appearance may change is the rule for when a window may move: a display
+whose cover is not on the glass keeps the set it is drawing and takes the new one in the batch that teleports
+the reals — the same hold `writeTruthPlane` makes over that display's share of `placedOnScreen`. Held, the set
+is painted under the cover and the stand-ins over it follow it there, so the veil travels with the geometry it
+belongs to. Emitted at the command it would land in the capture head instead, where the veil steps over a
+desktop that has not begun to move. It is also what makes `Reconstruction.veil`'s "as it was filmed" true: the
+plane still holds the old answer at the moment a layer is built.
 
-**The mask has two inputs and only one of them is an effect**, so the other is asked for
-(`Scrims.restack`). The bindings arrive as `setScrims`; the stacking they are masked against belongs to the
-window server and moves on its own — a transition's AX writes land *after* the core described them, so a set
-reaches the glass painted against where the windows still were, and holds that reading for as long as the
-bindings do. It is asked at the top of `CompositingExecutor.dismiss`, which is the moment both facts have
-settled *and* the cover is still hiding the scrim: the transition closed because the AX sets landed, so the
-window server is current, and the repaint lands behind the cover instead of being revealed by it. One window
-list and one repaint per transition, and a repaint that changes nothing stops at `ScrimWindow.setRegions`.
+**A display with no cover over it holds its set for its writes instead** (`World.inFlight`). A set is masked
+against the window server, and the batch that writes the frames reaches the plane before any of them has
+landed, so a set sent with it is cut around where the windows were. So an uncovered display keeps the set it
+is drawing while a write that touches it — where the window stood, or where it was sent — is in flight, and
+takes the new one with the last `axLanded` or `axFailed`: one set, masked once, against a desktop that has
+stopped. A hand resize, a float toggle and every move under `off` take this path. A covered display is not
+held for its writes, because until its cover comes down the stand-ins draw the veil, from the core's geometry.
+
+**Every frame in the mask is the window server's, and the core says when to read it.** A binding names a
+window and its veil, and carries no rectangle: the stacking is read in one
+`CGWindowListCopyWindowInfo` as a set arrives, emira's own windows with everything else, so a mask is one
+reading of the desktop rather than the core's targets beside the window server's positions. A frame carried in
+the binding would also turn every echo of our own write into a new set, since an app lands a fractional target
+on whole points. What a set without geometry cannot say is that the desktop moved under it unchanged, so **the
+core sends the same set again when the desktop settles**: when every write touching a display has landed, and
+when a window emira will not write back — a float, or a frame its app already refused — stops where it put
+itself (`windowSelfPlaced`). A tiled window that stopped anywhere else is written back, and recut when that
+lands. A covered transition's landings come no later than its `endTransition`, and the set goes ahead of the
+dismissal in their batch, so the repaint lands while the cover still hides the scrim. A repaint that changes
+nothing stops at the shape it would rewrite (`ScrimWindow.setVeils`), which is most re-sends.
+
+**No moment the core can name is late enough, so the plane watches the window server** (`Scrims.watch`). A
+window's move reaches the server *after* the AX write that caused it has landed and after the app has
+reported its new frame — 8 to 42 ms later, measured on one display with two windows — and nothing announces
+it when it arrives. So every event the core has is early, and a mask cut on one of them is cut around where
+the windows were. A set is painted at once and then cut again each time the reading changes, ending on quiet
+(`settleQuiet` readings with nothing new) or on a deadline (`settleLimit`). It is `HoistPanels`' fence in
+another place: what the window server is showing can only be found out by asking it. What makes this
+affordable is the layer tree — a re-cut writes paths, which leaves a veil fading through it undisturbed, and
+a reading that changes nothing paints nothing at all.
+
+**A set is one display's**, as its photograph and its surface are, and `Effect.setScrims` names which. A
+display holding its veil is then simply one that was sent nothing, and its neighbour's focus change cannot
+repaint it against a stacking its own writes are still moving through. It is also what lets one batch dissolve
+on one screen and cut on another, which is what those two words mean per display.
 
 **A window in the hand lifts every veil** (`State.scrimBindings`). A mask is cut once per set, and a hand moves
 a window between sets: a dragged float leaves its hole where it was picked up, and a shrunk one leaves a hole
 larger than itself. So the set is empty from the frame report that latches `Drag.subject` until `dragEnded`.
-The veil comes off **at once** as the window starts to move — the set is marked `lifted`, and `ScrimWindow.lift`
-drops the mask and the window's alpha in one turn, because a fade would be a fade from the wrong holes. It
-comes back as an ordinary set once the window has stopped, cut against where it came to rest, and dissolves
-in from an empty mask exactly as a focus change dissolves. `dragEnded` rather than the mouse-up is what makes that true: an app is still draining a resize
-when the button comes up (`WorldWatcher.beginSettle`). Tracking the window instead would be a window list and a
+The veil comes off **at once** as the window starts to move — the set is a `cut`, and an empty one takes the
+mask and the window's alpha away in one turn, rasterizing nothing and reading no window list, because a fade
+would be a fade from the wrong holes. It
+comes back as an ordinary set once the window has stopped and whatever `dragEnded` re-tiled has landed, cut
+against where they came to rest, and dissolves in from an empty mask exactly as a focus change dissolves.
+`dragEnded` rather than the mouse-up is what makes that true: an app is still draining a resize when the
+button comes up (`WorldWatcher.beginSettle`). Tracking the window instead would be a window list and a
 display-sized mask per frame report, and the hole would still trail the window by an AX round trip across
 everything it passes over. A press that moves nothing lifts nothing.
 
-**A repaint is a cut or a dissolve, and the plane says which.** `ScrimWindow.cut` is a layer of ours rather
-than a view's, so no delegate suppresses Core Animation's implicit animation and every repaint alike would
-dissolve over a quarter second — a correction included, which the eye reads as the window deciding to become
-transparent by itself. Actions are off, and the dissolve is asked for by name: `Scrims` compares the veil it
-drew each window at last time against this time, per display, so **a veil that moved is an event and fades
-over `ScrimWindow.fadeDuration`, while a rectangle that moved under unchanged veils is a correction and
-cuts.** That is what gives a focus change between two columns already on the glass — which scrolls nothing,
-raises no cover, and so has nothing else drawing it — the fade the covered case gets from
-`Reconstruction.refreshVeils`. The one event that cuts is a hand's lift (`Effect.setScrims`' `lifted`), and the
-core says so rather than the plane guessing: an empty set looks the same whether a hand emptied it or focus
-landed on the last veiled window.
+**A repaint is a cut or a dissolve, and the core says which** (`ScrimChange`). `ScrimWindow.cut` is a layer
+of ours rather than a view's, so no delegate suppresses Core Animation's implicit animation and every repaint
+alike would dissolve over a quarter second — a correction included, which the eye reads as the window deciding
+to become transparent by itself. Actions are off, and the dissolve is asked for by name. **A veil that moved is
+a `dissolve` and fades over `ScrimWindow.fadeDuration`; everything else is a `cut`** — a hand's lift, and a set
+the desktop merely settled under. That is what gives a focus change between two columns already on the glass —
+which scrolls nothing, raises no cover, and so has nothing else drawing it — the fade the covered case gets
+from `Reconstruction.refreshVeils`. It is the core's word and not the plane's guess because the core is what
+knows *why* a set changed: an empty set looks the same whether a hand emptied it or focus landed on the last
+veiled window, and a mask moving under unchanged veils looks the same whether the desktop settled or the user
+did something. The plane keeps no memory of what it last drew.
 
-**Coming on and going off are the same dissolve, and the window's alpha is only a gate**
-(`ScrimWindow.present`). A scrim comes on by flipping its window to `alpha 1` at once and dissolving the mask
-in from `ScrimWindow.empty`, and goes off by dissolving to a mask with nothing see-through and flipping the
-window off when that lands. Fading the window's alpha instead looks like a different animation beside a veil
-moving: AppKit steps a window's alpha on the main thread at 60 Hz along a front-loaded curve (41% in the first
-frame, 83% by the third), and a busy main thread delays the whole of it, where a `contents` dissolve is linear
-and drawn by the render server at the display's rate. The dissolve has to start from an image: from no
-contents at all, Core Animation cuts.
+**The mask is a layer tree, and a veil is a layer's opacity** (`ScrimWindow.setVeils`). One `CAShapeLayer`
+per see-through window, its path the shape above and its opacity the veil — so where a window *is* and how
+see-through it is change independently: a path is written with actions off, and a veil is an opacity animation
+the render server runs. That is what lets a correction land mid-fade without ending it, which one rasterized
+image cannot do, since every repaint of it replaces the whole mask. Measured on the development display
+(3420×2214), the shapes cost 0.24 ms against 2.1 ms for the image, and a fade was checked against a sibling's
+path, its own path, a layer arriving, a layer leaving and a retarget: it survives all five, and the retarget
+starts from where the fade has got to rather than from where the last one was going.
+
+**The window's alpha is only a gate**, flipped at once when there is a photograph and something see-through,
+and back when the last veil has finished going (`CATransaction`'s completion). Fading the window's alpha
+instead looks like a different animation beside a veil moving: AppKit steps a window's alpha on the main
+thread at 60 Hz along a front-loaded curve (41% in the first frame, 83% by the third), and a busy main thread
+delays the whole of it, where a layer's opacity is drawn by the render server at the display's rate.
 
 **The cover carries the same veil, drawn through the same photograph** (`Reconstruction.veil` and
 `Reconstruction.backdrop`, read from `Scrims.veil(of:)` and `Scrims.backdrop(of:)` when a layer is built). A
@@ -1683,10 +1716,10 @@ of "do not follow the user into a full-screen app", with nothing observing Space
 
 **`ScrimWindow` is one window per display, which is the opposite shape and the opposite reason.** A scrim
 takes no clicks at all (`ignoresMouseEvents`), so it is free to be one surface — and one surface is what
-makes its occlusion exact: its mask is painted back to front over the window server's own ordering, so a
-window in front of a see-through one punches its own hole by being painted after it, with nothing
-reasoning about which rectangles overlap which. Per-window veils ride in the mask's alpha, so the window
-stays at `alpha 1` and one surface serves any number of windows at any number of strengths.
+makes its occlusion exact: its mask holds one shape per see-through window, and every other window on the
+glass comes out of that shape, so a window in front of a see-through one takes its own overlap away with
+nothing reasoning about z-order. Per-window veils ride in those layers' opacity, so the window stays at
+`alpha 1` and one surface serves any number of windows at any number of strengths.
 
 Levels, top down: `GuidePanel` at `.floating + 2`, `HoistPanel` at `+ 1`, `Overlay` at `.floating`,
 `ScrimWindow` at `− 1`. A hoisted float is over the cover, because a float that stays on top through a

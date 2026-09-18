@@ -102,7 +102,7 @@ import Testing
             let (next, effects) = Engine.reduce(s, .command(.focus(direction)))
             #expect(!next.motion.isTransitioning)
             #expect(effects == [.focus(WindowId(2)), .raise(WindowId(2)),
-                                .setScrims(next.scrims, lifted: false)])
+                                .setScrims(MonitorId(1), next.scrims[MonitorId(1)] ?? [], .dissolve)])
             s = next
             s = EngineFix.settle(s, effects)
             // …and back, so the second direction starts from the same place.

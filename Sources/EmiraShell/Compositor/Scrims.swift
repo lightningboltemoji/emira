@@ -4,11 +4,11 @@ import EmiraCore
 // The scrim plane: one `ScrimWindow` per display, the desktop photograph behind each, and the rule
 // that decides which of the core's bindings the photograph is actually true for.
 //
-// **Two authorities, and each is asked only what it owns.** Where emira's own windows are is the core's
-// (`ScrimBinding.frame` is AX-observed truth, folded into `World`). What *else* is on the screen, and in
-// what order, is the window server's — it is the only thing that knows about the dialog an app just put
-// up, the Spotlight panel, or anything else emira never placed. Mixing them is not a second opinion; it
-// is the one question each can answer.
+// **Two authorities, and each is asked only what it owns.** Which windows are see-through, and how far,
+// is the core's (`ScrimBinding`). Where every window stands, and in what order, is the window server's —
+// the only thing that knows about the dialog an app just put up or the Spotlight panel, and the only
+// reading of emira's own windows taken at the same moment as those. The core sends a set once the moves
+// it describes have landed, so that reading is of a desktop that has stopped (`Engine.settleScrims`).
 //
 // **The rule, stated once: a window is drawn see-through only where the desktop is what lies behind it.**
 // It falls out of one comparison against the window server's ordering, and it has three consequences
@@ -25,6 +25,14 @@ import EmiraCore
 // A window *in front* is a different matter and costs nothing: those pixels are not on the screen, so
 // the mask simply paints it opaque afterwards and the painter's algorithm does the rest.
 //
+// **The window server catches up in its own time, and says nothing when it does.** An app's move reaches
+// it after the AX write that caused it has already landed — 8 to 42 ms later, measured — so the reading a
+// mask was cut against goes stale under it with no event to hang a repaint on. A set is therefore painted
+// at once and then cut again while the reading keeps changing, bounded by quiet and by a deadline
+// (`settleQuiet`, `settleLimit`). It is `HoistPanels`' fence in another place: what the window server
+// shows can only be found out by asking it. Cutting again costs a shape's path and nothing else, so a
+// veil fading through it is undisturbed (`ScrimWindow`).
+//
 // **The photograph is refilmed when the desktop is quiet.** Never on a focus change: the window server
 // serializes screenshots, and a focus change is also a cover, whose batch is the one latency in emira
 // anybody can feel (`SCKCapturer`). So it is taken at build, when the screens change, when the Space
@@ -35,11 +43,9 @@ import EmiraCore
 /// half, and `CompositingExecutor` routes to a seam a test can stand in for.
 @MainActor
 public protocol ScrimPlane: AnyObject {
-    /// Draw exactly these windows see-through, and take the scrim off every one not named — at once
-    /// where the set is `lifted` (`Effect.setScrims`).
-    func setScrims(_ bindings: [ScrimBinding], lifted: Bool)
-    /// Read the window server again and repaint, against the set last named. See `Scrims.restack`.
-    func restack()
+    /// Draw exactly these windows see-through on `monitor`, against the window server as it stands now,
+    /// and take the scrim off every one not named — dissolving or cutting as the core says.
+    func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange)
 }
 
 /// The plane on a machine that has none — no Screen Recording grant, or a test that does not care.
@@ -48,14 +54,13 @@ public protocol ScrimPlane: AnyObject {
 @MainActor
 public final class NoScrims: ScrimPlane {
     public init() {}
-    public func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {}
-    public func restack() {}
+    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {}
 }
 
 /// One on-screen window as the window server reports it, front to back.
 public struct StackedWindow: Equatable, Sendable {
     public let number: CGWindowID
-    /// Core (top-left, global) coordinates — the space `ScrimBinding.frame` is already in.
+    /// Core (top-left, global) coordinates.
     public let frame: Rect
 
     public init(number: CGWindowID, frame: Rect) {
@@ -105,6 +110,13 @@ public final class Scrims: ScrimPlane {
     /// a re-film is a full-screen capture we are unwilling to spend at any rate the eye would notice.
     static let desktopMaxAge: TimeInterval = 2
 
+    /// How often the window server is re-read while it catches up with a set, how many readings with
+    /// nothing new in them end that, and how long it may go on regardless. `WorldWatcher.beginSettle`'s
+    /// shape: quiet ends the wait, and a cap ends it whatever happens.
+    static let settleInterval: TimeInterval = 1.0 / 60
+    static let settleQuiet = 4
+    static let settleLimit: TimeInterval = 0.4
+
     /// A window's corner rounding, in points, until a capture has measured it. A guess, and it goes stale
     /// with the next macOS: what it costs is a corner-sized triangle of the window's shadow lightened by
     /// the veil, or of the window left unveiled.
@@ -119,6 +131,10 @@ public final class Scrims: ScrimPlane {
     private let cornerRadius: @MainActor (WindowId) -> Double?
     /// The window server's own ordering. Injected so the rule can be tested without a desktop.
     private let stack: @MainActor () -> [StackedWindow]
+    /// The flip between core and Cocoa coordinates — the shapes are built in each surface's own space.
+    private var geometry = ScreenGeometry(flipHeight: 0)
+    /// What the settling re-reads are scheduled on.
+    private let scheduler: any DelayScheduler
 
     private var surfaces: [MonitorId: any ScrimSurface] = [:]
     private var frames: [MonitorId: Rect] = [:]
@@ -133,27 +149,29 @@ public final class Scrims: ScrimPlane {
     /// it. Held by the plane rather than the filmer, because the plane is what a change makes stale.
     private var blur: Double = 0
 
-    /// The last set the core named, re-applied whenever the displays change under it — a surface is
-    /// built against one screen, and the core has no reason to re-emit a set that did not change just
-    /// because the screens did. `HoistPanels.current`'s reason.
-    private var current: [ScrimBinding] = []
+    /// The last set the core named per display, re-applied whenever the displays change under it — a
+    /// surface is built against one screen, and the core has no reason to re-emit a set that did not
+    /// change just because the screens did. `HoistPanels.current`'s reason.
+    private var current: [MonitorId: [ScrimBinding]] = [:]
 
-    /// The veil each window is **actually being drawn at** — the core's intent with the window server's
-    /// answer folded in. A window on no display's scrim is absent; one the scrim declined in part still
-    /// carries its veil, for `veil(of:)`'s reason. Kept because a second plane reads it: `veil(of:)`.
-    private var applied: [WindowId: Double] = [:]
+    /// The veil each window is **actually being drawn at**, by display — the core's intent with the
+    /// window server's answer folded in. A window on no display's scrim is absent; one the scrim declined
+    /// in part still carries its veil, for `veil(of:)`'s reason. Kept because a second plane reads it.
+    private var applied: [MonitorId: [WindowId: Double]] = [:]
 
-    /// The same, split by display and kept from the last apply — what tells an **event** from a
-    /// **correction**. A veil that moved is something the user did and fades; a rectangle that moved
-    /// under unchanged veils is us catching up with the window server, and cuts.
-    private var drawn: [MonitorId: [WindowId: Double]] = [:]
+    /// What each display's mask is actually drawing, so a re-read that finds nothing new paints nothing.
+    private var painted: [MonitorId: [ScrimVeil]] = [:]
+    /// Bumped per display by every set, so a settling re-read from an older one owns nothing.
+    private var settleGeneration: [MonitorId: Int] = [:]
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
                 cornerRadius: @escaping @MainActor (WindowId) -> Double? = { _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
+                scheduler: any DelayScheduler = DispatchScheduler(),
                 build: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
                     = { ScrimWindow(display: $0, scale: $1, geometry: $2) }) {
+        self.scheduler = scheduler
         self.filmer = filmer
         self.identify = identify
         self.cornerRadius = cornerRadius
@@ -167,17 +185,19 @@ public final class Scrims: ScrimPlane {
     public func setDisplays(_ displays: [(monitor: MonitorId, frame: Rect, scale: CGFloat)],
                             geometry: ScreenGeometry) {
         retireAll()
+        self.geometry = geometry
         for display in displays {
             surfaces[display.monitor] = build(display.frame, display.scale, geometry)
             frames[display.monitor] = display.frame
             refilm(display.monitor)
+            // A new surface holds no mask, so there is nothing for its set to dissolve from.
+            apply(current[display.monitor] ?? [], on: display.monitor, change: .cut)
         }
-        apply(current)
     }
 
-    public func setScrims(_ bindings: [ScrimBinding], lifted: Bool) {
-        current = bindings
-        apply(bindings, lifted: lifted)
+    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
+        current[monitor] = bindings
+        apply(bindings, on: monitor, change: change)
     }
 
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
@@ -189,11 +209,6 @@ public final class Scrims: ScrimPlane {
         for monitor in surfaces.keys { refilm(monitor) }
     }
 
-    /// Re-read the window server and repaint, against the set the core last named. **The mask has two
-    /// inputs and only one of them arrives as an effect**: the stacking a set is masked against moves
-    /// on its own, so without this the mask holds whatever the desktop was when the set arrived.
-    public func restack() { apply(current) }
-
     /// Take every scrim off the screen — the daemon is quitting, or the displays are being rebuilt.
     public func retireAll() {
         for (monitor, surface) in surfaces {
@@ -204,8 +219,9 @@ public final class Scrims: ScrimPlane {
         frames.removeAll()
         filmedAt.removeAll()
         photographs.removeAll()
-        // A surface that has gone took its mask with it, so the next one has nothing to dissolve from.
-        drawn.removeAll()
+        // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
+        applied.removeAll()
+        painted.removeAll()
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
@@ -237,86 +253,115 @@ public final class Scrims: ScrimPlane {
 
     /// What the desktop is drawing `window` at, or `0` for an opaque one. Read by the cover, so the two
     /// planes keep one decision — and reported for the whole window even where the scrim declined part.
-    public func veil(of window: WindowId) -> Double { applied[window] ?? 0 }
+    public func veil(of window: WindowId) -> Double {
+        applied.keys.sorted().compactMap { applied[$0]?[window] }.first ?? 0
+    }
 
     /// The photograph `monitor`'s scrim draws through, already frosted and shaded — what a cover's
     /// stand-ins draw their veil from, so the two planes show one backdrop. `nil` before the first film.
     public func backdrop(of monitor: MonitorId) -> CGImage? { photographs[monitor] }
 
-    private func apply(_ bindings: [ScrimBinding], lifted: Bool = false) {
-        let stacked = stack()
-        let identified = stacked.map { (window: identify($0.number), pane: $0) }
-        applied = [:]
-        for (monitor, surface) in surfaces {
-            guard let display = frames[monitor] else { continue }
-            let mine = bindings.filter { $0.monitor == monitor }
-            // Recorded as nothing drawn, so the set that follows the release is an event and fades in.
-            if lifted, mine.isEmpty {
-                drawn[monitor] = [:]
-                surface.lift()
-                continue
-            }
-            let regions = Self.regions(for: mine, over: identified, on: display,
-                                       cornerRadius: cornerRadius)
-            var veils: [WindowId: Double] = [:]
-            for (window, veil) in regions.drawn where veil > 0 { veils[window] = veil }
-            applied.merge(veils) { first, _ in first }
-            // Per display, because a scrim is one screen's: a focus change on one is not an event on
-            // the other, whose mask is only ever being corrected.
-            let fading = drawn[monitor] != nil && veils != drawn[monitor]
-            drawn[monitor] = veils
-            surface.setRegions(regions.mask, fading: fading)
-        }
+    private func apply(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
+        paint(monitor, change: change)
+        guard !bindings.isEmpty else { return }
+        watch(monitor)
     }
 
-    /// The mask's painting order, back to front: every window on `display`, each either see-through at
-    /// its binding's veil or opaque. The pure half of this file, and the only place the rule lives.
-    ///
-    /// `stacked` arrives front to back, which is the order the decline is decided in — "is anything
-    /// behind me" is a question about the tail — and leaves reversed, which is the order it is painted
-    /// in. A scrim takes the binding's frame and an occluder the window server's: each authority for
-    /// its own.
-    ///
-    /// **The decline is a region, not a verdict**, because the rule is one: a window is see-through
-    /// *where* the desktop is behind it. So a window behind stamps its overlap back to opaque rather
-    /// than disqualifying the frame, and a stamp past the screen edge costs nothing — a fill is
-    /// clipped to the bitmap, and the bitmap is the display.
-    static func regions(for bindings: [ScrimBinding],
-                        over stacked: [(window: WindowId?, pane: StackedWindow)],
-                        on display: Rect,
-                        cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil })
-        -> (mask: [ScrimRegion], drawn: [(WindowId, Double)]) {
-        let veils = Dictionary(bindings.map { ($0.window, $0) }, uniquingKeysWith: { first, _ in first })
-        func radius(_ id: WindowId?) -> Double { id.flatMap(cornerRadius) ?? fallbackCornerRadius }
-        let here = stacked.filter { $0.pane.frame.intersects(display) }
-        var regions: [ScrimRegion] = []
-        var drawn: [(WindowId, Double)] = []
-        for (index, entry) in here.enumerated() {
-            guard let id = entry.window, let binding = veils[id] else {
-                // A window emira never adopted, standing wholly on a see-through one, is that window's
-                // sheet: veiled with it, as the cover's still of the window already draws it.
-                let beneath = here[(index + 1)...].first { $0.pane.frame.intersects(entry.pane.frame) }
-                let isSheet = entry.window == nil
-                    && beneath?.window.flatMap({ veils[$0] }) != nil
-                    && beneath?.pane.frame.intersection(entry.pane.frame) == entry.pane.frame
-                if !isSheet {
-                    regions.append(ScrimRegion(frame: entry.pane.frame, veil: 0,
-                                               cornerRadius: radius(entry.window)))
-                }
-                continue
-            }
-            // The rule. Anything still to come in a front-to-back walk is *behind* this window, and the
-            // photograph does not hold it: stamped opaque inside this window's silhouette. Appended before
-            // the scrim because the list is reversed into painting order below, which puts it back over.
-            let silhouette = ScrimRegion.Silhouette(frame: binding.frame, cornerRadius: radius(id))
-            for behind in here[(index + 1)...] where behind.pane.frame.intersects(binding.frame) {
-                regions.append(ScrimRegion(frame: behind.pane.frame, veil: 0,
-                                           cornerRadius: radius(behind.window), within: silhouette))
-            }
-            regions.append(ScrimRegion(frame: binding.frame, veil: binding.veil,
-                                       cornerRadius: silhouette.cornerRadius))
-            drawn.append((id, binding.veil))
+    /// Cut `monitor`'s mask against the window server as it stands now, for the set the core last named.
+    /// Answers whether what the surface draws changed, which is what tells a settling desktop from a
+    /// settled one.
+    @discardableResult
+    private func paint(_ monitor: MonitorId, change: ScrimChange) -> Bool {
+        guard let surface = surfaces[monitor], let display = frames[monitor] else { return false }
+        let bindings = current[monitor] ?? []
+        // A set that draws nothing needs no stacking: there is no mask to cut against it.
+        guard !bindings.isEmpty else {
+            applied[monitor] = [:]
+            guard painted[monitor]?.isEmpty == false else { return false }
+            painted[monitor] = []
+            surface.setVeils([], change: change)
+            return true
         }
-        return (regions.reversed(), drawn)
+        let identified = stack().map { (window: identify($0.number), pane: $0) }
+        let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
+                             cornerRadius: cornerRadius)
+        var drawn: [WindowId: Double] = [:]
+        for (window, veil) in cut.drawn where veil > 0 { drawn[window] = veil }
+        applied[monitor] = drawn
+        guard cut.veils != painted[monitor] else { return false }
+        painted[monitor] = cut.veils
+        surface.setVeils(cut.veils, change: change)
+        return true
+    }
+
+    /// Watch the window server catch up with the moves this set describes, and cut the mask again each
+    /// time it does. Every re-cut is a `cut`: the veils are the ones already on the glass, and only the
+    /// rectangles under them are moving.
+    private func watch(_ monitor: MonitorId) {
+        settleGeneration[monitor, default: 0] &+= 1
+        let mine = settleGeneration[monitor] ?? 0
+        let deadline = Date().addingTimeInterval(Self.settleLimit)
+        func again(_ quiet: Int) {
+            guard quiet < Self.settleQuiet, Date() < deadline else { return }
+            scheduler.schedule(after: Self.settleInterval) { [weak self] in
+                guard let self, settleGeneration[monitor] == mine else { return }
+                again(paint(monitor, change: .cut) ? 0 : quiet + 1)
+            }
+        }
+        again(0)
+    }
+
+    /// The shape the desktop shows through for each see-through window on `display`, bottom→top, and what
+    /// each is drawn at. The pure half of this file, and the only place the rule lives: **a window is
+    /// see-through only where the desktop is behind it**, so every other window comes out of its shape.
+    static func veils(for bindings: [ScrimBinding],
+                      over stacked: [(window: WindowId?, pane: StackedWindow)],
+                      on display: Rect,
+                      geometry: ScreenGeometry,
+                      cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil })
+        -> (veils: [ScrimVeil], drawn: [(WindowId, Double)]) {
+        let wanted = Dictionary(bindings.map { ($0.window, $0.veil) }, uniquingKeysWith: { a, _ in a })
+        func radius(_ id: WindowId?) -> Double { id.flatMap(cornerRadius) ?? fallbackCornerRadius }
+        let surface = geometry.cocoa(display)
+        /// A window's outline in the surface's own coordinates. Outside a rounded corner is whatever the
+        /// window stands on, so a square silhouette would veil a shadow or clear a corner of its neighbour.
+        func silhouette(_ frame: Rect, _ id: WindowId?) -> CGPath {
+            let box = geometry.local(frame, in: surface)
+            let corner = radius(id)
+            guard corner > 0 else { return CGPath(rect: box, transform: nil) }
+            return CGPath(roundedRect: box, cornerWidth: corner, cornerHeight: corner, transform: nil)
+        }
+
+        // Front to back, which is the order the sheet rule is decided in: "is anything behind me" is a
+        // question about the tail. A sheet is left out rather than subtracted, so its window's veil
+        // carries it — the photograph standing in for the window behind the sheet is the same one.
+        let here = stacked.filter { $0.pane.frame.intersects(display) }
+        let panes = here.enumerated().filter { index, entry in
+            guard entry.window == nil,
+                  let beneath = here[(index + 1)...].first(where: {
+                      $0.pane.frame.intersects(entry.pane.frame)
+                  })
+            else { return true }
+            let isSheet = beneath.window.flatMap { wanted[$0] } != nil
+                && beneath.pane.frame.intersection(entry.pane.frame) == entry.pane.frame
+            return !isSheet
+        }.map { (id: $0.element.window, frame: $0.element.pane.frame) }
+
+        let shapes = panes.map { silhouette($0.frame, $0.id) }
+        var veils: [ScrimVeil] = []
+        var drawn: [(WindowId, Double)] = []
+        for (index, pane) in panes.enumerated() {
+            guard let id = pane.id, let veil = wanted[id] else { continue }
+            var shape = shapes[index]
+            for (other, entry) in panes.enumerated()
+            where other != index && entry.frame.intersects(pane.frame) {
+                shape = shape.subtracting(shapes[other])
+            }
+            veils.append(ScrimVeil(window: id, shape: shape, veil: veil))
+            drawn.append((id, veil))
+        }
+        // Bottom→top, the convention every binding array carries. Nothing overlaps, so it decides
+        // nothing about the drawing; it decides what a reader of this list expects.
+        return (veils.reversed(), drawn)
     }
 }

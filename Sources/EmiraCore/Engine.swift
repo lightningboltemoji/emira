@@ -36,9 +36,10 @@ public struct State: Sendable, Equatable, Codable {
     /// The floats the shell is drawing over the desktop, bottom→top — the decision *kept*, for the
     /// reason `World.placedOnScreen` is kept. `settleHoists` re-derives it and emits the difference.
     public var hoists: [HoistBinding]
-    /// The windows the shell is drawing the desktop back over, bottom→top — kept for `hoists`' reason,
-    /// and re-derived by `settleScrims` on the same terms.
-    public var scrims: [ScrimBinding] = []
+    /// The windows the shell is drawing the desktop back over, per display and bottom→top — kept for
+    /// `hoists`' reason, and re-derived by `settleScrims` on the same terms. A display holding its set
+    /// keeps its own entry while its neighbour's moves on.
+    public var scrims: [MonitorId: [ScrimBinding]] = [:]
     /// The focus a command asked for while a pin was being brought to the top, per display. Kept on
     /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
@@ -277,6 +278,8 @@ public struct State: Sendable, Equatable, Codable {
         // it was holding — and kept, it diffs equal against the flush surface a returning display is
         // rebuilt with, whose cover would then draw over the pin. Dropped here, as the shell drops its own.
         coverClearing = coverClearing.filter { attached.contains($0.key) }
+        // The same, for the same reason: the shell rebuilds a returning display's scrim empty.
+        scrims = scrims.filter { attached.contains($0.key) }
         guard moved else { return departed }
         let surviving = motion.transitioningMonitors
         for monitor in surviving { motion.closeTransition(on: monitor) }
@@ -449,7 +452,7 @@ public enum Engine {
         hidePointer(on: event, into: &next, effects: &effects)
         warpPointer(on: event, from: state, into: &next, effects: &effects)
         settleHoists(into: &next, effects: &effects)
-        settleScrims(into: &next, effects: &effects)
+        settleScrims(on: event, from: state, into: &next, effects: &effects)
         return (next, effects)
     }
 
@@ -519,24 +522,38 @@ public enum Engine {
         effects.append(.setHoists(next))
     }
 
-    /// Bring the see-through windows into line with the desktop this batch produced. A post-pass for
-    /// `settleHoists`' reason, and after it: what is unfocused and on the glass is the product of focus
-    /// and the placement pass, with no one verb to hang it on. Emitted only on a change, so a tick
-    /// costs nothing — and on a desktop that has not turned this on, nothing at all.
-    ///
-    /// **D8's gate, for D8's reason.** A display whose cover is not on the glass moves no window
-    /// (`writeTruthPlane`), and a scrim is appearance, which is the same claim: it keeps the set it is
-    /// drawing, exactly as it keeps its share of `placedOnScreen`, and pays it at the teleport.
-    private static func settleScrims(into s: inout State, effects: inout [Effect]) {
+    /// Bring the see-through windows into line with the desktop this batch produced — a post-pass for
+    /// `settleHoists`' reason, emitted on a change. **A set waits for the desktop it describes**, and goes
+    /// again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6, *Scrims*).
+    private static func settleScrims(on event: Event, from old: State, into s: inout State,
+                                     effects: inout [Effect]) {
         let fresh = s.scrimBindings()
-        let held = Set(s.monitors.ids.filter { !s.motion.mayPlace(on: $0) })
-        // The splice keeps each display's own run in order, which is the only order there is: a scrim
-        // belongs to one screen, so between two of them there was never one.
-        let next = held.isEmpty ? fresh
-            : fresh.filter { !held.contains($0.monitor) } + s.scrims.filter { held.contains($0.monitor) }
-        guard next != s.scrims else { return }
-        s.scrims = next
-        effects.append(.setScrims(next, lifted: s.drag.subject != nil))
+        // Only with nothing in flight: a landing still to come recuts this desktop anyway.
+        let placedItself = if case .windowSelfPlaced(let id) = event {
+            s.world.inFlight.isEmpty && standsWhereItPlacedItself(s, id)
+        } else { false }
+
+        var sets: [Effect] = []
+        for monitor in s.monitors.ids {
+            guard s.motion.mayPlace(on: monitor),
+                  s.motion.isCovered(on: monitor) || !s.world.hasWritesInFlight(on: monitor)
+            else { continue }
+            let next = fresh[monitor] ?? []
+            let changed = next != s.scrims[monitor] ?? []
+            let settled = placedItself
+                || (old.world.hasWritesInFlight(on: monitor) && !s.world.hasWritesInFlight(on: monitor))
+            // A set that draws nothing has no geometry to recut.
+            guard changed || (!next.isEmpty && settled) else { continue }
+            s.scrims[monitor] = next.isEmpty ? nil : next
+            // A hand's lift takes away veils cut around a window that is already moving, and a set the
+            // desktop merely settled under moves no veil at all: both go at once.
+            sets.append(.setScrims(monitor, next, changed && s.drag.subject == nil ? .dissolve : .cut))
+        }
+        guard !sets.isEmpty else { return }
+
+        // Ahead of a dismissal in the same batch, so a recut is painted while the cover still hides it.
+        let dismissal = effects.firstIndex { if case .endTransition = $0 { true } else { false } }
+        effects.insert(contentsOf: sets, at: dismissal ?? effects.endIndex)
     }
 
     /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch
@@ -779,8 +796,7 @@ public enum Engine {
         case .windowSelfPlaced(let id):
             // A window off the strip is the app's to place, and a float that resized itself has drawn
             // exactly what it is entitled to draw.
-            guard s.world.participatesInTiling(id) else { return (s, []) }
-            guard !alreadyRefused(s, id) else { return (s, []) }
+            guard !standsWhereItPlacedItself(s, id) else { return (s, []) }
             // The pass itself is the comparison: `writeTruthPlane` diffs every window against the frame
             // the layout gives it, so a window that put itself back where it belongs costs no write.
             let effects = reassertTruthPlane(&s)
@@ -982,7 +998,8 @@ public enum Engine {
 
         case .axLanded(let id):
             // A real window arrived at its AX target — marked in every session waiting on it, for the
-            // reason `captureReady` is untagged. No session ⇒ no-op (an idle set's ack).
+            // reason `captureReady` is untagged, and off the record the veil waits on (`settleScrims`).
+            s.world.noteLanded(id)
             s.motion.markLanded(id)
             let effects = closeSettledTransitions(&s)
             return (s, effects)
@@ -999,6 +1016,7 @@ public enum Engine {
             // A set timed out or was refused. Resolve its landing so one stuck window can't wedge the
             // cover open, and mark its recorded frame a guess so the next placement re-issues the set.
             s.world.markUnverified(id)
+            s.world.noteLanded(id)
             s.motion.markLanded(id)
             let effects = closeSettledTransitions(&s)
             return (s, effects)
@@ -3155,6 +3173,12 @@ public enum Engine {
         return !approximatelyEqual(known, frame)
     }
 
+    /// Whether a window that placed itself is left there: it is off the strip, or its app already refused
+    /// the frame the strip would write. `windowSelfPlaced` writes nothing for it, and the veil recuts.
+    private static func standsWhereItPlacedItself(_ s: State, _ id: WindowId) -> Bool {
+        !s.world.participatesInTiling(id) || alreadyRefused(s, id)
+    }
+
     /// Whether the frame this window would be asked for again is the one its app already declined —
     /// the rule `handleParkCorrected` keeps, for the other refusal an app can make.
     private static func alreadyRefused(_ s: State, _ id: WindowId) -> Bool {
@@ -3520,7 +3544,7 @@ public enum Engine {
                 guard let target = frames[id] else { continue }
                 if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
                 effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
-                s.world.updateFrame(id, to: target)    // optimistic: AX will land here (or axFailed)
+                s.world.noteWrite(id, to: target)      // optimistic: AX will land here (or axFailed)
                 moved.append(id)
             }
         }
@@ -3536,7 +3560,7 @@ public enum Engine {
                 guard !held,
                       !isAlreadyPlaced(s.world, pin.window, at: pin.frame, question: nil) else { continue }
                 effects.append(.setFrame(pin.window, pin.frame))
-                s.world.updateFrame(pin.window, to: pin.frame)
+                s.world.noteWrite(pin.window, to: pin.frame)
                 moved.append(pin.window)
             }
         }

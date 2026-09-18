@@ -394,11 +394,13 @@ import Testing
         let frame = Rect(x: 100, y: 100, width: 300, height: 200)
         s = EngineFix.settle(Engine.reduce(s, .windowCreated(
             EngineFix.snapshot(99, role: .dialog, frame: frame))).0)
-        s = EngineFix.settle(Engine.reduce(s, .pointerEntered(try #require(s.world.tiledWindowIds.first))).0)
+        let (entered, placing) = Engine.reduce(s, .pointerEntered(try #require(s.world.tiledWindowIds.first)))
+        s = EngineFix.settle(entered, placing)
         let offset = s.viewport.offset.current
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(WindowId(99)))
-        #expect(effects == [.focus(WindowId(99)), .setScrims(next.scrims, lifted: false)])
+        #expect(effects == [.focus(WindowId(99)),
+                            .setScrims(MonitorId(1), next.scrims[MonitorId(1)] ?? [], .dissolve)])
         #expect(next.viewport.offset.current == offset)
     }
 

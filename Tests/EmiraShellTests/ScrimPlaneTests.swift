@@ -12,22 +12,37 @@ import EmiraCore
 
     /// A `ScrimSurface` that is a record of calls rather than a window.
     final class RecordingSurface: ScrimSurface {
-        private(set) var regions: [ScrimRegion] = []
+        private(set) var veils: [ScrimVeil] = []
         private(set) var desktop: CGImage?
         private(set) var isRetired = false
 
-        private(set) var fades: [Bool] = []
-        func setRegions(_ regions: [ScrimRegion], fading: Bool) {
-            self.regions = regions
-            fades.append(fading)
-        }
-        private(set) var lifts = 0
-        func lift() {
-            regions = []
-            lifts += 1
+        private(set) var changes: [ScrimChange] = []
+        func setVeils(_ veils: [ScrimVeil], change: ScrimChange) {
+            self.veils = veils
+            changes.append(change)
         }
         func setDesktop(_ image: CGImage?) { desktop = image }
         func retire() { isRetired = true }
+    }
+
+    /// A `DelayScheduler` whose work runs only when a test says so — the settling re-reads hang off it.
+    @MainActor final class ManualScheduler: DelayScheduler {
+        private var work: [@MainActor () -> Void] = []
+        private(set) var scheduled = 0
+
+        func schedule(after seconds: TimeInterval, _ work: @escaping @MainActor () -> Void) {
+            scheduled += 1
+            self.work.append(work)
+        }
+
+        /// Fire everything pending — "the interval elapsed". Answers whether there was anything.
+        @discardableResult
+        func fire() -> Bool {
+            let due = work
+            work = []
+            for item in due { item() }
+            return !due.isEmpty
+        }
     }
 
     /// A filmer that answers with a 1×1 image, immediately — enough for "there is a photograph".
@@ -55,61 +70,92 @@ import EmiraCore
     }
 
     /// Window `n` is bound to window number `n` — the join `WindowRegistry` makes on a real desktop.
-    static func plane(stack: [StackedWindow], filmer: InstantFilmer = InstantFilmer())
+    static func plane(stack: [StackedWindow], filmer: InstantFilmer = InstantFilmer(),
+                      scheduler: ManualScheduler = ManualScheduler())
         -> (Scrims, RecordingSurface) {
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: filmer,
                             identify: { WindowId(UInt64($0)) },
                             stack: { stack },
+                            scheduler: scheduler,
                             build: { _, _, _ in surface })
         scrims.setDisplays([(monitor, display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         return (scrims, surface)
     }
 
-    /// A window-server answer two applies can see differently — what a correction is made of.
+    /// A window-server answer two applies can see differently — what a correction is made of. It counts
+    /// its reads, since a set that draws nothing must not take one.
     @MainActor final class Stack {
         var panes: [StackedWindow]
+        private(set) var reads = 0
         init(_ panes: [StackedWindow]) { self.panes = panes }
+        func read() -> [StackedWindow] {
+            reads += 1
+            return panes
+        }
     }
 
-    static func plane(stack: Stack, filmer: InstantFilmer = InstantFilmer())
+    static func plane(stack: Stack, filmer: InstantFilmer = InstantFilmer(),
+                      scheduler: ManualScheduler = ManualScheduler())
         -> (Scrims, RecordingSurface) {
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: filmer,
                             identify: { WindowId(UInt64($0)) },
-                            stack: { stack.panes },
+                            stack: { stack.read() },
+                            scheduler: scheduler,
                             build: { _, _, _ in surface })
         scrims.setDisplays([(monitor, display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         return (scrims, surface)
     }
 
-    static func binding(_ raw: UInt64, _ frame: Rect, veil: Double = 0.3) -> ScrimBinding {
-        ScrimBinding(window: WindowId(raw), monitor: monitor, frame: frame, veil: veil)
+    /// Window `n`, see-through on this display. Where it stands is whatever the stack says.
+    static func binding(_ raw: UInt64, veil: Double = 0.3) -> ScrimBinding {
+        ScrimBinding(window: WindowId(raw), veil: veil)
     }
 
-    // The painting order, and what it buys.
-
-    @Test func regionsComeBackBackToFrontSoTheFrontMostIsPaintedLast() {
-        // The window server lists front to back; the mask is painted back to front, so a window in
-        // front punches its own hole by being painted last.
-        let front = Rect(x: 0, y: 0, width: 100, height: 100)
-        let back = Rect(x: 500, y: 0, width: 100, height: 100)
-        let (scrims, surface) = Self.plane(stack: [Self.pane(1, front), Self.pane(2, back)])
-        scrims.setScrims([], lifted: false)
-        #expect(surface.regions.map(\.frame) == [back, front])
+    /// The whole of what a set is, on the one display these fixtures build.
+    static func show(_ scrims: Scrims, _ bindings: [ScrimBinding], _ change: ScrimChange = .dissolve) {
+        scrims.setScrims(bindings, on: monitor, change: change)
     }
+
+    /// One window's shape, or `nil` for a window the plane is drawing nothing for.
+    static func shape(_ surface: RecordingSurface, _ raw: UInt64) -> CGPath? {
+        surface.veils.first { $0.window == WindowId(raw) }?.shape
+    }
+
+    /// Whether the desktop shows through for `raw` at a point given in **core** (top-left) coordinates —
+    /// the space the fixtures are written in. The shapes themselves are in the surface's, flipped.
+    static func shows(_ surface: RecordingSurface, _ raw: UInt64, _ x: Double, _ y: Double) -> Bool {
+        guard let shape = shape(surface, raw) else { return false }
+        return shape.contains(CGPoint(x: x, y: display.maxY - y))
+    }
+
+    // The rule: a window is see-through only where the desktop is what lies behind it.
 
     @Test func aWindowWithNothingBehindItIsDrawnAtItsVeil() {
         let frame = Rect(x: 0, y: 0, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, frame)])
-        scrims.setScrims([Self.binding(1, frame)], lifted: false)
-        #expect(surface.regions == [ScrimRegion(frame: frame, veil: 0.3,
-                                                cornerRadius: Scrims.fallbackCornerRadius)])
+        Self.show(scrims, [Self.binding(1)])
+        #expect(surface.veils.map(\.window) == [WindowId(1)])
+        #expect(surface.veils.map(\.veil) == [0.3])
+        #expect(Self.shows(surface, 1, 200, 200))
+        #expect(!Self.shows(surface, 1, 500, 200), "and nowhere the window is not")
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
     }
 
+    /// The set arrives bottom→top, and the shapes keep that order — the convention every binding array
+    /// carries. Nothing overlaps once the subtractions are made, so it decides nothing about the drawing.
+    @Test func theShapesComeBackBottomToTop() {
+        let front = Rect(x: 0, y: 0, width: 100, height: 100)
+        let back = Rect(x: 500, y: 0, width: 100, height: 100)
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, front), Self.pane(2, back)])
+        Self.show(scrims, [Self.binding(1), Self.binding(2)])
+        #expect(surface.veils.map(\.window) == [WindowId(2), WindowId(1)])
+    }
+
     /// A window stops at its own silhouette, so it is rounded by the radius a capture measured off it —
-    /// and only a window nothing has filmed takes the guess.
+    /// and only a window nothing has filmed takes the guess. Outside the corner is the window's own
+    /// shadow, which a square silhouette would lighten by the veil.
     @Test func aWindowIsRoundedByItsMeasuredRadiusAndAnUnfilmedOneByTheFallback() {
         let measured = Rect(x: 0, y: 0, width: 400, height: 400)
         let unfilmed = Rect(x: 500, y: 0, width: 400, height: 400)
@@ -120,10 +166,12 @@ import EmiraCore
                             stack: { [Self.pane(1, measured), Self.pane(2, unfilmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
-        scrims.setScrims([Self.binding(1, measured), Self.binding(2, unfilmed)], lifted: false)
+        Self.show(scrims, [Self.binding(1), Self.binding(2)])
 
-        #expect(surface.regions.map(\.frame) == [unfilmed, measured])
-        #expect(surface.regions.map(\.cornerRadius) == [Scrims.fallbackCornerRadius, 17])
+        // 4 pt in from the corner: outside a 17 pt rounding, inside the 12 pt fallback.
+        #expect(!Self.shows(surface, 1, 4, 4))
+        #expect(Self.shows(surface, 2, 504, 4))
+        #expect(Self.shows(surface, 1, 40, 40) && Self.shows(surface, 2, 540, 40))
     }
 
     /// The rule, and the whole reason the effect belongs to a layout where windows never overlap: the
@@ -135,13 +183,13 @@ import EmiraCore
         let front = Rect(x: 0, y: 0, width: 400, height: 400)
         let behind = Rect(x: 200, y: 200, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, front), Self.pane(2, behind)])
-        scrims.setScrims([Self.binding(1, front), Self.binding(2, behind)], lifted: false)
+        Self.show(scrims, [Self.binding(1), Self.binding(2)])
 
-        // Back to front: `2`, then `1` over it, then `2` stamped back to opaque inside `1`'s silhouette.
-        // Both are drawn — `1` in part, which is what the cover is told.
-        #expect(surface.regions.map(\.frame) == [behind, front, behind])
-        #expect(surface.regions.map(\.within?.frame) == [nil, nil, front])
-        #expect(surface.regions.map(\.veil) == [0.3, 0.3, 0])
+        #expect(Self.shows(surface, 1, 100, 100), "where the one in front stands on the desktop")
+        #expect(Self.shows(surface, 2, 500, 500), "and where the one behind does")
+        #expect(!Self.shows(surface, 1, 300, 300), "not where they overlap — either of them")
+        #expect(!Self.shows(surface, 2, 300, 300))
+        // Both are still drawn, in part, which is what the cover is told.
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
         #expect(scrims.veil(of: WindowId(2)) == 0.3)
     }
@@ -153,26 +201,25 @@ import EmiraCore
         let scrimmed = Rect(x: 400, y: 0, width: 800, height: 700)     // 200 pt past the right edge
         let parked = Rect(x: 999, y: 650, width: 800, height: 700)     // the nub in the corner
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, scrimmed), Self.pane(2, parked)])
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)   // the parked one is not on screen
+        Self.show(scrims, [Self.binding(1)])   // the parked one is not on screen
 
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        #expect(surface.regions.map(\.frame) == [parked, scrimmed, parked])
-        #expect(surface.regions.map(\.within?.frame) == [nil, nil, scrimmed])
-        #expect(surface.regions.map(\.veil) == [0, 0.3, 0])
+        #expect(Self.shows(surface, 1, 600, 300), "the window keeps the screen it is on")
+        #expect(!Self.shows(surface, 1, 999.5, 680), "and loses only the sliver the nub reaches")
     }
 
-    /// A window *in front* costs nothing and is not a decline: those pixels are not on the screen, so
-    /// the mask paints over them and the painter's algorithm does the rest.
-    @Test func aWindowInFrontPunchesItsOwnHoleAndIsNotADecline() {
+    /// A window *in front* is not a decline and costs nothing: those pixels are not on the screen. It
+    /// comes out of the shape all the same, which is the same subtraction the decline is.
+    @Test func aWindowInFrontTakesItsOverlapOutToo() {
         let front = Rect(x: 0, y: 0, width: 200, height: 200)
         let scrimmed = Rect(x: 100, y: 100, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(9, front), Self.pane(1, scrimmed)])
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
+        Self.show(scrims, [Self.binding(1)])
 
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        // Back to front: the scrimmed one first, the occluder over it.
-        #expect(surface.regions.map(\.frame) == [scrimmed, front])
-        #expect(surface.regions.map(\.veil) == [0.3, 0])
+        #expect(surface.veils.map(\.window) == [WindowId(1)], "the opaque one draws nothing of its own")
+        #expect(Self.shows(surface, 1, 300, 300))
+        #expect(!Self.shows(surface, 1, 150, 150))
     }
 
     /// A window emira never adopted — a dialog, a system panel. The core cannot name it, so the plane
@@ -186,16 +233,17 @@ import EmiraCore
                             stack: { [Self.pane(1, scrimmed), Self.pane(77, stranger)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
+        Self.show(scrims, [Self.binding(1)])
 
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        #expect(surface.regions.map(\.frame) == [stranger, scrimmed, stranger])
-        #expect(surface.regions.map(\.within?.frame) == [nil, nil, scrimmed])
-        #expect(surface.regions.map(\.veil) == [0, 0.3, 0])
+        #expect(Self.shows(surface, 1, 50, 50))
+        #expect(!Self.shows(surface, 1, 150, 150))
+        // Outside the stranger's own rounded corner the window beneath keeps its veil.
+        #expect(Self.shows(surface, 1, 101, 101))
     }
 
     /// A sheet is part of its window: a window emira never adopted, standing wholly on a see-through
-    /// one, is veiled with it rather than stamped opaque over it.
+    /// one, is veiled with it rather than taken out of it.
     @Test func anUnmanagedWindowWhollyOnAScrimIsVeiledWithIt() {
         let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
         let sheet = Rect(x: 100, y: 100, width: 200, height: 100)
@@ -205,10 +253,10 @@ import EmiraCore
                             stack: { [Self.pane(77, sheet), Self.pane(1, scrimmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
+        Self.show(scrims, [Self.binding(1)])
 
-        #expect(surface.regions.map(\.frame) == [scrimmed])
-        #expect(surface.regions.map(\.veil) == [0.3])
+        #expect(surface.veils.map(\.window) == [WindowId(1)])
+        #expect(Self.shows(surface, 1, 200, 150), "the sheet is veiled with the window it stands on")
     }
 
     /// Only wholly, and only on a see-through window. A popup hanging off the edge of a scrimmed
@@ -225,105 +273,138 @@ import EmiraCore
                                       Self.pane(1, scrimmed), Self.pane(2, focused)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
+        Self.show(scrims, [Self.binding(1)])
 
-        #expect(surface.regions.map(\.frame) == [focused, scrimmed, dialog, popup])
-        #expect(surface.regions.map(\.veil) == [0, 0.3, 0, 0])
+        #expect(!Self.shows(surface, 1, 380, 150), "the popup overhangs, so it occludes")
+        #expect(Self.shows(surface, 1, 200, 150))
     }
 
-    /// The mask has two inputs and only one of them is an effect. The stacking a set is masked against
-    /// is the window server's and moves on its own — a transition's AX writes land after the core
-    /// described them — so the plane can be asked to read it again with the set unchanged.
-    @Test func restackingRepaintsAgainstTheWindowServerWithoutANewSet() {
+    /// **Every frame in the mask is the window server's**, the see-through windows' included, read when
+    /// the set arrives. So the same set named again once the moves it describes have landed repaints
+    /// where the windows now stand — which is what the core sends it again for (`Engine.settleScrims`).
+    @Test func theSameSetNamedAgainRepaintsWhereTheWindowServerNowHasTheWindows() {
         let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
         let stale = Rect(x: 100, y: 100, width: 200, height: 200)   // an occluder still where it was
         let settled = Rect(x: 600, y: 0, width: 200, height: 200)   // and where it has since landed
-        var front = stale
-        let surface = RecordingSurface()
-        let scrims = Scrims(filmer: InstantFilmer(),
-                            identify: { WindowId(UInt64($0)) },
-                            stack: { [Self.pane(9, front), Self.pane(1, scrimmed)] },
-                            build: { _, _, _ in surface })
-        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-        // Painted against the old reading: the occluder still stands on the window it will leave.
-        #expect(surface.regions.map(\.frame) == [scrimmed, stale])
+        let resized = Rect(x: 0, y: 0, width: 380, height: 400)     // the see-through one, landed too
+        let stack = Stack([Self.pane(9, stale), Self.pane(1, scrimmed)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        Self.show(scrims, [Self.binding(1)])
+        #expect(!Self.shows(surface, 1, 200, 200), "the occluder is where the window server had it")
+        #expect(Self.shows(surface, 1, 40, 40))
 
-        front = settled
-        scrims.restack()
-        #expect(surface.regions.map(\.frame) == [scrimmed, settled])
+        stack.panes = [Self.pane(9, settled), Self.pane(1, resized)]
+        Self.show(scrims, [Self.binding(1)])
+        #expect(Self.shows(surface, 1, 200, 200), "and where it has since landed")
+        #expect(!Self.shows(surface, 1, 390, 200), "the see-through one moved too — it shrank")
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
     }
 
-    // The hand — a lift goes at once, and the set that follows the release fades back in.
+    // The settle — the window server catches up after the write that moved it, and says nothing.
 
-    /// **A lifted set takes the scrim off at once.** The mask it holds was cut around a window the hand
-    /// is moving, so nothing is repainted to dissolve from it.
-    @Test func aLiftedSetTakesTheScrimOffAtOnce() {
+    /// **A set is cut again while the window server is still catching up.** The reading a mask is cut
+    /// against goes stale under it: an app's move reaches the server after the AX write has landed, and
+    /// nothing reports when it does.
+    @Test func aMaskIsCutAgainWhenTheWindowServerCatchesUp() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let before = Rect(x: 600, y: 0, width: 200, height: 200)      // the occluder, where it was
+        let after = Rect(x: 200, y: 200, width: 200, height: 200)     // and where the move lands it
+        let stack = Stack([Self.pane(9, before), Self.pane(1, scrimmed)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+        #expect(Self.shows(surface, 1, 300, 300), "nothing is over it yet")
+
+        stack.panes[0] = Self.pane(9, after)
+        clock.fire()
+        #expect(!Self.shows(surface, 1, 300, 300), "the mask followed the window server")
+        #expect(surface.changes.last == .cut, "the veils did not move, only what is under them")
+    }
+
+    /// And it stops: a reading with nothing new in it, `settleQuiet` times over, ends the watch. A set
+    /// that draws nothing is never watched at all.
+    @Test func theWatchEndsWhenTheReadingStopsChanging() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+
+        for _ in 0..<Scrims.settleQuiet { #expect(clock.fire(), "still watching") }
+        #expect(!clock.fire(), "nothing new, often enough, and the watch is over")
+
+        Self.show(scrims, [], .cut)
+        #expect(!clock.fire(), "a set that draws nothing has no desktop to wait for")
+    }
+
+    /// A reading that *does* change keeps the watch alive, which is what carries a desktop still moving.
+    @Test func aReadingThatChangesKeepsTheWatchAlive() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let stack = Stack([Self.pane(9, Rect(x: 600, y: 0, width: 100, height: 100)),
+                           Self.pane(1, scrimmed)])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+
+        for step in 0..<(Scrims.settleQuiet * 2) {
+            // Over the see-through window throughout, so every reading cuts a different mask.
+            stack.panes[0] = Self.pane(9, Rect(x: 100 + Double(step) * 10, y: 100, width: 100, height: 100))
+            #expect(clock.fire(), "a desktop that is still moving is still watched (step \(step))")
+        }
+    }
+
+    // The hand, and the other display.
+
+    /// **A set that draws nothing takes no window list.** A cut to no veils is what a hand's lift is, and
+    /// the mask it would build is the one being taken away.
+    @Test func aSetThatDrawsNothingIsTakenOffWithoutReadingTheStacking() {
         let scrimmed = Rect(x: 0, y: 0, width: 600, height: 600)
-        let (scrims, surface) = Self.plane(stack: [Self.pane(9, Rect(x: 100, y: 100, width: 200, height: 200)),
-                                                   Self.pane(1, scrimmed)])
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-        let painted = surface.fades.count
+        let stack = Stack([Self.pane(9, Rect(x: 100, y: 100, width: 200, height: 200)),
+                           Self.pane(1, scrimmed)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        Self.show(scrims, [Self.binding(1)])
+        let read = stack.reads
 
-        scrims.setScrims([], lifted: true)
-        #expect(surface.lifts == 1)
-        #expect(surface.fades.count == painted, "no mask was painted on the way out")
+        Self.show(scrims, [], .cut)
+        #expect(stack.reads == read, "nothing to mask, nothing to mask it against")
+        #expect(surface.veils.isEmpty)
+        #expect(surface.changes.last == .cut)
         #expect(scrims.veil(of: WindowId(1)) == 0)
     }
 
-    /// An empty set nobody lifted is an ordinary event — focus landing on the last veiled window — and
-    /// still dissolves.
-    @Test func anEmptySetNoHandLiftedStillFades() {
-        let scrimmed = Rect(x: 0, y: 0, width: 600, height: 600)
-        let (scrims, surface) = Self.plane(stack: [Self.pane(1, scrimmed)])
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-
-        scrims.setScrims([], lifted: false)
-        #expect(surface.lifts == 0)
-        #expect(surface.fades.last == true)
-    }
-
-    /// A display still holding a set while another is lifted — a cover's capture head holds its veil
-    /// (`Engine.settleScrims`) — is repainted as it would be anyway, not lifted with the rest.
-    @Test func aLiftLeavesADisplayThatStillHasASetAlone() {
-        let scrimmed = Rect(x: 0, y: 0, width: 600, height: 600)
-        let (scrims, surface) = Self.plane(stack: [Self.pane(1, scrimmed)])
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: true)
-        #expect(surface.lifts == 0)
-        #expect(scrims.veil(of: WindowId(1)) == 0.3)
-    }
-
-    /// **A veil set back down is cut where the windows are now, and fades in.** The core names the same
-    /// set again when the hand lets go, so what moved is the stacking — and nothing drawn is what it
-    /// fades from, not the mask the lift took away.
+    /// **A veil set back down is cut where the windows are now.** The core names the same set again when
+    /// the hand lets go, so what moved is the stacking — read afresh, with the float where it landed.
     @Test func aVeilSetBackDownIsCutWhereTheHeldWindowCameToRest() {
         let scrimmed = Rect(x: 0, y: 0, width: 600, height: 600)
         let picked = Rect(x: 100, y: 100, width: 200, height: 200)
         let dropped = Rect(x: 300, y: 250, width: 150, height: 120)
         let stack = Stack([Self.pane(9, picked), Self.pane(1, scrimmed)])
         let (scrims, surface) = Self.plane(stack: stack)
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-        #expect(surface.regions.map(\.frame) == [scrimmed, picked])
+        Self.show(scrims, [Self.binding(1)])
+        #expect(!Self.shows(surface, 1, 200, 200), "the float, where it was picked up")
 
-        scrims.setScrims([], lifted: true)
-        #expect(surface.regions.isEmpty)
+        Self.show(scrims, [], .cut)
+        #expect(surface.veils.isEmpty)
 
         stack.panes[0] = Self.pane(9, dropped)
-        scrims.setScrims([Self.binding(1, scrimmed)], lifted: false)
-        #expect(surface.regions.map(\.frame) == [scrimmed, dropped])
-        #expect(surface.fades.last == true)
+        Self.show(scrims, [Self.binding(1)])
+        #expect(Self.shows(surface, 1, 200, 200), "and where it came to rest")
+        #expect(!Self.shows(surface, 1, 350, 300))
+        #expect(surface.changes.last == .dissolve)
     }
 
-    @Test func aWindowOnAnotherDisplayIsNotDrawnOnThisOne() {
+    /// **A set names one display and reaches no other.** Holding one screen's veil while another moves is
+    /// the core's business (`Engine.settleScrims`), and it only works if the held one is left alone.
+    @Test func aSetForAnotherDisplayLeavesThisOneAlone() {
         let here = Rect(x: 0, y: 0, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, here)])
-        scrims.setScrims([ScrimBinding(window: WindowId(1), monitor: MonitorId(2), frame: here,
-                                       veil: 0.3)], lifted: false)
-        #expect(surface.regions.allSatisfy { $0.veil == 0 })
-        #expect(scrims.veil(of: WindowId(1)) == 0)
+        Self.show(scrims, [Self.binding(1)])
+        let painted = surface.changes.count
+
+        scrims.setScrims([Self.binding(2)], on: MonitorId(2), change: .dissolve)
+        #expect(surface.changes.count == painted)
+        #expect(surface.veils.map(\.veil) == [0.3])
+        #expect(scrims.veil(of: WindowId(1)) == 0.3)
+        #expect(scrims.veil(of: WindowId(2)) == 0)
     }
 
     // The photograph.
@@ -383,128 +464,33 @@ import EmiraCore
         #expect(surface.isRetired)
     }
 
-    // An event or a correction — which repaints dissolve.
+    // Dissolve or cut — the core's word, carried through.
 
     static let left = Rect(x: 0, y: 0, width: 400, height: 700)
     static let right = Rect(x: 500, y: 0, width: 400, height: 700)
 
-    /// **A veil that moves is something the user did**, so it fades. Focus crossing two columns that
-    /// are both already on the glass raises no cover, so this is the only thing drawing the change.
-    @Test func aVeilThatMovesIsAnEventAndFades() {
-        let (scrims, surface) = Self.plane(stack: Stack([Self.pane(1, Self.left),
-                                                         Self.pane(2, Self.right)]))
-        scrims.setScrims([Self.binding(1, Self.left)], lifted: false)
-        scrims.setScrims([Self.binding(2, Self.right)], lifted: false)
-        #expect(surface.fades.last == true)
-    }
-
-    /// **A rectangle that moves under unchanged veils is us catching up with the window server**, and a
-    /// correction that dissolves reads as the window deciding to change on its own.
-    @Test func aRectangleThatMovesUnderTheSameVeilsIsACorrectionAndCuts() {
+    /// **The plane keeps no memory of what it drew.** Whether a repaint is a veil moving or the mask
+    /// catching up with the window server is what the core knows, and it says so with every set.
+    @Test func theChangeThePlanePaintsIsTheOneTheCoreNamed() {
         let stack = Stack([Self.pane(1, Self.left), Self.pane(2, Self.right)])
         let (scrims, surface) = Self.plane(stack: stack)
-        scrims.setScrims([Self.binding(1, Self.left)], lifted: false)
-        let painted = surface.fades.count
+        Self.show(scrims, [Self.binding(1)])
+        #expect(surface.changes.last == .dissolve)
 
-        stack.panes[1] = Self.pane(2, Rect(x: 550, y: 0, width: 400, height: 700))
-        scrims.restack()
-        #expect(surface.fades.count > painted, "the mask was repainted at all")
-        #expect(surface.fades.last == false)
-    }
+        // The same set again, against a stacking that moved *over* it: the core's word for that is a cut.
+        stack.panes[1] = Self.pane(2, Rect(x: 200, y: 0, width: 400, height: 700))
+        let painted = surface.changes.count
+        Self.show(scrims, [Self.binding(1)], .cut)
+        #expect(surface.changes.count > painted, "the mask was repainted at all")
+        #expect(surface.changes.last == .cut)
 
-    /// The first mask a display's scrim holds moved from nothing, so the plane calls it a correction. The
-    /// surface brings it on from an empty mask all the same (`ScrimWindow.present`).
-    @Test func theFirstMaskIsNotADissolve() {
-        let (surface) = Self.plane(stack: Stack([Self.pane(1, Self.left)])).1
-        #expect(surface.fades.first == false)
-    }
-}
-
-// The mask itself: the one image the whole effect is drawn through.
-
-@Suite @MainActor struct ScrimMaskTests {
-
-    static let display = Rect(x: 0, y: 0, width: 100, height: 80)
-
-    /// The alpha at one pixel of the mask, 0–255. Redrawn into a known layout rather than read raw:
-    /// an alpha-only image has no channel order to assume, but it does have a row padding.
-    static func alpha(_ image: CGImage, x: Int, y: Int) -> Int? {
-        let w = image.width, h = image.height
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
-                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                                      | CGBitmapInfo.byteOrder32Big.rawValue)
-        else { return nil }
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let data = ctx.data, x >= 0, x < w, y >= 0, y < h else { return nil }
-        // Top-left addressing, which is the space the regions are given in.
-        return Int(data.bindMemory(to: UInt8.self, capacity: w * h * 4)[y * w * 4 + x * 4])
-    }
-
-    /// The veil is in the alpha channel, the only one `CALayer.mask` reads. A grey image with no alpha
-    /// is a mask that hides nothing, and the whole desktop is then drawn over the whole screen.
-    @Test func theVeilIsWrittenAsAlpha() throws {
-        let region = ScrimRegion(frame: Rect(x: 10, y: 10, width: 40, height: 40), veil: 0.5,
-                                 cornerRadius: 0)
-        let mask = try #require(ScrimWindow.mask([region], display: Self.display, scale: 1))
-        #expect(Self.alpha(mask, x: 30, y: 30).map { abs($0 - 128) <= 2 } == true)
-        #expect(Self.alpha(mask, x: 80, y: 60) == 0)          // bare desktop stays untouched
-    }
-
-    /// Painted back to front in `.copy`, so an occluder *replaces* what is under it. Blending instead
-    /// would leave the window in front half-veiled by the one behind it.
-    @Test func anOccluderPaintedOverAScrimClearsItRatherThanBlendingWithIt() throws {
-        let scrim = ScrimRegion(frame: Rect(x: 0, y: 0, width: 80, height: 80), veil: 0.6,
-                                cornerRadius: 0)
-        let occluder = ScrimRegion(frame: Rect(x: 40, y: 0, width: 40, height: 80), veil: 0,
-                                   cornerRadius: 0)
-        let mask = try #require(ScrimWindow.mask([scrim, occluder], display: Self.display, scale: 1))
-        #expect(Self.alpha(mask, x: 20, y: 40).map { abs($0 - 153) <= 2 } == true)
-        #expect(Self.alpha(mask, x: 60, y: 40) == 0)
-    }
-
-    /// A scrim stops at its silhouette, because outside its corner is its own shadow.
-    @Test func aScrimIsRoundedAtItsCorners() throws {
-        let rounded = ScrimRegion(frame: Rect(x: 0, y: 0, width: 60, height: 60), veil: 1,
-                                  cornerRadius: 12)
-        let scrim = try #require(ScrimWindow.mask([rounded], display: Self.display, scale: 1))
-        #expect(Self.alpha(scrim, x: 1, y: 1) == 0)
-        #expect(Self.alpha(scrim, x: 30, y: 30) == 255)
-    }
-
-    /// So does an occluder: outside its corner is the window it stands on. A float over an unfocused
-    /// window stamped square leaves that window unveiled in four sharp corners around it.
-    @Test func anOccluderIsRoundedAndLeavesTheVeilBeneathItsCorners() throws {
-        let scrim = ScrimRegion(frame: Rect(x: 0, y: 0, width: 80, height: 80), veil: 1,
-                                cornerRadius: 0)
-        let float = ScrimRegion(frame: Rect(x: 20, y: 20, width: 40, height: 40), veil: 0,
-                                cornerRadius: 12)
-        let mask = try #require(ScrimWindow.mask([scrim, float], display: Self.display, scale: 1))
-        #expect(Self.alpha(mask, x: 21, y: 21) == 255)        // outside the float's corner
-        #expect(Self.alpha(mask, x: 21, y: 40) == 0)          // along its edge
-        #expect(Self.alpha(mask, x: 40, y: 40) == 0)
-    }
-
-    /// A decline is the window behind, painted only inside the see-through window's silhouette. Where
-    /// the one in front rounds its corner, the one behind keeps the veil it was painted with.
-    @Test func aDeclineIsTheWindowBehindInsideTheOneInFront() throws {
-        let behind = ScrimRegion(frame: Rect(x: 0, y: 0, width: 50, height: 50), veil: 1,
-                                 cornerRadius: 0)
-        let front = ScrimRegion(frame: Rect(x: 20, y: 20, width: 60, height: 60), veil: 1,
-                                cornerRadius: 12)
-        let decline = ScrimRegion(frame: behind.frame, veil: 0, cornerRadius: 0,
-                                  within: .init(frame: front.frame, cornerRadius: front.cornerRadius))
-        let mask = try #require(ScrimWindow.mask([behind, front, decline], display: Self.display,
-                                                 scale: 1))
-        #expect(Self.alpha(mask, x: 21, y: 21) == 255)        // outside the front one's corner
-        #expect(Self.alpha(mask, x: 30, y: 30) == 0)          // where both stand
-        #expect(Self.alpha(mask, x: 10, y: 10) == 255)        // the one behind, alone
-        #expect(Self.alpha(mask, x: 60, y: 60) == 255)        // the one in front, alone
-    }
-
-    @Test func aMaskWithNothingOnItIsEntirelyClear() throws {
-        let mask = try #require(ScrimWindow.mask([], display: Self.display, scale: 1))
-        #expect(Self.alpha(mask, x: 50, y: 40) == 0)
+        // And a veil moving is a dissolve, whatever the rectangles did — including the last one going,
+        // which is focus landing on the window that was see-through.
+        Self.show(scrims, [Self.binding(2)])
+        #expect(surface.changes.last == .dissolve)
+        Self.show(scrims, [])
+        #expect(surface.veils.isEmpty)
+        #expect(surface.changes.last == .dissolve)
     }
 }
 

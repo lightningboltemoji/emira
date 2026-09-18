@@ -1,8 +1,5 @@
 # Build and test every pull request. Pushes to main are covered by `release.yml`, which runs the
 # same two commands before it publishes anything — there is no point building main twice.
-#
-# `macos-26` is the platform floor (PRINCIPLES.md §7); it is Apple Silicon and its default Xcode is
-# a 26.x, so nothing here selects a toolchain. `make test` detects Xcode-vs-CommandLineTools itself.
 name: ci
 
 on:
@@ -15,7 +12,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v5
 

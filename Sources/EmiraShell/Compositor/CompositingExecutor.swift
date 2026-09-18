@@ -204,11 +204,11 @@ public final class CompositingExecutor: Executor {
                     hoists.setHoists(bindings, feedback: feedback)
                 }
             case .scrim:
-                // Last wins, for `setHoists`' reason: the core emits the whole set, so two in a batch
-                // would be a decision superseded before it reached the screen.
+                // Each names its own display, so two in a run are two screens rather than one decision
+                // superseded — a scrim is one display's, as `setCoverClearing` is.
                 for effect in run.effects {
-                    guard case .setScrims(let bindings, let lifted) = effect else { continue }
-                    scrims.setScrims(bindings, lifted: lifted)
+                    guard case .setScrims(let monitor, let bindings, let change) = effect else { continue }
+                    scrims.setScrims(bindings, on: monitor, change: change)
                 }
                 // A cover standing over that desktop follows it. The set a transition changes arrives
                 // at the teleport, so the veil moves *with* the motion rather than waiting behind the
@@ -341,10 +341,6 @@ public final class CompositingExecutor: Executor {
         // opens a *new* cover on that display and must take its own base, not inherit the fading one's
         // desktop.
         let token = store.closeCover(on: monitor)
-        // Before the cover starts moving, not after it lands: the transition closed because the AX
-        // sets landed, so the window server is current now — and the cover still hides the scrim, so
-        // the repaint lands where nobody can see it.
-        scrims.restack()
         surface.dismiss(on: monitor, over: dismissalDuration) { [onCoverDismissed, store] in
             // Released only once the cover is *down* — `CALayer.contents` holds the stills for the
             // whole cross-fade. And only *these* stills: `discard` ignores a superseded token.

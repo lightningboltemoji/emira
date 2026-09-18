@@ -30,27 +30,32 @@ import Foundation
 // one. The physical stacking of the desktop, including the windows emira never placed, is the window
 // server's fact and not the layout's, so the decline is made where that fact lives.
 
-/// One window drawn as though you could see through it: which window, which display's photograph backs
-/// it, the rect it occupies in core (top-left, global) coordinates, and how much of the desktop shows.
-///
+/// One window drawn as though you could see through it, and how much of the desktop shows. No frame and no
+/// display: where it stands is the window server's to say, and `Effect.setScrims` names the screen.
 /// Array order is z-order, bottom→top — the convention `LayerBinding` and `HoistBinding` carry.
 public struct ScrimBinding: Sendable, Equatable, Codable {
     public let window: WindowId
-    /// Whose desktop photograph backs it. A scrim is one display's, because the photograph is.
-    public let monitor: MonitorId
-    /// Where the real window is. A scrim stands exactly on it, or it tints somebody else's pixels.
-    public let frame: Rect
     /// The share of the backdrop that shows — `1 − [focus] unfocused-opacity`. Carried per binding
     /// rather than read from the config by the shell, so the one place that decides how transparent a
     /// window looks is the reducer, as it is for every other number the shell draws with.
     public let veil: Double
 
-    public init(window: WindowId, monitor: MonitorId, frame: Rect, veil: Double) {
+    public init(window: WindowId, veil: Double) {
         self.window = window
-        self.monitor = monitor
-        self.frame = frame
         self.veil = veil
     }
+}
+
+/// How a scrim's mask gets from what it is drawing to what a set asks for. **The core says which**, since
+/// it is what knows why the set changed; the plane keeps no memory of its own to guess from.
+public enum ScrimChange: String, Sendable, Equatable, Codable {
+    /// A veil moved: focus crossed, a window reached the glass or left it, the setting itself changed.
+    /// The mask dissolves over `ScrimWindow.fadeDuration`.
+    case dissolve
+    /// The mask moves with no veil behind it — the desktop settled under a set that did not move, or a
+    /// hand lifted one — so it changes at once. A correction that faded would read as the window
+    /// deciding to become transparent by itself.
+    case cut
 }
 
 extension State {
@@ -64,21 +69,23 @@ extension State {
     /// deriving a viewport.
     ///
     /// **Empty while a window is in the user's hand**: a mask is cut once per set, so a moving window's
-    /// hole would stay where it was picked up.
-    public func scrimBindings() -> [ScrimBinding] {
+    /// hole would stay where it was picked up. By display, because a scrim is one display's, and each
+    /// screen's own run of the z-order is the only order there is.
+    public func scrimBindings() -> [MonitorId: [ScrimBinding]] {
         let veil = min(max(1 - config.unfocusedOpacity, 0), 1)
-        guard veil > 0, drag.subject == nil else { return [] }
+        guard veil > 0, drag.subject == nil else { return [:] }
 
         let focused = world.focusedWindow
         let candidates = world.placedOnScreen.filter { $0 != focused }.sorted()
-        guard !candidates.isEmpty else { return [] }
+        guard !candidates.isEmpty else { return [:] }
 
-        return stackingOrder(of: candidates)
-            .compactMap { id -> ScrimBinding? in
+        let showing = stackingOrder(of: candidates)
+            .compactMap { id -> (MonitorId, ScrimBinding)? in
                 guard let frame = world.windows[id]?.frame,
                       let monitor = showing(id, at: frame) else { return nil }
-                return ScrimBinding(window: id, monitor: monitor, frame: frame, veil: veil)
+                return (monitor, ScrimBinding(window: id, veil: veil))
             }
+        return Dictionary(grouping: showing, by: \.0).mapValues { $0.map(\.1) }
     }
 
     /// Which display is showing `id`: a pin names its own, a window on a layout takes the display

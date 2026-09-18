@@ -173,6 +173,9 @@ public struct World: Sendable, Equatable, Codable {
     /// a timed-out write usually can't be read back — so without this mark that guess stands as truth and
     /// `Engine.isAlreadyPlaced` skips the window forever. Not a retry: nothing here schedules anything.
     public private(set) var unverified: Set<WindowId>
+    /// Every set the reducer has written and the app has yet to answer, with the displays the move
+    /// touches — where the window stood and where it was sent. What the veil on a display waits for.
+    public private(set) var inFlight: [WindowId: Set<MonitorId>]
     /// The windows the last placement pass put **on the glass** — every other window it placed is parked
     /// at its sliver. Recorded by `Engine.writeTruthPlane` rather than derived, because deriving it needs
     /// both a scroll offset and the layout it was measured against, and the two come apart: through a
@@ -219,6 +222,7 @@ public struct World: Sendable, Equatable, Codable {
         self.parkFloors = [:]
         self.refusedFrames = [:]
         self.unverified = []
+        self.inFlight = [:]
         self.placedOnScreen = []
         self.floating = [:]
         self.pins = [:]
@@ -249,6 +253,7 @@ public struct World: Sendable, Equatable, Codable {
         parkFloors[id] = nil
         refusedFrames[id] = nil
         unverified.remove(id)
+        inFlight[id] = nil
         placedOnScreen.remove(id)
         floating[id] = nil
         pins[id] = nil
@@ -275,6 +280,28 @@ public struct World: Sendable, Equatable, Codable {
     /// mutator here folds an `Event` the shell has to be able to construct. Replaced wholesale, never
     /// merged: a pass places every managed window, so what it does not name it parked.
     mutating func notePlaced(onScreen ids: Set<WindowId>) { placedOnScreen = ids }
+
+    /// Record a set `Engine.writeTruthPlane` has just written: the target is taken optimistically, and
+    /// the move is in flight on every display the old frame or the new one overlaps until it lands.
+    /// `internal` for `notePlaced`'s reason.
+    mutating func noteWrite(_ id: WindowId, to target: Rect) {
+        guard let from = windows[id]?.frame else { return }
+        let touched = monitors.filter { $0.frame.intersects(from) || $0.frame.intersects(target) }
+        inFlight[id, default: []].formUnion(touched.map(\.id))
+        updateFrame(id, to: target)
+    }
+
+    /// Fold `Event.axLanded` and `Event.axFailed`: the app has answered, so nothing about this window is
+    /// still on its way to the glass.
+    public mutating func noteLanded(_ id: WindowId) {
+        inFlight[id] = nil
+    }
+
+    /// Whether a write that touches `monitor` has yet to land — the window server's stacking there is
+    /// still moving.
+    public func hasWritesInFlight(on monitor: MonitorId) -> Bool {
+        inFlight.values.contains { $0.contains(monitor) }
+    }
 
     /// Fold `Event.axFailed`: what `windows` holds for this id is a guess we've been told is wrong.
     public mutating func markUnverified(_ id: WindowId) {
