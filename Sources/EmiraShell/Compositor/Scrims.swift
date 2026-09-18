@@ -189,7 +189,7 @@ public final class Scrims: ScrimPlane {
         for display in displays {
             surfaces[display.monitor] = build(display.frame, display.scale, geometry)
             frames[display.monitor] = display.frame
-            refilm(display.monitor)
+            if wantsPhotograph(display.monitor) { refilm(display.monitor) }
             // A new surface holds no mask, so there is nothing for its set to dissolve from.
             apply(current[display.monitor] ?? [], on: display.monitor, change: .cut)
         }
@@ -197,6 +197,10 @@ public final class Scrims: ScrimPlane {
 
     public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
         current[monitor] = bindings
+        // The first set on a display is what makes its photograph worth taking, and it is applied
+        // against one that is still coming: a surface with no desktop cuts its shapes and stays off the
+        // glass until `setDesktop` gives it one, so the film lands behind a mask already in place.
+        if photographs[monitor] == nil, !bindings.isEmpty { refilmIfStale(monitor) }
         apply(bindings, on: monitor, change: change)
     }
 
@@ -206,7 +210,7 @@ public final class Scrims: ScrimPlane {
     public func setBlur(_ radius: Double) {
         guard radius != blur else { return }
         blur = radius
-        for monitor in surfaces.keys { refilm(monitor) }
+        for monitor in surfaces.keys where wantsPhotograph(monitor) { refilm(monitor) }
     }
 
     /// Take every scrim off the screen — the daemon is quitting, or the displays are being rebuilt.
@@ -228,24 +232,48 @@ public final class Scrims: ScrimPlane {
     /// Space switch, a display change. Throttled by `desktopMaxAge`, so a burst of transitions costs
     /// one photograph rather than one each.
     public func desktopMayHaveChanged() {
-        let now = Date()
-        for monitor in surfaces.keys {
-            guard now.timeIntervalSince(filmedAt[monitor] ?? .distantPast) >= Self.desktopMaxAge else {
-                continue
-            }
-            refilm(monitor)
+        for monitor in surfaces.keys where wantsPhotograph(monitor) { refilmIfStale(monitor) }
+    }
+
+    /// Whether `monitor`'s desktop is worth photographing at all. A film is a full-screen capture, and
+    /// until the core names a window to veil there is nothing for the photograph to be the backdrop
+    /// *of* — not on this plane, and not on the cover's, whose stand-ins draw their veils through the
+    /// same one (`backdrop(of:)`). So the setting left off costs no capture rather than one every
+    /// `desktopMaxAge` for a picture nobody reads, and no cover carries a veil layer it draws at zero.
+    ///
+    /// **Sticky once taken**, because an empty set is not only the setting going off: the core empties
+    /// one for the length of a drag, and a hand putting a window down has to find the backdrop standing
+    /// rather than wait out a capture. What that leaves behind is one photograph per display held until
+    /// the daemon restarts by somebody who turned the setting off mid-session — never refreshed, since
+    /// nothing asks for it again.
+    private func wantsPhotograph(_ monitor: MonitorId) -> Bool {
+        current[monitor]?.isEmpty == false || photographs[monitor] != nil
+    }
+
+    /// Refilm unless the standing photograph is younger than `desktopMaxAge`. The throttle paces a
+    /// desktop that may merely have changed; `setBlur` and a rebuilt surface go around it, since what
+    /// those hold is a photograph known to be wrong rather than one suspected of being stale.
+    private func refilmIfStale(_ monitor: MonitorId) {
+        guard Date().timeIntervalSince(filmedAt[monitor] ?? .distantPast) >= Self.desktopMaxAge else {
+            return
         }
+        refilm(monitor)
     }
 
     private func refilm(_ monitor: MonitorId) {
+        // A display with no surface has no scrim to back, and `setScrims` can name one before the
+        // screens it is on have been built.
+        guard surfaces[monitor] != nil else { return }
         filmedAt[monitor] = Date()
         filmGeneration[monitor, default: 0] &+= 1
         let mine = filmGeneration[monitor] ?? 0
         filmer.film(desktopOf: monitor, blurredBy: blur) { [weak self] image in
             guard let self, self.filmGeneration[monitor] == mine else { return }
             // A film that failed leaves the standing photograph alone: an old desktop is a better
-            // backdrop than none, and `nil` here would take every scrim on that display down.
-            guard let image else { return self.filmedAt[monitor] = .distantPast }
+            // backdrop than none, and `nil` here would take every scrim on that display down. The
+            // attempt still stands against the throttle, or a desktop that declines to be filmed at
+            // all — no Screen Recording grant — is asked again at every cover and every set.
+            guard let image else { return }
             self.photographs[monitor] = image
             self.surfaces[monitor]?.setDesktop(image)
         }

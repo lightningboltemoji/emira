@@ -64,6 +64,11 @@ public final class Reconstruction: CoverSurface {
 
     /// The photograph the scrim draws its veil through (`Scrims.backdrop(of:)`). A stand-in draws its
     /// own through the same one rather than as real alpha, so both planes land the same blend and frost.
+    ///
+    /// **`nil` is also how the setting being off reaches the cover.** The scrim films no display nobody
+    /// is veiling (`Scrims.wantsPhotograph`), so asking for the photograph is the whole of asking
+    /// whether this feature is live, and a cover raised under an opaque desktop builds no veil layer to
+    /// carry at zero and place every frame.
     public var backdrop: @MainActor (MonitorId) -> CGImage? = { _ in nil }
 
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,

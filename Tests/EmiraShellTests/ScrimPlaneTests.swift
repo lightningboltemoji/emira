@@ -407,24 +407,58 @@ import EmiraCore
         #expect(scrims.veil(of: WindowId(2)) == 0)
     }
 
-    // The photograph.
+    // The photograph. A film is a full-screen capture, so what has to hold is that one is taken exactly
+    // when somebody is going to read it — the set the core names is the whole of that question.
 
-    @Test func aDisplayFilmsItsDesktopAsItIsBuilt() {
-        let (_, surface) = Self.plane(stack: [])
+    /// The plane with one window veiled on its display, which is what makes the photograph worth
+    /// taking. The stack is left empty: these are about the film, not about the mask cut against it.
+    static func filming(_ filmer: InstantFilmer = InstantFilmer()) -> (Scrims, RecordingSurface) {
+        let (scrims, surface) = Self.plane(stack: [], filmer: filmer)
+        scrims.setScrims([Self.binding(1)], on: Self.monitor, change: .cut)
+        return (scrims, surface)
+    }
+
+    @Test func aDisplayFilmsItsDesktopWhenTheFirstSetNamesIt() {
+        let (_, surface) = Self.filming()
         #expect(surface.desktop != nil)
+    }
+
+    /// The setting off is the set never arriving, so this is how off costs nothing: no capture at boot,
+    /// none every `desktopMaxAge` after, and no photograph held for a picture nobody reads.
+    @Test func aDisplayNobodyIsVeilingFilmsNothing() {
+        let filmer = InstantFilmer()
+        let (scrims, surface) = Self.plane(stack: [], filmer: filmer)
+        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.isEmpty)
+        #expect(surface.desktop == nil)
+        // …and the cover asks the same question by asking for the backdrop, so it builds no veil layer.
+        #expect(scrims.backdrop(of: Self.monitor) == nil)
     }
 
     /// An old desktop is a better backdrop than none, and `nil` here would take every scrim down.
     /// Driven through `setBlur` because it is the one refilm the throttle does not stand in the way
-    /// of: `desktopMayHaveChanged` inside `desktopMaxAge` of the build never reaches the filmer.
+    /// of: `desktopMayHaveChanged` inside `desktopMaxAge` of the film never reaches the filmer.
     @Test func aFailedFilmLeavesTheStandingPhotographAlone() {
         let filmer = InstantFilmer()
-        let (scrims, surface) = Self.plane(stack: [], filmer: filmer)
+        let (scrims, surface) = Self.filming(filmer)
         #expect(surface.desktop != nil)
         filmer.answers = false
         scrims.setBlur(5)
         #expect(filmer.films.count == 2)
         #expect(surface.desktop != nil)
+    }
+
+    /// A failure is an attempt, and it stands against the throttle like any other: a desktop that
+    /// declines to be filmed at all — no Screen Recording grant — would otherwise be asked again at
+    /// every cover that comes down and every set the core names.
+    @Test func aFilmThatFailedStillPacesTheNextOne() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.filming(filmer)
+        filmer.answers = false
+        scrims.setBlur(5)
+        let attempts = filmer.films.count
+        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.count == attempts)
     }
 
     // The frost. The blur is baked into the film, so the radius has to reach the filmer.
@@ -433,7 +467,7 @@ import EmiraCore
     /// at once, outside the throttle that paces a desktop which may merely have changed.
     @Test func aNewRadiusRefilmsEveryDisplayAtOnce() {
         let filmer = InstantFilmer()
-        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        let (scrims, _) = Self.filming(filmer)
         #expect(filmer.films.map(\.radius) == [0])
         scrims.setBlur(5)
         #expect(filmer.films.map(\.radius) == [0, 5])
@@ -442,17 +476,31 @@ import EmiraCore
     /// Most reloads leave it alone, and a full-screen capture per display is not what one of those costs.
     @Test func theRadiusItAlreadyHasFilmsNothing() {
         let filmer = InstantFilmer()
-        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        let (scrims, _) = Self.filming(filmer)
         scrims.setBlur(0)
         #expect(filmer.films.count == 1)
     }
 
+    /// A radius nobody is reading refilms nothing either: there is no standing photograph to be wrong.
+    @Test func aNewRadiusFilmsNothingOnADisplayNobodyIsVeiling() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.plane(stack: [], filmer: filmer)
+        scrims.setBlur(5)
+        #expect(filmer.films.isEmpty)
+    }
+
     /// The plane holds the radius, not the photograph — so a display plugged in later films at it
     /// without anybody re-applying the config.
+    ///
+    /// The set arrives before the surface does, which is the real order: `screensChanged` reaches the
+    /// core first so every cover is closed against the surface that raised it, and only then are the
+    /// displays swapped. A set naming a display that does not exist yet films nothing and waits.
     @Test func aDisplayBuiltAfterTheRadiusWasSetFilmsAtIt() {
         let filmer = InstantFilmer()
         let (scrims, _) = Self.plane(stack: [], filmer: filmer)
         scrims.setBlur(5)
+        scrims.setScrims([Self.binding(1)], on: MonitorId(2), change: .cut)
+        #expect(filmer.films.isEmpty)
         scrims.setDisplays([(MonitorId(2), Self.display, 2)],
                            geometry: ScreenGeometry(flipHeight: 800))
         #expect(filmer.films.last?.radius == 5)

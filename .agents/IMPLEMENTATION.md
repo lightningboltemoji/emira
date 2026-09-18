@@ -1276,12 +1276,22 @@ on. The physical stacking of the desktop includes the windows emira never placed
 server's fact rather than the layout's, so the decline is made where that fact lives — one
 `CGWindowListCopyWindowInfo` in z-order per rebuild, which is the only public list that carries one.
 
-**The photograph is refilmed only when the desktop is quiet** — at build, on a display change, and after a
-cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change: the window server serializes
-screenshots, and a focus change is also a cover, whose batch is the one latency anybody can feel. A desktop
-widget therefore ticks late behind a window you are looking through. A new `unfocused-blur` is the one refilm
-the throttle does not pace, because a radius change does not leave the standing photograph stale — it leaves it
-wrong.
+**The photograph is refilmed only when the desktop is quiet** — on the first set that names a display, on a
+display change, and after a cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change:
+the window server serializes screenshots, and a focus change is also a cover, whose batch is the one latency
+anybody can feel. A desktop widget therefore ticks late behind a window you are looking through. A new
+`unfocused-blur` is the one refilm the throttle does not pace, because a radius change does not leave the
+standing photograph stale — it leaves it wrong. A film that *failed* is still an attempt and still paces the
+next one, or a desktop that declines to be filmed at all is asked again at every cover and every set.
+
+**No display nobody is veiling is ever filmed** (`Scrims.wantsPhotograph`), which is the whole of what the
+setting being off costs: no capture at boot, none every `desktopMaxAge` after, and no photograph held. The
+core names no window while `unfocused-opacity` is `1`, so the shell reads the set it is given rather than the
+config, and the cover reads the same answer by asking for the backdrop and getting `nil` — a stand-in under an
+opaque desktop is built with no veil layer to carry at zero and place every frame. It is **sticky** once
+taken: an empty set is also what a drag looks like, and a hand putting a window down has to find the backdrop
+standing rather than wait out a capture, so a session that turns the setting off keeps its last photograph —
+never refreshed — until the daemon restarts.
 
 **A set describes a desktop, so it does not arrive ahead of one** (`Engine.settleScrims`). The veil is
 appearance, and the rule for when appearance may change is the rule for when a window may move: a display
