@@ -43,7 +43,7 @@ test:
 	swift test $(TEST_FLAGS) $(QUIET)
 
 # --- The golden config file ----------------------------------------------------------------------
-# `emira.example.toml` is generated from `ConfigSchema` and pinned by a test; this is the one way to
+# `config.example.toml` is generated from `ConfigSchema` and pinned by a test; this is the one way to
 # regenerate it. The generator *is* that test — under `EMIRA_UPDATE_GOLDEN` it writes the file it
 # otherwise asserts against — so there is no second rendering of the schema to keep in step with the
 # first, and no new executable target to build one.
@@ -53,7 +53,7 @@ test:
 example:
 	EMIRA_UPDATE_GOLDEN=1 swift test $(TEST_FLAGS) \
 		--filter theGeneratedDocumentIsTheGoldenFile $(QUIET)
-	@git --no-pager diff --stat -- emira.example.toml
+	@git --no-pager diff --stat -- config.example.toml
 
 clean:
 	swift package clean

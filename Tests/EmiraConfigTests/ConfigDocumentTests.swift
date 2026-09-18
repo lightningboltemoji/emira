@@ -19,7 +19,7 @@ import EmiraCore
         var description: String { name }
     }
 
-    /// Tanner's own `~/.config/emira/emira.toml`, verbatim: a base gap with one per-side override, a
+    /// Tanner's own `~/.config/emira/config.toml`, verbatim: a base gap with one per-side override, a
     /// `[keys]` table with blank lines grouping it, and an `exec` line whose quoting is its own hazard.
     static let real = #"""
     [layout]

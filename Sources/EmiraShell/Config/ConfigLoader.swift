@@ -36,7 +36,7 @@ public enum ConfigLoadError: Error, CustomStringConvertible {
     }
 }
 
-/// Loads `~/.config/emira/emira.toml` and keeps the daemon in step with it.
+/// Loads `~/.config/emira/config.toml` and keeps the daemon in step with it.
 @MainActor
 public final class ConfigLoader {
 

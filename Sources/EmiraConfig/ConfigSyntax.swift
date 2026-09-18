@@ -11,7 +11,7 @@ import EmiraCore
 // left, so there is only one list of known keys and it is the schema itself.
 //
 // The whole schema at its defaults is `ConfigSchema.document`, generated from that table and pinned
-// as `emira.example.toml`. It used to be a hand-written block here, which is a restatement of the
+// as `config.example.toml`. It used to be a hand-written block here, which is a restatement of the
 // reader that can silently drift from it.
 //
 // Three sections the table deliberately does not describe are read below by a function named for

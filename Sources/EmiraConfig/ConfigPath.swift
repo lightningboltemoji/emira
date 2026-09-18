@@ -6,12 +6,12 @@ import EmiraCore
 // CLI and the daemon both need them and share nothing else.
 
 extension Config {
-    /// `$EMIRA_CONFIG`, or the XDG-style `~/.config/emira/emira.toml`.
+    /// `$EMIRA_CONFIG`, or the XDG-style `~/.config/emira/config.toml`.
     public static func defaultPath() -> String {
         if let override = ProcessInfo.processInfo.environment["EMIRA_CONFIG"], !override.isEmpty {
             return override
         }
-        return NSHomeDirectory() + "/.config/emira/emira.toml"
+        return NSHomeDirectory() + "/.config/emira/config.toml"
     }
 
     /// What a config file emira creates for the user contains, so a fresh one opens onto a sentence

@@ -2091,7 +2091,7 @@ and a save leaves the window up.
 
 ## 9. Config
 
-**TOML**, at `~/.config/emira/emira.toml` (override: `EMIRA_CONFIG`).
+**TOML**, at `~/.config/emira/config.toml` (override: `EMIRA_CONFIG`).
 
 **TOML 1.0.0 is the target, and the reader is measured against it rather than against emira's own file.** A
 config a conformant parser accepts is one emira accepts; a file emira writes is one a conformant parser reads.
@@ -2113,7 +2113,7 @@ The split is the one §3 states: the **values** are a pure `Config` struct in `E
 reads them; the **format** — grammar, schema, path — is `EmiraConfig`, and `String → Config` is pure by
 construction. The shell owns only reading and watching.
 
-**`emira.example.toml` is the config surface**, generated from `ConfigSchema.document` and pinned by a golden
+**`config.example.toml` is the config surface**, generated from `ConfigSchema.document` and pinned by a golden
 test. Read it rather than a list here; `make example` regenerates it, and the diff a human reads is `git diff`.
 The variable it uses (`EMIRA_UPDATE_GOLDEN`) is opt-in and CI never sets it — a suite that repaired itself on
 the way past would answer differently on a second run.
@@ -2229,7 +2229,7 @@ global it reaches compiles clean and reads zeroed memory if called early.
 
 ```
 emira/
-├── Package.swift · Makefile · emira.example.toml (generated, golden)
+├── Package.swift · Makefile · config.example.toml (generated, golden)
 ├── .github/workflows/{ci,release}.yml   ci: build+test on macos-26 · release: tip + v* + cask bump
 ├── .github/demo/                        the README's film: demo.sh + caption.swift + screencapture
 ├── .agents/{README,PRINCIPLES,IMPLEMENTATION}.md + changes/<epoch>.md
@@ -2339,7 +2339,7 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 
 - **`EmiraConfigTests`** — the grammar and schema (every diagnostic, by line number), the document model
   (round-trip identity over a corpus), and the schema as text (every entry reads back whatever it prints, and
-  `emira.example.toml` matches its golden).
+  `config.example.toml` matches its golden).
 - **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
 - **`EmiraSettingsTests`** — the draft (an edit as text, unset-on-default, a refusal that does not land), the
   preview's geometry against `Layout`'s own, a take's arrangement at a given `t`, which spring drives which

@@ -51,7 +51,7 @@ public struct SpringParams: Sendable, Equatable, Codable {
     ///
     /// Spelled the way the config file spells a spring rather than as `critical(frequency: √800)`. The
     /// two are the same spring and agree on `damping` to the bit, but routing `k` through a square root
-    /// and back lands on 800.0000000000001 — which the generated `emira.example.toml` would then print
+    /// and back lands on 800.0000000000001 — which the generated `config.example.toml` would then print
     /// as this key's default.
     public static let smooth = SpringParams(stiffness: 800, dampingRatio: 1)
     /// Quick with a touch of life — a slight overshoot, and no production consumer: structural moves

@@ -29,7 +29,7 @@ import EmiraCore
     /// would answer "do the tests pass?" differently on a second run — and a CI retry would go green
     /// with a modified tree, laundering a stale file into main.
     @Test func theGeneratedDocumentIsTheGoldenFile() throws {
-        let file = Self.root.appendingPathComponent("emira.example.toml")
+        let file = Self.root.appendingPathComponent("config.example.toml")
         let updating = ProcessInfo.processInfo.environment["EMIRA_UPDATE_GOLDEN"]
         if let updating, !updating.isEmpty {
             try ConfigSchema.document.write(to: file, atomically: true, encoding: .utf8)
@@ -37,7 +37,7 @@ import EmiraCore
         }
         let golden = try String(contentsOf: file, encoding: .utf8)
         #expect(ConfigSchema.document == golden, """
-        emira.example.toml is stale. Run `make example` to regenerate it, and read the diff.
+        config.example.toml is stale. Run `make example` to regenerate it, and read the diff.
         """)
     }
 

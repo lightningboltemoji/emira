@@ -16,7 +16,7 @@ extension ConfigSchema {
 
     /// Every setting emira has, written out as the config file that would set each to its default.
     ///
-    /// Pinned by a golden file (`emira.example.toml`), which is what the docs quote: generated means it
+    /// Pinned by a golden file (`config.example.toml`), which is what the docs quote: generated means it
     /// cannot drift from the reader, and golden means it cannot change without someone reading the diff.
     public static var document: String {
         var tables: [(header: String, entries: [String])] = []

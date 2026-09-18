@@ -41,7 +41,7 @@ import EmiraCore
     /// A scratch directory that cleans itself up, so a test can write, rewrite and delete a real file.
     final class Scratch {
         let directory: URL
-        var path: String { directory.appendingPathComponent("emira.toml").path }
+        var path: String { directory.appendingPathComponent("config.toml").path }
 
         init() {
             directory = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -293,7 +293,7 @@ import EmiraCore
 
     @Test func aFileThatIsntThereBecauseItsDirectoryIsntEither() throws {
         let scratch = Scratch()
-        let nested = scratch.directory.appendingPathComponent("nested/deeper/emira.toml").path
+        let nested = scratch.directory.appendingPathComponent("nested/deeper/config.toml").path
         try ConfigFile.create(at: nested)
         #expect(FileManager.default.fileExists(atPath: nested))
     }

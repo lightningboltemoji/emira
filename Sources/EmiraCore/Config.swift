@@ -2,7 +2,7 @@ import Foundation
 import EmiraMotion
 
 // The configuration values the reducer reads. Pure data: the *parse* is next door
-// (`ConfigSyntax.swift`), and finding, reading and watching `~/.config/emira/emira.toml` is the
+// (`ConfigSyntax.swift`), and finding, reading and watching `~/.config/emira/config.toml` is the
 // shell's, which hands the result back as `Event.configChanged`.
 //
 // **Lengths are in points; width presets are proportions of the content width.** A zero-config

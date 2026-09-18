@@ -24,7 +24,7 @@ import EmiraCore
         var model = StatusModel(workspace: WorkspaceName("4")!)
         #expect(model.title == "4")
 
-        model.configStatus = .broken("/tmp/emira.toml:3: unknown setting 'layout.colum-gap'")
+        model.configStatus = .broken("/tmp/config.toml:3: unknown setting 'layout.colum-gap'")
         #expect(model.title == "!")
         // The address it displaced is still reachable, because the user still needs to know it.
         #expect(model.tooltip.contains("4"))
@@ -50,7 +50,7 @@ import EmiraCore
     /// screen is showing what is not the fact the error replaces.
     @Test func aBrokenConfigKeepsEveryDisplaysAddressInTheTooltip() {
         let model = StatusModel(workspace: WorkspaceName("4")!, elsewhere: [WorkspaceName("7")!],
-                                configStatus: .broken("/tmp/emira.toml:3: bad"))
+                                configStatus: .broken("/tmp/config.toml:3: bad"))
         #expect(model.title == "!")
         #expect(model.tooltip.contains("4"))
         #expect(model.tooltip.contains("7"))
@@ -60,7 +60,7 @@ import EmiraCore
     /// Nothing is being managed, so the workspace it would name holds no windows.
     @Test func aConfigThatNeverLoadedTakesTheTitleAndSaysWhy() {
         let model = StatusModel(workspace: WorkspaceName("4")!,
-                                configStatus: .neverLoaded("/tmp/emira.toml:3: bad"))
+                                configStatus: .neverLoaded("/tmp/config.toml:3: bad"))
         #expect(model.title == "!")
         #expect(!model.tooltip.contains("4"))
         #expect(model.tooltip.contains("not managing"))
@@ -69,7 +69,7 @@ import EmiraCore
     /// The two failures read differently because they *are* different: one has earlier settings
     /// running and one has none, which is the whole reason emira manages nothing in the second.
     @Test func theTwoFailuresSayDifferentThingsAboutTheSameDiagnostic() {
-        let error = "/tmp/emira.toml:3: bad"
+        let error = "/tmp/config.toml:3: bad"
         let broken = StatusModel(configStatus: .broken(error)).consequence
         let never = StatusModel(configStatus: .neverLoaded(error)).consequence
 
@@ -86,7 +86,7 @@ import EmiraCore
     }
 
     @Test func theDiagnosticWrapsWithoutBreakingThePath() {
-        let path = "/Users/someone/.config/emira/emira.toml:3"
+        let path = "/Users/someone/.config/emira/config.toml:3"
         let model = StatusModel(workspace: .first,
                                 configStatus: .broken("\(path): unknown setting 'layout.colum-gap'"))
         let lines = model.diagnosticLines(width: 40)
