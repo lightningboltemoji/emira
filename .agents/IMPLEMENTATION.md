@@ -1220,7 +1220,7 @@ frozen, and a float that comes forward and goes back is filmed again.
 `Effect.setScrims`). emira cannot set a foreign window's alpha, but it can composite what is *behind* a window
 over the top of it, and the window server's own source-over does the blending. Drawn plainly at `v`, that is
 the same arithmetic as the window being transparent at `1 − v`; what is drawn is that, frosted and shaded (both
-below). `[focus] unfocused-opacity` is the number, `0.5` by default and off at `1`.
+below). `[focus] unfocused-opacity` is the number, `1` and off by default.
 
 **What it can get wrong is never the blend, only the backdrop.** The shell holds one photograph per display
 (`DesktopCapturer`): the display with **every** window taken out of it, leaving wallpaper, icons and widgets.
@@ -1230,7 +1230,7 @@ desktop reads inside out. So the effect belongs to the strip and says so: `strip
 overlap, and that promise is what makes one photograph the true backdrop for every window on the surface.
 
 **The photograph may be frosted, and the frost belongs to the backdrop rather than to the window.** `[focus]
-unfocused-blur` is a Gaussian in points, `8` by default and off at `0`, applied to the photograph as it is filmed
+unfocused-blur` is a Gaussian in points, `0` and off by default, applied to the photograph as it is filmed
 (`DesktopCapturer`) — on the capture task, where the render is already off the main thread, and once per film
 rather than every time a mask moves. The radius crosses into pixels with the photograph's own scale, and it is
 clamped to the display's own extent first, or the blur reads transparency in from past the screen and leaves a

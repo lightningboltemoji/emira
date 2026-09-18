@@ -399,8 +399,7 @@ import Testing
         let offset = s.viewport.offset.current
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(WindowId(99)))
-        #expect(effects == [.focus(WindowId(99)),
-                            .setScrims(MonitorId(1), next.scrims[MonitorId(1)] ?? [], .dissolve)])
+        #expect(effects == [.focus(WindowId(99))])
         #expect(next.viewport.offset.current == offset)
     }
 

@@ -101,8 +101,7 @@ import Testing
         for direction in [Direction.left, .up] {
             let (next, effects) = Engine.reduce(s, .command(.focus(direction)))
             #expect(!next.motion.isTransitioning)
-            #expect(effects == [.focus(WindowId(2)), .raise(WindowId(2)),
-                                .setScrims(MonitorId(1), next.scrims[MonitorId(1)] ?? [], .dissolve)])
+            #expect(effects == [.focus(WindowId(2)), .raise(WindowId(2))])
             s = next
             s = EngineFix.settle(s, effects)
             // …and back, so the second direction starts from the same place.

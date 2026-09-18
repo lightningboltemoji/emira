@@ -260,8 +260,7 @@ import Testing
             let s = world(2, mode)
             let (after, fx) = Engine.reduce(s, systemEvent(nil))
             #expect(after.world.focusedWindow == nil, "\(mode) held on to focus")
-            #expect(fx == [.setScrims(MonitorId(1), after.scrims[MonitorId(1)] ?? [], .dissolve)],
-                    "\(mode) emitted \(fx)")
+            #expect(fx.isEmpty, "\(mode) emitted \(fx)")
         }
     }
 
