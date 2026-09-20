@@ -1224,10 +1224,15 @@ below). `[focus] unfocused-opacity` is the number, `1` and off by default.
 
 **What it can get wrong is never the blend, only the backdrop.** The shell holds one photograph per display
 (`DesktopCapturer`): the display with **every** window taken out of it, leaving wallpaper, icons and widgets.
-Hence the one rule — **a window is drawn see-through only where the desktop is what lies behind it.** Where
-another window is behind, the photograph would replace a real window with wallpaper and the depth of the
-desktop reads inside out. So the effect belongs to the strip and says so: `strip` promises windows never
-overlap, and that promise is what makes one photograph the true backdrop for every window on the surface.
+Hence the one rule — **a window is drawn see-through where what lies behind it is the desktop, or another
+window this set is also drawing see-through.** Where an *opaque* window is behind, the photograph would replace
+a window plainly in use with wallpaper and the depth of the desktop reads inside out. So the effect belongs to
+the strip: `strip` promises windows never overlap, and that promise is what makes one photograph the true
+backdrop for every window on the surface. The second clause covers the one overlap tiling does produce — a
+column scrolled under a pin, which the strip is laid out beside and never clipped to fit — and it is the
+feature's one approximation, since what lies behind a see-through window is the desktop *and* that window's own
+content at `1 − v`. The error is `v(1 − v)·(desktop − window)`, spread smoothly across one photograph; declining
+instead leaves the front window's own pixels where that blend should be, and a step at the overlap's edge.
 
 **The photograph may be frosted, and the frost belongs to the backdrop rather than to the window.** `[focus]
 unfocused-blur` is a Gaussian in points, `0` and off by default, applied to the photograph as it is filmed
@@ -1249,13 +1254,13 @@ the desktop, and this is the member of that family that scales with the window �
 window at all. The arithmetic is in the photograph's encoded values because those are what the window server
 blends. It is baked in at film time beside the frost, and for the frost's reasons.
 
-**The decline is a region, because the rule is one.** A window behind takes its overlap out of the
-see-through one's shape rather than disqualifying the whole frame — so a float takes the patch of the tile it
-covers and no more, and a cascade keeps the effect on whatever a `stack` tile leaves exposed. Standing in for
-the rest needs a photograph per window, refilmed whenever anything behind anything redraws. **The occluder and
-the decline are one subtraction** (`Scrims.veils`): a window *in front* is not a decline and costs nothing,
-those pixels not being on the screen at all, but it comes out of the shape the same way — so z-order decides
-nothing here, and only the sheet rule reads the walk. The scope follows from the surface: only what is on this
+**The decline is a region, because the rule is one.** An opaque window behind takes its overlap out of the
+see-through one's shape rather than disqualifying the whole frame — so a float over the tile you are working in
+takes the patch it covers and no more. Standing in for the rest needs a photograph per window, refilmed
+whenever anything behind anything redraws. **The occluder and the decline are two subtractions, told apart by
+z-order** (`Scrims.veils`, `cuts`): `panes` runs front to back, so a lower index is in front and always comes
+out, those pixels not being on the screen at all; behind, only an opaque pane comes out, a see-through one
+standing on the photograph as well. The scope follows from the surface: only what is on this
 display is in the walk at all, so a column hanging off the viewport, its frame running through the parking lot
 in the corner, forfeits a sliver a pixel wide and keeps the screen it is on.
 
@@ -1264,17 +1269,19 @@ see-through window stops at its corners because outside them is its own shadow, 
 stops at *its* corners because outside those is whatever that window stands on — which keeps the veil beneath.
 Subtracted square, an occluder or a decline leaves the window beneath unveiled in a sharp corner.
 
-**A sheet is part of its window, so it is veiled with it** (`Scrims.regions`). A window emira never adopted,
+**A sheet is part of its window, so it is veiled with it** (`Scrims.veils`). A window emira never adopted,
 standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes
 that window's veil. The photograph standing in for the window behind the sheet is the one standing in for it
 everywhere else, so the whole window reads as see-through, sheet included — and it is how the cover already
 draws it, because a window's still carries its child windows. *Wholly* is what keeps a popup hanging off the
 edge of a window opaque, rather than veiled only where it overlaps.
 
-**The core names windows and the shell decides which it can back**, which is the seam `capture` already sits
-on. The physical stacking of the desktop includes the windows emira never placed, and that is the window
-server's fact rather than the layout's, so the decline is made where that fact lives — one
-`CGWindowListCopyWindowInfo` in z-order per rebuild, which is the only public list that carries one.
+**Which layout a window is on is the core's fact; how the desktop stacks is the shell's**, which is the seam
+`capture` already sits on. So a `stack` workspace declines in the core — `State.scrimBindings` never names its
+windows (`veiling`), and a cascade therefore costs no window-server read and no path boolean — while the
+physical stacking, which includes the windows emira never placed, declines in the shell, off one
+`CGWindowListCopyWindowInfo` in z-order per rebuild, the only public list that carries one. A pin is on no
+layout, so it keeps its veil beside a cascade.
 
 **The photograph is refilmed only when the desktop is quiet** — on the first set that names a display, on a
 display change, and after a cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change:
@@ -1332,6 +1339,17 @@ the windows were. A set is painted at once and then cut again each time the read
 another place: what the window server is showing can only be found out by asking it. What makes this
 affordable is the layer tree — a re-cut writes paths, which leaves a veil fading through it undisturbed, and
 a reading that changes nothing paints nothing at all.
+
+**A pane the reading has not caught up with declines nothing** (`Effect.setScrims`'s `moving`,
+`Scrims.staleFrames`). Painting at once and correcting is enough wherever a cover hides the first cut, and a
+pin's band is where it does not: the cover is held off it so the pin stays live (`settleCoverClearing`), so
+the pin is the one window on the glass carrying the server's lag in the open. A column that focus has just
+left goes opaque in the very set that teleports it, and a decline against where the server still has it cuts
+the pin's veil to a sliver for as long as the lag lasts. So the core names what it has written — a write in
+flight, and everything a cover still holds stand-ins for — and the plane records each at the frame it was
+still being read at; a pane standing there is one that has already gone, and takes nothing out of anything.
+The record is dropped the moment the reading moves, which is the only evidence the server has caught up, and
+the watch's own end is the backstop for a write it will never show.
 
 **A set is one display's**, as its photograph and its surface are, and `Effect.setScrims` names which. A
 display holding its veil is then simply one that was sent nothing, and its neighbour's focus change cannot
@@ -1398,12 +1416,13 @@ blit does not already cost. Left to the cross-fade instead, the whole change wou
 come to rest, which is correct and reads as two events: the transition, and then the desktop catching up.
 
 **What the cover does not carry is the decline.** A stand-in is veiled over its whole window and its
-photograph holds no windows, so wherever a stand-in stands over something other than the desktop — a `stack`
-tile over the one beneath it, a dialog emira floats by role left behind a scrolling column — the cover shows
-frosted wallpaper where that window is. Carrying the decline would take a mask per stand-in, rewritten every
-frame wherever the overlap slides, which is the offscreen pass `Overlay.setClearing` is shaped to avoid. It
-lasts only as long as the motion, over the scraps a cascade leaves exposed; a pin's band and a hoisted float
-are never under a stand-in at all.
+photograph holds no windows, so wherever a stand-in stands over something other than the desktop — a dialog
+emira floats by role, left behind a scrolling column — the cover shows frosted wallpaper where that window is.
+Carrying the decline would take a mask per stand-in, rewritten every frame wherever the overlap slides, which
+is the offscreen pass `Overlay.setClearing` is shaped to avoid. It lasts only as long as the motion, and there
+is less of it to carry than the rule once implied: a see-through window behind another is no decline at all,
+so the two planes part company only over the opaque ones. A cascade raises no veil to disagree about, and a
+pin's band and a hoisted float are never under a stand-in.
 
 ---
 

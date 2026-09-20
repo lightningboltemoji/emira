@@ -10,20 +10,27 @@ import EmiraCore
 // reading of emira's own windows taken at the same moment as those. The core sends a set once the moves
 // it describes have landed, so that reading is of a desktop that has stopped (`Engine.settleScrims`).
 //
-// **The rule, stated once: a window is drawn see-through only where the desktop is what lies behind it.**
-// It falls out of one comparison against the window server's ordering, and it has three consequences
-// that are really the same consequence:
+// **The rule, stated once: a window is drawn see-through where what lies behind it is the desktop — or
+// another window this set is also drawing see-through.** It falls out of one comparison against the
+// window server's ordering, and it has three consequences:
 //
-//  · On the **strip** it is always satisfied, because `strip` promises windows never overlap
+//  · On the **strip** the first clause alone carries it, because `strip` promises windows never overlap
 //    (`PRINCIPLES` §1). The whole feature rides on that promise, and is exact because of it.
-//  · A **float** over a tile declines — the tile is behind it, and the photograph does not hold the
-//    tile. So does a tile with anything at all under it.
-//  · A **cascade** declines almost everywhere, which is the honest answer: a `stack` tile is backed by
-//    another tile, and standing in for that needs a photograph per window, refilmed whenever anything
-//    behind anything redraws. See `Scrims.swift` in the core for why that price is not paid.
+//  · A **pin** is what the second clause is for. A pin stands beside the strip rather than over it, and
+//    the strip is never clipped to fit, so a column scrolled far enough runs under the band — the one
+//    overlap tiling produces. That column is see-through too, so the pin keeps its veil across it.
+//  · Anything **opaque** behind declines: the focused window, a float over the tile you are working in,
+//    a dialog or a panel emira never placed. That is where the photograph would stand wallpaper over a
+//    window plainly in use, and the depth of the desktop would read inside out.
 //
-// A window *in front* is a different matter and costs nothing: those pixels are not on the screen, so
-// the mask simply paints it opaque afterwards and the painter's algorithm does the rest.
+// **The second clause is the one approximation in the feature.** Behind a see-through window is the
+// desktop *and* that window's own content at `1 − v`, and the photograph carries only the desktop — an
+// error of `v(1 − v)·(desktop − window)`, spread smoothly across one photograph. Declining is not the
+// exact alternative but the larger error: it leaves the front window's own pixels standing where that
+// blend should be, and a step at the overlap's edge where the veil stops.
+//
+// A window *in front* is never a decline and costs nothing: those pixels are not on the screen, so it
+// comes out of the shape whatever it is, and the painter's algorithm does the rest.
 //
 // **The window server catches up in its own time, and says nothing when it does.** An app's move reaches
 // it after the AX write that caused it has already landed — 8 to 42 ms later, measured — so the reading a
@@ -44,8 +51,10 @@ import EmiraCore
 @MainActor
 public protocol ScrimPlane: AnyObject {
     /// Draw exactly these windows see-through on `monitor`, against the window server as it stands now,
-    /// and take the scrim off every one not named — dissolving or cutting as the core says.
-    func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange)
+    /// and take the scrim off every one not named — dissolving or cutting as the core says. `moving`
+    /// names the windows whose reported place the server may not have caught up with.
+    func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
+                   moving: Set<WindowId>)
 }
 
 /// The plane on a machine that has none — no Screen Recording grant, or a test that does not care.
@@ -54,7 +63,8 @@ public protocol ScrimPlane: AnyObject {
 @MainActor
 public final class NoScrims: ScrimPlane {
     public init() {}
-    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {}
+    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
+                          moving: Set<WindowId>) {}
 }
 
 /// One on-screen window as the window server reports it, front to back.
@@ -164,6 +174,13 @@ public final class Scrims: ScrimPlane {
     /// Bumped per display by every set, so a settling re-read from an older one owns nothing.
     private var settleGeneration: [MonitorId: Int] = [:]
 
+    /// Each window the core named `moving`, at the frame the window server was still reporting for it
+    /// when it was named — dropped the moment that reading changes, which is the server catching up.
+    /// A pane standing at its stale frame declines nothing: it is not where the mask would put it.
+    private var stale: [MonitorId: [WindowId: Rect]] = [:]
+    /// What the last set named as moving, until the next reading records their frames.
+    private var naming: [MonitorId: Set<WindowId>] = [:]
+
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
                 cornerRadius: @escaping @MainActor (WindowId) -> Double? = { _ in nil },
@@ -195,8 +212,10 @@ public final class Scrims: ScrimPlane {
         }
     }
 
-    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
+    public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
+                          moving: Set<WindowId>) {
         current[monitor] = bindings
+        naming[monitor] = moving
         // The first set on a display is what makes its photograph worth taking, and it is applied
         // against one that is still coming: a surface with no desktop cuts its shapes and stays off the
         // glass until `setDesktop` gives it one, so the film lands behind a mask already in place.
@@ -226,6 +245,8 @@ public final class Scrims: ScrimPlane {
         // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
         applied.removeAll()
         painted.removeAll()
+        stale.removeAll()
+        naming.removeAll()
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
@@ -305,6 +326,9 @@ public final class Scrims: ScrimPlane {
         // A set that draws nothing needs no stacking: there is no mask to cut against it.
         guard !bindings.isEmpty else {
             applied[monitor] = [:]
+            // Nothing is cut, so nothing is waiting on a reading.
+            stale[monitor] = nil
+            naming[monitor] = nil
             guard painted[monitor]?.isEmpty == false else { return false }
             painted[monitor] = []
             surface.setVeils([], change: change)
@@ -312,7 +336,7 @@ public final class Scrims: ScrimPlane {
         }
         let identified = stack().map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
-                             cornerRadius: cornerRadius)
+                             cornerRadius: cornerRadius, stale: staleFrames(monitor, in: identified))
         var drawn: [WindowId: Double] = [:]
         for (window, veil) in cut.drawn where veil > 0 { drawn[window] = veil }
         applied[monitor] = drawn
@@ -320,6 +344,28 @@ public final class Scrims: ScrimPlane {
         painted[monitor] = cut.veils
         surface.setVeils(cut.veils, change: change)
         return true
+    }
+
+    /// Where each named-moving window still stands, for this reading: recorded at the frame it was first
+    /// read at after being named, and dropped once that reading changes — the only evidence available
+    /// that the server has caught up. A name is consumed by the cut that records it, never held.
+    private func staleFrames(_ monitor: MonitorId,
+                             in identified: [(window: WindowId?, pane: StackedWindow)])
+        -> [WindowId: Rect] {
+        var here: [WindowId: Rect] = [:]
+        for entry in identified { if let id = entry.window { here[id] = entry.pane.frame } }
+
+        var pending = stale[monitor] ?? [:]
+        // A window the reading has moved is where it says it is; one that has left the glass is nobody's.
+        for (id, frame) in pending where here[id] != frame { pending[id] = nil }
+        // Named once and recorded once: a window read at a new frame has arrived, and re-recording it
+        // from a name the core has not withdrawn would suspend it again where it now stands for good.
+        for id in naming[monitor] ?? [] where pending[id] == nil {
+            if let frame = here[id] { pending[id] = frame }
+        }
+        naming[monitor] = nil
+        stale[monitor] = pending.isEmpty ? nil : pending
+        return pending
     }
 
     /// Watch the window server catch up with the moves this set describes, and cut the mask again each
@@ -330,7 +376,15 @@ public final class Scrims: ScrimPlane {
         let mine = settleGeneration[monitor] ?? 0
         let deadline = Date().addingTimeInterval(Self.settleLimit)
         func again(_ quiet: Int) {
-            guard quiet < Self.settleQuiet, Date() < deadline else { return }
+            // A reading that has stopped changing is the server caught up, and a deadline is the answer
+            // to a write it will never show. Either way nothing is waited on any longer, so a window
+            // still standing where it was named is standing there for good and declines again.
+            guard quiet < Self.settleQuiet, Date() < deadline else {
+                guard stale[monitor] != nil else { return }
+                stale[monitor] = nil
+                paint(monitor, change: .cut)
+                return
+            }
             scheduler.schedule(after: Self.settleInterval) { [weak self] in
                 guard let self, settleGeneration[monitor] == mine else { return }
                 again(paint(monitor, change: .cut) ? 0 : quiet + 1)
@@ -340,13 +394,14 @@ public final class Scrims: ScrimPlane {
     }
 
     /// The shape the desktop shows through for each see-through window on `display`, bottom→top, and what
-    /// each is drawn at. The pure half of this file, and the only place the rule lives: **a window is
-    /// see-through only where the desktop is behind it**, so every other window comes out of its shape.
+    /// each is drawn at. The only place the rule lives: **a window is see-through where the desktop is
+    /// behind it, or another this set draws see-through**. `stale` is where a moving pane was last read.
     static func veils(for bindings: [ScrimBinding],
                       over stacked: [(window: WindowId?, pane: StackedWindow)],
                       on display: Rect,
                       geometry: ScreenGeometry,
-                      cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil })
+                      cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil },
+                      stale: [WindowId: Rect] = [:])
         -> (veils: [ScrimVeil], drawn: [(WindowId, Double)]) {
         let wanted = Dictionary(bindings.map { ($0.window, $0.veil) }, uniquingKeysWith: { a, _ in a })
         func radius(_ id: WindowId?) -> Double { id.flatMap(cornerRadius) ?? fallbackCornerRadius }
@@ -376,13 +431,24 @@ public final class Scrims: ScrimPlane {
         }.map { (id: $0.element.window, frame: $0.element.pane.frame) }
 
         let shapes = panes.map { silhouette($0.frame, $0.id) }
+
+        /// Whether the pane at `other` comes out of the pane at `index`'s shape. `panes` runs front to
+        /// back, so a lower index is in front — and in front always comes out, those pixels not being
+        /// this window's. Behind, only an opaque pane does — and only one the server has caught up with,
+        /// a decline being a claim about what is behind a window rather than about what has left.
+        func cuts(_ other: Int, from index: Int) -> Bool {
+            guard panes[other].frame.intersects(panes[index].frame) else { return false }
+            if other < index { return true }
+            guard let id = panes[other].id else { return true }
+            return wanted[id] == nil && stale[id] != panes[other].frame
+        }
+
         var veils: [ScrimVeil] = []
         var drawn: [(WindowId, Double)] = []
         for (index, pane) in panes.enumerated() {
             guard let id = pane.id, let veil = wanted[id] else { continue }
             var shape = shapes[index]
-            for (other, entry) in panes.enumerated()
-            where other != index && entry.frame.intersects(pane.frame) {
+            for other in panes.indices where other != index && cuts(other, from: index) {
                 shape = shape.subtracting(shapes[other])
             }
             veils.append(ScrimVeil(window: id, shape: shape, veil: veil))

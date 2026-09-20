@@ -300,7 +300,8 @@ import EmiraCore
     @MainActor final class RecordingScrims: ScrimPlane {
         let timeline: Timeline
         init(_ timeline: Timeline) { self.timeline = timeline }
-        func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
+        func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
+                       moving: Set<WindowId>) {
             let windows = bindings.map { "\($0.window.raw)" }.joined(separator: ",")
             timeline.record("\(change)@\(monitor.raw)(\(windows))")
         }
@@ -340,7 +341,7 @@ import EmiraCore
     @Test func aScrimSetIsFollowedByTheCoversOwnVeils() {
         let (executor, _, timeline, log) = Self.scrimHarness()
         let binding = ScrimBinding(window: WindowId(1), veil: 0.3)
-        executor.execute([.setScrims(MonitorId(1), [binding], .dissolve)], feedback: log.sink)
+        executor.execute([.setScrims(MonitorId(1), [binding], .dissolve, moving: [])], feedback: log.sink)
         #expect(timeline.entries == ["dissolve@1(1)", "veils"])
     }
 
@@ -350,15 +351,15 @@ import EmiraCore
         let (executor, _, timeline, log) = Self.scrimHarness()
         let first = ScrimBinding(window: WindowId(1), veil: 0.3)
         let second = ScrimBinding(window: WindowId(2), veil: 0.3)
-        executor.execute([.setScrims(MonitorId(1), [first], .dissolve),
-                          .setScrims(MonitorId(2), [second], .dissolve)], feedback: log.sink)
+        executor.execute([.setScrims(MonitorId(1), [first], .dissolve, moving: []),
+                          .setScrims(MonitorId(2), [second], .dissolve, moving: [])], feedback: log.sink)
         #expect(timeline.entries == ["dissolve@1(1)", "dissolve@2(2)", "veils"])
     }
 
     /// Whether a hand emptied the set is the core's to say, and it reaches the plane as said.
     @Test func aLiftedSetReachesThePlaneLifted() {
         let (executor, _, timeline, log) = Self.scrimHarness()
-        executor.execute([.setScrims(MonitorId(1), [], .cut)], feedback: log.sink)
+        executor.execute([.setScrims(MonitorId(1), [], .cut, moving: [])], feedback: log.sink)
         #expect(timeline.entries == ["cut@1()", "veils"])
     }
 

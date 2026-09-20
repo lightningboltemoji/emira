@@ -40,7 +40,7 @@ import Testing
         let (next, effects) = Engine.reduce(s, .configChanged(off))
         s = next
         #expect(s.scrims.isEmpty)
-        #expect(effects.contains(.setScrims(MonitorId(1), [], .dissolve)))
+        #expect(effects.contains(.setScrims(MonitorId(1), [], .dissolve, moving: [])))
     }
 
     // What the set holds.
@@ -70,6 +70,34 @@ import Testing
     /// opacity above 1 stops being a negative veil.
     @Test func anOpacityOverOneIsClampedRatherThanInverted() {
         #expect(Self.world(2, opacity: 2).scrims.isEmpty)
+    }
+
+    /// The effect belongs to the strip, and this is where it says so. A cascade's tiles are backed by
+    /// each other rather than by the desktop, and the overlaps are the whole of what says which is on
+    /// top — so `stack` is declined by the layout rather than rediscovered as an overlap by the plane.
+    @Test func aCascadesTilesAreNotSeeThrough() {
+        var config = EngineFix.stacked(EngineFix.halfWidth)
+        config.unfocusedOpacity = 0.7
+        let s = EngineFix.world(3, config: config)
+        #expect(s.layout.kind == .stack)
+        #expect(s.world.placedOnScreen.count == 3, "everything on a cascade is on screen")
+        #expect(s.scrims.isEmpty)
+    }
+
+    /// A pin is on no layout, so the cascade it stands beside says nothing about it.
+    @Test func aPinIsSeeThroughBesideACascade() {
+        var config = EngineFix.stacked(EngineFix.halfWidth)
+        config.unfocusedOpacity = 0.7
+        var s = EngineFix.world(3, config: config)
+        s.world.setFocus(WindowId(2))
+        let (pinned, fx) = EngineFix.run(s, [.command(.pin(.left))])
+        s = EngineFix.settle(pinned, fx)
+        // Focus off the pin, through the reducer, or the post-pass that derives the set never runs.
+        let (moved, effects) = Engine.reduce(s, .focusChanged(WindowId(1), origin: .system))
+        s = EngineFix.settle(moved, effects)
+
+        #expect(s.world.isPinned(WindowId(2)))
+        #expect(Self.windows(s) == [WindowId(2)], "the pin, and none of the tiles beside it")
     }
 
     @Test func theSetIsOrderedBottomToTop() {
@@ -190,14 +218,52 @@ import Testing
     // The gate — `settleScrims`' half of D8.
 
     static func setScrims(_ effects: [Effect]) -> [ScrimBinding]? {
-        for effect in effects { if case .setScrims(_, let bindings, _) = effect { return bindings } }
+        for effect in effects { if case .setScrims(_, let bindings, _, _) = effect { return bindings } }
         return nil
     }
 
     /// How the set in `effects` reaches the glass, or `nil` for no set at all.
     static func change(_ effects: [Effect]) -> ScrimChange? {
-        for effect in effects { if case .setScrims(_, _, let change) = effect { return change } }
+        for effect in effects { if case .setScrims(_, _, let change, _) = effect { return change } }
         return nil
+    }
+
+    /// The windows the set in `effects` names as still on their way, or `nil` for no set at all.
+    static func moving(_ effects: [Effect]) -> Set<WindowId>? {
+        for effect in effects { if case .setScrims(_, _, _, let moving) = effect { return moving } }
+        return nil
+    }
+
+    /// **A set names what the window server has not caught up with.** The teleport writes the frames and
+    /// the set goes with it, but the server trails an `axLanded` — so the shell is told which panes are
+    /// merely where they were, or a window that has just gone opaque declines against its old place.
+    @Test func theTeleportsSetNamesTheWindowsItIsStillMoving() throws {
+        var s = Self.aboutToScroll()
+        var effects: [Effect] = []
+        func feed(_ event: Event) { let (n, f) = Engine.reduce(s, event); s = n; effects = f }
+
+        feed(.command(.focus(.left)))
+        for window in s.motion.transition(of: MonitorId(1))?.windows ?? [] { feed(.captureReady(window)) }
+        feed(.coverOnScreen(MonitorId(1)))
+
+        let named = try #require(Self.moving(effects), "the teleport pays the held set")
+        let written = Set(effects.compactMap { effect -> WindowId? in
+            if case .setFrame(let id, _) = effect { id } else if case .park(let id, _) = effect { id }
+            else { nil }
+        })
+        #expect(!written.isEmpty, "the teleport is what writes the frames")
+        #expect(written.isSubset(of: named), "and every one of them is named as still on its way")
+    }
+
+    /// A desktop nobody is moving names nobody, or every decline would be suspended for ever.
+    @Test func aSetOnAStillDesktopNamesNothingAsMoving() {
+        let s = Self.world(2)
+        let (_, effects) = Engine.reduce(s, .command(.focus(.left)))
+        let settled = EngineFix.settle(s, effects)
+        let (_, quiet) = Engine.reduce(settled, .configChanged({
+            var c = settled.config; c.unfocusedOpacity = 0.4; return c
+        }()))
+        #expect(Self.moving(quiet) == [])
     }
 
     /// A world where the next `focus left` genuinely scrolls. Three ½-width columns on a 1000-wide
@@ -294,7 +360,7 @@ import Testing
 
         let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
         let sets = effects.compactMap { effect -> MonitorId? in
-            if case .setScrims(let monitor, _, _) = effect { monitor } else { nil }
+            if case .setScrims(let monitor, _, _, _) = effect { monitor } else { nil }
         }
         #expect(sets == [MonitorSessionTests.left], "one set, for the display whose veil moved")
         #expect(Self.set(next, MonitorSessionTests.right) == Self.set(s, MonitorSessionTests.right))

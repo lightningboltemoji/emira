@@ -207,8 +207,9 @@ public final class CompositingExecutor: Executor {
                 // Each names its own display, so two in a run are two screens rather than one decision
                 // superseded — a scrim is one display's, as `setCoverClearing` is.
                 for effect in run.effects {
-                    guard case .setScrims(let monitor, let bindings, let change) = effect else { continue }
-                    scrims.setScrims(bindings, on: monitor, change: change)
+                    guard case .setScrims(let monitor, let bindings, let change, let moving) = effect
+                    else { continue }
+                    scrims.setScrims(bindings, on: monitor, change: change, moving: moving)
                 }
                 // A cover standing over that desktop follows it. The set a transition changes arrives
                 // at the teleport, so the veil moves *with* the motion rather than waiting behind the

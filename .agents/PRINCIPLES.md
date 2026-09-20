@@ -110,12 +110,17 @@ Four consequences, and they are the whole design:
 unfocused window we are not permitted to make transparent are the same problem, answered the same way: put the
 pixels in a window of our own. Transparency is the sharper case, because it is not a stand-in at all. Compositing
 what is _behind_ a window over the top of it is the identical blend to that window being transparent — the same
-arithmetic, arrived at from the other side — so nothing is approximated and the presentation plane's usual trade,
-a frozen still for smooth motion, is not being made. What such a thing can get wrong is never the blend; it is
-only ever the backdrop, and **the desktop is the true backdrop exactly where the desktop is what lies behind.**
-That is a second thing the strip's promise buys: windows that never overlap are windows one photograph of the
-desktop can stand behind, every one of them. A cascade is backed by itself, and declines wherever it is —
-_where_, because the claim is about a region and so is the answer to it.
+arithmetic, arrived at from the other side — so the blend is never approximated and the presentation plane's usual
+trade, a frozen still for smooth motion, is not being made. What such a thing can get wrong is never the blend; it
+is only ever the backdrop, and **the desktop is the true backdrop where the desktop is what lies behind — or
+where what lies behind is another window the desktop is standing behind too.** That is a second thing the strip's
+promise buys: windows that never overlap are windows one photograph of the desktop can stand behind, every one of
+them. The second clause is for the one overlap tiling does produce, a column scrolled under a pin, and it is the
+only place a backdrop is approximate rather than exact — a see-through window's own content is lost from behind
+the one in front of it, which is the quieter of the two errors on offer, the other being to stop the veil dead at
+the overlap's edge. A cascade is backed by itself and takes no veil at all: its tiles are one size, so the
+overlaps are the whole of what says which is on top. What does decline declines _where_ it must, because the
+claim is about a region and so is the answer to it.
 
 **The photograph departs from a pane of glass twice, and both are choices rather than slips.** `[focus]
 unfocused-blur` blurs it before anything is drawn through it, which is the material macOS builds its own chrome

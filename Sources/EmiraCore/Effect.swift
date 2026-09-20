@@ -39,7 +39,8 @@ public enum Effect: Sendable, Equatable, Codable {
     /// The windows to draw the desktop back over on one display, bottom→top — that display's whole set
     /// every time, and again unchanged once the desktop settles under it. Unacked; the shell may decline
     /// a binding it cannot back honestly. `ScrimChange` is how the mask gets there, and the core's to say.
-    case setScrims(MonitorId, [ScrimBinding], ScrimChange)
+    /// `moving` names what emira has written that the window server may not have caught up with.
+    case setScrims(MonitorId, [ScrimBinding], ScrimChange, moving: Set<WindowId>)
 
     /// How far one display's cover must stay clear of each edge, so the windows pinned there stay live
     /// underneath it. **A band off the edge, not a hole in the middle**: a pin is full height and hard

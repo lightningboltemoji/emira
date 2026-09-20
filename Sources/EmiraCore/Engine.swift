@@ -547,13 +547,26 @@ public enum Engine {
             s.scrims[monitor] = next.isEmpty ? nil : next
             // A hand's lift takes away veils cut around a window that is already moving, and a set the
             // desktop merely settled under moves no veil at all: both go at once.
-            sets.append(.setScrims(monitor, next, changed && s.drag.subject == nil ? .dissolve : .cut))
+            sets.append(.setScrims(monitor, next,
+                                   changed && s.drag.subject == nil ? .dissolve : .cut,
+                                   moving: movingWindows(s, on: monitor)))
         }
         guard !sets.isEmpty else { return }
 
         // Ahead of a dismissal in the same batch, so a recut is painted while the cover still hides it.
         let dismissal = effects.firstIndex { if case .endTransition = $0 { true } else { false } }
         effects.insert(contentsOf: sets, at: dismissal ?? effects.endIndex)
+    }
+
+    /// The windows on `monitor` whose place the window server may not have caught up with: a write
+    /// still in flight, and — for as long as a cover holds its stand-ins — everything that cover is
+    /// carrying, since the server trails an `axLanded` by longer than the landing takes to arrive.
+    private static func movingWindows(_ s: State, on monitor: MonitorId) -> Set<WindowId> {
+        var moving = Set(s.world.inFlight.filter { $0.value.contains(monitor) }.keys)
+        if s.motion.hasLayers(on: monitor) {
+            moving.formUnion(s.motion.transition(of: monitor)?.windows ?? [])
+        }
+        return moving
     }
 
     /// Hide the pointer while the user is working from the keyboard. A post-pass over the whole batch

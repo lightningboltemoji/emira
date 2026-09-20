@@ -19,16 +19,18 @@ import Foundation
 // would show. Where another *window* is behind it, the photograph is a lie of the worst kind available
 // here: it replaces a real window with wallpaper, and the depth of the desktop reads inside out.
 //
-// So the effect belongs to the strip, and says so: **`strip` promises that windows never overlap**
-// (`PRINCIPLES` §1), and that promise is what makes the desktop the true backdrop for every window on
-// it. A cascade overlaps by definition, and its tiles are backed by each other rather than by the
-// desktop, so they decline — one photograph cannot stand in for five windows, and the alternative is a
-// capture per window, refilmed whenever anything behind anything redraws.
+// So the effect belongs to the strip, and this is where it says so: **`strip` promises that windows
+// never overlap** (`PRINCIPLES` §1), and that promise is what makes the desktop the true backdrop for
+// every window on it. A cascade overlaps by definition and its tiles are backed by each other, so a
+// `stack` workspace's windows are not named at all — one photograph cannot stand in for five windows,
+// the alternative is a capture per window refilmed whenever anything behind anything redraws, and what
+// a veil buys on a cascade is small beside that: the tiles are the same size, so the overlaps are the
+// whole of what says which is on top.
 //
-// **The core names windows; the shell decides which of them the photograph is true for.** That split is
-// the one `capture` already sits on — the core asks for a still and the shell reports it could not take
-// one. The physical stacking of the desktop, including the windows emira never placed, is the window
-// server's fact and not the layout's, so the decline is made where that fact lives.
+// **Which layout a window is on is the core's fact; how the desktop stacks is the shell's.** So the
+// layout's decline is made here and the physical one there, on the split `capture` already sits on —
+// the core asks for a still and the shell reports it could not take one. The windows emira never
+// placed, and the order the window server holds them all in, are knowable only where that fact lives.
 
 /// One window drawn as though you could see through it, and how much of the desktop shows. No frame and no
 /// display: where it stands is the window server's to say, and `Effect.setScrims` names the screen.
@@ -82,22 +84,24 @@ extension State {
         let showing = stackingOrder(of: candidates)
             .compactMap { id -> (MonitorId, ScrimBinding)? in
                 guard let frame = world.windows[id]?.frame,
-                      let monitor = showing(id, at: frame) else { return nil }
+                      let monitor = veiling(id, at: frame) else { return nil }
                 return (monitor, ScrimBinding(window: id, veil: veil))
             }
         return Dictionary(grouping: showing, by: \.0).mapValues { $0.map(\.1) }
     }
 
-    /// Which display is showing `id`: a pin names its own, a window on a layout takes the display
-    /// showing that layout's workspace, and only what is on neither is asked where it happens to be.
+    /// Which display draws `id` see-through, or `nil` where none does: a pin names its own, a window on
+    /// a layout takes the display showing that layout's workspace — and declines there if the layout is
+    /// a cascade — and only what is on neither is asked where it happens to be.
     ///
     /// **Not the window's centre**, which is what a hoist's display is asked of. A float sits inside
     /// the screen it is on; a column need not — the strip is infinite and the viewport is a slice of
     /// it, so a column at the edge hangs half off with its centre in the parked region beyond.
-    private func showing(_ id: WindowId, at frame: Rect) -> MonitorId? {
+    private func veiling(_ id: WindowId, at frame: Rect) -> MonitorId? {
         if let pin = world.pins[id] { return pin.monitor }
-        if let name = workspaces.workspace(of: id), let monitor = monitors.monitor(of: name) {
-            return monitor
+        if let name = workspaces.workspace(of: id) {
+            guard workspaces[name].kind == .strip else { return nil }
+            return monitors.monitor(of: name)
         }
         return world.monitor(at: frame.center)
     }

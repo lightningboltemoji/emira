@@ -114,8 +114,9 @@ import EmiraCore
     }
 
     /// The whole of what a set is, on the one display these fixtures build.
-    static func show(_ scrims: Scrims, _ bindings: [ScrimBinding], _ change: ScrimChange = .dissolve) {
-        scrims.setScrims(bindings, on: monitor, change: change)
+    static func show(_ scrims: Scrims, _ bindings: [ScrimBinding], _ change: ScrimChange = .dissolve,
+                     moving: Set<WindowId> = []) {
+        scrims.setScrims(bindings, on: monitor, change: change, moving: moving)
     }
 
     /// One window's shape, or `nil` for a window the plane is drawing nothing for.
@@ -174,24 +175,86 @@ import EmiraCore
         #expect(Self.shows(surface, 1, 40, 40) && Self.shows(surface, 2, 540, 40))
     }
 
-    /// The rule, and the whole reason the effect belongs to a layout where windows never overlap: the
-    /// photograph holds the desktop, so a window with another *window* behind it would have that window
-    /// replaced by wallpaper — the depth of the desktop read inside out.
+    /// The rule's first clause, and the whole reason the effect belongs to a layout where windows never
+    /// overlap: the photograph holds the desktop, so an **opaque** window behind would be replaced by
+    /// wallpaper — the depth of the desktop read inside out.
     ///
     /// **Where it reaches, and no further**: the rule is about a region, so the decline is one.
-    @Test func aWindowWithAnotherWindowBehindItIsDeclinedOnlyWhereThatWindowReaches() {
+    @Test func anOpaqueWindowBehindDeclinesTheOneInFrontWhereItReaches() {
         let front = Rect(x: 0, y: 0, width: 400, height: 400)
         let behind = Rect(x: 200, y: 200, width: 400, height: 400)
         let (scrims, surface) = Self.plane(stack: [Self.pane(1, front), Self.pane(2, behind)])
-        Self.show(scrims, [Self.binding(1), Self.binding(2)])
+        Self.show(scrims, [Self.binding(1)])           // 2 is opaque — the window being worked in
 
         #expect(Self.shows(surface, 1, 100, 100), "where the one in front stands on the desktop")
-        #expect(Self.shows(surface, 2, 500, 500), "and where the one behind does")
-        #expect(!Self.shows(surface, 1, 300, 300), "not where they overlap — either of them")
-        #expect(!Self.shows(surface, 2, 300, 300))
-        // Both are still drawn, in part, which is what the cover is told.
+        #expect(!Self.shows(surface, 1, 300, 300), "and not where the opaque one lies under it")
+        // Still drawn, in part, which is what the cover is told.
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
-        #expect(scrims.veil(of: WindowId(2)) == 0.3)
+    }
+
+    /// The rule's second clause, and the case the strip's promise does not cover: a pin stands beside
+    /// the strip rather than over it, and the strip is never clipped to fit, so a column scrolled far
+    /// enough runs under the band. Both are see-through, so the pin's veil crosses the band whole.
+    @Test func aColumnUnderAPinLeavesThePinsVeilWhole() {
+        let pin = Rect(x: 0, y: 0, width: 500, height: 800)        // half the display, left, frontmost
+        let under = Rect(x: 200, y: 0, width: 400, height: 800)    // 300 pt of it under the pin
+        let focused = Rect(x: 600, y: 0, width: 400, height: 800)
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, pin),
+                                                   Self.pane(3, focused),
+                                                   Self.pane(2, under)])
+        Self.show(scrims, [Self.binding(1), Self.binding(2)])
+
+        #expect(Self.shows(surface, 1, 100, 400), "the pin where it stands on the desktop")
+        #expect(Self.shows(surface, 1, 350, 400), "and over the column hidden under it")
+        #expect(Self.shows(surface, 2, 550, 400), "the column where it shows")
+        #expect(!Self.shows(surface, 2, 350, 400), "and not where the pin covers it")
+    }
+
+    // A window the core has written and the server has not yet moved. Every moment the core can name is
+    // earlier than the reading becoming true, and a pin's band is the one place no cover hides that.
+
+    /// The column focus has just left goes opaque in the set that teleports it, while the server still
+    /// has it under the pin — so declining for it would cut the pin's veil to a sliver for a frame.
+    @Test func aPaneTheServerHasNotCaughtUpWithDeclinesNothing() {
+        let pin = Rect(x: 0, y: 0, width: 500, height: 800)
+        let under = Rect(x: 200, y: 0, width: 400, height: 800)
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, pin), Self.pane(2, under)])
+        Self.show(scrims, [Self.binding(1)], .dissolve, moving: [WindowId(2)])
+
+        #expect(Self.shows(surface, 1, 100, 400))
+        #expect(Self.shows(surface, 1, 350, 400), "the pin keeps its veil over a window already on its way")
+    }
+
+    /// …and it is waited on only until the reading moves, which is the one evidence available that the
+    /// server has caught up. A pane read at a frame it was never named at is simply where it is.
+    @Test func theDeclineComesBackOnceTheServerHasShownTheMove() {
+        let pin = Rect(x: 0, y: 0, width: 500, height: 800)
+        let stack = Stack([Self.pane(1, pin), Self.pane(2, Rect(x: 200, y: 0, width: 400, height: 800))])
+        let scheduler = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: scheduler)
+        Self.show(scrims, [Self.binding(1)], .dissolve, moving: [WindowId(2)])
+        #expect(Self.shows(surface, 1, 350, 400))
+
+        // The server shows the move — to somewhere that still overlaps, so the decline has work to do.
+        stack.panes = [Self.pane(1, pin), Self.pane(2, Rect(x: 250, y: 0, width: 400, height: 800))]
+        scheduler.fire()
+        #expect(!Self.shows(surface, 1, 350, 400), "where the server has actually placed it, it declines")
+        #expect(Self.shows(surface, 1, 100, 400), "and no further")
+    }
+
+    /// A write the server never shows — an app that refused the frame — is not waited on for ever. The
+    /// watch ending is what says so, and it cuts once more on the way out.
+    @Test func aMoveTheServerNeverShowsIsGivenUpOnWhenTheWatchEnds() {
+        let pin = Rect(x: 0, y: 0, width: 500, height: 800)
+        let under = Rect(x: 200, y: 0, width: 400, height: 800)
+        let scheduler = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, pin), Self.pane(2, under)],
+                                           scheduler: scheduler)
+        Self.show(scrims, [Self.binding(1)], .dissolve, moving: [WindowId(2)])
+        #expect(Self.shows(surface, 1, 350, 400), "suspended while the move is outstanding")
+
+        for _ in 0..<Scrims.settleQuiet { scheduler.fire() }
+        #expect(!Self.shows(surface, 1, 350, 400), "and standing there for good, it declines again")
     }
 
     /// A column at the edge of the viewport hangs off the screen, and its frame runs through the
@@ -400,7 +463,7 @@ import EmiraCore
         Self.show(scrims, [Self.binding(1)])
         let painted = surface.changes.count
 
-        scrims.setScrims([Self.binding(2)], on: MonitorId(2), change: .dissolve)
+        scrims.setScrims([Self.binding(2)], on: MonitorId(2), change: .dissolve, moving: [])
         #expect(surface.changes.count == painted)
         #expect(surface.veils.map(\.veil) == [0.3])
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
@@ -414,7 +477,7 @@ import EmiraCore
     /// taking. The stack is left empty: these are about the film, not about the mask cut against it.
     static func filming(_ filmer: InstantFilmer = InstantFilmer()) -> (Scrims, RecordingSurface) {
         let (scrims, surface) = Self.plane(stack: [], filmer: filmer)
-        scrims.setScrims([Self.binding(1)], on: Self.monitor, change: .cut)
+        scrims.setScrims([Self.binding(1)], on: Self.monitor, change: .cut, moving: [])
         return (scrims, surface)
     }
 
@@ -499,7 +562,7 @@ import EmiraCore
         let filmer = InstantFilmer()
         let (scrims, _) = Self.plane(stack: [], filmer: filmer)
         scrims.setBlur(5)
-        scrims.setScrims([Self.binding(1)], on: MonitorId(2), change: .cut)
+        scrims.setScrims([Self.binding(1)], on: MonitorId(2), change: .cut, moving: [])
         #expect(filmer.films.isEmpty)
         scrims.setDisplays([(MonitorId(2), Self.display, 2)],
                            geometry: ScreenGeometry(flipHeight: 800))
