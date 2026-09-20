@@ -8,7 +8,8 @@ import EmiraCore
 // become Cocoa bottom-left ones and a panel's local space is computed, and the routing and
 // framing (`CompositingExecutor`) — effects reaching the right plane in emission order, every
 // presentation run wrapped in exactly one frame. `Overlay`, `Reconstruction` and `DisplayLinkDriver`
-// need a window server and hold no decisions, hence `CoverSurface` and `FrameClock` being protocols.
+// need a window server and hold no decisions, hence `CoverSurface` and `FrameClock` being protocols —
+// the one exception being the shape a cover is cut to, which is geometry and is tested as such.
 
 @Suite struct ScreenGeometryTests {
 
@@ -87,6 +88,55 @@ import EmiraCore
 
 // Routing & frame boundaries
 
+// The shape a cover is cut to, so its pins stay live on top of it
+
+@Suite struct CoverCutTests {
+
+    static let display = CGRect(x: 0, y: 0, width: 1710, height: 1107)
+    /// A left pin taking half the display, standing on its own edge — the shape a column scrolling off
+    /// the strip's near end slides under.
+    static let pin = PinSilhouette(box: CGRect(x: 0, y: 0, width: 845, height: 1073), radius: 12)
+
+    /// Whether the cover draws at `point`. The cut is even-odd, so a point inside both the display and
+    /// a pin crosses twice and is left to the desktop — which is the whole of the mask.
+    static func draws(_ point: CGPoint, _ pins: [PinSilhouette] = [pin]) -> Bool {
+        guard let cut = Overlay.cut(of: pins, in: display) else { return true }
+        return cut.contains(point, using: .evenOdd)
+    }
+
+    @Test func aCoverWithNothingPinnedIsNotCutAtAll() {
+        #expect(Overlay.cut(of: [], in: Self.display) == nil)
+    }
+
+    @Test func theCoverStopsAtThePinAndNowhereElse() {
+        #expect(!Self.draws(CGPoint(x: 400, y: 500)), "the middle of the pin is the pin's")
+        #expect(Self.draws(CGPoint(x: 1000, y: 500)), "the strip beside it is the cover's")
+        #expect(Self.draws(CGPoint(x: 400, y: 1090)), "so is the margin the pin stands in")
+    }
+
+    /// **The notch a rounded corner cuts out of the pin's box is not the pin**, so the cover draws
+    /// there — where a rectangle the width of the band leaves it showing the desktop, and a window
+    /// teleporting under the pin appears in it at once.
+    @Test func theCornerNotchesAreTheCoversToDraw() {
+        let box = Self.pin.box
+        for notch in [CGPoint(x: box.maxX - 2, y: box.maxY - 2),
+                      CGPoint(x: box.maxX - 2, y: box.minY + 2),
+                      CGPoint(x: box.minX + 2, y: box.maxY - 2),
+                      CGPoint(x: box.minX + 2, y: box.minY + 2)] {
+            #expect(Self.draws(notch), "the notch at \(notch) was left to the desktop")
+        }
+        // A radius in from the same corner is inside the rounding, and so is the pin's own.
+        #expect(!Self.draws(CGPoint(x: box.maxX - 12, y: box.maxY - 12)))
+    }
+
+    @Test func eachPinOnTheDisplayIsCutOut() {
+        let right = PinSilhouette(box: CGRect(x: 1200, y: 0, width: 510, height: 1073), radius: 12)
+        #expect(!Self.draws(CGPoint(x: 400, y: 500), [Self.pin, right]))
+        #expect(!Self.draws(CGPoint(x: 1400, y: 500), [Self.pin, right]))
+        #expect(Self.draws(CGPoint(x: 1000, y: 500), [Self.pin, right]), "the strip between them")
+    }
+}
+
 @Suite @MainActor struct CompositingExecutorTests {
 
     static let bindings = [LayerBinding(window: WindowId(1), layer: LayerId(1)),
@@ -99,6 +149,11 @@ import EmiraCore
     @MainActor final class Timeline {
         private(set) var entries: [String] = []
         func record(_ entry: String) { entries.append(entry) }
+
+        /// A clearing as one token: which windows, and where each stands.
+        static func pins(_ pins: [PinnedFrame]) -> String {
+            pins.map { "\($0.window.raw)@\(Int($0.frame.minX))" }.joined(separator: ",")
+        }
     }
 
     @MainActor final class RecordingPlane: CoverPlane {
@@ -122,8 +177,8 @@ import EmiraCore
         func extendCover(on monitor: MonitorId, _ bindings: [LayerBinding]) {
             timeline.record("extend@\(monitor.raw)(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
         }
-        func setClearing(on monitor: MonitorId, _ insets: EdgeInsets) {
-            timeline.record("clear@\(monitor.raw)(\(insets.left),\(insets.right))")
+        func setClearing(on monitor: MonitorId, _ pins: [PinnedFrame]) {
+            timeline.record("clear@\(monitor.raw)(\(Timeline.pins(pins)))")
         }
         func elevate(_ layer: LayerId) {
             timeline.record("elevate(\(layer.raw))")
@@ -767,8 +822,8 @@ import EmiraCore
         func extendCover(_ bindings: [LayerBinding]) {
             timeline.record("extend\(name)(\(bindings.map { "\($0.layer.raw)" }.joined(separator: ",")))")
         }
-        func setClearing(_ insets: EdgeInsets) {
-            timeline.record("clear\(name)(\(insets.left),\(insets.right))")
+        func setClearing(_ pins: [PinnedFrame]) {
+            timeline.record("clear\(name)(\(Timeline.pins(pins)))")
         }
         func elevate(_ layer: LayerId) { timeline.record("elevate\(name)(\(layer.raw))") }
         func setLayerFrame(_ layer: LayerId, to rect: Rect) {

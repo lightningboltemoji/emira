@@ -71,6 +71,11 @@ public final class Reconstruction: CoverSurface {
     /// carry at zero and place every frame.
     public var backdrop: @MainActor (MonitorId) -> CGImage? = { _ in nil }
 
+    /// A window's corner rounding as a capture last measured it (`SurfaceCache.cornerRadius(of:)`), or
+    /// `nil` for one nothing has filmed. Asked for the pins the cover is held clear of, which have no
+    /// still to read it off: a pin standing still is in the base, not in the transition.
+    public var cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil }
+
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
                 animation: WindowAnimation = .stretch) {
         self.overlay = overlay
@@ -93,8 +98,11 @@ public final class Reconstruction: CoverSurface {
         addLayers(bindings)
     }
 
-    public func setClearing(_ insets: EdgeInsets) {
-        overlay.setClearing(insets)
+    public func setClearing(_ pins: [PinnedFrame]) {
+        overlay.setClearing(pins.map { pin in
+            PinSilhouette(box: overlay.localRect(pin.frame),
+                          radius: CGFloat(cornerRadius(pin.window) ?? Self.fallbackCornerRadius))
+        })
     }
 
     public func elevate(_ layer: LayerId) {
@@ -304,8 +312,9 @@ public final class Reconstruction: CoverSurface {
         NSColor.windowBackgroundColor.withAlphaComponent(0.35).cgColor
     }
 
-    /// Used only when a capture's alpha couldn't answer for itself — an opaque or square-cornered
-    /// surface, where `CapturedSurface.measuredCornerRadius` returns `nil`.
+    /// Used where nothing has measured a radius: an opaque or square-cornered surface, where
+    /// `CapturedSurface.measuredCornerRadius` returns `nil`, and a pin no cover has ever filmed. A
+    /// floor rather than a guess — cutting a silhouette short is the error the base can cover.
     private static let fallbackCornerRadius: Double = 12
 
     /// How long a stand-in takes to become the window's own pixels (`CoverMode.immediate`). Well under

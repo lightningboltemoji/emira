@@ -45,10 +45,10 @@ public struct State: Sendable, Equatable, Codable {
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
     /// leaving the user typing into the pin.
     public var owedFocus: [MonitorId: WindowId] = [:]
-    /// How far each display's cover is staying off its own edges, so the pins there stay live — kept
-    /// for `hoists`' reason, and re-derived by `settleCoverClearing` on the same terms. Absent means
-    /// flush with the display, which is every cover on a desktop that pins nothing.
-    public var coverClearing: [MonitorId: EdgeInsets] = [:]
+    /// The pins each display's cover is staying off, so they stay live — kept for `hoists`' reason, and
+    /// re-derived by `settleCoverClearing` on the same terms. Absent means flush with the display,
+    /// which is every cover on a desktop that pins nothing.
+    public var coverClearing: [MonitorId: [PinnedFrame]] = [:]
 
     /// The strip the acting monitor is showing — a projection of `workspaces` at `monitors.shown`, not
     /// a second authority. Only the cross-workspace queries bypass it: reconcile, `targetFrames`, the
@@ -488,27 +488,23 @@ public enum Engine {
         }
     }
 
-    /// Keep each cover off the bands its pins stand in. A post-pass for `settleHoists`' reason: what a
+    /// Keep each cover off the pins standing on it. A post-pass for `settleHoists`' reason: what a
     /// cover must leave alone is the product of the pins, the scope and the phase, and no one verb owns
-    /// it. **A pin the session is already drawing is not cleared for** — its band is covered, because
-    /// its own frame is moving and it is a stand-in like any other window.
+    /// it. **A pin the session is already drawing is not cleared for** — it is covered, because its own
+    /// frame is moving and it is a stand-in like any other window.
     private static func settleCoverClearing(into s: inout State, effects: inout [Effect]) {
-        // **Only a cover that still has layers may be reshaped**, which is what keeps the band clear
+        // **Only a cover that still has layers may be reshaped**, which is what keeps the pin clear
         // for the whole of a cross-fade. A cover holds its stand-ins until the fade completes, and the
         // one that just scrolled off the strip's near end is at a natural frame reaching right across
-        // the band — so growing the cover back at `endTransition` would draw that window over the pin
-        // for the length of the fade. `crossfadeDone` is what releases it.
+        // the pin — so growing the cover back at `endTransition` would draw that window over it for the
+        // length of the fade. `crossfadeDone` is what releases it.
         for monitor in s.monitors.ids where s.motion.hasLayers(on: monitor) {
             guard let metrics = s.metrics(of: monitor) else { continue }
             let scope = Set(s.motion.transition(of: monitor)?.windows ?? [])
-            var clear = metrics
-            for side in metrics.pins.filter({ scope.contains($0.value.window) }).keys {
-                clear.pins[side] = nil
-            }
-            let insets = clear.pinInsets
-            guard insets != s.coverClearing[monitor] ?? .zero else { continue }
-            s.coverClearing[monitor] = insets == .zero ? nil : insets
-            effects.append(.setCoverClearing(monitor, insets))
+            let clear = metrics.pinFrames.filter { !scope.contains($0.window) }
+            guard clear != s.coverClearing[monitor] ?? [] else { continue }
+            s.coverClearing[monitor] = clear.isEmpty ? nil : clear
+            effects.append(.setCoverClearing(monitor, clear))
         }
     }
 
@@ -1046,15 +1042,15 @@ public enum Engine {
             return (s, [.endTransition(monitor)] + effects)
 
         case .crossfadeDone(let monitor):
-            // The cover is fully down, so the band it was holding clear is the desktop's again. Not at
+            // The cover is fully down, so the pin it was holding clear is the desktop's again. Not at
             // `endTransition`: a fading cover is still drawing its stand-ins, and the column that just
-            // scrolled off the strip's near end is at a frame reaching across the band.
+            // scrolled off the strip's near end is at a frame reaching across the pin.
             //
             // Guarded on there being no layers, because a command arriving during a cross-fade opens a
             // *new* cover on that display — and the shape then belongs to that one.
             guard !s.motion.hasLayers(on: monitor),
                   s.coverClearing.removeValue(forKey: monitor) != nil else { return (s, []) }
-            return (s, [.setCoverClearing(monitor, .zero)])
+            return (s, [.setCoverClearing(monitor, [])])
         }
     }
 

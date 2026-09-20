@@ -20,6 +20,19 @@ import EmiraCore
 // A raise is not done when it returns: it is on the glass a refresh later, and `raise(onScreen:)` is
 // what says so.
 
+/// One pinned window as a cover has to see it: the box it stands in and the rounding its own corners
+/// cut out of that box, both in the overlay's own coordinates. The rounding is a measurement off the
+/// window's pixels, so only `Reconstruction` — which holds the plane that films them — can fill it in.
+public struct PinSilhouette: Sendable, Equatable {
+    public let box: CGRect
+    public let radius: CGFloat
+
+    public init(box: CGRect, radius: CGFloat) {
+        self.box = box
+        self.radius = radius
+    }
+}
+
 /// A borderless click-through overlay window covering one display, with a layer host for the
 /// reconstruction. Created once at launch — a transition raises and fades it, never builds it.
 @MainActor
@@ -40,19 +53,24 @@ public final class Overlay: NSObject {
     private let screen: NSScreen
     private let geometry: ScreenGeometry
     private let window: NSWindow
-    /// Clipped, so a window layer sliding off the strip's edge is cut at the screen boundary.
+    /// The content view's own layer, holding the base, the strip, and — over a pin — the mask that
+    /// cuts the pins back out of both (`setClearing`). Clipped to the display.
     private let host: CALayer
     /// The bottom-most layer: the display captured *excluding* the windows this transition animates,
     /// so it carries every window that is not moving, with holes where the moving ones were.
     private let base: CALayer
-    /// Everything above the base, clipped to the same rectangle — the one container `addLayer` fills.
-    /// It exists so a cleared cover cuts the stand-ins and the photograph at exactly one edge, with the
-    /// sublayers still addressed in the window's own coordinates (`bounds.origin` tracks `frame`).
+    /// Everything above the base — the one container `addLayer` fills, so minting and dropping a
+    /// transition's stand-ins never touches the photograph under them. Clipped, so a layer sliding off
+    /// the strip's end is cut at the screen boundary.
     private let strip: CALayer
 
-    /// How far this cover is held off each edge of its display, so the windows pinned there stay live
-    /// and on top of it (`Effect.setCoverClearing`). `.zero` is flush with the display.
-    private var clearing: EdgeInsets = .zero
+    /// The pins this cover is held clear of, so they stay live on top of it (`Effect.setCoverClearing`).
+    /// Empty is flush with the display.
+    private var clearing: [PinSilhouette] = []
+
+    /// The mask that takes them out, minted on the first pin and kept. A cover clearing nothing has no
+    /// mask at all rather than one that passes everything: that is the difference this costs.
+    private var cut: CAShapeLayer?
 
     public private(set) var isRaised = false
 
@@ -111,28 +129,49 @@ public final class Overlay: NSObject {
         strip.addSublayer(layer)
     }
 
-    /// Hold the cover this far off each edge, so a pinned window there stays live underneath it.
-    ///
-    /// **A smaller rectangle, not a mask** — a mask would cost the whole cover an offscreen pass on
-    /// every frame of every scroll. The base is cropped with `contentsRect` rather than scaled, since
-    /// it is `.resize`. The window stops being opaque while anything is cleared: what makes the band
-    /// show the real desktop is that nothing of ours is drawn there.
-    public func setClearing(_ insets: EdgeInsets) {
-        guard insets != clearing else { return }
-        clearing = insets
-        let full = CGRect(origin: .zero, size: window.frame.size)
-        let cover = CGRect(x: full.minX + insets.left, y: full.minY,
-                           width: max(full.width - insets.left - insets.right, 0), height: full.height)
-        window.isOpaque = insets == .zero
-        window.backgroundColor = insets == .zero ? .black : .clear
-        base.frame = cover
-        base.contentsRect = full.width > 0
-            ? CGRect(x: cover.minX / full.width, y: 0, width: cover.width / full.width, height: 1)
-            : CGRect(x: 0, y: 0, width: 1, height: 1)
-        strip.frame = cover
-        // Children keep addressing themselves in the window's own coordinates: a bounds origin equal to
-        // the frame's is what makes the container a pure clip rather than a translation.
-        strip.bounds = cover
+    /// Hold the cover clear of these pins, so each stays live underneath it. **A mask**, because a pin
+    /// is a silhouette and not a rectangle: it costs the cover an offscreen composite — about a fifth
+    /// of its own GPU time — for as long as it is up on a display that has a pin. And the window stops
+    /// being opaque, an opaque one being a claim that every pixel of it is ours.
+    public func setClearing(_ pins: [PinSilhouette]) {
+        guard pins != clearing else { return }
+        clearing = pins
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let path = Self.cut(of: pins, in: host.bounds) {
+            let mask = cut ?? mintCut()
+            mask.path = path
+            host.mask = mask
+        } else {
+            host.mask = nil
+        }
+        window.isOpaque = pins.isEmpty
+        window.backgroundColor = pins.isEmpty ? .black : .clear
+        CATransaction.commit()
+    }
+
+    /// What the cover may draw in: the display with every pin's silhouette taken back out of it, as one
+    /// even-odd path. `nil` where nothing is pinned, which is a cover with no mask rather than a mask
+    /// that lets everything through.
+    nonisolated static func cut(of pins: [PinSilhouette], in bounds: CGRect) -> CGPath? {
+        guard !pins.isEmpty else { return nil }
+        let path = CGMutablePath()
+        path.addRect(bounds)
+        for pin in pins {
+            path.addPath(CGPath(roundedRect: pin.box, cornerWidth: pin.radius,
+                                cornerHeight: pin.radius, transform: nil))
+        }
+        return path
+    }
+
+    private func mintCut() -> CAShapeLayer {
+        let mask = CAShapeLayer()
+        mask.frame = host.bounds
+        mask.contentsScale = backingScale
+        mask.fillRule = .evenOdd
+        mask.fillColor = CGColor(gray: 1, alpha: 1)
+        cut = mask
+        return mask
     }
 
     /// Put this transition's captured desktop behind the window layers, or `nil` for the black fill.

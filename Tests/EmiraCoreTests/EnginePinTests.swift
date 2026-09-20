@@ -331,12 +331,12 @@ import Testing
     }
 }
 
-// The cover, held off the band its pins stand in
+// The cover, held off the pins standing on it
 
 @Suite struct EnginePinCoverTests {
 
     /// Half-width presets and a pin taking half the screen, so the two columns left do not fit beside
-    /// it and a focus change genuinely scrolls — which is what raises a cover to have a band cut out of.
+    /// it and a focus change genuinely scrolls — which is what raises a cover to have a pin cut out of.
     static let config = Config(widthPresets: PresetCycle([.proportion(0.5)]))
 
     static func pinnedWorld() -> (State, [Effect]) {
@@ -346,8 +346,8 @@ import Testing
         return (EngineFix.settle(pinned, fx), fx)
     }
 
-    static func clearings(_ fx: [Effect]) -> [EdgeInsets] {
-        fx.compactMap { if case .setCoverClearing(_, let insets) = $0 { return insets } else { return nil } }
+    static func clearings(_ fx: [Effect]) -> [[PinnedFrame]] {
+        fx.compactMap { if case .setCoverClearing(_, let pins) = $0 { return pins } else { return nil } }
     }
 
     /// Answer the captures and the raise, and hand back everything emitted on the way — the clearing
@@ -387,56 +387,57 @@ import Testing
         #expect(after.coverClearing.isEmpty)
     }
 
-    /// A scroll past a standing pin: the cover stops at the band, so the real window stays live in it.
-    @Test func aCoverStopsAtTheBandOfAPinItIsNotDrawing() {
+    /// A scroll past a standing pin: the cover is held off that pin, so the real window stays live.
+    @Test func aCoverClearsThePinItIsNotDrawing() {
         var (s, _) = Self.pinnedWorld()
         s.world.setFocus(WindowId(2))
-        let insets = s.metrics()!.pinInsets
+        let pins = s.metrics()!.pinFrames
         let (scrolling, command) = EngineFix.run(s, [.command(.focus(.left))])
         // Emitted with the raise, not with the command: nothing is on the glass while the stills are out.
         #expect(Self.clearings(command).isEmpty)
         let (after, fx) = Self.raised(scrolling, command)
-        #expect(Self.clearings(fx).contains(insets))
-        #expect(after.coverClearing[MonitorId(1)] == insets)
-        #expect(insets.left > 0 && insets.right == 0)
+        #expect(Self.clearings(fx).contains(pins))
+        #expect(after.coverClearing[MonitorId(1)] == pins)
+        // The pin itself, not the band it stands in: what the shell cuts out is this rectangle under
+        // the window's own rounding, and the margin beside it is the cover's to draw.
+        #expect(pins == [PinnedFrame(window: WindowId(3), frame: s.metrics()!.pinFrame(.left)!)])
     }
 
-    /// **The band stays clear for the whole cross-fade**, and this is the sharp edge of it: a cover
+    /// **The pin stays clear for the whole cross-fade**, and this is the sharp edge of it: a cover
     /// holds its stand-ins until the fade completes, and the column that just scrolled off the strip's
-    /// near end is at a natural frame reaching right across the band. Growing the cover back at
-    /// `endTransition` unclips that stand-in and draws it over the pin for the length of the fade.
-    @Test func theBandIsHeldClearUntilTheCoverIsActuallyDown() {
+    /// near end is at a natural frame reaching right across the pin. Growing the cover back at
+    /// `endTransition` uncuts that stand-in and draws it over the pin for the length of the fade.
+    @Test func thePinIsHeldClearUntilTheCoverIsActuallyDown() {
         var (s, _) = Self.pinnedWorld()
         s.world.setFocus(WindowId(2))
-        let insets = s.metrics()!.pinInsets
+        let pins = s.metrics()!.pinFrames
         let (moved, fx) = EngineFix.run(s, [.command(.focus(.left))])
         let settled = EngineFix.settle(moved, fx)
 
         // The mechanism, stated rather than argued: the column that scrolled off the near end is drawn
-        // at a natural frame reaching right across the band, and only the cover's clip holds it back.
-        let band = Rect(x: 0, y: 0, width: insets.left, height: s.metrics()!.workingArea.height)
+        // at a natural frame reaching right over the pin, and only the cover's mask holds it back.
         let (covered, _) = Self.raised(moved, fx)
         let (_, blits) = Engine.reduce(covered, .tick(dt: 1.0 / 120))
-        #expect(blits.contains { if case .setLayerFrame(_, let r) = $0 { return r.intersects(band) }
+        #expect(blits.contains { if case .setLayerFrame(_, let r) = $0 { return r.intersects(pins[0].frame) }
                                  else { return false } },
-                "no stand-in reaches the band, so this no longer tests what it was written for")
+                "no stand-in reaches the pin, so this no longer tests what it was written for")
 
         // `settle` answers every ack a live system gives *except* the cross-fade, so this is the state
         // the desktop is in for the whole 220 ms the cover takes to go.
-        #expect(settled.coverClearing[MonitorId(1)] == insets, "the band was given back mid-fade")
+        #expect(settled.coverClearing[MonitorId(1)] == pins, "the pin was given back mid-fade")
         #expect(!settled.motion.isTransitioning)
 
         let (down, fx2) = Engine.reduce(settled, .crossfadeDone(MonitorId(1)))
         #expect(down.coverClearing.isEmpty)
-        #expect(fx2.contains(.setCoverClearing(MonitorId(1), .zero)))
+        #expect(fx2.contains(.setCoverClearing(MonitorId(1), [])))
     }
 
     /// A command landing inside the cross-fade opens a new cover, and the shape then belongs to that
-    /// one — the late report from the cover it superseded must not hand the band back under it.
-    @Test func aCoverRaisedInsideTheFadeKeepsTheBand() {
+    /// one — the late report from the cover it superseded must not hand the pin back under it.
+    @Test func aCoverRaisedInsideTheFadeKeepsThePin() {
         var (s, _) = Self.pinnedWorld()
         s.world.setFocus(WindowId(2))
-        let insets = s.metrics()!.pinInsets
+        let pins = s.metrics()!.pinFrames
         let (moved, fx) = EngineFix.run(s, [.command(.focus(.left))])
         var settled = EngineFix.settle(moved, fx)
         settled.world.setFocus(WindowId(1))
@@ -445,27 +446,26 @@ import Testing
         #expect(raised.motion.hasLayers(on: MonitorId(1)))
 
         let (after, out) = Engine.reduce(raised, .crossfadeDone(MonitorId(1)))
-        #expect(after.coverClearing[MonitorId(1)] == insets)
+        #expect(after.coverClearing[MonitorId(1)] == pins)
         #expect(out.isEmpty)
     }
 
-    /// A pin the session is *drawing* is a stand-in like any other window, so its band is covered —
-    /// leaving it clear would show the real one teleporting beside its own layer.
+    /// A pin the session is *drawing* is a stand-in like any other window, so it is covered — leaving
+    /// it clear would show the real one teleporting beside its own layer.
     @Test func aPinBeingResizedIsCoveredRatherThanClearedFor() {
         let (s, _) = Self.pinnedWorld()
         #expect(s.world.focusedWindow == WindowId(3))     // still on the pin
         let (after, fx) = EngineFix.run(s, [.command(.grow(.percent(10)))])
         #expect(after.motion.transition(of: MonitorId(1))?.windows.contains(WindowId(3)) == true)
         #expect(after.coverClearing[MonitorId(1)] == nil)
-        #expect(Self.clearings(fx).allSatisfy { $0 == .zero })
+        #expect(Self.clearings(fx).allSatisfy { $0.isEmpty })
     }
 
-    /// The band and the layer clip are the same edge, so a column sliding off the strip is cut where
-    /// the pin begins rather than at the display's own edge.
-    @Test func theClearedBandIsWhereTheStripStops() {
+    /// The strip's physical extent stops at the pin's own edge, which is what puts a column sliding off
+    /// the near end *under* the pin rather than beside it — the overlap the cover has to cut around.
+    @Test func theStripStopsAtThePinsOwnEdge() {
         let (s, _) = Self.pinnedWorld()
         let metrics = s.metrics()!
-        #expect(metrics.pinInsets.left == metrics.screenArea.minX - metrics.workingArea.minX)
         #expect(metrics.screenArea.minX == metrics.pinFrame(.left)!.maxX)
     }
 }

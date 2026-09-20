@@ -272,8 +272,8 @@ this display's capture head.
 ### The phase machine
 
 `TransitionSession.Phase` is `.capturing → .raising → .covered`, and **only the last lets a real window
-move** — with one further condition on that last one, `Motion.mayPlace`: a cover leaving a band clear for a
-pinned window may move nothing until the window server says that pin is on top of it (§6, *Pinning*).
+move** — with one further condition on that last one, `Motion.mayPlace`: a cover leaving a pinned window
+clear may move nothing until the window server says that pin is on top of it (§6, *Pinning*).
 
 ```
 command                                            (m = the display it acts on)
@@ -691,8 +691,8 @@ pops the cross-fade because the presentation plane draws that column from geomet
 
 **A pin band is a strut and an outer gap is not**, and the arithmetic being identical is the trap in both
 directions. The strip never crosses a band: a layer sliding into one would be drawn over the pin's own
-photograph in the captured base, which reads as a column sliding over it, so the cover's layer container clips
-at the band and that is the one edge the layout's clip and the cover's clip share.
+photograph in the captured base, which reads as a column sliding over it — so the band is the layout's edge,
+and the cover's is the pin's own silhouette inside it (§6, *Pinning*).
 
 **An outer gap is not a strut**, and the arithmetic being identical is the trap. A strut is **forbidden ground**
 — no managed window is ever inside it, tiled or parked, which is what licenses the strut-inset cover. An outer
@@ -1111,7 +1111,7 @@ outside it:
   written from `metrics.pinFrames` and joins `placedOnScreen`, which is what keeps that record the whole
   desktop's rather than the strips'.
 - **A pin is scoped into a cover exactly when its own frame moves** — pinned, released, or resized. A pin
-  standing still stays in the captured base, behind the band the cover is leaving clear, which is what keeps
+  standing still stays in the captured base, behind the silhouette the cover is leaving clear, which is what keeps
   it *live*: filming it would freeze the one window on the screen meant not to be.
 - **Its width is a column's width.** A pin seeds both of `ColumnLayout`'s lower rungs from the column it left
   and carries them, so `grow`, `shrink` and `cycle-width` are its width control with nothing new behind them.
@@ -1119,22 +1119,32 @@ outside it:
 - **The quit cascade rescues it.** `cascadeOrder` walks strips, so a pin is appended — a band is exactly as
   unsurvivable as a park slot once the daemon is gone, and for the same reason.
 
-**The cover stops at the band rather than masking a hole in it** (`Effect.setCoverClearing` →
-`Overlay.setClearing`). A pin is full height and hard against its own edge, so the uncovered region is one
-rectangle and the mechanism is a frame change on two layers instead of a mask, which would cost the whole
-cover an offscreen composite on every frame of every scroll. The band takes the outer-gap margin with it,
-which is what makes it one rectangle; nothing of ours is drawn there and the wallpaper under it is the
-wallpaper the base was photographed from.
+**The cover is cut to the pin's silhouette** (`Effect.setCoverClearing` → `Overlay.setClearing`). The core
+names the pin *frames*; the shell rounds them with the radius the capture plane measured off the window's own
+pixels and masks the cover with the display minus each one. A band would be one rectangle and therefore free
+of a mask, but a pin is not a rectangle: the margin it stands in and the notches its rounding cuts are not the
+pin, and leaving them open leaves the real desktop showing through them — a window whose destination overlaps
+the pin teleports there the moment the cover is up, and appears in its corners while the cover is still
+carrying that window's stand-in across the screen. So the cut is exact, and the cover draws everything outside
+it: the raise stays pixel-identical there too, and a stand-in sliding under the pin goes on being the cover's
+to draw right up to the rounding.
 
-**The band is held clear for the whole cross-fade, not until the session closes.** A cover keeps its
+**What it costs is an offscreen composite over the whole cover**, for as long as one is up on a display with a
+pin — about a fifth of the cover's own GPU time, measured, dropping no frames, and nothing on a display with
+no pin, where there is no mask at all. A mask on the stand-in container alone costs the same, so there is no
+cheaper place to put it. A radius nothing has measured falls back to a floor rather than a guess: cutting
+inside the true rounding leaves the cover drawing a sliver of the pin's own corner out of the base, where the
+pin is standing still and therefore identical, while cutting outside it leaves the desktop showing.
+
+**The pin is held clear for the whole cross-fade, not until the session closes.** A cover keeps its
 stand-ins until the fade completes, and the column that just scrolled off the strip's near end is at a
-natural frame reaching right across the band — held back by nothing but the clip. Growing the cover back
-at `endTransition` unclips it and draws that window over the pin for the length of the fade, which is
+natural frame reaching right over the pin — held back by nothing but the cut. Growing the cover back
+at `endTransition` uncuts it and draws that window over the pin for the length of the fade, which is
 `Event.crossfadeDone`'s one job here. `Compositor` keeps the same decision, because a surface rebuilt
-under it starts flush with its display while the core still believes a band is clear.
+under it starts flush with its display while the core still believes a pin is clear.
 
-**And the band the cover leaves clear is a band the cover does not hide**, which is the second fence on the
-teleport. A real window whose *current* frame overlaps a band is drawn over the pin from the instant the reals
+**And the pin the cover leaves clear is a pin the cover does not hide**, which is the second fence on the
+teleport. A real window whose *current* frame overlaps a pin is drawn over it from the instant the reals
 move until its app answers — and emira may not re-level a foreign window, so focus is the only lever that
 reorders across apps. So `Effect.confirmFocus` goes out in the same head batch as the captures, the shell
 answers it from the window server (`PinFence` over `StackProbe`, bounded, reporting anyway on expiry), and
@@ -1142,11 +1152,11 @@ answers it from the window server (`PinFence` over `StackProbe`, bounded, report
 proportionate:
 
 - **The trigger is the at-risk set**, not "a pin exists": `guardPins` asks which scoped windows sit over a
-  live band *or are about to*, read at the aimed offset. Both halves are needed and the second is the
+  live pin *or are about to*, read at the aimed offset. Both halves are needed and the second is the
   commoner — a column scrolling off the strip's near end is still in the clear area when the command lands.
   The answer is empty on the ordinary desktop and on every scroll past a pin nothing reaches, which is what
   keeps a foreign app from being flashed into the menu bar on every keystroke.
-- **The ordering it buys outlasts the transition.** A near-end column genuinely overhangs the band and no
+- **The ordering it buys outlasts the transition.** A near-end column genuinely overhangs the pin and no
   scroll position removes the overlap, so the pin has to *end up* above it. Activating the pin's app after
   whatever last activated the overhanging window, and the target's after that, leaves the order
   overhanging < pin < target — which is why the debt below is paid at the end rather than dropped.
@@ -1159,7 +1169,7 @@ proportionate:
   above the pin. `State.owedFocus` holds it rather than the session, since **every exit owes it** — a debt
   whose session has gone falls due at once, which is how that holds without being repeated at four teardown
   sites. A gate speaks for **its own display alone**, and what holds a focus back and what releases it are
-  one predicate (`Motion.isGatingFocus`): a pin yet to come forward, or a window still crossing the band.
+  one predicate (`Motion.isGatingFocus`): a pin yet to come forward, or a window still crossing the pin.
 - **The fence's write is a stacking operation and not a focus.** Folded as one it would put the user on the
   pin for the length of the gate, and every verb that branches on `focusedWindow` would read them there.
   `World.noteActivation` is `setFocus`'s stacking half alone, and it is what records both activations the
@@ -1342,7 +1352,7 @@ a reading that changes nothing paints nothing at all.
 
 **A pane the reading has not caught up with declines nothing** (`Effect.setScrims`'s `moving`,
 `Scrims.staleFrames`). Painting at once and correcting is enough wherever a cover hides the first cut, and a
-pin's band is where it does not: the cover is held off it so the pin stays live (`settleCoverClearing`), so
+a pin is where it does not: the cover is cut around it so it stays live (`settleCoverClearing`), so
 the pin is the one window on the glass carrying the server's lag in the open. A column that focus has just
 left goes opaque in the very set that teleports it, and a decline against where the server still has it cuts
 the pin's veil to a sliver for as long as the lag lasts. So the core names what it has written — a write in
@@ -1418,11 +1428,11 @@ come to rest, which is correct and reads as two events: the transition, and then
 **What the cover does not carry is the decline.** A stand-in is veiled over its whole window and its
 photograph holds no windows, so wherever a stand-in stands over something other than the desktop — a dialog
 emira floats by role, left behind a scrolling column — the cover shows frosted wallpaper where that window is.
-Carrying the decline would take a mask per stand-in, rewritten every frame wherever the overlap slides, which
-is the offscreen pass `Overlay.setClearing` is shaped to avoid. It lasts only as long as the motion, and there
+Carrying the decline would take a mask per stand-in, rewritten every frame wherever the overlap slides —
+where the cut around a pin is one path, rewritten twice a transition. It lasts only as long as the motion, and there
 is less of it to carry than the rule once implied: a see-through window behind another is no decline at all,
 so the two planes part company only over the opaque ones. A cascade raises no veil to disagree about, and a
-pin's band and a hoisted float are never under a stand-in.
+pin — cut out of the cover — and a hoisted float are never under a stand-in.
 
 ---
 

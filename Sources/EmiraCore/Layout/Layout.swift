@@ -118,6 +118,19 @@ public struct PinBand: Sendable, Equatable {
     }
 }
 
+/// A pinned window and the rectangle it stands in — what the placement pass writes, what the teleport
+/// gate asks about, and what a cover is held clear of. The *box*: what the window covers on the glass
+/// is that box under its own corner rounding, which only the plane that films windows can measure.
+public struct PinnedFrame: Sendable, Equatable, Codable {
+    public let window: WindowId
+    public let frame: Rect
+
+    public init(window: WindowId, frame: Rect) {
+        self.window = window
+        self.frame = frame
+    }
+}
+
 /// The monitor + config inputs a `Layout` resolves against — passed per call, never stored.
 public struct LayoutMetrics: Sendable, Equatable {
     /// The monitor's **physical** working area — screen-space, top-left, already inset past the menu
@@ -276,12 +289,6 @@ public struct LayoutMetrics: Sendable, Equatable {
 
     /// …and out of the physical one: the outer gap it stands in plus its own width, so the edge is the
     /// pin's rather than the margin's. Zero on an unpinned side, where the strip bleeds to the display.
-    ///
-    /// **Public because it is also how far a cover must stay off each edge.** A pinned window has to
-    /// stay live and on top of the reconstruction, and emira may not re-level a foreign window, so the
-    /// cover stops at the band instead and the real desktop shows there.
-    public var pinInsets: EdgeInsets { physicalPinInsets }
-
     private var physicalPinInsets: EdgeInsets {
         EdgeInsets(left: pinWidth(.left).map { outerGaps.left + $0 } ?? 0,
                    right: pinWidth(.right).map { outerGaps.right + $0 } ?? 0)
@@ -297,10 +304,10 @@ public struct LayoutMetrics: Sendable, Equatable {
     }
 
     /// Every pinned window and where it goes, in side order — the placement pass's one new term.
-    public var pinFrames: [(window: WindowId, frame: Rect)] {
+    public var pinFrames: [PinnedFrame] {
         PinSide.allCases.compactMap { side in
             guard let band = pins[side], let frame = pinFrame(side) else { return nil }
-            return (band.window, frame)
+            return PinnedFrame(window: band.window, frame: frame)
         }
     }
 

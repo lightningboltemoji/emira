@@ -24,11 +24,11 @@ public protocol CoverSurface: AnyObject {
     /// everything already there. No-op for a binding already present.
     func extendCover(_ bindings: [LayerBinding])
 
-    /// Keep the cover this far off each edge of its display, so the windows pinned there stay live and
-    /// on top of it. `.zero` is flush with the display, which is what every cover is until something is
-    /// pinned. Takes effect on the next raise as well as immediately, so a cover raised into a cleared
-    /// display is never drawn over the pin even for one frame.
-    func setClearing(_ insets: EdgeInsets)
+    /// Hold the cover clear of these pins' silhouettes, so they stay live and on top of it. Empty is
+    /// flush with the display, which is what every cover is until something is pinned. Takes effect on
+    /// the next raise as well as immediately, so a cover raised over a standing pin is never drawn over
+    /// it even for one frame.
+    func setClearing(_ pins: [PinnedFrame])
 
     /// Move one reconstruction layer to `rect` (core top-left coordinates) for this frame.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
@@ -80,8 +80,8 @@ public protocol CoverPlane: AnyObject {
     /// Add layers to `monitor`'s already-raised cover, for windows a retarget pulled into scope.
     func extendCover(on monitor: MonitorId, _ bindings: [LayerBinding])
 
-    /// Keep `monitor`'s cover this far off its own edges — where its pins stand.
-    func setClearing(on monitor: MonitorId, _ insets: EdgeInsets)
+    /// Hold `monitor`'s cover clear of the pins standing on it.
+    func setClearing(on monitor: MonitorId, _ pins: [PinnedFrame])
 
     /// Move one reconstruction layer to `rect` this frame, on whichever display holds it.
     func setLayerFrame(_ layer: LayerId, to rect: Rect)
@@ -298,10 +298,10 @@ public final class CompositingExecutor: Executor {
                     feedback(.coverOnScreen(monitor))
                 }
                 framesBlitted[monitor] = 0
-            case .setCoverClearing(let monitor, let insets):
+            case .setCoverClearing(let monitor, let pins):
                 // Not counted as a blit: a cover changing shape is not a frame of motion, and it rides
                 // in this run precisely so the raise beside it lands in the same transaction.
-                surface.setClearing(on: monitor, insets)
+                surface.setClearing(on: monitor, pins)
             case .extendCover(let monitor, let bindings):
                 // The `setLayerFrame`s that place these are in this same run, so the new layers are
                 // created and positioned inside one transaction.

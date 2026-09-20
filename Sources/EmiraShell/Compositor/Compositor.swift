@@ -44,10 +44,10 @@ public final class Compositor: CoverPlane {
     /// second `coverOnScreen` is a teleport the reducer has already made.
     private var fenceOwed: Set<MonitorId> = []
 
-    /// How far each display's cover is being held off its own edges. Kept because a surface can be
-    /// rebuilt under a standing decision — a display whose geometry changed gets a fresh `Overlay`, flush
-    /// with the screen, while the core still believes a band is clear and so re-emits nothing.
-    private var clearing: [MonitorId: EdgeInsets] = [:]
+    /// The pins each display's cover is being held clear of. Kept because a surface can be rebuilt
+    /// under a standing decision — a display whose geometry changed gets a fresh `Overlay`, flush with
+    /// the screen, while the core still believes a pin is clear and so re-emits nothing.
+    private var clearing: [MonitorId: [PinnedFrame]] = [:]
 
     public init(surfaces: [(monitor: MonitorId, surface: any CoverSurface)]) {
         self.surfaces = Dictionary(surfaces.map { ($0.monitor, $0.surface) },
@@ -73,8 +73,8 @@ public final class Compositor: CoverPlane {
         let live = Set(self.surfaces.keys)
         // A rebuilt surface is flush with its display and the core's record says otherwise, so the
         // standing decision is re-applied rather than waited for.
-        for (monitor, insets) in clearing where live.contains(monitor) {
-            self.surfaces[monitor]?.setClearing(insets)
+        for (monitor, pins) in clearing where live.contains(monitor) {
+            self.surfaces[monitor]?.setClearing(pins)
         }
         clearing = clearing.filter { live.contains($0.key) }
         route = route.filter { live.contains($0.value) }
@@ -122,9 +122,9 @@ public final class Compositor: CoverPlane {
         surfaces[monitor]?.extendCover(bindings)
     }
 
-    public func setClearing(on monitor: MonitorId, _ insets: EdgeInsets) {
-        clearing[monitor] = insets == .zero ? nil : insets
-        surfaces[monitor]?.setClearing(insets)
+    public func setClearing(on monitor: MonitorId, _ pins: [PinnedFrame]) {
+        clearing[monitor] = pins.isEmpty ? nil : pins
+        surfaces[monitor]?.setClearing(pins)
     }
 
     public func setLayerFrame(_ layer: LayerId, to rect: Rect) {

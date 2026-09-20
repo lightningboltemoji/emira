@@ -579,10 +579,14 @@ applyShellConfig(config)
     // that it has just been built. At launch that is the boot scan's arrivals; on a hot-plug it is
     // whatever the user does after plugging the display in.
     guide.prime(runtime.state)
+    let reconstruction = Reconstruction(overlay: overlay, monitor: info.id, store: capture)
+    // Set here rather than in `applyShellConfig`: a corner radius is a measurement off a window's own
+    // pixels, and no setting moves it.
+    reconstruction.cornerRadius = { [surfaceCache] in surfaceCache.cornerRadius(of: $0) }
     return DisplayParts(
         info: info,
         overlay: overlay,
-        reconstruction: Reconstruction(overlay: overlay, monitor: info.id, store: capture),
+        reconstruction: reconstruction,
         capturer: SCKCapturer(displayId: ScreenGeometry.displayId(of: screen, at: index),
                               scale: screen.backingScaleFactor),
         panel: panel,

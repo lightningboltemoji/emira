@@ -42,11 +42,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// `moving` names what emira has written that the window server may not have caught up with.
     case setScrims(MonitorId, [ScrimBinding], ScrimChange, moving: Set<WindowId>)
 
-    /// How far one display's cover must stay clear of each edge, so the windows pinned there stay live
-    /// underneath it. **A band off the edge, not a hole in the middle**: a pin is full height and hard
-    /// against its own edge, so the cover is a smaller rectangle rather than a masked one. The whole
-    /// insets every time, which the shell diffs, as `setHoists` is. Unacked and gating nothing.
-    case setCoverClearing(MonitorId, EdgeInsets)
+    /// The pins one display's cover must not draw over, so they stay live underneath it. **Silhouettes,
+    /// not bands**: these are the pin boxes, the rounding is the shell's to measure, and everything
+    /// outside the two is the cover's to draw. The whole set every time, which the shell diffs, as
+    /// `setHoists` is. Unacked and gating nothing.
+    case setCoverClearing(MonitorId, [PinnedFrame])
 
     /// Take one reconstruction layer off the screen, until a `setLayerFrame` puts it back — what a
     /// display says about a stand-in it can no longer place. Emitting nothing instead is not "no layer":
