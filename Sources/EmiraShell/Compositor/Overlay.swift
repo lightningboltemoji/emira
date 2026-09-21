@@ -130,8 +130,8 @@ public final class Overlay: NSObject {
     }
 
     /// Hold the cover clear of these pins, so each stays live underneath it. **A mask**, because a pin
-    /// is a silhouette and not a rectangle: it costs the cover an offscreen composite — about a fifth
-    /// of its own GPU time — for as long as it is up on a display that has a pin. And the window stops
+    /// is a silhouette and not a rectangle: an offscreen pass priced by the cover's bounds and not by
+    /// the notch it removes, for as long as one is up on a display with a pin. And the window stops
     /// being opaque, an opaque one being a claim that every pixel of it is ours.
     public func setClearing(_ pins: [PinSilhouette]) {
         guard pins != clearing else { return }

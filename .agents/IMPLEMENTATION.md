@@ -1130,9 +1130,12 @@ it: the raise stays pixel-identical there too, and a stand-in sliding under the 
 to draw right up to the rounding.
 
 **What it costs is an offscreen composite over the whole cover**, for as long as one is up on a display with a
-pin — about a fifth of the cover's own GPU time, measured, dropping no frames, and nothing on a display with
-no pin, where there is no mask at all. A mask on the stand-in container alone costs the same, so there is no
-cheaper place to put it. A radius nothing has measured falls back to a floor rather than a guess: cutting
+pin: a mask is priced by the bounds of the layer it is on rather than by the area it removes, so a notch costs
+what a screen costs. Measured at about +70% of the GPU a pinned cover used to draw with — half the offscreen
+pass, half rasterizing the band it no longer clips away — dropping no frames on the development display, and
+nothing at all where nothing is pinned, since there is then no mask. A mask on the stand-in container alone
+measures the same, so there is no cheaper place to put it; what is cheaper is not masking every transition,
+which is the at-risk predicate the teleport fence below already carries. A radius nothing has measured falls back to a floor rather than a guess: cutting
 inside the true rounding leaves the cover drawing a sliver of the pin's own corner out of the base, where the
 pin is standing still and therefore identical, while cutting outside it leaves the desktop showing.
 
