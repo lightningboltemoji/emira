@@ -20,7 +20,7 @@ import EmiraCore
 // A mask rasterized into one image cannot separate them — every repaint replaces the whole image, so a
 // window moving mid-fade ends the fade. Measured on the development display (3420×2214), the paths cost
 // 0.24 ms against 2.1 ms for the image, and a fade survives a sibling's path, its own path, a layer
-// arriving or leaving, and retargets from wherever it has got to.
+// arriving or leaving, and a cut that is not moving it; it retargets from wherever it has got to.
 //
 // **Below the cover, above everything else.** `Overlay.level` is `.floating`, so a scrim sits one under
 // it: a transition's cover must hide the scrims completely, or the reconstruction would be tinted
@@ -83,7 +83,7 @@ public final class ScrimWindow: NSObject, ScrimSurface {
     /// The mask's root. Holds nothing of its own: what it masks with is its sublayers' alpha.
     private let cut: CALayer
     /// One shape per see-through window, keyed by it. `opacity` is that window's veil.
-    private var veils: [WindowId: CAShapeLayer] = [:]
+    private(set) var veils: [WindowId: CAShapeLayer] = [:]
     private let scale: CGFloat
 
     private var desktop: CGImage?
@@ -157,9 +157,10 @@ public final class ScrimWindow: NSObject, ScrimSurface {
             set(layer, to: Float(min(max(veil.veil, 0), 1)), change: change)
         }
         for (window, layer) in self.veils where !named.contains(window) {
-            // Kept until the fade lands, so a window coming back inside it finds the shape it left on.
+            // Kept until the fade lands, so a window coming back inside it finds the shape it left
+            // on — and one already on its way out is the landing's to drop, not this cut's.
             set(layer, to: 0, change: change)
-            if change == .cut { drop(window) }
+            if change == .cut, layer.animation(forKey: "veil") == nil { drop(window) }
         }
         // **The window's alpha is a gate**: every change anybody sees is a shape's own opacity, which the
         // render server draws, where AppKit would step a window's alpha on the main thread at 60 Hz.
@@ -170,11 +171,14 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         CATransaction.commit()
     }
 
-    /// What holds once the veils a set asked for have arrived: a shape nobody named any longer is dropped,
-    /// and a scrim with nothing left to draw comes off the glass. Read off the live state rather than the
-    /// set that scheduled it, so a set landing inside a fade is the one that decides.
+    /// What holds once the veils a set asked for have arrived: a shape nobody named any longer, and that
+    /// has finished going, is dropped — and a scrim with nothing left to draw comes off the glass. Read
+    /// off the live state rather than the set that scheduled it, so a set landing inside a fade decides.
     private func settled(keeping named: Set<WindowId>) {
-        for (window, layer) in veils where !named.contains(window) && layer.opacity == 0 { drop(window) }
+        for (window, layer) in veils
+        where !named.contains(window) && layer.opacity == 0 && layer.animation(forKey: "veil") == nil {
+            drop(window)
+        }
         if !isShowing { window.alphaValue = 0 }
     }
 
@@ -201,12 +205,13 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         return layer
     }
 
-    /// Take one shape to its veil: at once for a cut, and over `fadeDuration` for a dissolve — from
-    /// wherever the shape has got to, so a fade retargeted mid-flight starts on the glass rather than
-    /// from where the last one was going.
+    /// Take one shape to its veil: at once for a cut, over `fadeDuration` for a dissolve, and from
+    /// wherever the shape has got to, so a retarget starts on the glass. **A cut to the veil a fade is
+    /// already bound for leaves it alone** — most cuts move the shapes under a mask that did not change.
     private func set(_ layer: CAShapeLayer, to opacity: Float, change: ScrimChange) {
         switch change {
         case .cut:
+            guard layer.opacity != opacity else { return }
             layer.removeAnimation(forKey: "veil")
             layer.opacity = opacity
         case .dissolve:

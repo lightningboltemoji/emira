@@ -354,8 +354,6 @@ public final class Scrims: ScrimPlane {
         }
         // **A window management has let go of takes nothing out of anything.** Nothing announces the
         // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
-        // **A window management has let go of takes nothing out of anything.** Nothing announces the
-        // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
         let gone = departed()
         let identified = stack()
             .filter { !gone.contains($0.number) }

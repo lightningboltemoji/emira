@@ -1367,8 +1367,9 @@ it when it arrives. So every event the core has is early, and a mask cut on one 
 the windows were. A set is painted at once and then cut again each time the reading changes, ending on quiet
 (`settleQuiet` readings with nothing new) or on a deadline (`settleLimit`). It is `HoistPanels`' fence in
 another place: what the window server is showing can only be found out by asking it. What makes this
-affordable is the layer tree — a re-cut writes paths, which leaves a veil fading through it undisturbed, and
-a reading that changes nothing paints nothing at all.
+affordable is the layer tree — a re-cut moves the shapes and names the veils they already carry, which
+leaves a veil fading through it undisturbed (`ScrimWindow.set`), and a reading that changes nothing paints
+nothing at all.
 
 **A pane management has let go of is out of the walk entirely** (`Scrims.departed`, from
 `WindowRegistry.departedNumbers` — the set a cover's base already cuts a hole for). A window closes on the
