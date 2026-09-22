@@ -77,7 +77,10 @@ extension State {
         let veil = min(max(1 - config.unfocusedOpacity, 0), 1)
         guard veil > 0, drag.subject == nil else { return [:] }
 
-        let focused = world.focusedWindow
+        // **Focus resting on nothing keeps the veil where it was**: `World.lastFocus` is the shelter the
+        // arrival path already takes from the same routine `nil`, which read literally draws the whole
+        // strip see-through for as long as no managed window holds the keyboard.
+        let focused = world.focusedWindow ?? world.lastFocus
         let candidates = world.placedOnScreen.filter { $0 != focused }.sorted()
         guard !candidates.isEmpty else { return [:] }
 

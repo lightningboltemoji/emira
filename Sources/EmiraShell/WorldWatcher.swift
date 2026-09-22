@@ -99,6 +99,11 @@ public final class WorldWatcher {
     /// A window manager quietly not managing something is the failure a user cannot debug.
     public var onIncompleteScan: (@MainActor (AXEnumerator.Report) -> Void)?
 
+    /// The set of windows on the glass is not the one the last sweep saw. Fanned out for the same
+    /// reason pointer samples are: this type owns the window-server sweep, and a plane that masks
+    /// itself against that reading (`Scrims`) has no event of its own to hear a foreign window close.
+    public var onStackChanged: (@MainActor () -> Void)?
+
     /// Whether the shell is committing a Core Animation transaction every frame. Read by `reconcile`,
     /// which is the one thing here that must not run while it is true; `false` where nothing paints,
     /// which is every test that is not about the interaction.
@@ -157,6 +162,15 @@ public final class WorldWatcher {
     /// reconciliations have asked about each. Cleared per number as soon as it binds or goes away, so a
     /// window that reappears at a recycled number starts with a full budget.
     private var unaccounted: [CGWindowID: Int] = [:]
+
+    /// Managed windows the window server has stopped showing, and how many consecutive reconciliations
+    /// have asked their app about them. The budget is `unaccounted`'s, and for its reason: a window on
+    /// another Space is off screen for good, and asking forever would scan its app forever.
+    private var offGlass: [WindowId: Int] = [:]
+
+    /// The on-screen windows the last sweep read. Kept to notice the one change nothing announces: a
+    /// window emira never managed arriving on the glass or leaving it (`onStackChanged`).
+    private var onGlass: Set<CGWindowID> = []
 
     /// The window last reported as focused *in the present* — whether or not we passed it on, but not
     /// counting an echo of our own that arrived out of order. It exists only to name the window a new
@@ -259,6 +273,7 @@ public final class WorldWatcher {
                 moved.remove(id)
                 vanishing.remove(id)
                 stillness[id] = nil
+                offGlass[id] = nil
                 emit(.windowDestroyed(id))
             }
 
@@ -314,9 +329,9 @@ public final class WorldWatcher {
             resolveFocus(id)
 
         case .focusMovedUnmanaged(let pid):
-            // Unanswered is still `nil`: the notification said focus left every managed window, and
-            // swallowing that leaves `World.focusedWindow` on one the user is no longer typing into.
-            readFocus(of: pid, unanswered: .window(nil))
+            // The app is the only thing that can say which window that element belongs to, so the
+            // report carries no answer of its own — see `readFocus`.
+            readFocus(of: pid)
 
         case .mouseDown:
             // A press arriving mid-settle closes it first: the bracket the core reads is a latch, and
@@ -342,22 +357,22 @@ public final class WorldWatcher {
     }
 
     /// Ask which of an app's windows has focus, for a report that named the app and no managed window.
-    /// Only for an app we track, and only if no focus request overtakes the read (case 6 above). An app
-    /// too busy to answer is taken to have said `unanswered`, which for an activation is nothing.
-    private func readFocus(of pid: pid_t, unanswered: FocusedWindowRead = .unreadable) {
+    /// Only for an app we track, and only if no focus request overtakes the read (case 6 above).
+    /// **An unanswered read is not an answer** — the element named is as likely a window arriving that
+    /// nothing has bound yet — so a busy app leaves the standing belief for the next report to correct.
+    private func readFocus(of pid: pid_t) {
         guard apps[pid] != nil else { return }
-        readFocus(of: pid, unanswered: unanswered, since: intent.newest, attempt: 1)
+        readFocus(of: pid, since: intent.newest, attempt: 1)
     }
 
     /// One attempt of `readFocus`. A retry keeps the first attempt's marker: the report left then.
-    private func readFocus(of pid: pid_t, unanswered: FocusedWindowRead, since asked: FocusIntent.Ticket,
-                           attempt: Int) {
+    private func readFocus(of pid: pid_t, since asked: FocusIntent.Ticket, attempt: Int) {
         source.focusedWindow(of: pid) { [weak self] read in
             guard let self, !isStopped, intent.isCurrent(asked) else { return }
-            if read == .unreadable, attempt < Self.maxFocusReadAttempts {
-                return readFocus(of: pid, unanswered: unanswered, since: asked, attempt: attempt + 1)
+            guard case .window(let id) = read else {
+                guard attempt < Self.maxFocusReadAttempts else { return }
+                return readFocus(of: pid, since: asked, attempt: attempt + 1)
             }
-            guard case .window(let id) = read == .unreadable ? unanswered : read else { return }
             resolveFocus(id)
         }
     }
@@ -445,20 +460,21 @@ public final class WorldWatcher {
         moved.remove(id)
         stillness[id] = nil
         minimized.remove(id)
+        offGlass[id] = nil
         hidden[record.pid]?.remove(id)
         emit(.windowDestroyed(id))
     }
 
     // Reconciliation (the standing question the notification stream cannot answer)
 
-    /// Make the standing invariants true again: every app we know observed, every managed window still
-    /// real, every on-screen window managed.
+    /// Make the standing invariants true again: every app we know observed, every managed window
+    /// watched, every managed window still on the glass, every on-screen window managed.
     ///
     /// The standing check behind an otherwise entirely edge-triggered design, where every discovery path
     /// is one notification at one moment and a missed one is never reissued. Level-triggered and cheap:
     /// the list is a window-server query, and AX is reached only when the two disagree.
     ///
-    /// Each of the three is a state rather than a race, which is what separates them from the retry
+    /// Each of the four is a state rather than a race, which is what separates them from the retry
     /// chain: a race resolves itself and is waited out under a budget, a state stays wrong until
     /// something asks again.
     ///
@@ -473,7 +489,19 @@ public final class WorldWatcher {
         // and nothing in the edge plane can fix that, because a budget must terminate and this must not.
         // `register` skips the apps already covered, so a healthy desktop pays one set lookup each.
         // Ahead of the paint gate, being AX work on the lanes and free to the main thread.
-        for (_, target) in apps.sorted(by: { $0.key < $1.key }) { register(target) }
+        //
+        // **The window-level registrations with them**: a window whose own registration an app refused
+        // has no destroy notification for the rest of its life, and `watch(windows:)` is idempotent by
+        // id, so a healthy desktop pays a lookup per window.
+        var watched: [pid_t: [WindowId]] = [:]
+        for id in registry.ids where !vanishing.contains(id) {
+            guard let record = registry.record(id) else { continue }
+            watched[record.pid, default: []].append(id)
+        }
+        for (_, target) in apps.sorted(by: { $0.key < $1.key }) {
+            register(target)
+            if let ids = watched[target.pid] { source.watch(windows: ids, of: target.pid) }
+        }
 
         guard !isPainting() else { return }
 
@@ -502,6 +530,8 @@ public final class WorldWatcher {
             vanish(id)
         }
 
+        let showing = Set(list.lazy.filter(\.isOnScreen).map(\.number))
+
         // On-screen only, for the same reason `Report.unclaimed` is: an app's off-screen layer-0
         // oddments are not windows and never will be. A window on another Space or in the Dock is off
         // screen too — those are adopted by the notification that brings them back.
@@ -526,6 +556,34 @@ public final class WorldWatcher {
             // app: here the window server has already named it. It lands in `apps` once scanned, so
             // this route is paid once rather than every interval.
             if let target = enumerator.target(for: stray.pid) { targets[stray.pid] = target }
+        }
+
+        // Managed windows the list still carries that the window server has stopped **showing** — an
+        // ordered-out window keeps its entry for as long as its process lives, so absence never settles
+        // it. Off screen is not death, so it buys one scan and `AXEnumerator.join` is the arbiter.
+        let offScreen = Set(registry.ids.filter { id in
+            guard let record = registry.record(id), !vanishing.contains(id),
+                  listed.contains(record.number), !showing.contains(record.number),
+                  !minimized.contains(id), hidden[record.pid]?.contains(id) != true
+            else { return false }
+            return true
+        })
+        // A window back on the glass, or gone from the list entirely, forfeits its history.
+        offGlass = offGlass.filter { offScreen.contains($0.key) }
+        for id in offScreen.sorted() {
+            guard let record = registry.record(id) else { continue }
+            let round = (offGlass[id] ?? 0) + 1
+            offGlass[id] = round
+            guard round <= Self.maxReconcileRounds, targets[record.pid] == nil,
+                  let target = apps[record.pid] else { continue }
+            targets[record.pid] = target
+        }
+
+        // The one change on the glass that nothing announces: a window emira never managed arriving or
+        // leaving. Read off the sweep this round already took, so noticing it costs nothing.
+        if showing != onGlass {
+            onGlass = showing
+            onStackChanged?()
         }
 
         guard !targets.isEmpty else { return }

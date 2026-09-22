@@ -1235,6 +1235,12 @@ over the top of it, and the window server's own source-over does the blending. D
 the same arithmetic as the window being transparent at `1 − v`; what is drawn is that, frosted and shaded (both
 below). `[focus] unfocused-opacity` is the number, `1` and off by default.
 
+**Focus resting on nothing keeps the veil where it was** (`World.lastFocus`). A `nil` focus is routine — an app
+focusing a window emira declined, a launcher taking the keyboard, an arrival a moment before it is adopted —
+and read literally it makes every window on the strip a candidate at once, the one being worked in included.
+The anchor is the shelter an arrival already takes from the same transient (`Engine.arrivalAnchor`), and
+appearance is the one reader for which `nil` is a claim about every window rather than about one.
+
 **What it can get wrong is never the blend, only the backdrop.** The shell holds one photograph per display
 (`DesktopCapturer`): the display with **every** window taken out of it, leaving wallpaper, icons and widgets.
 Hence the one rule — **a window is drawn see-through where what lies behind it is the desktop, or another
@@ -1352,6 +1358,21 @@ the windows were. A set is painted at once and then cut again each time the read
 another place: what the window server is showing can only be found out by asking it. What makes this
 affordable is the layer tree — a re-cut writes paths, which leaves a veil fading through it undisturbed, and
 a reading that changes nothing paints nothing at all.
+
+**A pane management has let go of is out of the walk entirely** (`Scrims.departed`, from
+`WindowRegistry.departedNumbers` — the set a cover's base already cuts a hole for). A window closes on the
+glass long after AX says it is gone, the length of its app's teardown, and nothing announces the moment it
+leaves. Skipped rather than subtracted, because a decline is a claim about what lies *behind* a window and a
+window on its way off will not be behind it a moment later: the mask that ignores it is the one that stays
+right, and none is owed a re-cut when it finally goes. What it costs is a veil painted over a window still
+showing its last frames, against a hole that outlives it by the length of a quit.
+
+**The stacking also moves with nothing in the core to say so**, which the settle watch above does not reach: a
+window emira never managed arrives on the glass or leaves it, and no set is coming to recut the hole the mask
+was cut around. So the reconciliation sweep — which reads the whole window list every interval anyway, past
+its own paint gate — fans out the one fact it can see for free, that the on-screen set is not the one it saw
+last (`WorldWatcher.onStackChanged` → `Scrims.recut`). A re-cut that comes out the same paints nothing, so a
+quiet desktop costs a set comparison. A foreign window that *moves* is still corrected only by the next set.
 
 **A pane the reading has not caught up with declines nothing** (`Effect.setScrims`'s `moving`,
 `Scrims.staleFrames`). Painting at once and correcting is enough wherever a cover hides the first cut, and a
@@ -1545,9 +1566,11 @@ sheet goes away, so focus left on anything but its window never comes back to it
 unknown element is therefore a question rather than an answer (`WorldObservation.focusMovedUnmanaged`), and it
 becomes the same read an activation costs, which names a focused element's `AXParent` when that is the window
 the registry knows. **A read that times out is asked once more** (`WorldWatcher.maxFocusReadAttempts`): an app
-putting up a sheet stops answering AX for longer than one `AXClient` timeout while the sheet comes in. Only
-then is the fallback believed — nothing for an activation, which named no window, and `nil` for a
-notification, which already said focus left the managed ones.
+putting up a sheet stops answering AX for longer than one `AXClient` timeout while the sheet comes in. **An
+unanswered read is then nothing at all, never `nil`.** The element such a report names is as likely a window
+arriving that nothing has bound yet as one emira will never manage, and only the app tells them apart — where
+a `nil` read into a timeout puts the core on no window, which draws every window on the strip see-through
+(§ _Scrims_) with nothing standing to correct it. A stale belief is corrected by the next report.
 
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The
@@ -1572,13 +1595,15 @@ list read yields; registering an observer is AX work on that app's own lane and 
 The read is on the main thread and stays there: moving it to a background queue relocates the wait rather than
 removing it, since the same per-connection lock is what our own frame commit then blocks on.
 
-**It holds three invariants, not one, and the division is race versus state.** A race resolves itself, so it is
+**It holds four invariants, not one, and the division is race versus state.** A race resolves itself, so it is
 waited out under a budget in the edge plane; a state stays wrong until something asks again, and only the
 heartbeat can ask forever. Every app we know is observed — a registration that failed leaves an app deaf to us,
-which no edge can repair because a budget must terminate. Every managed window still exists — the destroy
-notification comes from the app, and a wedged app sends nothing. Every on-screen window is managed. The retry
-chain is kept in front of the first two as a hurry rather than a repair: it answers a launch race in
-milliseconds instead of at the next tick, and running out no longer means giving up.
+which no edge can repair because a budget must terminate. **Every managed window is watched**, on the same
+terms and for a sharper reason: a window whose own registration an app refused has no destroy notification for
+the rest of its life, and the rollback that lets one be retried is reached only by a scan. Every managed window
+still exists — the destroy notification comes from the app, and a wedged app sends nothing. Every on-screen
+window is managed. The retry chain is kept in front of the first two as a hurry rather than a repair: it
+answers a launch race in milliseconds instead of at the next tick, and running out no longer means giving up.
 
 **The window server is the authority the removal direction rests on**, because it owns the window rather than
 the app does — the one witness a beachballed app cannot keep quiet. Absence from `CGWindowListCopyWindowInfo`
@@ -1589,6 +1614,15 @@ Dock — and each is a live window, which is exactly why the *discovery* directi
 And an empty list is a failed read rather than an empty desktop, so it is refused before it can retire the
 strip. Removal goes through `vanish`, so a window that closed unheard still gets the succession its
 notification would have bought it.
+
+**Off the glass is a question rather than a certificate.** A window the list still carries with `isOnScreen`
+false is one of four things: in the Dock, on another Space, a background tab, or ordered out by an app that
+posted no destroy — and that last one keeps its entry for as long as its process lives, so absence from the
+list never settles it. The other three are alive and AX lists all of them, so the reading buys one scan of the
+app rather than a retirement and `AXEnumerator`'s join is what answers, retiring only what AX has stopped
+listing *and* the window server is not showing. Capped per window like an unaccounted stray, or a window on
+another Space costs a scan of its app every interval forever; what the watcher already knows is in the Dock or
+behind ⌘H is left out; and emira's own placements never reach it, a parked column keeping its sliver on screen.
 
 **The succession wait is a question, not a rule.** A destroyed element is not always a window leaving —
 a native tab group carries on under its next tab — so `vanish` holds the *id* until a scan says whether

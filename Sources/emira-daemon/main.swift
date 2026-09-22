@@ -322,6 +322,7 @@ let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
 let desktopCapturer = DesktopCapturer()
 let scrims = Scrims(filmer: desktopCapturer,
                     identify: { [weak registry] in registry?.id(forNumber: $0) },
+                    departed: { [weak registry] in registry?.departedNumbers ?? [] },
                     cornerRadius: { [surfaceCache] in surfaceCache.cornerRadius(of: $0) })
 
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
@@ -464,6 +465,10 @@ let watcher = WorldWatcher(
 watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
 }
+
+// The sweep's other reader: a mask cut against the window server has no event of its own for a window
+// emira never managed leaving the glass, and a cut that changes nothing paints nothing.
+watcher.onStackChanged = { [weak scrims] in scrims?.recut() }
 
 // The one thing reconciliation needs from the core, through a reader for `PointerFocus`'s reason: the
 // watcher holds no core state, and what it is asking is not about the world it watches but about

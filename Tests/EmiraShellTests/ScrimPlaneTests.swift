@@ -192,6 +192,49 @@ import EmiraCore
         #expect(scrims.veil(of: WindowId(1)) == 0.3)
     }
 
+    /// A window closes on the glass long after AX says it is gone — the length of its app's teardown —
+    /// and nothing announces the moment it leaves. Subtracted like any other opaque pane, it leaves a
+    /// hole in the veil that outlives the window it was cut around.
+    @Test func aPaneManagementHasLetGoOfIsOutOfTheWalkEntirely() {
+        let front = Rect(x: 0, y: 0, width: 400, height: 400)
+        let closing = Rect(x: 200, y: 200, width: 400, height: 400)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            // The registry drops a closed window's number at once, so the mask meets it
+                            // as a window emira never managed.
+                            identify: { $0 == 2 ? nil : WindowId(UInt64($0)) },
+                            departed: { [2] },
+                            stack: { [Self.pane(1, front), Self.pane(2, closing)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1)])
+
+        #expect(Self.shows(surface, 1, 300, 300), "the veil crosses where the closing window stands")
+        #expect(Self.shows(surface, 1, 100, 100))
+    }
+
+    /// The reading a mask was cut against moves with nothing in the core to say so: a window emira never
+    /// managed leaves the glass, and no set is coming to correct the hole it was cut around.
+    /// `WorldWatcher` fans its own sweep out; a cut that comes out the same paints nothing.
+    @Test func aRecutFollowsTheReadingAndAnUnchangedOnePaintsNothing() {
+        let front = Rect(x: 0, y: 0, width: 400, height: 400)
+        let foreign = Rect(x: 200, y: 200, width: 400, height: 400)
+        let stack = Stack([Self.pane(1, front), Self.pane(9, foreign)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        Self.show(scrims, [Self.binding(1)])
+        #expect(!Self.shows(surface, 1, 300, 300), "declined while the foreign window is on the glass")
+        let painted = surface.changes.count
+
+        scrims.recut()
+        #expect(surface.changes.count == painted, "the same reading paints nothing")
+
+        stack.panes = [Self.pane(1, front)]
+        scrims.recut()
+
+        #expect(Self.shows(surface, 1, 300, 300), "and the veil closes over where it stood")
+        #expect(surface.changes.last == .cut)
+    }
+
     /// The rule's second clause, and the case the strip's promise does not cover: a pin stands beside
     /// the strip rather than over it, and the strip is never clipped to fit, so a column scrolled far
     /// enough runs under the band. Both are see-through, so the pin's veil crosses the band whole.

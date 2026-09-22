@@ -53,6 +53,24 @@ import Testing
         #expect(!Self.windows(s).contains(focused!))
     }
 
+    @Test func focusRestingOnNothingKeepsTheVeilWhereItWas() throws {
+        // A `nil` focus report is routine — an app focuses a window emira has not adopted, a launcher
+        // takes the keyboard — and read literally it draws every window on the strip see-through,
+        // including the one the user is working in, and rests there until something moves focus back.
+        var s = Self.world(2)
+        let working = try #require(s.world.focusedWindow)
+        let before = Self.set(s)
+
+        let (next, effects) = Engine.reduce(s, .focusChanged(nil, origin: .system))
+        s = next
+
+        #expect(s.world.focusedWindow == nil)
+        #expect(!Self.windows(s).contains(working), "the window focus just left stays opaque")
+        #expect(Self.set(s) == before)
+        #expect(!effects.contains { if case .setScrims = $0 { true } else { false } },
+                "and the plane is told nothing, the set not having moved")
+    }
+
     @Test func aParkedWindowIsNotSeeThrough() {
         // Three ½-width columns on a 1000-wide viewport: one of them is off the strip, and a window
         // nobody can see is not a window to draw the desktop over.

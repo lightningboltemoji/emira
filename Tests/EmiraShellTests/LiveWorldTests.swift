@@ -238,6 +238,11 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var watchedAtFirstCreate: Int?
 }
 
+/// The same, for the fan-out that counts rather than orders.
+@MainActor private final class StackCounter {
+    var changes = 0
+}
+
 // The world under test
 
 /// The fixture, named `LiveWorld` rather than `World` so it can't shadow `EmiraCore.World`.
@@ -1298,9 +1303,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
     }
 
-    @Test func anUnmanagedFocusTheAppCannotAnswerForStillLeavesTheManagedWindows() {
-        // Unlike an activation, which names no window: this notification already said focus is on
-        // something unmanaged, and a busy app is no reason to doubt it.
+    @Test func anUnmanagedFocusTheAppCannotAnswerForIsNotAnAnswer() {
+        // The element such a report names is as likely a window arriving that nothing has bound yet as
+        // one emira will never manage, and only the app tells the two apart. Read as `nil`, a timeout
+        // puts the core on no window at all — which draws every window on the strip see-through.
         let world = LiveWorld()
         world.watcher.start()
         world.source.focused[200] = .unreadable
@@ -1309,7 +1315,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMovedUnmanaged(200))
 
         #expect(world.source.focusReads == Array(repeating: 200, count: WorldWatcher.maxFocusReadAttempts))
-        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(nil, origin: .system)])
+        #expect(world.recorder.events.count == before, "and nothing invented in its place")
     }
 
     @Test func aFocusReadThatTimesOutIsAskedAgainBeforeItIsBelieved() {
@@ -2015,6 +2021,107 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.heartbeat.beat()
 
         #expect((world.windows.scanCounts[200] ?? 0) == exhausted + 1)
+    }
+
+    // A window can go away without anything saying so. `AXUIElementDestroyed` is the app's to post and
+    // the per-window registration it rides on is a round trip a busy app refuses; a window ordered out
+    // keeps its window-list entry for as long as its process lives. So the list says "still there" and
+    // the app says nothing, and the window stays on the strip — hoisted, veiled, holding a column.
+
+    @Test func aManagedWindowTheServerHasStoppedShowingIsAskedAbout() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+
+        // Ordered out: still listed, no longer on the glass, and AX has stopped describing it.
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "two" }
+
+        world.heartbeat.beat()
+
+        #expect(world.recorder.events.contains(.windowDestroyed(id)))
+        #expect(world.registry.record(id) == nil)
+    }
+
+    @Test func aWindowOffTheGlassThatAXStillListsIsKeptAndStopsBeingAskedAbout() {
+        // Off screen is not death: the Dock, another Space and a background tab are all off screen and
+        // alive. So the question has an arbiter — AX, which still lists every one of them — and a
+        // budget, or a window on another Space costs a scan of its app every interval forever.
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        let before = world.windows.scanCounts[200] ?? 0
+
+        for _ in 0..<10 { world.heartbeat.beat() }
+
+        #expect((world.windows.scanCounts[200] ?? 0) - before == WorldWatcher.maxReconcileRounds)
+        #expect(world.registry.record(id) != nil, "and it keeps its place on the strip")
+    }
+
+    @Test func aWindowBackOnTheGlassForfeitsItsHistory() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let listed = world.windows.entries
+        world.windows.entries = listed.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        for _ in 0..<WorldWatcher.maxReconcileRounds { world.heartbeat.beat() }
+        let exhausted = world.windows.scanCounts[200] ?? 0
+
+        world.windows.entries = listed                            // shown again
+        world.heartbeat.beat()                                    // budget returned here
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        world.heartbeat.beat()
+
+        #expect((world.windows.scanCounts[200] ?? 0) == exhausted + 1)
+    }
+
+    @Test func everyManagedWindowsObserverIsOfferedAgainEveryRound() {
+        // `AXObserverAddNotification` is a round trip a busy app answers `.cannotComplete`, and the
+        // rollback that lets it be retried is only reached by a scan. Offered here instead, where the
+        // app-level registration already is: idempotent by id, so a healthy desktop pays a lookup.
+        let world = LiveWorld()
+        world.watcher.start()
+        let term = try! #require(world.id(titled: "term"))
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let before = world.source.watchedWindows.count
+
+        world.heartbeat.beat()
+
+        let offered = Array(world.source.watchedWindows.dropFirst(before))
+        #expect(offered.contains { $0 == (100, [term]) })
+        #expect(offered.contains { $0 == (200, [one, two].sorted()) })
+    }
+
+    @Test func aForeignWindowLeavingTheGlassIsFannedOutRatherThanLeftToBeNoticed() {
+        // A mask cut against the window server has no event of its own for a window emira never
+        // managed closing, and the reading it was cut against does not correct itself (`Scrims.recut`).
+        let world = LiveWorld()
+        world.watcher.start()
+        let counter = StackCounter()
+        world.watcher.onStackChanged = { counter.changes += 1 }
+        world.heartbeat.beat()                                    // the first reading to compare against
+        let settled = counter.changes
+
+        world.heartbeat.beat()
+        #expect(counter.changes == settled, "an unchanged desktop fans nothing out")
+
+        world.windows.entries.removeAll { $0.number == 3 }        // somebody else's window closed
+        world.heartbeat.beat()
+
+        #expect(counter.changes == settled + 1)
     }
 
     @Test func teardownStopsTheTickRatherThanLettingItLandMidCascade() {

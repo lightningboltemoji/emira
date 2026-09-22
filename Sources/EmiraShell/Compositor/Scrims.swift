@@ -32,6 +32,10 @@ import EmiraCore
 // A window *in front* is never a decline and costs nothing: those pixels are not on the screen, so it
 // comes out of the shape whatever it is, and the painter's algorithm does the rest.
 //
+// **A pane the desktop is still showing and management has let go of is out of the walk entirely.** A
+// window closes on the glass long after AX says it is gone, and nothing announces the moment it leaves —
+// so it is skipped rather than subtracted, which is the mask the desktop is about to have.
+//
 // **The window server catches up in its own time, and says nothing when it does.** An app's move reaches
 // it after the AX write that caused it has already landed — 8 to 42 ms later, measured — so the reading a
 // mask was cut against goes stale under it with no event to hang a repaint on. A set is therefore painted
@@ -136,6 +140,9 @@ public final class Scrims: ScrimPlane {
     private let filmer: any DesktopFilmer
     /// Window number → the id the core knows it by, or `nil` for a window emira never adopted.
     private let identify: @MainActor (CGWindowID) -> WindowId?
+    /// The numbers management has let go of that the glass may still be showing
+    /// (`WindowRegistry.departedNumbers`) — a hole to the mask, as they are to a cover's base.
+    private let departed: @MainActor () -> Set<CGWindowID>
     /// A window's corner radius as a capture last measured it, or `nil` for one never filmed
     /// (`SurfaceCache.cornerRadius(of:)`). A scrim films no window, so it asks the plane that does.
     private let cornerRadius: @MainActor (WindowId) -> Double?
@@ -183,6 +190,7 @@ public final class Scrims: ScrimPlane {
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
+                departed: @escaping @MainActor () -> Set<CGWindowID> = { [] },
                 cornerRadius: @escaping @MainActor (WindowId) -> Double? = { _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
                 scheduler: any DelayScheduler = DispatchScheduler(),
@@ -191,6 +199,7 @@ public final class Scrims: ScrimPlane {
         self.scheduler = scheduler
         self.filmer = filmer
         self.identify = identify
+        self.departed = departed
         self.cornerRadius = cornerRadius
         self.stack = stack
         self.build = build
@@ -247,6 +256,15 @@ public final class Scrims: ScrimPlane {
         painted.removeAll()
         stale.removeAll()
         naming.removeAll()
+    }
+
+    /// Cut every mask against the window server again: the reading one was cut against has moved with
+    /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it
+    /// (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
+    public func recut() {
+        for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
+            paint(monitor, change: .cut)
+        }
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
@@ -334,7 +352,14 @@ public final class Scrims: ScrimPlane {
             surface.setVeils([], change: change)
             return true
         }
-        let identified = stack().map { (window: identify($0.number), pane: $0) }
+        // **A window management has let go of takes nothing out of anything.** Nothing announces the
+        // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
+        // **A window management has let go of takes nothing out of anything.** Nothing announces the
+        // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
+        let gone = departed()
+        let identified = stack()
+            .filter { !gone.contains($0.number) }
+            .map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
                              cornerRadius: cornerRadius, stale: staleFrames(monitor, in: identified))
         var drawn: [WindowId: Double] = [:]
