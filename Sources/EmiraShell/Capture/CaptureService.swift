@@ -54,6 +54,11 @@ public struct CapturedSurface: Sendable {
     /// uncovered and antialiasing conserves coverage — a boundary pixel's alpha *is* its covered fraction
     /// — so the alpha deficit inverts straight to `r` whatever the rasterizer did.
     ///
+    /// **Both top corners, and the lesser wins.** Wherever the block is transparent it reads as corner,
+    /// and an app that paints only the part of itself on the display leaves the rest of its still
+    /// transparent — an enormous corner. That transparency can only *add* to the deficit, so the lesser
+    /// corner is the honest one; a column too wide for the viewport hangs off both edges and has neither.
+    ///
     /// A square-cornered window answers 0; `nil` means the pixels couldn't say and the caller should
     /// supply its own fallback.
     public static func measuredCornerRadius(of image: CGImage, scale: CGFloat) -> Double? {
@@ -62,7 +67,17 @@ public struct CapturedSurface: Sendable {
         // evidence we measured something other than a corner.
         let probe = min(96 * Int(scale.rounded()), min(image.width, image.height))
         guard probe > 0 else { return nil }
+        // Left corner, then right. `compactMap` drops a corner the pixels couldn't answer for, which is
+        // what lets the wholly transparent one be carried by its neighbour.
+        return [0, probe - image.width]
+            .compactMap { radius(ofTopCornerAt: $0, of: image, probe: probe, scale: scale) }
+            .min()
+    }
 
+    /// One top corner's radius in points, `x` being where the image's own origin goes so that the wanted
+    /// corner lands in the probe block: `0` for the left corner, `probe − width` for the right.
+    private static func radius(ofTopCornerAt x: Int, of image: CGImage, probe: Int,
+                               scale: CGFloat) -> Double? {
         // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0 of
         // each pixel is unambiguously the alpha. `CGBitmapContext` has no legal alpha-only format.
         let stride = probe * 4
@@ -75,8 +90,8 @@ public struct CapturedSurface: Sendable {
 
         // Core Graphics draws from a bottom-left origin into a top-down buffer, so aligning the image's
         // *top* with the block's top means placing its origin `probe − height` below zero. Backwards
-        // measures the bottom-left corner instead: plausible, and wrong.
-        context.draw(image, in: CGRect(x: 0, y: CGFloat(probe - image.height),
+        // measures the bottom corner instead: plausible, and wrong.
+        context.draw(image, in: CGRect(x: CGFloat(x), y: CGFloat(probe - image.height),
                                        width: CGFloat(image.width), height: CGFloat(image.height)))
         guard let data = context.data else { return nil }
 
@@ -90,7 +105,8 @@ public struct CapturedSurface: Sendable {
         uncovered /= 255
 
         // `r²(1 − π/4)` inverted. The bound rejects a mostly-transparent block, which is not a rounded
-        // corner: a capture with no alpha information, or a probe that wandered off the window.
+        // corner: a capture with no alpha information, a probe that wandered off the window, or a
+        // corner sitting in the part of a window its app never painted.
         let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
         guard radius <= Double(probe) / 2 else { return nil }
         return radius / Double(scale)

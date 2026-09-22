@@ -536,6 +536,50 @@ import EmiraCore
                                   | CGBitmapInfo.byteOrder32Big.rawValue)!
         #expect(CapturedSurface.measuredCornerRadius(of: blank.makeImage()!, scale: 1) == nil)
     }
+
+    /// `image` with `points` of one vertical edge made fully transparent — a still of a window whose
+    /// app painted only the part of itself that was on the display, which is what an app that
+    /// rasterizes by screen visibility hands back for a column hanging off the side of the strip.
+    static func unpainting(_ image: CGImage, _ points: Double, onRight: Bool,
+                           scale: CGFloat = 1) -> CGImage {
+        let width = image.width, height = image.height
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        // `.copy` rather than a blend: the band has to come out at alpha 0, not at the image's alpha
+        // multiplied by something.
+        context.setBlendMode(.copy)
+        context.setFillColor(CGColor(gray: 0, alpha: 0))
+        let band = points * scale
+        context.fill(CGRect(x: onRight ? CGFloat(width) - band : 0, y: 0,
+                            width: band, height: CGFloat(height)))
+        return context.makeImage()!
+    }
+
+    /// What the second probe buys. One probe reads unpainted window as corner and answers a radius that
+    /// is *plausible* — 26 pt for a 17 pt corner off a single point of blank — before tipping past the
+    /// bound into `nil`, so the stand-in takes the wrong silhouette either way and says nothing.
+    @Test(arguments: [1.0, 2.0, 4.0, 8.0, 32.0, 100.0], [false, true])
+    func anUnpaintedEdgeDoesNotInflateTheRadius(unpainted: Double, onRight: Bool) {
+        let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let image = Self.unpainting(whole, unpainted, onRight: onRight)
+        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        // The corner on the painted side is untouched, so it carries the answer on its own.
+        #expect(measured != nil)
+        #expect(abs((measured ?? -1) - 12) <= 0.25)
+    }
+
+    /// The property the minimum rests on, pinned where there is no honest corner left — a column too
+    /// wide for the viewport, hanging off both edges. Unasked-for transparency only ever *adds* to the
+    /// deficit, so the answer there is free to inflate, or to refuse, but never to shrink.
+    @Test func unpaintedEdgesNeverUnderReport() {
+        let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let image = Self.unpainting(Self.unpainting(whole, 4, onRight: false), 4, onRight: true)
+        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        #expect(measured == nil || (measured ?? 0) >= 12 - 0.25)
+    }
 }
 
 @Suite @MainActor struct CoverModeTests {
