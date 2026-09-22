@@ -369,4 +369,127 @@ import EmiraMotion
         #expect(s.layout.columns[0].widthOverride == .proportion(1.0))
         #expect(s.workspaces.heightOverrides[WindowId(1)] == .proportion(1.0))
     }
+
+    // The pin band
+
+    // A band carries the same two width rungs a column does, so the hand writes what `grow`, `shrink`
+    // and `cycle-width` write. What it has not got is a height rung, being full height by construction.
+
+    /// `w2` pinned to `side` at rest, `w1` left on the strip beside it. Half-width presets, so the band
+    /// starts at 500 of the fixture's 1000 and every drawn number below is unambiguous.
+    static func pinned(_ side: PinIntent = .left, config: Config = EngineFix.halfWidthSnap) -> State {
+        var s = EngineFix.world(2, config: config)
+        s.world.setFocus(WindowId(2))
+        let (after, fx) = EngineFix.run(s, [.command(.pin(side))])
+        return EngineFix.settle(after, fx)
+    }
+
+    /// Where the band stands right now — the frame the placement pass writes the pin to.
+    static func band(_ s: State, _ side: PinSide = .left) -> Rect {
+        s.metrics()!.pinFrame(side)!
+    }
+
+    /// The band redrawn at `width`, held against the edge it is nailed to: the inner edge is the one a
+    /// hand can reach, so a left band grows rightward and a right band leftward.
+    static func redrawn(_ band: Rect, to width: Double, _ side: PinSide = .left) -> Rect {
+        Rect(x: side == .left ? band.minX : band.maxX - width, y: band.minY,
+             width: width, height: band.height)
+    }
+
+    @Test func aDragOnAPinIsAdoptedAsTheBandsWidth() {
+        var s = Self.pinned()
+        let band = Self.band(s)
+        #expect(EngineFix.approxScalar(band.width, 500))
+
+        (s, _) = Self.drag(s, WindowId(2), to: Self.redrawn(band, to: 650))
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == Self.widthShare(650))
+        #expect(EngineFix.approxScalar(Self.band(s).width, 650))
+    }
+
+    /// And the strip starts past it. A band is not a column, so what a drag moves is every column at
+    /// once — the same thing `grow` does to a pin, arriving without a cover for the reason a column
+    /// drag's neighbours do.
+    @Test func theStripStartsPastTheBandTheHandDrew() {
+        var s = Self.pinned()
+        (s, _) = Self.drag(s, WindowId(2), to: Self.redrawn(Self.band(s), to: 650))
+        #expect(EngineFix.approxScalar(Self.placed(s)[WindowId(1)]!.minX, 650))
+    }
+
+    /// The rung underneath survives, so the ladder is still there to come back to — `adoptWidth`'s
+    /// contract, one container over.
+    @Test func aDrawnBandIsStillOnTheLadderTheNextCycleWalks() {
+        var s = Self.pinned()
+        (s, _) = Self.drag(s, WindowId(2), to: Self.redrawn(Self.band(s), to: 650))
+        #expect(s.world.pins[WindowId(2)]?.widthPreset == 0)
+
+        var fx: [Effect] = []
+        (s, fx) = Engine.reduce(s, .command(.cycleWidth))
+        s = EngineFix.settle(s, fx)
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == nil)
+        #expect(EngineFix.approxScalar(Self.band(s).width, 500))
+    }
+
+    /// A band is nailed to the display's own edge, so the width is the whole of what a drag says. The
+    /// right side is where that shows: the edge under the hand is the inner one, and the outer one does
+    /// not move however far it is drawn.
+    @Test func aRightBandIsDrawnFromItsInnerEdgeAndKeepsTheDisplaysOwn() {
+        var s = Self.pinned(.right)
+        let band = Self.band(s, .right)
+        #expect(EngineFix.approxScalar(band.maxX, 1000))
+
+        (s, _) = Self.drag(s, WindowId(2), to: Self.redrawn(band, to: 650, .right))
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == Self.widthShare(650))
+        #expect(EngineFix.approxScalar(Self.band(s, .right).maxX, 1000))
+        #expect(EngineFix.approxScalar(Self.band(s, .right).minX, 350))
+    }
+
+    /// A drag that only *moved* the pin is reverted, exactly as one that moved a tiled window is: there
+    /// is nowhere for a band to be but its edge, and the drawn size is the only thing being read.
+    @Test func aDragThatOnlyMovesAPinIsStillTakenBack() {
+        var s = Self.pinned()
+        let band = Self.band(s)
+        var fx: [Effect] = []
+        (s, fx) = Self.drag(s, WindowId(2),
+                            to: Rect(x: band.minX + 80, y: band.minY,
+                                     width: band.width, height: band.height))
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == Self.widthShare(500))
+        #expect(EngineFix.approx(EngineFix.placement(of: WindowId(2), in: fx)!, band))
+    }
+
+    /// The height half of the same answer, and the one axis a band has no rung for. Full height is what
+    /// a pin *is*, so a drawn one has nowhere to be written and the pass draws the band again.
+    @Test func aBandHasNoHeightRungSoADrawnHeightIsTakenBack() {
+        var s = Self.pinned()
+        let band = Self.band(s)
+        var fx: [Effect] = []
+        (s, fx) = Self.drag(s, WindowId(2),
+                            to: Rect(x: band.minX, y: band.minY + 100,
+                                     width: band.width, height: band.height - 200))
+        #expect(s.workspaces.heightOverrides[WindowId(2)] == nil)
+        #expect(EngineFix.approx(EngineFix.placement(of: WindowId(2), in: fx)!, band))
+    }
+
+    /// Drawn past the room there is, the band stops where `LayoutMetrics.pinWidth` stops it — the strip
+    /// keeps a column's worth. The clamp is the one already on every read, not a second one here, which
+    /// is why the *intent* is the full share the hand drew.
+    @Test func aBandDrawnPastTheRoomLeavesTheStripAColumn() {
+        var s = Self.pinned()
+        (s, _) = Self.drag(s, WindowId(2), to: Self.redrawn(Self.band(s), to: 1000))
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == Self.widthShare(1000))
+        #expect(EngineFix.approxScalar(Self.band(s).width, 1000 - Engine.minimumColumnWidth))
+    }
+
+    /// `interactive-resize = off` is inert over a band for the reason it is inert over a column: the
+    /// one gate, read once, before either container is asked.
+    @Test func interactiveResizeOffLeavesTheBandAlone() {
+        var config = EngineFix.halfWidthSnap
+        config.interactiveResize = false
+        var s = Self.pinned(.left, config: config)
+        let band = Self.band(s)
+
+        var fx: [Effect] = []
+        (s, fx) = Self.drag(s, WindowId(2), to: Self.redrawn(band, to: 650))
+        #expect(s.world.pins[WindowId(2)]?.widthOverride == Self.widthShare(500))
+        #expect(EngineFix.approx(EngineFix.placement(of: WindowId(2), in: fx)!, band))
+    }
 }

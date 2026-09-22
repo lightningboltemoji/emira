@@ -787,8 +787,9 @@ reports a resize identically whoever asked for it and our own placements provoke
 change is evidence only while the **button is down** — and only for the **first** window to move in that
 interval, since a placement pass mid-drag writes the stackmates and an app clamping one of those reports a frame
 change with the button still down. That window is latched whether it tiles or not, because the veil lifts for
-any window in the hand (*Scrims*); adoption is what asks for a tiled one under `interactive-resize`. A hand
-draws a size while it is holding the window, so the release (`Event.dragReleased`) ends the interval even though
+any window in the hand (*Scrims*); what adoption then asks, under `interactive-resize`, is which container holds
+the size it drew — a column, a pin's band, or neither, which is where a drag reverts. A hand draws a size while
+it is holding the window, so the release (`Event.dragReleased`) ends the interval even though
 `dragEnded` comes later: what the wait between them is for is the subject's frames finishing, not a new subject.
 Without that an app resizing itself just after a click lands inside the bracket, and a self-animated one is
 adopted at a size it was only passing through. The observed size is taken as the intent directly rather than as
@@ -1114,8 +1115,10 @@ outside it:
   standing still stays in the captured base, behind the silhouette the cover is leaving clear, which is what keeps
   it *live*: filming it would freeze the one window on the screen meant not to be.
 - **Its width is a column's width.** A pin seeds both of `ColumnLayout`'s lower rungs from the column it left
-  and carries them, so `grow`, `shrink` and `cycle-width` are its width control with nothing new behind them.
-  `LayoutMetrics.pinWidth` is where the stack resolves and where the clamp lives, once.
+  and carries them, so `grow`, `shrink`, `cycle-width` and the window's own resize handle are its width control
+  with nothing new behind them. `LayoutMetrics.pinWidth` is where the stack resolves and where the clamp lives,
+  once — including over a hand-drawn width, which is recorded as the share it was drawn at and clamped on
+  every read like any other. A band has no height rung, being full height, so a drawn height reverts.
 - **The quit cascade rescues it.** `cascadeOrder` walks strips, so a pin is appended — a band is exactly as
   unsurvivable as a park slot once the daemon is gone, and for the same reason.
 

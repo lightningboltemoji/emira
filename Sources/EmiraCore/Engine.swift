@@ -3206,11 +3206,17 @@ public enum Engine {
     /// The observed size is taken as the intent directly rather than as a delta on the target: the user
     /// drew a rectangle, and asking the layout for that rectangle is exactly what they asked. It also
     /// makes the arithmetic total over a window that was already refusing its target size.
+    ///
+    /// **A pin branches first and everything below is the strip's.** A column and a band are the two
+    /// containers a width intent can go in, and a pin is on no strip.
     private static func adoptDraggedSize(_ s: inout State) {
+        guard s.config.interactiveResize, let id = s.drag.subject,
+              let observed = s.world.windows[id]?.frame else { return }
+        if s.world.isPinned(id) { return adoptPinnedWidth(&s, id, observed) }
+
         // A cascade has no rung to write a drawn size to, so the next placement pass takes the window
         // back — which is what a *move* drag already gets, on the other axis.
-        guard s.config.interactiveResize, let id = s.drag.subject, s.world.participatesInTiling(id),
-              let observed = s.world.windows[id]?.frame,
+        guard s.world.participatesInTiling(id),
               let (name, column) = s.workspaces.column(containing: id),
               s.workspaces[name].kind == .strip,
               let monitor = s.monitors.monitor(of: name),
@@ -3261,6 +3267,26 @@ public enum Engine {
         strip.setWidthOverride(metrics.widthExtent.proportion(of: clamped) ?? .fixed(clamped),
                                ofColumn: column.id)
         s.workspaces[name] = strip
+    }
+
+    /// Pin the dragged band to the width its window was left at — `adoptWidth` over a `PinPlacement`,
+    /// which carries the same two rungs a column does, preset kept beneath override so the next
+    /// `cycle-width` puts the band back on the ladder.
+    ///
+    /// **Width only**: a pin is full height by construction, so a drawn height has no rung to be written
+    /// to. **No viewport compensation**: a band is nailed to the display's own edge, so the edge under
+    /// the hand is already where the hand left it.
+    private static func adoptPinnedWidth(_ s: inout State, _ id: WindowId, _ observed: Rect) {
+        guard let pin = s.world.pins[id], let metrics = s.metrics(of: pin.monitor),
+              let from = metrics.pinWidth(pin.side),
+              !approximatelyEqualScalar(observed.width, from) else { return }
+        // The floor `grow` and `shrink` hold a band to, relaxed to the width it already has: a clamp
+        // that stops an adoption short but never reverses it. The ceiling is `pinWidth`'s, on every read.
+        let width = Swift.max(observed.width, Swift.min(minimumColumnWidth, from))
+        s.world.setPinWidth(id, preset: pin.widthPreset,
+                            override: metrics.widthExtent.proportion(of: width) ?? .fixed(width))
+        // The user asked again, so ask the app again — the invalidation every resize verb performs.
+        s.world.forgetCorrections(of: [id])
     }
 
     /// Pin the dragged window to the height it was left at, and give the column somebody to take the
