@@ -446,10 +446,18 @@ that went stale under the cover, never geometry. The numbers live in `Compositin
 
 `CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept photograph fits is acked
 at once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one
-layer's _contents_ that settles no gate. `SurfaceCache` holds **one photograph per window** — the most recent
+layer's _contents_ that settles no gate. `SurfaceCache` holds **one photograph per window** — the best one
 taken of it, whether or not a cover is showing it — and matches on **size alone**, which is freshness only while
 the geometry a size was computed against holds, so a display change drops the lot
 (`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
+
+The best one is the newest, except where the newest has a hole in it. An app that rasterizes what is on
+screen leaves a still transparent where the window hung off the display, and a stand-in built from one
+carries that band of nothing back across the glass; so a film measured holed (`CapturedSurface.measuredWhole`)
+loses to a held whole film at the same size, and to nothing else. The cover is then built from a photograph
+that has been through `reduced` — soft, and whole, which is the better of the two wrong answers. A batch
+whose pixels the store declined asks for no `captureRefreshed`: the layer is already painting what the store
+holds.
 
 **Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
 that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), ordered

@@ -53,8 +53,8 @@ import EmiraCore
         /// at, which is what a later stand-in has to match. `pixels` is how big the *image* is, which
         /// almost nothing cares about — only the cache, which will not keep a still it cannot shrink.
         func send(_ id: WindowId, size: Size = Size(width: 100, height: 100), pixels: Int = 1,
-                  batch: Int? = nil) {
-            sink(batch)?.piece(.window(id, Self.surface(id, size, pixels: pixels)))
+                  isWhole: Bool = true, batch: Int? = nil) {
+            sink(batch)?.piece(.window(id, Self.surface(id, size, pixels: pixels, isWhole: isWhole)))
         }
 
         /// Close batch `batch`: nothing further is coming.
@@ -83,10 +83,11 @@ import EmiraCore
         /// A distinct image per call, on purpose: a stand-in and the capture that replaces it are
         /// otherwise indistinguishable, and telling them apart is the whole of what `.immediate` does.
         static func surface(_ id: WindowId, _ size: Size = Size(width: 100, height: 100),
-                            pixels: Int = 1) -> CapturedSurface {
+                            pixels: Int = 1, isWhole: Bool = true) -> CapturedSurface {
             CapturedSurface(image: makeImage(side: pixels),
                             frame: Rect(x: Double(id.raw), y: 0,
-                                        width: size.width, height: size.height))
+                                        width: size.width, height: size.height),
+                            isWhole: isWhole)
         }
 
         static let image: CGImage = makeImage()
@@ -582,6 +583,44 @@ import EmiraCore
     }
 }
 
+/// Telling a still with a band of unpainted window in it from one without — what `SurfaceCache` keeps
+/// the older photograph for. The measurement it must not trip over is the one the suite above is about:
+/// a window's own rounded corners are transparent too, and every real still has them.
+@Suite struct WholeStillTests {
+
+    typealias Window = CornerRadiusTests
+
+    @Test(arguments: [0.0, 12.0, 26.0])
+    func aWindowsOwnCornersAreNotAHole(radius: Double) {
+        let big = Window.window(radius: CGFloat(radius), size: CGSize(width: 400, height: 300))
+        #expect(CapturedSurface.measuredWhole(of: big))
+        // A corner is a far larger share of a small window, which is where a false positive would show.
+        let small = Window.window(radius: CGFloat(radius), size: CGSize(width: 120, height: 90))
+        #expect(CapturedSurface.measuredWhole(of: small))
+    }
+
+    /// A twentieth of the width is the resolution, so these are the bands this is for — the case that
+    /// motivates it is nearer half the window.
+    @Test(arguments: [20.0, 40.0, 100.0, 200.0], [false, true])
+    func anUnpaintedBandIsAHole(unpainted: Double, onRight: Bool) {
+        let whole = Window.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let holed = Window.unpainting(whole, unpainted, onRight: onRight)
+        #expect(CapturedSurface.measuredWhole(of: whole))
+        #expect(!CapturedSurface.measuredWhole(of: holed))
+    }
+
+    /// A still an app painted nothing of. Not a case the strip produces on its own, but it is what a
+    /// window filmed before it ever drew looks like, and answering "whole" for it would hand a cover a
+    /// photograph of nothing.
+    @Test func anEntirelyUnpaintedStillIsAHole() {
+        let blank = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                  | CGBitmapInfo.byteOrder32Big.rawValue)!
+        #expect(!CapturedSurface.measuredWhole(of: blank.makeImage()!))
+    }
+}
+
 @Suite @MainActor struct CoverModeTests {
 
     typealias Capturer = CaptureServiceTests.ManualCapturer
@@ -652,6 +691,28 @@ import EmiraCore
         #expect(Self.refreshed(log) == [WindowId(1)])
         // …and the store now holds the window's own pixels, which is what the refresh paints.
         #expect(service.surface(for: WindowId(1))?.image !== standIn?.image)
+    }
+
+    /// …and the sharpen does not happen when the window's own still is the worse of the two. The store
+    /// declines the pixels, so the layer is already showing what it holds and a cross-fade would be one
+    /// frame of nothing changing. The stand-in is not overtaken, and the report says so.
+    @Test func aHoledStillDoesNotAskForARepaint() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        var report: CaptureReport?
+        let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                     cache: cache)
+        service.onBatchResolved = { report = $0 }
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        capturer.sendBase()
+        let standIn = service.surface(for: WindowId(1))
+
+        capturer.send(WindowId(1), size: Self.size, isWhole: false)
+        capturer.close()
+
+        #expect(log.capturedIds == [WindowId(1)])                  // the ack it was owed, exactly once
+        #expect(Self.refreshed(log).isEmpty)
+        #expect(service.surface(for: WindowId(1))?.image === standIn?.image, "still the kept pixels")
+        #expect(report?.standing == 1)
     }
 
     /// A still that beats the base has no layer to refresh — the cover has not been raised — and needs
@@ -1007,7 +1068,7 @@ import EmiraCore
 
     /// A still 4 points wide would reduce to one, so these are big enough to survive the ratio.
     static func surface(_ id: UInt64, width: Int = 400, height: Int = 300,
-                        radius: Double? = 12) -> CapturedSurface {
+                        radius: Double? = 12, isWhole: Bool = true) -> CapturedSurface {
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                 bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
@@ -1016,7 +1077,7 @@ import EmiraCore
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return CapturedSurface(image: context.makeImage()!,
                                frame: Rect(x: 0, y: 0, width: Double(width), height: Double(height)),
-                               cornerRadius: radius)
+                               cornerRadius: radius, isWhole: isWhole)
     }
 
     // Who wants a still kept
@@ -1202,6 +1263,73 @@ import EmiraCore
 
         #expect(cache.pinnedSurface(for: WindowId(1))?.frame.width == 800, "the newer film, and painted")
         #expect(cache.byteCount == 0, "…pinned, so the budget is no longer about it")
+    }
+
+    /// The one place the mint does not decide. Bouncing focus between two columns wider than half the
+    /// viewport films each of them whole on the transition that leaves it, and holed on the one that
+    /// returns — so the held photograph is the complete one exactly when the fresh film is not.
+    @Test func aHoledFilmLosesToAWholeOneTheSameSize() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
+
+        let took = cache.record(Self.surface(1, isWhole: false), mintedAt: 2, for: WindowId(1),
+                                pinnedBy: nil)
+
+        #expect(took == false)
+        #expect(cache.anySurface(for: WindowId(1))?.isWhole == true, "the whole film is still the one held")
+    }
+
+    /// Size governs which photograph may stand in at all (rule 2), so a whole film of the wrong size
+    /// could stand in for nothing — and holding it over a holed film of the *right* size would leave the
+    /// cover with neither. The resize is the case: an app re-laid out while it hung off the display.
+    @Test func aHoledFilmOfANewSizeIsTakenAnyway() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1, width: 400, height: 300), mintedAt: 1, for: WindowId(1),
+                     pinnedBy: nil)
+
+        let took = cache.record(Self.surface(1, width: 800, height: 600, isWhole: false), mintedAt: 2,
+                                for: WindowId(1), pinnedBy: nil)
+
+        #expect(took)
+        #expect(cache.anySurface(for: WindowId(1))?.frame.width == 800)
+    }
+
+    /// Nothing whole to fall back on: the first film of a window that has never been seen whole, and a
+    /// holed film over a holed one. A hole is not a reason to hold a photograph that is older *and* no
+    /// better, and a cover with no photograph at all shows the base through where the window was.
+    @Test func aHoledFilmIsTakenWithNothingBetterHeld() {
+        let cache = SurfaceCache(keepsStills: true)
+
+        #expect(cache.record(Self.surface(1, isWhole: false), mintedAt: 1, for: WindowId(1),
+                             pinnedBy: nil))
+        #expect(cache.anySurface(for: WindowId(1)) != nil)
+
+        let second = Self.surface(1, radius: 17, isWhole: false)
+        #expect(cache.record(second, mintedAt: 2, for: WindowId(1), pinnedBy: nil))
+        #expect(cache.cornerRadius(of: WindowId(1)) == 17, "the newer of two holed films")
+    }
+
+    /// Declining the pixels is not declining the entitlement — `anOvertakenFilmStillRecordsItsEntitlement`'s
+    /// invariant, over the other way a film can lose. A cover that asked for this window may paint what
+    /// the store holds, which is the better photograph of the two.
+    @Test func aHoledFilmStillRecordsItsEntitlement() {
+        let cache = SurfaceCache(keepsStills: true)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
+        #expect(cache.pinnedSurface(for: WindowId(1)) == nil)     // nothing is showing it yet
+
+        cache.record(Self.surface(1, isWhole: false), mintedAt: 2, for: WindowId(1),
+                     pinnedBy: MonitorId(1))
+
+        #expect(cache.pinnedSurface(for: WindowId(1))?.isWhole == true, "the whole film, and painted")
+    }
+
+    /// A reduction moves no hole into or out of a still, so the fact travels with the pixels rather
+    /// than being re-read off a quarter-size copy — which is what lets a photograph that has been
+    /// through a cover still beat the holed film that arrives after it.
+    @Test func theReductionCarriesWhetherTheStillIsWhole() {
+        let holed = Self.surface(1, isWhole: false)
+        #expect(SurfaceCache.reduced(holed)?.isWhole == false)
+        #expect(SurfaceCache.reduced(Self.surface(1))?.isWhole == true)
     }
 
     /// The scrim rounds a see-through window at rest, when no photograph need be left: with nothing

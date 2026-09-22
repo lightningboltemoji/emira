@@ -37,11 +37,15 @@ public struct CapturedSurface: Sendable {
     /// The corner radius baked into `image`, in points — `nil` when the pixels couldn't say. Needed only
     /// by `WindowAnimation.crop`, which paints a window's extent rather than its pixels.
     public let cornerRadius: Double?
+    /// Whether the app painted the window's whole width (`measuredWhole`). `SurfaceCache` is what reads
+    /// it; `true` is the answer for anything nobody measured, so an unmeasured still is a usable one.
+    public let isWhole: Bool
 
-    public init(image: CGImage, frame: Rect, cornerRadius: Double? = nil) {
+    public init(image: CGImage, frame: Rect, cornerRadius: Double? = nil, isWhole: Bool = true) {
         self.image = image
         self.frame = frame
         self.cornerRadius = cornerRadius
+        self.isWhole = isWhole
     }
 
     /// Read a window's corner radius *out of its own capture*, in points. No public API reports another
@@ -110,6 +114,44 @@ public struct CapturedSurface: Sendable {
         let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
         guard radius <= Double(probe) / 2 else { return nil }
         return radius / Double(scale)
+    }
+
+    /// Whether `image` carries pixels across its whole width. An app that rasterizes what is on screen
+    /// leaves a still transparent where the window hung off the display, and that band is a hole a
+    /// stand-in would carry back across the glass.
+    ///
+    /// Columns only, because the strip scrolls on one axis and a window's height is the working area's.
+    /// Resampled rather than scanned — 0.004 ms against 7.3 ms for every pixel of a 2556×2090 still —
+    /// and a band has to average under one alpha level in 255 to count as unpainted, which a rounded
+    /// corner never approaches: it costs its band about a hundredth.
+    ///
+    /// A window whose own shape leaves a transparent margin down an edge reads the same as one with a
+    /// hole, and there is nothing in the pixels to tell them apart. It costs that window nothing: every
+    /// film of it answers alike, so none of them is ever the whole one another loses to.
+    ///
+    /// Unmeasurable answers `true`. A still nothing could read is one to use, not one to refuse.
+    public static func measuredWhole(of image: CGImage) -> Bool {
+        guard image.width > 0, image.height > 0 else { return true }
+        let (columns, rows) = (20, 4)
+        let stride = columns * 4
+        guard let context = CGContext(
+            data: nil, width: columns, height: rows, bitsPerComponent: 8, bytesPerRow: stride,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue)
+        else { return true }
+
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+        guard let data = context.data else { return true }
+
+        let bytes = data.bindMemory(to: UInt8.self, capacity: rows * stride)
+        for column in 0..<columns {
+            var alpha = 0
+            for row in 0..<rows { alpha += Int(bytes[row * stride + column * 4]) }
+            if alpha <= rows { return false }
+        }
+        return true
     }
 }
 
@@ -551,9 +593,13 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         //
         // The batch is the mint: this line runs in arrival order, and one that ran long reaches it after
         // the batch that superseded it.
+        // Whether the store took these pixels. A film the store declined — overtaken by a later batch, or
+        // holed where the window hung off the display — overtakes no stand-in and asks for no repaint:
+        // what is on the layer is what the store still holds.
+        var stored = false
         if case .window(let id, let surface) = piece {
-            cache.record(surface, mintedAt: generation, for: id,
-                         pinnedBy: isCurrent ? batch?.monitor : nil)
+            stored = cache.record(surface, mintedAt: generation, for: id,
+                                  pinnedBy: isCurrent ? batch?.monitor : nil)
         }
 
         guard let batch else { return }         // already finished; nothing owes an ack
@@ -571,12 +617,13 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
             release(generation: generation)
 
         case .window(let id, _):
-            if isCurrent { pending[generation]?.refreshed.insert(id) }
+            if isCurrent, stored { pending[generation]?.refreshed.insert(id) }
+            // Before the `stored` gate, never behind it: rule 1 is owed whatever the store decided.
             guard batch.stoodIn.contains(id) else { return ready(generation: generation, id) }
             // A stand-in has spent its `captureReady`, so this asks for a repaint instead, which settles
             // no gate. Only once that ack has gone out — before it there is no layer, and the raise finds
             // these pixels in the store anyway — and only if the cover they belong to is still up.
-            guard isCurrent, pending[generation]?.owed.contains(id) == false else { return }
+            guard isCurrent, stored, pending[generation]?.owed.contains(id) == false else { return }
             batch.feedback(.captureRefreshed(id))
         }
     }

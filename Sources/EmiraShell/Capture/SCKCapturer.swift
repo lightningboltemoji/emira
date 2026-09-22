@@ -80,7 +80,8 @@ public final class SCKCapturer: SurfaceCapturer {
                     await piece(.window(id, CapturedSurface(
                         image: window.image, frame: window.frame,
                         cornerRadius: CapturedSurface.measuredCornerRadius(of: window.image,
-                                                                           scale: scale))))
+                                                                           scale: scale),
+                        isWhole: CapturedSurface.measuredWhole(of: window.image))))
                 }
             }
             done()

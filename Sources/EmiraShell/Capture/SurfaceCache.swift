@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import EmiraCore
 
-// One photograph per window — the most recent one taken of it — and, beside it, which live covers are
+// One photograph per window — the best one taken of it — and, beside it, which live covers are
 // entitled to paint that photograph at the resolution it was filmed at. Three rules, and the first
 // forces the other two.
 //
@@ -20,6 +20,14 @@ import EmiraCore
 //     photograph is unreachable rather than wrong and the byte budget collects it. No window-lifecycle
 //     observation reaches this file.
 //
+// **A film with a hole in it is not the best one on hand**, and it is the one place the mint does not
+// decide. An app that rasterizes what is on screen leaves a still transparent where the window hung off the
+// display, so the newest photograph is not always the most complete one; a holed film loses to a held whole
+// one *at the same size*, and to nothing else. Softness is what that costs — the held one has been through
+// `reduced` — and a soft stand-in is a better answer than one with a band of nothing in it. Size is the
+// condition because rule 2 governs which photograph may stand in at all, and a whole film of the wrong size
+// could stand in for nothing.
+//
 // **A corner radius is not a photograph**, so it is kept beside them rather than in them: the scrim rounds a
 // see-through window at rest, long after its photograph may have been reduced, evicted or forgotten. Rule 3
 // holds for it too, and nothing collects it — it is a few bytes per window ever filmed.
@@ -28,9 +36,9 @@ import EmiraCore
 // lifetime and recency are three relations over one key. The first two let pixels that were paid for
 // outlive the batch, the generation, and the ack that failed to place them. The third orders the
 // writes, because arrival order is not film order — a batch that runs long answers after the one that
-// superseded it, and the older film must lose.
+// superseded it, and the older film must lose unless it is the whole one.
 
-/// Every window's most recent photograph — full resolution while a cover is showing it, reduced after.
+/// Every window's best photograph — full resolution while a cover is showing it, reduced after.
 @MainActor
 public final class SurfaceCache {
 
@@ -47,7 +55,7 @@ public final class SurfaceCache {
     /// AX answered and what ScreenCaptureKit filmed. The identity join allows the same.
     private static let tolerance = 2.0
 
-    /// One window's most recent photograph, and the three things about it that are not in its pixels.
+    /// One window's best photograph, and the three things about it that are not in its pixels.
     private struct Photo {
         var surface: CapturedSurface
         /// The batch that took it, ordering every film the session has taken. The window server
@@ -90,9 +98,12 @@ public final class SurfaceCache {
     /// Write the photograph batch `mint` just took of `id`, pinned to `monitor` when a live cover is
     /// entitled to paint it. The only writer, and it settles entitlement and pixels **separately**: the
     /// entitlement is unconditional, holding over whichever film turns out to be the best one on hand,
-    /// and the pixels are taken only where they are newer than the ones already held.
+    /// and the pixels are taken only where they are newer *and* no worse than the ones already held.
+    ///
+    /// Answers whether the pixels were taken, which is what says a stand-in has been overtaken.
+    @discardableResult
     public func record(_ surface: CapturedSurface, mintedAt mint: Int, for id: WindowId,
-                       pinnedBy monitor: MonitorId?) {
+                       pinnedBy monitor: MonitorId?) -> Bool {
         // Ordered by its own batch, because the photograph it was measured off may be long gone.
         if let radius = surface.cornerRadius, mint > corners[id]?.mint ?? .min {
             corners[id] = (radius, mint)
@@ -102,18 +113,27 @@ public final class SurfaceCache {
             // A slower batch, answering with a film that has been overtaken. Its entitlement is still
             // news: this cover may paint what is here, which is the better photograph of the two.
             if let monitor { pin(id, to: monitor) }
-            return
+            return false
+        }
+        if !surface.isWhole, let held, held.surface.isWhole,
+           Self.sameSize(held.surface.frame.size, surface.frame.size) {
+            // Newer, and worse: a hole where the window hung off the display. The entitlement is news
+            // for the reason above — what is held is the better photograph, and this cover may paint it.
+            if let monitor { pin(id, to: monitor) }
+            return false
         }
         var pins = held?.pins ?? []
         if let monitor { pins.insert(monitor) }
         if !pins.isEmpty {
             store(Photo(surface: surface, mint: mint, pins: pins), for: id)
-        } else if keepsStills, let small = Self.reduced(surface) {
-            // Nothing may paint it at capture resolution, so nothing holds it there (rule 1) — and one
-            // too small to reduce is not stored at all: a copy that is neither affordable nor honest is
-            // worth less than the miss it becomes.
-            store(Photo(surface: small, mint: mint, isReduced: true), for: id)
+            return true
         }
+        // Nothing may paint it at capture resolution, so nothing holds it there (rule 1) — and one
+        // too small to reduce is not stored at all: a copy that is neither affordable nor honest is
+        // worth less than the miss it becomes.
+        guard keepsStills, let small = Self.reduced(surface) else { return false }
+        store(Photo(surface: small, mint: mint, isReduced: true), for: id)
+        return true
     }
 
     /// `monitor`'s cover may paint `id`'s photograph — what a stand-in match buys. It does not write:
@@ -151,11 +171,14 @@ public final class SurfaceCache {
     /// carries the *old* origin, which is not a position: a cover places every layer from the core's own
     /// geometry in the transaction it raises in.
     public func surface(for id: WindowId, at size: Size) -> CapturedSurface? {
-        guard let photo = photos[id],
-              abs(photo.surface.frame.width - size.width) <= Self.tolerance,
-              abs(photo.surface.frame.height - size.height) <= Self.tolerance
-        else { return nil }
+        guard let photo = photos[id], Self.sameSize(photo.surface.frame.size, size) else { return nil }
         return photo.surface
+    }
+
+    /// Two sizes the tolerance calls one. The stand-in match and the hole rule ask the same question of
+    /// it, so they ask it in one place.
+    private static func sameSize(_ a: Size, _ b: Size) -> Bool {
+        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 
     /// The photograph a live cover is entitled to paint — what `CaptureStore.surface(for:)` answers
@@ -252,8 +275,10 @@ public final class SurfaceCache {
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         guard let reduced = context.makeImage() else { return nil }
+        // `isWhole` is carried for the radius's reason: scaling a still down moves no hole into or out
+        // of it, and re-measuring a quarter-size copy could only be a worse reading of the same fact.
         return CapturedSurface(image: reduced, frame: surface.frame,
-                               cornerRadius: surface.cornerRadius)
+                               cornerRadius: surface.cornerRadius, isWhole: surface.isWhole)
     }
 
     private static func byteCount(_ surface: CapturedSurface) -> Int {
