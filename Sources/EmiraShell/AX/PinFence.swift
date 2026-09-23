@@ -12,16 +12,20 @@ import EmiraCore
 // So the answer is the window server's, asked repeatedly until it comes back clear. Off the main thread
 // for `StackProbe`'s reason: what is being waited out is another app's activation, and its length is not
 // ours to block for.
+//
+// **The question is an order, asked once the pin's app has been activated.** The windows the gate
+// protects are mostly still on their way into the band, so they are named rather than looked for there;
+// and an app's windows rise on its own schedule after `activate()` returns, so nothing read before it
+// is an answer.
 
-/// Asks the window server, until it agrees, that nothing foreign sits over a pin's band.
+/// Asks the window server, until it agrees, that a pin is above what it must be above.
 @MainActor
 public final class PinFence {
 
-    /// How long the fence goes on asking before it answers anyway. **A delay, not a veto**: a cover
-    /// held open on an activation that never lands would be worse than one frame of a window drawn over
-    /// the pin, and `[animation] hold-timeout` is what bounds the transition itself. Comfortably inside
-    /// it, so the fence is never the thing that trips the deadline.
-    public static let grace: TimeInterval = 0.4
+    /// The share of `[animation] hold-timeout` the fence may wait before it answers anyway — **a delay,
+    /// not a veto**. The rest is the teleport's and its landings': a session that times out closes over
+    /// reals still in flight, which is worse than a pin briefly under a window.
+    public static let share = 0.5
 
     /// How long between askings. Roughly a refresh: the answer changes when the window server re-stacks,
     /// which it does on its own schedule, and asking faster only spends `CGWindowListCopyWindowInfo`
@@ -30,41 +34,70 @@ public final class PinFence {
 
     private let probe: any StackProbe
     private let scheduler: any DelayScheduler
-    private let grace: TimeInterval
     private let interval: TimeInterval
 
-    /// The pins currently being asked about. One request per window at a time — a second asking would
-    /// double the reads and answer the same thing.
-    private var asking: Set<WindowId> = []
+    /// The transition's deadline, which the fence's is cut from. Both are armed as a session opens or
+    /// retargets, so they count from the same moment; read per request, so a reload applies to the next.
+    public var holdTimeout: TimeInterval
+
+    private struct Request {
+        let generation: Int
+        let over: Set<WindowId>
+        let band: Rect
+        let report: @MainActor () -> Void
+        var isActivated = false
+    }
+
+    /// The request outstanding per pin. **One per window, the newest**: `Event.focusConfirmed` names
+    /// only the window, so a report from a request the core has since asked again would answer the
+    /// new question with the old one's reading.
+    private var requests: [WindowId: Request] = [:]
+    private var generation = 0
 
     public init(probe: any StackProbe, scheduler: any DelayScheduler = DispatchScheduler(),
-                grace: TimeInterval = PinFence.grace, interval: TimeInterval = PinFence.interval) {
+                holdTimeout: TimeInterval = Config().holdTimeout,
+                interval: TimeInterval = PinFence.interval) {
         self.probe = probe
         self.scheduler = scheduler
-        self.grace = grace
+        self.holdTimeout = holdTimeout
         self.interval = interval
     }
 
-    /// Report once `window` has nothing foreign over `band`, or once `grace` has run out. `then` runs
-    /// exactly once per call, always — the reducer is counting down to a teleport on it.
-    public func confirm(_ window: WindowId, over band: Rect,
+    /// Report once `window` is stacked above each of `over` and anything foreign over `band`, or once its
+    /// `share` of `holdTimeout` runs out — counted from here, so an activation that is superseded or
+    /// refused is waited out. Nothing is asked until `activated(window)`; a newer request replaces this.
+    public func confirm(_ window: WindowId, over: Set<WindowId>, within band: Rect,
                         then report: @escaping @MainActor () -> Void) {
-        guard asking.insert(window).inserted else { return report() }
-        ask(window, band, deadline: Date().addingTimeInterval(grace), report)
+        generation &+= 1
+        let mine = generation
+        requests[window] = Request(generation: mine, over: over, band: band, report: report)
+        scheduler.schedule(after: holdTimeout * Self.share) { [weak self] in
+            guard let self, requests[window]?.generation == mine else { return }
+            finish(window)
+        }
     }
 
-    private func ask(_ window: WindowId, _ band: Rect, deadline: Date,
-                     _ report: @escaping @MainActor () -> Void) {
-        probe.isCovered(window, within: band) { [weak self] covered in
-            guard let self else { return report() }
-            guard covered, Date() < deadline else {
-                asking.remove(window)
-                return report()
-            }
+    /// The pin's app has been activated, so what the window server shows from here on is an answer.
+    /// Before it, a clear reading is only the order the desktop had before anything was asked.
+    public func activated(_ window: WindowId) {
+        guard var request = requests[window], !request.isActivated else { return }
+        request.isActivated = true
+        requests[window] = request
+        ask(window, generation: request.generation)
+    }
+
+    private func ask(_ window: WindowId, generation mine: Int) {
+        guard let request = requests[window], request.generation == mine else { return }
+        probe.isCovered(window, within: request.band, orBy: request.over) { [weak self] covered in
+            guard let self, requests[window]?.generation == mine else { return }
+            guard covered else { return finish(window) }
             scheduler.schedule(after: interval) { [weak self] in
-                guard let self else { return report() }
-                ask(window, band, deadline: deadline, report)
+                self?.ask(window, generation: mine)
             }
         }
+    }
+
+    private func finish(_ window: WindowId) {
+        requests.removeValue(forKey: window)?.report()
     }
 }

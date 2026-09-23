@@ -109,12 +109,10 @@ public enum Effect: Sendable, Equatable, Codable {
     /// window that can still hold focus, where a command is owed whatever the app is busy doing.
     case restoreFocus(WindowId)
 
-    /// Focus a window and **report back when the window server shows nothing foreign over `rect`** —
-    /// the same write as `focus` under a different promise, the seam `restoreFocus` already sits on, and
-    /// the one focus anything in emira waits on. `rect` is a pin's **band** rather than the window's own
-    /// frame: the question is whether anything is about to be drawn in the space a cover is leaving
-    /// clear (`setCoverClearing`).
-    case confirmFocus(WindowId, within: Rect)
+    /// `focus`, reporting back once the window server stacks the window above each of `over` — wherever
+    /// they stand, since they are mostly still on their way to it — and above anything foreign in `rect`,
+    /// a pin's **band**. The one focus anything in emira waits on.
+    case confirmFocus(WindowId, over: Set<WindowId>, within: Rect)
 
     /// Raise a real window in the z-order without necessarily focusing it (stacking within a column).
     case raise(WindowId)

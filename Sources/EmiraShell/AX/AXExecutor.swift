@@ -87,19 +87,19 @@ public final class AXExecutor: Executor {
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }
 
-            // The same write as `focus`, under the one promise anything in emira waits on: the report
-            // goes out when the *window server* shows nothing over the pin's band, not when the app says
-            // its focus moved. An unknown window is reported at once — a teleport must not be held on a
-            // window nothing can raise.
-            case .confirmFocus(let id, let band):
+            // The same write as `focus`, reported when the *window server* has the pin on top — asked
+            // from the activation on, since a read before it describes the desktop before anything was
+            // asked. An unknown window is reported at once: nothing can raise it.
+            case .confirmFocus(let id, let over, let band):
                 guard let record = registry.record(id), let fence else {
                     feedback(.focusConfirmed(id))
                     continue
                 }
+                fence.confirm(id, over: over, within: band) { feedback(.focusConfirmed(id)) }
                 writer.focus(record) { [scheduler] in
+                    fence.activated(id)
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }
-                fence.confirm(id, over: band) { feedback(.focusConfirmed(id)) }
 
             case .raise(let id):
                 guard let record = registry.record(id) else { continue }

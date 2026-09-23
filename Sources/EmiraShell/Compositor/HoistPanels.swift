@@ -227,7 +227,7 @@ public final class HoistPanels: HoistPlane {
 
     private func ask(_ id: WindowId, _ panel: any HoistSurface, until deadline: Date,
                      generation mine: Int, then: @escaping @MainActor () -> Void) {
-        probe.isCovered(id, within: panel.frame) { [weak self] covered in
+        probe.isCovered(id, within: panel.frame, orBy: []) { [weak self] covered in
             guard let self, self.fenceGeneration[id] == mine else { return }
             guard covered, Date() < deadline else { return then() }
             self.scheduler.schedule(after: Self.releaseInterval) { [weak self] in

@@ -98,6 +98,9 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     /// does.
     private(set) var pendingPins: [WindowId] = []
     private(set) var askingPin: WindowId?
+    /// What each pin must be confirmed above: every scoped window found over its band or about to be.
+    /// Never drained — a window that has landed there is exactly one the pin must stay above.
+    private(set) var atRisk: [WindowId: Set<WindowId>] = [:]
     /// The scoped windows that currently sit over a live band. Drained by `markLanded`; while any of
     /// them is still in flight the focus this session owes stays owed, because focusing anything else
     /// puts its app back above the pin.
@@ -154,18 +157,24 @@ public struct TransitionSession: Sendable, Equatable, Codable {
     }
 
     /// Note that `pin` must be confirmed on top before this cover moves anything, and that `over` is
-    /// what it must be confirmed above. Idempotent in both halves.
+    /// what it must be confirmed above. Idempotent — except that a pin already on the wire is asked
+    /// again if `over` grew, since its answer covers only the windows it was asked about.
     mutating func requirePin(_ pin: WindowId, over windows: [WindowId]) {
         clearance.formUnion(windows)
-        guard askingPin != pin, !pendingPins.contains(pin) else { return }
+        let known = atRisk[pin, default: []]
+        atRisk[pin] = known.union(windows)
+        guard !pendingPins.contains(pin) else { return }
+        if askingPin == pin, known.isSuperset(of: windows) { return }
         pendingPins.append(pin)
     }
 
-    /// Take the next pin to ask about, or `nil` — nothing left, or one already out on the wire.
-    mutating func nextPinToConfirm() -> WindowId? {
+    /// Take the next pin to ask about, with what it must be above, or `nil` — nothing left, or one
+    /// already out on the wire.
+    mutating func nextPinToConfirm() -> (pin: WindowId, over: Set<WindowId>)? {
         guard askingPin == nil, !pendingPins.isEmpty else { return nil }
-        askingPin = pendingPins.removeFirst()
-        return askingPin
+        let pin = pendingPins.removeFirst()
+        askingPin = pin
+        return (pin, atRisk[pin, default: []])
     }
 
     /// Fold `Event.focusConfirmed`. Total: a report about a pin this session never asked for, or one it
@@ -817,8 +826,9 @@ public struct Motion: Sendable, Equatable, Codable {
         viewports[id]?.transition?.requirePin(pin, over: windows)
     }
 
-    /// Take the next pin `id`'s cover has to ask the window server about, or `nil`.
-    public mutating func nextPinToConfirm(on id: MonitorId?) -> WindowId? {
+    /// Take the next pin `id`'s cover has to ask the window server about, with the windows it must be
+    /// confirmed above, or `nil`.
+    public mutating func nextPinToConfirm(on id: MonitorId?) -> (pin: WindowId, over: Set<WindowId>)? {
         guard let id else { return nil }
         return viewports[id]?.transition?.nextPinToConfirm()
     }

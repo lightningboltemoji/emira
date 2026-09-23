@@ -103,7 +103,7 @@ public final class MockExecutor: Executor {
             feedback(.focusChanged(id, origin: .ours))
 
         // The same echo, plus the answer a window server with nothing to re-stack would give at once.
-        case .confirmFocus(let id, _):
+        case .confirmFocus(let id, _, _):
             feedback(.focusChanged(id, origin: .ours))
             feedback(.focusConfirmed(id))
 

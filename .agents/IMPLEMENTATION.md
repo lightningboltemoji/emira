@@ -1162,8 +1162,18 @@ teleport. A real window whose *current* frame overlaps a pin is drawn over it fr
 move until its app answers — and emira may not re-level a foreign window, so focus is the only lever that
 reorders across apps. So `Effect.confirmFocus` goes out in the same head batch as the captures, the shell
 answers it from the window server (`PinFence` over `StackProbe`, bounded, reporting anyway on expiry), and
-`Motion.mayPlace` holds the pass until both that and `coverOnScreen` have landed. Four things make it
-proportionate:
+`Motion.mayPlace` holds the pass until both that and `coverOnScreen` have landed.
+
+**What the window server is asked is an order, not a place, and only from the activation on.** The at-risk
+windows ride on the effect and the pin must be stacked above each of them wherever they stand: most are
+still on their way into the band, where a question about the band alone answers *clear* whatever the
+order. And an app's windows rise on its own schedule after `activate()` returns, so `PinFence` reads
+nothing until the writer has activated the pin's app — a read before it is the desktop as it was, and a
+pin whose raise has not reached the glass loses it to the owed focus following too closely. The grace is
+half of `hold-timeout`, counted from the request as that deadline is, so an activation that is superseded
+or refused is waited out and the other half is left for the teleport to land: a session that times out
+closes over reals still in flight, which is worse than a pin briefly under. The rest is what makes the
+gate proportionate:
 
 - **The trigger is the at-risk set**, not "a pin exists": `guardPins` asks which scoped windows sit over a
   live pin *or are about to*, read at the aimed offset. Both halves are needed and the second is the
@@ -1177,8 +1187,11 @@ proportionate:
 - **The gate hangs on the teleport, not on the command.** An interrupting command retargets the open session
   exactly as it does today and the gate is re-read; nothing is queued and no event is deferred.
 - **One pin is asked about at a time.** Two focus requests in flight supersede each other on `FocusIntent`'s
-  record, so a batch asking about both would leave one un-raised. The teleport is edge-triggered on the gate
-  opening, so a late duplicate answer cannot re-teleport and clear a landing wait still in flight.
+  record, so a batch asking about both would leave one un-raised. A retarget that sweeps in a window the ask
+  on the wire did not name has the pin asked again once it lands, and `PinFence` holds one request per pin,
+  the newest — `focusConfirmed` names only the window, so an older request's reading would answer the newer
+  question. The teleport is edge-triggered on the gate opening, so a late duplicate answer cannot
+  re-teleport and clear a landing wait still in flight.
 - **The focus the command asked for is paid last**, because focusing the target is what puts its app back
   above the pin. `State.owedFocus` holds it rather than the session, since **every exit owes it** — a debt
   whose session has gone falls due at once, which is how that holds without being repeated at four teardown

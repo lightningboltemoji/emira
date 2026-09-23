@@ -75,7 +75,7 @@ enum EngineFix {
                 // test asking who is in front of whom reads an order the desktop never had.
                 case .focus(let w), .restoreFocus(let w):
                     feedback.append(.focusChanged(w, origin: .ours))
-                case .confirmFocus(let w, _):
+                case .confirmFocus(let w, _, _):
                     feedback.append(.focusChanged(w, origin: .ours))
                     feedback.append(.focusConfirmed(w))
                 default: continue

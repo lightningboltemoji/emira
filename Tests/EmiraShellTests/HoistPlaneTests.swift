@@ -63,7 +63,7 @@ import EmiraCore
         var covered = false
         private(set) var asks = 0
 
-        func isCovered(_ window: WindowId, within frame: Rect,
+        func isCovered(_ window: WindowId, within frame: Rect, orBy others: Set<WindowId>,
                        then: @escaping @MainActor (Bool) -> Void) {
             asks += 1
             then(covered)

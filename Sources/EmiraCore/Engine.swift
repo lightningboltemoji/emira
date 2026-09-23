@@ -2336,7 +2336,7 @@ public enum Engine {
         // A pin released while its own confirmation was being taken has no band to ask about, and a
         // queue holding one nothing can answer would hold the teleport until `holdTimeout`. Answered
         // here instead, which is the same thing the shell does for a window the registry has lost.
-        while let next = s.motion.nextPinToConfirm(on: monitor) {
+        while let (next, over) = s.motion.nextPinToConfirm(on: monitor) {
             guard let side = s.world.pins[next]?.side,
                   let band = s.metrics(of: monitor)?.pinFrame(side) else {
                 s.motion.confirmPin(next, on: monitor)
@@ -2346,7 +2346,7 @@ public enum Engine {
             // arrive: this activation and the one that pays the debt are two halves of one sequence,
             // and two apps' notifications have no order between them.
             s.world.noteActivation(next)
-            return [.confirmFocus(next, within: band)]
+            return [.confirmFocus(next, over: over, within: band)]
         }
         return []
     }

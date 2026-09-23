@@ -551,3 +551,54 @@ import EmiraMotion
         #expect(decoded == m)
     }
 }
+
+// The pin gate's queue: one pin on the wire at a time, and each ask carrying what it must be above
+
+extension MotionTests {
+
+    static let pin = WindowId(9)
+
+    /// **The ask names what the pin must be above**, accumulated across the session — a window that
+    /// has already landed in the band is exactly one the pin has to stay over.
+    @Test func anAskCarriesEveryWindowThePinMustBeAbove() {
+        var m = Motion(viewportOffset: 0)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        m.requirePin(Self.pin, over: [WindowId(1)], on: Self.one)
+        let asked = m.nextPinToConfirm(on: Self.one)
+        let first = try! #require(asked)
+        #expect(first.pin == Self.pin)
+        #expect(first.over == [WindowId(1)])
+
+        m.confirmPin(Self.pin, on: Self.one)
+        m.requirePin(Self.pin, over: [WindowId(2)], on: Self.one)
+        #expect(m.nextPinToConfirm(on: Self.one)?.over == [WindowId(1), WindowId(2)])
+    }
+
+    /// A retarget that sweeps in a window the ask on the wire never named has the pin asked again once
+    /// that answer lands — its reading says nothing about a window it was not asked about.
+    @Test func aWindowSweptInMidAskHasThePinAskedAgain() {
+        var m = Motion(viewportOffset: 0)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        m.requirePin(Self.pin, over: [WindowId(1)], on: Self.one)
+        _ = m.nextPinToConfirm(on: Self.one)
+
+        m.requirePin(Self.pin, over: [WindowId(1), WindowId(2)], on: Self.one)
+        #expect(m.nextPinToConfirm(on: Self.one) == nil, "one pin on the wire at a time")
+
+        m.confirmPin(Self.pin, on: Self.one)
+        #expect(!m.isPinCleared(on: Self.one), "the first answer does not cover the newcomer")
+        #expect(m.nextPinToConfirm(on: Self.one)?.over == [WindowId(1), WindowId(2)])
+    }
+
+    /// …and a retarget naming nothing new is no reason to ask again.
+    @Test func aRetargetNamingNothingNewDoesNotReAsk() {
+        var m = Motion(viewportOffset: 0)
+        m.openTransition(scope: Self.scope, on: Self.one)
+        m.requirePin(Self.pin, over: [WindowId(1), WindowId(2)], on: Self.one)
+        _ = m.nextPinToConfirm(on: Self.one)
+
+        m.requirePin(Self.pin, over: [WindowId(2)], on: Self.one)
+        m.confirmPin(Self.pin, on: Self.one)
+        #expect(m.isPinCleared(on: Self.one))
+    }
+}

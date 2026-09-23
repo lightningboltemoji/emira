@@ -17,9 +17,10 @@ import EmiraCore
 /// Whether the window server shows a foreign window over one of ours.
 @MainActor
 public protocol StackProbe: AnyObject {
-    /// Answer whether anything but our own windows sits above `window` and overlaps `frame`, exactly
-    /// once. `false` for a window the registry no longer knows, and for a read that failed.
-    func isCovered(_ window: WindowId, within frame: Rect,
+    /// Answer whether anything but our own windows sits above `window` and overlaps `frame` — or is one
+    /// of `others`, wherever it stands — exactly once. `false` for a window the registry no longer
+    /// knows, and for a read that failed.
+    func isCovered(_ window: WindowId, within frame: Rect, orBy others: Set<WindowId>,
                    then: @escaping @MainActor (Bool) -> Void)
 }
 
@@ -36,12 +37,14 @@ public final class CGStackProbe: StackProbe {
         self.registry = registry
     }
 
-    public func isCovered(_ window: WindowId, within frame: Rect,
+    public func isCovered(_ window: WindowId, within frame: Rect, orBy others: Set<WindowId>,
                           then: @escaping @MainActor (Bool) -> Void) {
         guard let number = registry.record(window)?.number else { return then(false) }
+        // A window the registry has lost cannot be above anything any more, so it drops out here.
+        let named = Set(others.compactMap { registry.record($0)?.number })
         let mine = ProcessInfo.processInfo.processIdentifier
         inspector.async {
-            let covered = Self.isCovered(number, within: frame, ignoring: mine)
+            let covered = Self.isCovered(number, within: frame, orBy: named, ignoring: mine)
             Task { @MainActor in then(covered) }
         }
     }
@@ -51,15 +54,19 @@ public final class CGStackProbe: StackProbe {
     /// drops the Dock and the menu bar) and to windows that are not ours, since the hoist's own panel,
     /// the cover and the guides are all above it by construction.
     nonisolated static func isCovered(_ number: CGWindowID, within frame: Rect,
-                                      ignoring mine: pid_t) -> Bool {
+                                      orBy named: Set<CGWindowID>, ignoring mine: pid_t) -> Bool {
         let options: CGWindowListOption = [.optionOnScreenAboveWindow, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, number) as? [[String: Any]] else {
             return false
         }
         return raw.contains { info in
             guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
-                  info[kCGWindowOwnerPID as String] as? pid_t != mine,
-                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  info[kCGWindowOwnerPID as String] as? pid_t != mine
+            else { return false }
+            if let above = info[kCGWindowNumber as String] as? CGWindowID, named.contains(above) {
+                return true
+            }
+            guard let bounds = info[kCGWindowBounds as String] as? [String: Any],
                   let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
             else { return false }
             return Rect(x: Double(rect.minX), y: Double(rect.minY),

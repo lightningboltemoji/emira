@@ -300,9 +300,10 @@ menuBar.onError = { log($0) }
 // is standing in for; the pin fence asks it about the band a cover is leaving clear.
 let stackProbe = CGStackProbe(registry: registry)
 
+let pinFence = PinFence(probe: stackProbe)
 let truth = AXExecutor(registry: registry,
                        writer: AXWindowWriter(client: axClient, intent: focusIntent),
-                       fence: PinFence(probe: stackProbe))
+                       fence: pinFence)
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this
@@ -529,6 +530,8 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
         entry.reconstruction.backdrop = { [weak scrims] in scrims?.backdrop(of: $0) }
     }
     capture.mode = config.coverMode
+    // Not a geometry setting, but the reducer reads the same value to arm the deadline this is cut from.
+    pinFence.holdTimeout = config.holdTimeout
     executor.transitionMode = config.transitionMode
     // The scrim's backdrop, for the same reason: the core names the same windows at the same veil under
     // every radius, and what changes is only what the photograph behind them looks like.

@@ -491,7 +491,7 @@ import Testing
     }
 
     static func requests(_ fx: [Effect]) -> [WindowId] {
-        fx.compactMap { if case .confirmFocus(let id, _) = $0 { return id } else { return nil } }
+        fx.compactMap { if case .confirmFocus(let id, _, _) = $0 { return id } else { return nil } }
     }
 
     static func focuses(_ fx: [Effect]) -> [WindowId] {
@@ -633,6 +633,22 @@ extension EnginePinGateTests {
         #expect(settled.world.focusedWindow == WindowId(2), "the focus the command asked for was not paid")
     }
 
+    /// **The ask names the window about to cross the band, not only what is in it.** The near column is
+    /// still in the clear area when the command lands, so a question about the band alone is answered
+    /// *clear* on its first reading whatever the stacking.
+    @Test func theAskNamesTheWindowAboutToCrossTheBand() {
+        let st = Self.atTheNearEnd()
+        let band = try! #require(st.metrics()?.pinFrame(.left))
+        let near = try! #require(st.world.windows[WindowId(1)]?.frame)
+        #expect(band.intersection(near) == nil, "already in the band, so this tests nothing")
+
+        let (_, fx) = Engine.reduce(st, .command(.focus(.right)))
+        let asked = fx.compactMap { effect -> Set<WindowId>? in
+            if case .confirmFocus(WindowId(3), let over, _) = effect { return over } else { return nil }
+        }
+        #expect(asked == [[WindowId(1)]])
+    }
+
     /// A pin released while its own confirmation is being taken leaves nothing to ask about, and a queue
     /// holding one nothing can answer would hold the teleport open until the deadline.
     @Test func aPinReleasedMidFenceDoesNotWedgeTheTeleport() {
@@ -661,7 +677,7 @@ extension EnginePinGateTests {
                 switch effect {
                 case .capture(_, let w, _): feedback.append(.captureReady(w))
                 case .beginTransition(let m, _): feedback.append(.coverOnScreen(m))
-                case .confirmFocus(let w, _):
+                case .confirmFocus(let w, _, _):
                     feedback.append(.focusChanged(w, origin: .ours))
                     feedback.append(.focusConfirmed(w))
                 default: continue                       // deliberately no `axLanded`
