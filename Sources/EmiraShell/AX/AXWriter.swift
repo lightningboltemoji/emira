@@ -166,11 +166,16 @@ public final class AXWindowWriter: WindowWriter {
         client.perform(app: pid) { _ in
             element.makeKey()
         } then: { [intent, client] _ in
-            guard intent.isCurrent(ticket) else { return }
+            guard intent.isCurrent(ticket) else { dbg("writer: superseded before activate \(window.id)"); return }
             guard !correcting || Self.canHoldFocus(pid: pid, window: number) else { return }
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
-            if NSRunningApplication(processIdentifier: pid)?.activate() == true {
+            let ok = NSRunningApplication(processIdentifier: pid)?.activate()
+            dbg("writer: activate \(window.id) pid=\(pid) -> \(String(describing: ok)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                dbg("writer: +150ms after activate \(window.id): front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
+            }
+            if ok == true {
                 return completion()
             }
             let application = client.application(for: pid)
@@ -208,4 +213,11 @@ public final class AXWindowWriter: WindowWriter {
             element.close()
         } then: { _ in }
     }
+}
+
+
+/// Temporary instrumentation.
+func dbg(_ message: String) {
+    let t = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9
+    FileHandle.standardError.write(Data(String(format: "%.4f DBG ", t).appending(message + "\n").utf8))
 }

@@ -57,6 +57,10 @@ public final class FocusIntent {
     /// entry when its first echo lands would let the second one back through as external.
     private var requested: [WindowId] = []
 
+    /// Called as the record clears. A report swallowed while it stood has nothing coming to repeat it,
+    /// so this is when the desktop is asked again (`WorldWatcher.settleFocus`).
+    public var onCleared: (@MainActor () -> Void)?
+
     public init(scheduler: any DelayScheduler, grace: TimeInterval = FocusIntent.defaultGrace) {
         self.scheduler = scheduler
         self.grace = grace
@@ -66,12 +70,15 @@ public final class FocusIntent {
     public func request(_ id: WindowId) -> Ticket {
         issued += 1
         requested.append(id)
+        dbg("intent.request \(id) requested=\(requested)")
         let ticket = Ticket(number: issued)
         // Re-armed per request, never cancelled — `DelayScheduler` has none, so the generation check on
         // arrival is what keeps a superseded deadline from clearing a record still being written to.
         scheduler.schedule(after: grace) { [weak self] in
             guard let self, issued == ticket.number else { return }
+            dbg("intent: grace expired, record cleared")
             requested.removeAll()
+            onCleared?()
         }
         return ticket
     }

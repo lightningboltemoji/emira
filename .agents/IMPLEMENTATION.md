@@ -1589,6 +1589,16 @@ each read leaves and drops an answer `isCurrent` no longer holds for. The marker
 no clock — a lane that is merely slow is not a reason to doubt its answer — where the record `FocusIntent`
 keeps for the app's own notifications is bounded by its grace, and that is the half the grace still covers.
 
+**What the record swallows is asked again as it clears** (`FocusIntent.onCleared` → `WorldWatcher.settleFocus`).
+While it stands, a real report naming a window on it is indistinguishable from our own echo — the pin fence puts
+the pin there, and every request re-arms the grace, so a burst of closes holds it for as long as the burst — and a
+click on that window is dropped with nothing coming to repeat it. So the moment the record clears, the active
+app is asked once which window has focus, and the answer is passed on as it stands: nothing is left to mistake
+it for, and a desktop that has gone quiet is not an app mid-guess, so none of the filters above applies. The
+same read covers an activation of ours that macOS refused, which otherwise leaves the core on a window whose
+app never came forward. A read overtaken by a new request is dropped, since that request's own clearing asks
+again.
+
 **An app's own focus report is keyboard focus only while that app is the active one.** A close lands when its
 app gets round to it, so an app the user has already clicked away from still picks its next key window and
 still posts `AXFocusedWindowChanged` for it — which, believed, puts the core on a window of an app nobody

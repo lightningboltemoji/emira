@@ -1748,6 +1748,60 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated])
     }
 
+    // What the record swallowed, asked again as it clears
+    //
+    // The pin fence activates the pin's app, which puts the pin on the record, and a burst of closes
+    // keeps the record standing. A click on the pin inside it names a window the record holds, so it is
+    // read as our own late echo, and nothing repeats it once the record is gone.
+
+    @Test func aClickTheRecordTookForAnEchoIsReportedWhenItClears() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        _ = world.intent.request(one)                 // the fence, raising the pin
+        _ = world.intent.request(term)                // a close's successor after it
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))      // the click on the pin: `stale`
+        let before = world.recorder.events.count
+
+        world.intentClock.fire()                      // the record clears
+
+        #expect(world.source.focusReads == [200, 200], "the active app is asked once more")
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    @Test func aRequestIssuedWhileTheSettleReadIsOutOvertakesIt() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        _ = world.intent.request(one)
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        world.source.holdsFocusReads = true
+        world.intentClock.fire()                      // the settle read goes out
+        _ = world.intent.request(term)                // a keypress before it answers
+        let before = world.recorder.events.count
+
+        world.source.answerFocusRead(.window(one))
+
+        #expect(world.recorder.events.count == before, "the next clearing asks again")
+    }
+
+    @Test func nothingIsAskedBeforeAnyAppHasComeForward() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        _ = world.intent.request(one)
+        let before = world.recorder.events.count
+
+        world.intentClock.fire()
+
+        #expect(world.source.focusReads.isEmpty)
+        #expect(world.recorder.events.count == before)
+    }
+
     @Test func minimizingAWindowWeDoNotManageIsSilence() {
         let world = LiveWorld()
         world.watcher.start()
