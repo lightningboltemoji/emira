@@ -197,6 +197,16 @@ public final class WorldWatcher {
     /// deliberately not cleared when its window dies.
     private var focus: WindowId?
 
+    /// The app `focus` belonged to when it was reported. Its own record, because a window that has
+    /// closed is gone from the registry, and "which app lost it" is the question asked of it afterwards.
+    /// Dropped when that app goes: a quit is where macOS does pick the next app.
+    private var focusApp: pid_t?
+
+    /// The app `NSWorkspace` last said came forward — the one whose own `AXFocusedWindowChanged` is
+    /// keyboard focus (`isActive`). `nil` until the first activation, which admits every app, as
+    /// before anything was known.
+    private var active: pid_t?
+
     /// Whether a mouse-up is waiting to become `dragEnded` — see `beginSettle`.
     private var isSettling = false
 
@@ -279,6 +289,8 @@ public final class WorldWatcher {
 
         case .appTerminated(let pid):
             apps[pid] = nil
+            if active == pid { active = nil }
+            if focusApp == pid { focusApp = nil }
             observing.remove(pid)
             scanning[pid] = nil
             rescan[pid] = nil
@@ -304,6 +316,7 @@ public final class WorldWatcher {
         // offer. The app itself stays tracked, so a `.prohibited` that was not a quit costs one
         // reconciliation rather than going silently unmanaged.
         case .appDeparting(let pid):
+            if focusApp == pid { focusApp = nil }
             for record in registry.records(ofApps: [pid]) { retire(record.id) }
 
         // ⌘H, which nothing else reports. The *minimize* pair rather than a destroy: these windows are
@@ -346,10 +359,15 @@ public final class WorldWatcher {
             minimized.remove(id)
             emit(.windowDeminimized(id))
 
+        // An app's own report is keyboard focus only while that app is the active one: a background app
+        // picking its next key window is nobody's focus, and a real move to another app arrives as its
+        // activation. The fade check still runs, since a report is when a window may have gone.
         case .focusMoved(let id):
+            guard isActive(registry.record(id)?.pid) else { return checkShownAfterFade() }
             resolveFocus(id)
 
         case .focusMovedUnmanaged(let pid):
+            guard isActive(pid) else { return checkShownAfterFade() }
             // The app is the only thing that can say which window that element belongs to, so the
             // report carries no answer of its own — see `readFocus`.
             readFocus(of: pid)
@@ -372,9 +390,15 @@ public final class WorldWatcher {
             onPointerMoved?(point)
 
         case .appActivated(let pid):
+            active = pid
             emit(.appActivated)
             readFocus(of: pid)
         }
+    }
+
+    /// Whether `pid` is the app holding the keyboard, as far as the activations seen so far say.
+    private func isActive(_ pid: pid_t?) -> Bool {
+        active == nil || pid == active
     }
 
     /// Ask which of an app's windows has focus, for a report that named the app and no managed window.
@@ -817,6 +841,10 @@ public final class WorldWatcher {
     /// that arrived while we asked. Failing toward "dead" only drops a reveal (the next focus change
     /// reveals); the opposite mistake would drop a real window off the strip, which is why this never
     /// synthesizes a `windowVanished`.
+    ///
+    /// Only the app that lost the window fills its hole, so a report from another app skips the question,
+    /// and only the active app's reports get here at all (`handle`). A quit keeps it: `appDeparting`
+    /// forgets the quitting app, which is the one case where macOS does pick the next app.
     private func resolveFocus(_ id: WindowId?) {
         checkShownAfterFade()
         switch intent.resolve(id) {
@@ -828,7 +856,7 @@ public final class WorldWatcher {
         // Exactly what we asked for, so it cannot also be macOS covering for a window that died — we
         // named the replacement ourselves. Nothing to ask, and one lane round trip not spent.
         case .expected:
-            focus = id
+            noteFocus(id)
             emit(.focusChanged(id, origin: .ours))
             return
 
@@ -837,9 +865,17 @@ public final class WorldWatcher {
         }
 
         let displaced = focus
-        focus = id
+        let left = focusApp
+        noteFocus(id)
         // Nothing displaced (boot), or a report that changes nothing: there is no question to ask.
         guard let displaced, displaced != id else {
+            emit(.focusChanged(id, origin: .system))
+            return
+        }
+        // Only the app that lost the window fills the hole. Another app's window, while that app is
+        // still running, is focus leaving it — a click away in the middle of a close — and asking about
+        // the closing window would drop exactly that click.
+        if let left, let from = focusApp, from != left {
             emit(.focusChanged(id, origin: .system))
             return
         }
@@ -851,6 +887,12 @@ public final class WorldWatcher {
             guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { return }
             emit(.focusChanged(id, origin: .system))
         }
+    }
+
+    /// Advance `focus`, and the app it is in with it.
+    private func noteFocus(_ id: WindowId?) {
+        focus = id
+        focusApp = id.flatMap { registry.record($0)?.pid }
     }
 
     // Drawn (the fact no notification carries)

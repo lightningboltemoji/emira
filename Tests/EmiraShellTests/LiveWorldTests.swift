@@ -1418,13 +1418,13 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))
         let two = try! #require(world.id(titled: "two"))
-        let term = try! #require(world.id(titled: "term"))
         world.watcher.handle(.focusMoved(two))        // the present: focus is on `two`
         _ = world.intent.request(one)
         _ = world.intent.request(two)
         world.watcher.handle(.focusMoved(one))        // swallowed
 
-        world.watcher.handle(.focusMoved(term))       // a real Cmd-Tab after it
+        world.intentClock.fire()                      // the record runs out
+        world.watcher.handle(.focusMoved(one))        // a real click back to `one` after it
 
         #expect(world.source.aliveProbes == [two], "read against `two`, not the stale `one`")
     }
@@ -1650,6 +1650,102 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term, origin: .system)],
                 "read against `two`, which is alive")
+    }
+
+    // The two edges of that question: the app that lost the window, while it is the active one
+    //
+    // Pin Safari, open four Ghostty windows, ⌃D three of them fast and click Safari. Each close lands
+    // when Ghostty gets to it, so the last one can land either side of the click. Misread, either order
+    // leaves the core on Ghostty with Safari frontmost — the veil drawn on the window being typed into.
+
+    @Test func aBackgroundAppPickingItsNextKeyWindowIsNotFocus() {
+        // The click reached Safari first; Ghostty then closes the window and announces the replacement
+        // it will show when it next comes forward. Passed on, it would move focus onto a window of an app
+        // nobody activated, and nothing would ever say otherwise.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))      // the click
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(term))
+        world.watcher.handle(.focusMovedUnmanaged(100))
+
+        #expect(world.recorder.events.count == before, "no focusChanged reached the core")
+        #expect(world.source.aliveProbes.isEmpty)
+        #expect(world.source.focusReads == [200], "and the background app was not asked")
+    }
+
+    @Test func theActiveAppsOwnReportIsStillFocus() {
+        // ⌘` between an app's own windows posts nothing but this notification.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(two))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two, origin: .system)])
+    }
+
+    @Test func aClickAwayFromAClosingWindowIsNotABackfill() {
+        // The other order: the click lands while the close is still in flight, so what it displaces is
+        // the window on its way out. Only Ghostty can fill a hole Ghostty left; TextEdit coming forward
+        // is the user. Dropped, the core's own successor would pull Ghostty back over the click.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(term))
+        world.source.dead = [term]                    // closed, its destroy not yet here
+        world.source.focused[200] = .window(one)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(200))
+
+        #expect(world.source.aliveProbes.isEmpty, "nothing to ask of a window another app left")
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.appActivated, .focusChanged(one, origin: .system)])
+    }
+
+    @Test func aClickAwayAfterTheDestroyLandedStillReaches() {
+        // The same click with the destroy already in: the registry holds the id for its succession wait,
+        // which is what still names the app it belonged to.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(term))
+        world.watcher.handle(.windowVanished(term))
+        world.source.focused[200] = .window(one)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(200))
+
+        #expect(Array(world.recorder.events.dropFirst(before))
+            == [.appActivated, .focusChanged(one, origin: .system)])
+    }
+
+    @Test func theAppMacOSBringsForwardAfterAQuitIsStillABackfill() {
+        // A quit is the one close where macOS does choose another app, and the core has already chosen
+        // its own successor for the windows the quit took.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(term))
+        world.watcher.handle(.appDeparting(100))
+        world.source.focused[200] = .window(one)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.appActivated(200))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated])
     }
 
     @Test func minimizingAWindowWeDoNotManageIsSilence() {

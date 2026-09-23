@@ -1589,6 +1589,16 @@ each read leaves and drops an answer `isCurrent` no longer holds for. The marker
 no clock — a lane that is merely slow is not a reason to doubt its answer — where the record `FocusIntent`
 keeps for the app's own notifications is bounded by its grace, and that is the half the grace still covers.
 
+**An app's own focus report is keyboard focus only while that app is the active one.** A close lands when its
+app gets round to it, so an app the user has already clicked away from still picks its next key window and
+still posts `AXFocusedWindowChanged` for it — which, believed, puts the core on a window of an app nobody
+activated, with nothing ever coming to correct it. So `WorldWatcher` admits the notification only from the
+app `NSWorkspace` last activated; a move to another app arrives as that app's activation, which is a read of
+its own. The same fact bounds the question that tells a backfill from the user (`PRINCIPLES.md` §4): **only the app that lost
+the window fills its hole**, so a report from another app is focus leaving and is never asked about a window
+mid-close. A quit is where macOS does choose the next app, and it keeps the question, because `appDeparting`
+forgets the quitting app before there is anything to compare it with.
+
 **Focus in a sheet is focus in the window it is attached to.** A sheet is never in `AXWindows`, so the element
 `AXFocusedWindowChanged` names is one the registry does not know — and AppKit posts no focus change when the
 sheet goes away, so focus left on anything but its window never comes back to it. A notification naming an
