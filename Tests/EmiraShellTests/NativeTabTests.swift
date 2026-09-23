@@ -69,9 +69,9 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     }
 
     /// Re-scan with whatever the source now says, and hand back the report.
-    func rescan() -> AXEnumerator.Report {
+    func rescan(ignoring unmanageable: AXEnumerator.Unmanageable = .none) -> AXEnumerator.Report {
         var report: AXEnumerator.Report?
-        enumerator.enumerate(apps: [ghostty]) { report = $0 }
+        enumerator.enumerate(apps: [ghostty], ignoring: unmanageable) { report = $0 }
         return report!
     }
 }
@@ -469,6 +469,67 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         #expect(report.departed.isEmpty)
         #expect(report.succeeded.isEmpty)
         #expect(report.unclaimed == 1)
+    }
+
+    /// A disagreement that is not a race. An app can keep an on-screen window emira will never manage
+    /// for as long as it lives, and read as a successor still to be placed it holds every other window
+    /// of that app on the strip after it has closed. Whether it is one of those is its history, which
+    /// the caller has and a scan does not (`Unmanageable`).
+    @Test func anEntryTheCallerHasWrittenOffDoesNotSuspendJudgement() {
+        let group = Group()
+        let elsewhere = Rect(x: 900, y: 39, width: 600, height: 1100)
+        let panel = Rect(x: 1500, y: 800, width: 300, height: 200)
+
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one"),
+                                                   tab(2, title: "other", frame: elsewhere)]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere), entry(9, frame: panel)]
+        let other = group.rescan().snapshots[0].id
+
+        // It closes unheard: AX stops describing it and the window server has ordered it out. The panel
+        // AX never describes is still there, as it always is.
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one")]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere, onScreen: false),
+                                entry(9, frame: panel)]
+
+        #expect(group.rescan().departed.isEmpty, "not written off, the panel is the race being waited out")
+        #expect(group.rescan(ignoring: AXEnumerator.Unmanageable(entries: [9])).departed == [other])
+    }
+
+    /// The same from AX's side: a window it describes that never binds.
+    @Test func aRejectionTheCallerHasWrittenOffDoesNotSuspendJudgement() {
+        let group = Group()
+        let elsewhere = Rect(x: 900, y: 39, width: 600, height: 1100)
+        let chrome = tab(7, title: "chrome", frame: Rect(x: 1500, y: 800, width: 300, height: 200))
+
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one"),
+                                                   tab(2, title: "other", frame: elsewhere), chrome]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere)]
+        let other = group.rescan().snapshots[0].id
+
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one"), chrome]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere, onScreen: false)]
+
+        #expect(group.rescan().departed.isEmpty)
+        #expect(group.rescan(ignoring: AXEnumerator.Unmanageable(windows: [element(7)])).departed == [other])
+    }
+
+    /// Writing one window off writes off nothing else: a tab switch still succeeds, and a newly made
+    /// tab the window list has not caught up with still holds the group's column.
+    @Test func aWrittenOffWindowLeavesTheRaceForEveryOther() {
+        let panel = Rect(x: 1500, y: 800, width: 300, height: 200)
+        let unmanageable = AXEnumerator.Unmanageable(entries: [9])
+
+        let switched = Group()
+        switched.source.windowsByPid = [ghostty.pid: [tab(2, title: "tab two")]]
+        switched.source.entries = [entry(1, onScreen: false), entry(2), entry(9, frame: panel)]
+        #expect(switched.rescan(ignoring: unmanageable).succeeded == [switched.id])
+
+        let made = Group()
+        made.source.windowsByPid = [ghostty.pid: [tab(2, title: "tab two")]]
+        made.source.entries = [entry(1, onScreen: false), entry(9, frame: panel)]
+        let report = made.rescan(ignoring: unmanageable)
+        #expect(report.departed.isEmpty, "the new tab is not the panel, and is still the race")
+        #expect(made.registry.record(made.id) != nil)
     }
 
     /// A managed window can fall out of its app's own answer without having gone anywhere: `snapshot`

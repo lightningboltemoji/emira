@@ -883,6 +883,12 @@ public enum Engine {
             }
             return (s, effects)
 
+        case .windowShown(let id, let shown):
+            // Nothing moves: the fact changes what is on the screen, and the post-passes that read that
+            // (`settleHoists`) bring the desktop into line with it.
+            s.world.setShown(id, shown)
+            return (s, [])
+
         case .windowDeminimized(let id):
             // An arrival — the reverse of `windowMinimized`'s departure.
             let before = strandedGeometry(&s)

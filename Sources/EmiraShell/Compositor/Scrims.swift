@@ -87,7 +87,8 @@ public struct StackedWindow: Equatable, Sendable {
     /// `.optionOnScreenOnly` rather than `WindowListEntry`'s `.optionAll`, and the difference is the
     /// whole point: only the on-screen list is in **z-order**, which is the one fact this plane needs
     /// and the only public place it exists. Layer 0 alone — anything above it composites over the scrim
-    /// anyway, and anything below it is the desktop the photograph already holds.
+    /// anyway, and anything below it is the desktop the photograph already holds. A window drawn at no
+    /// alpha is not here either: it shows nothing, so it is in front of nothing (`WindowListEntry.isDrawn`).
     public static func current() -> [StackedWindow] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
@@ -95,6 +96,7 @@ public struct StackedWindow: Equatable, Sendable {
         }
         return raw.compactMap { info in
             guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > WindowListEntry.invisibleAlpha,
                   let number = info[kCGWindowNumber as String] as? CGWindowID,
                   let bounds = info[kCGWindowBounds as String] as? [String: Any],
                   let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)

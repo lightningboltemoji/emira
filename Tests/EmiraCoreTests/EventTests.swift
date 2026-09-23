@@ -22,6 +22,7 @@ import Testing
         .focusChanged(nil, origin: .system),
         .windowMinimized(WindowId(5)),
         .windowDeminimized(WindowId(5)),
+        .windowShown(WindowId(5), false),
         .dragEnded,
         .pointerEntered(WindowId(9)),
         .pointerWoke,

@@ -1210,6 +1210,10 @@ and each removes a way for the picture to be a lie:
 - **Only a window emira placed can bury one** (`World.placedOnScreen`). A float behind something emira never
   placed was not buried by emira, and hoisting it would be an opinion about somebody else's desktop.
 
+**On screen means drawn** (`World.unshown`). A float its app has stopped drawing without closing it has no
+pixels to stand in for, and a picture of it would take clicks for a window nobody can see — so it leaves the
+set, and returns when the window server draws it again.
+
 Ordering is `StackOrder`, lexicographic on `(app, window)` over `World.focusedAt`, and it reaches one step
 further than the rule: a float above a hoisted one, overlapping it, is hoisted too, or the picture would be
 drawn over a window genuinely in front of it. `settleHoists` re-derives the whole set as a post-pass and emits
@@ -1635,6 +1639,21 @@ app rather than a retirement and `AXEnumerator`'s join is what answers, retiring
 listing *and* the window server is not showing. Capped per window like an unaccounted stray, or a window on
 another Space costs a scan of its app every interval forever; what the watcher already knows is in the Dock or
 behind ⌘H is left out; and emira's own placements never reach it, a parked column keeping its sliver on screen.
+
+**The join judges absence only from an answer that agrees with the list** — an on-screen entry AX did not
+describe, or an AX window no entry matches, is what a successor looks like a moment before it can be seen, so
+either suspends every departure of that app. **Except a window the watcher has written off**
+(`AXEnumerator.Unmanageable`): an entry or AX window refused for `maxReconcileRounds` rounds is one the app keeps
+for good — a helper AX never lists, chrome emira declines — and read as a race it would hold every departure
+of its app, tab switches included, for as long as it lives. A successor is moments old, so it is never one.
+
+**Drawn is a reading, not an event.** An app can order a window out, or fade it to nothing and keep it, and
+posts nothing either way — the faded one is listed on screen at alpha 0 with AX still describing it. So the
+watcher reads `WindowListEntry.isDrawn` (on screen, above `invisibleAlpha`) every reconciliation, and once more
+`fadeAllowance` after each focus report, when an app hands focus back from a window it is fading out; changes
+reach the core as `Event.windowShown`. The second read is behind the same paint gate, deferred rather than
+taken mid-transition. `World.isOnScreen` reads the fact for untiled windows only (*Hoisting*), and the veil's
+mask reads alpha itself, a window drawn at nothing being in front of nothing.
 
 **The succession wait is a question, not a rule.** A destroyed element is not always a window leaving —
 a native tab group carries on under its next tab — so `vanish` holds the *id* until a scan says whether

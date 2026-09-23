@@ -47,6 +47,10 @@ public enum Event: Sendable, Equatable, Codable {
     /// A minimized window was restored — re-inserted at its remembered strip position.
     case windowDeminimized(WindowId)
 
+    /// The window server started or stopped drawing a live window — ordered out, or faded to nothing,
+    /// which no notification reports. Read only for a window emira does not place (`World.isOnScreen`).
+    case windowShown(WindowId, Bool)
+
     /// A global mouse-down: the start of a possible drag. Carries no window because the system does not
     /// say which one is under the pointer, and the answer that matters is which one *moves* — the core
     /// latches that itself (`Drag`). What this arms is the only interval in which a frame change is read

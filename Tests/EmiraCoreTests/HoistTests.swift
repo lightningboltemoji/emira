@@ -118,6 +118,29 @@ import Testing
         #expect(s.hoists.isEmpty)                           // off the screen: nothing even to prepare
     }
 
+    /// A float its app has stopped drawing without closing — ordered out, or faded to nothing, and kept.
+    /// A picture of it would stand over the desktop showing a window nobody can see, and a click on the
+    /// picture would hand focus to it. It is off the screen until the window server draws it again.
+    @Test func aFloatTheServerStoppedDrawingIsNotHoisted() {
+        var s = Self.floatOverATile()
+        s = EngineFix.run(s, [.windowShown(WindowId(2), false)]).0
+        #expect(s.hoists.isEmpty)
+        #expect(Engine.reduce(s, .hoistClicked(WindowId(2))).1.isEmpty, "and nothing is left to click")
+
+        // The same window drawn again — a reminder that comes back is the window that left.
+        s = EngineFix.run(s, [.windowShown(WindowId(2), true)]).0
+        #expect(Self.shown(s) == [WindowId(2)])
+    }
+
+    /// The fact is about where a window the app places is. A tiled window's place is the strip's, which
+    /// the last placement pass already answered.
+    @Test func aTiledWindowTheServerStoppedDrawingKeepsItsPlace() {
+        var s = Self.floatOverATile()
+        s = EngineFix.run(s, [.windowShown(WindowId(1), false)]).0
+        #expect(s.world.isOnScreen(WindowId(1)))
+        #expect(Self.shown(s) == [WindowId(2)])
+    }
+
     /// The float leaving takes its hoist with it — the shell is told by the same effect that would have
     /// placed it, so nothing has to notice the destroy on its own.
     @Test func aDestroyedFloatIsUnhoistedByTheSameEffect() {

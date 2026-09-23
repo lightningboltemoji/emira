@@ -119,6 +119,9 @@ public final class AXEnumerator {
         /// Windows of the scanned apps the window server lists but AX did not describe — one that
         /// appeared between the two reads, or one with unreadable AX attributes. A reason to ask again.
         public let unclaimed: Int
+        /// `unbound` by element, per scanned app — what a later scan recognises the same window by, which
+        /// the title and frame above cannot be trusted to do.
+        let rejected: [pid_t: Set<AXWindow>]
 
         public var scannedApps: Int { apps.count }
         public var boundWindows: Int { snapshots.count + rebound.count }
@@ -157,6 +160,21 @@ public final class AXEnumerator {
         }
     }
 
+    /// The windows the caller has stopped trying to bind, which the join therefore does not read as an
+    /// arrival it has yet to place: window-list entries by number, AX windows by element. Whether a
+    /// window is one of these is a question about its history, which a single scan does not have.
+    public struct Unmanageable: Sendable, Equatable {
+        public var entries: Set<CGWindowID>
+        public var windows: Set<AXWindow>
+
+        public init(entries: Set<CGWindowID> = [], windows: Set<AXWindow> = []) {
+            self.entries = entries
+            self.windows = windows
+        }
+
+        public static let none = Unmanageable()
+    }
+
     private let source: any WindowSource
     private let registry: WindowRegistry
 
@@ -175,13 +193,14 @@ public final class AXEnumerator {
     ///
     /// The fan-out is deliberately not sequential: apps are independent processes with independent main
     /// run loops, so scanning at once costs the *maximum* of their latencies rather than the sum.
-    public func enumerate(apps targets: [ScanTarget],
+    public func enumerate(apps targets: [ScanTarget], ignoring unmanageable: Unmanageable = .none,
                           completion: @escaping @MainActor (Report) -> Void) {
         guard !targets.isEmpty else {
             // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
             // that never fires would leave the daemon waiting forever.
             completion(Report(snapshots: [], rebound: [], succeeded: [], departed: [], undescribed: [],
-                              apps: [], incompleteApps: [], seenWindows: 0, unbound: [], unclaimed: 0))
+                              apps: [], incompleteApps: [], seenWindows: 0, unbound: [], unclaimed: 0,
+                              rejected: [:]))
             return
         }
 
@@ -191,7 +210,7 @@ public final class AXEnumerator {
                 gather.answers[target.pid] = answer
                 gather.pending -= 1
                 guard gather.pending == 0 else { return }
-                completion(finish(gather.answers, apps: targets))
+                completion(finish(gather.answers, apps: targets, ignoring: unmanageable))
             }
         }
     }
@@ -213,7 +232,8 @@ public final class AXEnumerator {
     /// The join cannot reach across processes: `bind` narrows candidates by owner before it compares
     /// frames, and a `CGWindowID` belongs to one process. So per-app costs no outcome, and buys each app
     /// a list read beside its own AX reads.
-    private func finish(_ answers: [pid_t: ScanAnswer], apps: [ScanTarget]) -> Report {
+    private func finish(_ answers: [pid_t: ScanAnswer], apps: [ScanTarget],
+                        ignoring unmanageable: Unmanageable) -> Report {
         var snapshots: [WindowSnapshot] = []
         var rebound: [WindowId] = []
         var succeeded: [WindowId] = []
@@ -223,11 +243,12 @@ public final class AXEnumerator {
         var incompleteApps: [ScanTarget] = []
         var seenWindows = 0
         var unclaimed = 0
+        var rejected: [pid_t: Set<AXWindow>] = [:]
 
         for target in apps {
             let answer = answers[target.pid] ?? ScanAnswer(windows: [], entries: [])
             seenWindows += answer.windows.count
-            let outcome = join(answer, of: target)
+            let outcome = join(answer, of: target, ignoring: unmanageable)
 
             snapshots += outcome.snapshots
             rebound += outcome.rebound
@@ -236,6 +257,7 @@ public final class AXEnumerator {
             undescribed += outcome.undescribed
             unbound += outcome.unbound
             unclaimed += outcome.unclaimed
+            if !outcome.rejected.isEmpty { rejected[target.pid] = outcome.rejected }
             if outcome.isIncomplete { incompleteApps.append(target) }
         }
 
@@ -244,7 +266,7 @@ public final class AXEnumerator {
                       rebound: rebound,
                       succeeded: succeeded.sorted(), departed: departed, undescribed: undescribed,
                       apps: apps, incompleteApps: incompleteApps, seenWindows: seenWindows,
-                      unbound: unbound, unclaimed: unclaimed)
+                      unbound: unbound, unclaimed: unclaimed, rejected: rejected)
     }
 
     /// `snapshots` in the order the desktop stacks them, back to front — along `entries`, the window
@@ -278,6 +300,7 @@ public final class AXEnumerator {
         var departed: [WindowId] = []
         var undescribed: [WindowId] = []
         var unbound: [Report.Unbound] = []
+        var rejected: Set<AXWindow> = []
         var unclaimed = 0
         /// Whether this app is worth asking again — the retry's target set is built from this.
         var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 || !undescribed.isEmpty }
@@ -288,7 +311,8 @@ public final class AXEnumerator {
     /// A window we already know is never re-joined: the two sides of the join are read at different
     /// instants and *we* are what moves windows in between, so under a burst of window creation a stale
     /// read can report window A at the frame B has since taken and match B's entry uniquely.
-    private func join(_ answer: ScanAnswer, of target: ScanTarget) -> AppOutcome {
+    private func join(_ answer: ScanAnswer, of target: ScanTarget,
+                      ignoring unmanageable: Unmanageable) -> AppOutcome {
         var outcome = AppOutcome()
 
         var fresh: [ScannedWindow] = []
@@ -324,9 +348,18 @@ public final class AXEnumerator {
         // what a successor looks like a moment before we can see it. Either way the app is skipped here
         // and `isIncomplete` asks again. A tab group always leaves its selected tab behind, so the case
         // this exists for never rides on a scan that came back short.
+        //
+        // **A disagreement the caller has written off is not that race** (`unmanageable`): a successor is
+        // moments old, and a window the app keeps for good would hold its every departure for as long as
+        // it lives.
         let matched = Set(binding.matches.map(\.number))
-        let disagrees = !binding.rejections.isEmpty
-            || available.contains { $0.isOnScreen && !matched.contains($0.number) }
+        let unplacedArrival = binding.rejections.contains {
+            !unmanageable.windows.contains(fresh[$0.observed].element)
+        }
+        let unclaimedEntry = available.contains {
+            $0.isOnScreen && !matched.contains($0.number) && !unmanageable.entries.contains($0.number)
+        }
+        let disagrees = unplacedArrival || unclaimedEntry
         let listed = Set(outcome.rebound)
         let departures = answer.windows.isEmpty || disagrees ? [] : registry.records(ofApps: [target.pid])
             .filter { !listed.contains($0.id) }
@@ -391,6 +424,7 @@ public final class AXEnumerator {
             return Report.Unbound(bundleId: observed.bundleId, title: observed.title,
                                   frame: observed.frame, reason: rejection.reason)
         }
+        outcome.rejected = Set(binding.rejections.map { fresh[$0.observed].element })
 
         // The mirror image of `unbound`, feeding the same bounded retry. Only on-screen entries count:
         // ordinary apps carry layer-0 entries that are not windows and never will be (Ghostty, Safari and

@@ -62,13 +62,25 @@ public struct WindowListEntry: Sendable, Equatable {
     /// of evidence: an app can carry two layer-0 entries with byte-identical bounds, only one of them
     /// live.
     public let isOnScreen: Bool
+    /// The opacity the window server composites it at (`kCGWindowAlpha`). What `isOnScreen` cannot say:
+    /// an app can fade a window to nothing and keep it, and the server then lists it on screen still.
+    public let alpha: Double
 
-    public init(number: CGWindowID, pid: pid_t, frame: Rect, isOnScreen: Bool = true) {
+    public init(number: CGWindowID, pid: pid_t, frame: Rect, isOnScreen: Bool = true, alpha: Double = 1) {
         self.number = number
         self.pid = pid
         self.frame = frame
         self.isOnScreen = isOnScreen
+        self.alpha = alpha
     }
+
+    /// Whether anyone can see it: on screen, and drawn at more than `invisibleAlpha`.
+    public var isDrawn: Bool { isOnScreen && alpha > Self.invisibleAlpha }
+
+    /// The alpha at and under which a window shows nothing. Not zero, because a fade does not end
+    /// there: measured, AppKit's own fade on `orderOut` reads 0.0008 on its last frame before the
+    /// server takes the window off screen, and an app's own fade lands wherever its curve does.
+    public static let invisibleAlpha = 0.01
 
     /// The current window list, ordinary application windows only.
     ///
@@ -92,7 +104,8 @@ public struct WindowListEntry: Sendable, Equatable {
                 number: number, pid: pid,
                 frame: Rect(x: Double(rect.minX), y: Double(rect.minY),
                             width: Double(rect.width), height: Double(rect.height)),
-                isOnScreen: info[kCGWindowIsOnscreen as String] as? Bool ?? false)
+                isOnScreen: info[kCGWindowIsOnscreen as String] as? Bool ?? false,
+                alpha: info[kCGWindowAlpha as String] as? Double ?? 1)
         }
     }
 

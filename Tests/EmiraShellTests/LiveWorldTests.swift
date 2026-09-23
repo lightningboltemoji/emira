@@ -2087,6 +2087,117 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect((world.windows.scanCounts[200] ?? 0) == exhausted + 1)
     }
 
+    // An app that keeps a window emira will never manage makes every scan of it look like a successor
+    // still to be placed, and that holds every departure of the app — so a window that closed unheard
+    // would stay on the strip for as long as the app lives. Written off on reconciliation's budget.
+
+    @Test func aWindowThatClosedUnheardLeavesBesideAWindowItsAppNeverDescribes() {
+        let world = LiveWorld()
+        // TextEdit keeps an on-screen window AX never describes.
+        world.windows.entries.append(WindowListEntry(number: 9, pid: 200, frame: rect(2100)))
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "two" }
+
+        for _ in 1..<WorldWatcher.maxReconcileRounds { world.heartbeat.beat() }
+        #expect(world.registry.record(id) != nil, "young enough to be a successor, so it holds")
+
+        world.heartbeat.beat()
+        #expect(world.recorder.events.contains(.windowDestroyed(id)))
+        #expect(world.registry.record(id) == nil)
+    }
+
+    @Test func aWindowThatClosedUnheardLeavesBesideAWindowItsAppNeverBinds() {
+        let world = LiveWorld()
+        // TextEdit describes a window no window-list entry stands at, and does every time it is asked.
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 9, bundle: "com.apple.TextEdit", title: "chrome", frame: rect(2100, 500)))
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3
+                ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), isOnScreen: false) : $0
+        }
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "two" }
+
+        world.heartbeat.beat()
+        #expect(world.registry.record(id) != nil)
+
+        for _ in 1..<WorldWatcher.maxReconcileRounds { world.heartbeat.beat() }
+        #expect(world.recorder.events.contains(.windowDestroyed(id)))
+    }
+
+    // An app can stop drawing a window and keep it — ordered out, or faded to nothing — and nothing is
+    // posted either way. The window server is the only witness, so the watcher reads it and says so.
+
+    @Test func aWindowTheServerStopsDrawingIsReportedOnceAndBackAgain() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "two"))
+        func drawn(_ alpha: Double) {
+            world.windows.entries = world.windows.entries.map {
+                $0.number == 3 ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), alpha: alpha) : $0
+            }
+        }
+        func shown() -> [Event] {
+            world.recorder.events.filter { if case .windowShown = $0 { true } else { false } }
+        }
+
+        drawn(0)                                                  // faded out, still on screen
+        world.heartbeat.beat()
+        world.heartbeat.beat()
+        #expect(shown() == [.windowShown(id, false)], "said once, however many rounds read it")
+
+        drawn(1)
+        world.heartbeat.beat()
+        #expect(shown() == [.windowShown(id, false), .windowShown(id, true)])
+    }
+
+    @Test func aFocusReportAsksAgainOnceAFadeHasHadTimeToFinish() {
+        // A reminder snoozed hands focus back as it fades: read at the report, it is still drawn, and
+        // read at the next reconciliation, its picture has stood over the desktop for seconds.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+
+        world.watcher.handle(.focusMoved(one))
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3 ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), alpha: 0) : $0
+        }
+        #expect(!world.recorder.events.contains(.windowShown(two, false)), "not before the fade")
+
+        world.scheduler.fire(after: WorldWatcher.fadeAllowance)
+        #expect(world.recorder.events.contains(.windowShown(two, false)))
+    }
+
+    @Test func theFadeCheckWaitsOutAFrameLoopRatherThanReadingThroughIt() {
+        // The list read waits on our own pending frame, so it is taken between transitions, never in one.
+        let world = LiveWorld()
+        var painting = true
+        world.watcher.isPainting = { painting }
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+
+        world.watcher.handle(.focusMoved(one))
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 3 ? WindowListEntry(number: 3, pid: 200, frame: rect(1400), alpha: 0) : $0
+        }
+        world.scheduler.fire(after: WorldWatcher.fadeAllowance)
+        #expect(!world.recorder.events.contains(.windowShown(two, false)), "not while a frame is in flight")
+
+        painting = false
+        world.scheduler.fire(after: WorldWatcher.fadeAllowance)
+        #expect(world.recorder.events.contains(.windowShown(two, false)))
+    }
+
     @Test func everyManagedWindowsObserverIsOfferedAgainEveryRound() {
         // `AXObserverAddNotification` is a round trip a busy app answers `.cannotComplete`, and the
         // rollback that lets it be retried is only reached by a scan. Offered here instead, where the

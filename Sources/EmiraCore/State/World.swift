@@ -209,6 +209,10 @@ public struct World: Sendable, Equatable, Codable {
     /// that blocks for as long as another app's animation runs. Absent reads as 0, below everything
     /// focused and above nothing, so a desktop nothing has focused knows of no window behind another.
     public private(set) var focusedAt: [WindowId: Int] = [:]
+    /// The windows the window server is not drawing — ordered out, or drawn fully transparent — while
+    /// still alive. The app's to do and nobody's to announce, so it is a reading (`Event.windowShown`)
+    /// rather than a notification; `isOnScreen` is its reader.
+    public private(set) var unshown: Set<WindowId> = []
     /// The counter behind `focusedAt`. Monotonic and never reset — it orders the session rather than the
     /// windows in it, so two windows can never share a rank.
     private var focusClock = 0
@@ -258,6 +262,7 @@ public struct World: Sendable, Equatable, Codable {
         floating[id] = nil
         pins[id] = nil
         focusedAt[id] = nil
+        unshown.remove(id)
         pruneTiledFocus()
         if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
@@ -399,6 +404,12 @@ public struct World: Sendable, Equatable, Codable {
         lastTiledFocus = nil
     }
 
+    /// Fold `Event.windowShown`.
+    public mutating func setShown(_ id: WindowId, _ shown: Bool) {
+        guard windows[id] != nil else { return }
+        if shown { unshown.remove(id) } else { unshown.insert(id) }
+    }
+
     /// Fold `Event.windowMinimized` / `Event.windowDeminimized`.
     public mutating func setMinimized(_ id: WindowId, _ minimized: Bool) {
         windows[id]?.isMinimized = minimized
@@ -494,8 +505,9 @@ public struct World: Sendable, Equatable, Codable {
         guard let window = windows[id] else { return false }
         // Nowhere on the screen for a reason that has nothing to do with the layout.
         guard !window.isMinimized, !isAppHidden(of: id) else { return false }
-        // A window emira does not place is wherever its app put it, which is in view.
-        guard participatesInTiling(id) else { return true }
+        // A window emira does not place is wherever its app put it, which is in view — unless the app
+        // has stopped drawing it without closing it, which only the window server can say.
+        guard participatesInTiling(id) else { return !unshown.contains(id) }
         return placedOnScreen.contains(id)
     }
 

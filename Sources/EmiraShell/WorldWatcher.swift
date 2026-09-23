@@ -65,6 +65,10 @@ public final class WorldWatcher {
     /// its cost when it fires is one dead window on the strip for a quarter second.
     public static let successionGrace: TimeInterval = 0.25
 
+    /// How long after a focus report the window server is asked what it is still drawing
+    /// (`checkShownAfterFade`): long enough for a fade to finish, which AppKit's own does in under 0.3 s.
+    public static let fadeAllowance: TimeInterval = 0.4
+
     /// How long a released drag's frame reports must go quiet before it counts as finished. An app is
     /// still draining the resize when the button comes up, so the size a window was dragged to is in
     /// neither AX nor the window server until some milliseconds after the release.
@@ -162,6 +166,21 @@ public final class WorldWatcher {
     /// reconciliations have asked about each. Cleared per number as soon as it binds or goes away, so a
     /// window that reappears at a recycled number starts with a full budget.
     private var unaccounted: [CGWindowID: Int] = [:]
+
+    /// AX windows each app has described that have never bound, and the reconciliation round each was
+    /// first refused in. Dropped per element the first time a scan of its app does not refuse it.
+    private var rejectedSince: [pid_t: [AXWindow: Int]] = [:]
+
+    /// The managed windows this watcher has told the core the window server is not drawing
+    /// (`Event.windowShown`) — kept so a reading that has not changed is not re-announced.
+    private var unshown: Set<WindowId> = []
+
+    /// Bumped by every focus report, so only the latest one's fade check reads the list.
+    private var shownCheck = 0
+
+    /// How many reconciliations have read the window list — the clock `rejectedSince` is kept in, so a
+    /// rejection is written off on the same timescale as an unaccounted entry.
+    private var reconcileRound = 0
 
     /// Managed windows the window server has stopped showing, and how many consecutive reconciliations
     /// have asked their app about them. The budget is `unaccounted`'s, and for its reason: a window on
@@ -265,6 +284,7 @@ public final class WorldWatcher {
             rescan[pid] = nil
             hidden[pid] = nil
             pendingArrivals.remove(pid)
+            rejectedSince[pid] = nil
             source.unwatch(app: pid)
             // Window by window: `World` has no notion of an app dying, only of windows going away.
             // Nothing here waits on a successor — the process that would have produced one is gone.
@@ -274,6 +294,7 @@ public final class WorldWatcher {
                 vanishing.remove(id)
                 stillness[id] = nil
                 offGlass[id] = nil
+                unshown.remove(id)
                 emit(.windowDestroyed(id))
             }
 
@@ -461,6 +482,7 @@ public final class WorldWatcher {
         stillness[id] = nil
         minimized.remove(id)
         offGlass[id] = nil
+        unshown.remove(id)
         hidden[record.pid]?.remove(id)
         emit(.windowDestroyed(id))
     }
@@ -504,6 +526,7 @@ public final class WorldWatcher {
         }
 
         guard !isPainting() else { return }
+        reconcileRound += 1
 
         let list = enumerator.windowList()
         // An empty list is a failed read, not an empty desktop — `WindowListEntry.current()` answers `[]`
@@ -529,6 +552,8 @@ public final class WorldWatcher {
             guard let record = registry.record(id), !listed.contains(record.number) else { continue }
             vanish(id)
         }
+
+        noteShown(list)
 
         let showing = Set(list.lazy.filter(\.isOnScreen).map(\.number))
 
@@ -609,9 +634,19 @@ public final class WorldWatcher {
         }
         guard !admitted.isEmpty else { return }
         for target in admitted { scanning[target.pid] = alreadyOpen }
-        enumerator.enumerate(apps: admitted) { [weak self] report in
+        enumerator.enumerate(apps: admitted, ignoring: unmanageable) { [weak self] report in
             self?.absorb(report, attempt: attempt, alreadyOpen: alreadyOpen)
         }
+    }
+
+    /// What this watcher has stopped trying to bind, which a scan must not mistake for an arrival still to
+    /// place (`AXEnumerator.join`): an entry or an AX window refused for `maxReconcileRounds` rounds.
+    private var unmanageable: AXEnumerator.Unmanageable {
+        let entries = unaccounted.filter { $0.value >= Self.maxReconcileRounds }.keys
+        let windows = rejectedSince.values.flatMap { since in
+            since.filter { reconcileRound - $0.value + 1 >= Self.maxReconcileRounds }.keys
+        }
+        return AXEnumerator.Unmanageable(entries: Set(entries), windows: Set(windows))
     }
 
     /// Take a scan's answer into the world: watch what it covered, announce what is new, and decide
@@ -633,6 +668,16 @@ public final class WorldWatcher {
         for target in report.apps {
             if incomplete.contains(target.pid) { pendingArrivals.insert(target.pid) }
             else { pendingArrivals.remove(target.pid) }
+        }
+
+        // Every refusal is dated by the round it was first seen in, and forgets that date the first time
+        // a scan does not repeat it — so what `unmanageable` writes off is a refusal that has stood for
+        // the whole budget, never one that keeps coming back.
+        for target in report.apps {
+            let refused = report.rejected[target.pid] ?? []
+            var since = (rejectedSince[target.pid] ?? [:]).filter { refused.contains($0.key) }
+            for window in refused where since[window] == nil { since[window] = reconcileRound }
+            rejectedSince[target.pid] = since.isEmpty ? nil : since
         }
 
         // Watch before announcing: dispatching `windowCreated` pumps the reducer synchronously and its
@@ -773,6 +818,7 @@ public final class WorldWatcher {
     /// reveals); the opposite mistake would drop a real window off the strip, which is why this never
     /// synthesizes a `windowVanished`.
     private func resolveFocus(_ id: WindowId?) {
+        checkShownAfterFade()
         switch intent.resolve(id) {
         // News about the past. `focus` is deliberately not advanced: it names the window a *new* report
         // displaces, and a window we stopped considering focused two presses ago is not that.
@@ -804,6 +850,41 @@ public final class WorldWatcher {
         source.isAlive(displaced) { [weak self] alive in
             guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { return }
             emit(.focusChanged(id, origin: .system))
+        }
+    }
+
+    // Drawn (the fact no notification carries)
+
+    /// Tell the core which managed windows the window server has started or stopped drawing — read, since
+    /// an app that orders a window out or fades it away posts nothing. Every managed window: which ones
+    /// emira places is the core's to know, and one the list has dropped is `reconcile`'s.
+    private func noteShown(_ list: [WindowListEntry]) {
+        let drawn = Dictionary(list.map { ($0.number, $0.isDrawn) }, uniquingKeysWith: { first, _ in first })
+        for id in registry.ids.sorted() where !vanishing.contains(id) {
+            guard let number = registry.record(id)?.number, let shown = drawn[number],
+                  shown == unshown.contains(id)          // i.e. the reading has changed
+            else { continue }
+            if shown { unshown.remove(id) } else { unshown.insert(id) }
+            emit(.windowShown(id, shown))
+        }
+    }
+
+    /// Read the list once a fade has had time to finish after a focus report — the moment a float can be
+    /// buried, and when an app hands focus back from a window it is fading out. Only the latest report's.
+    private func checkShownAfterFade() {
+        shownCheck &+= 1
+        checkShown(after: Self.fadeAllowance, generation: shownCheck)
+    }
+
+    /// One attempt of `checkShownAfterFade`, behind `reconcile`'s paint gate and for its reason: a focus
+    /// report usually starts a transition, and the read waits on every frame of it.
+    private func checkShown(after delay: TimeInterval, generation mine: Int) {
+        scheduler.schedule(after: delay) { [weak self] in
+            guard let self, !isStopped, shownCheck == mine else { return }
+            guard !isPainting() else { return checkShown(after: delay, generation: mine) }
+            let list = enumerator.windowList()
+            guard !list.isEmpty else { return }         // a failed read, for `reconcile`'s reason
+            noteShown(list)
         }
     }
 
