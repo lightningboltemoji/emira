@@ -176,6 +176,31 @@ public struct EdgeInsets: Sendable, Equatable, Codable {
     }
 }
 
+/// Some of an inset's edges: what a file says about one when it need not say all four. A `nil` edge
+/// is one it leaves as it was.
+public struct EdgeInsetsPatch: Sendable, Equatable, Codable {
+    public var top: Double?
+    public var left: Double?
+    public var bottom: Double?
+    public var right: Double?
+
+    public init(top: Double? = nil, left: Double? = nil, bottom: Double? = nil, right: Double? = nil) {
+        self.top = top
+        self.left = left
+        self.bottom = bottom
+        self.right = right
+    }
+
+    /// Whether this sets no edge at all.
+    public var isEmpty: Bool { top == nil && left == nil && bottom == nil && right == nil }
+
+    /// `insets`, with every edge this sets replaced.
+    public func applied(to insets: EdgeInsets) -> EdgeInsets {
+        EdgeInsets(top: top ?? insets.top, left: left ?? insets.left,
+                   bottom: bottom ?? insets.bottom, right: right ?? insets.right)
+    }
+}
+
 //
 // Read only by the compositor; the arithmetic lives here because it is pure and testable headlessly.
 

@@ -115,12 +115,25 @@ import EmiraCore
     workspace = "z"
     """#
 
+    /// `[[display]]` — `[layout]`'s own keys again, under a repeating table of their own.
+    static let displays = #"""
+    [layout]
+    column-gap = 20
+    outer-gap = 20
+
+    [[display]]
+    name = "Built-in Retina Display"
+    column-gap = 8
+    outer-gap = 8
+    """#
+
     static let corpus: [File] = [
         File(name: "Tanner's own file", text: real),
         File(name: "CRLF", text: crlf),
         File(name: "no trailing newline", text: noTrailingNewline),
         File(name: "trailing comments", text: trailingComments),
         File(name: "window rules", text: windowRules),
+        File(name: "displays", text: displays),
         File(name: "literal strings", text: literalStrings),
         File(name: "empty", text: ""),
         File(name: "nothing but a comment", text: "# not a setting in sight\n"),
@@ -262,6 +275,16 @@ import EmiraCore
         try document.set("layout.column-gap", to: .number(6))
         #expect(document.rendered == Self.windowRules + "\n\n[layout]\ncolumn-gap = 6\n")
         #expect(document.config.windowRules.count == 2)
+    }
+
+    /// A display block spells `column-gap` exactly as `[layout]` does, and an edit to `[layout]`'s is
+    /// an edit to that line alone.
+    @Test func aLayoutKeyIsEditedWhereLayoutWritesItNotWhereADisplayDoes() throws {
+        var document = try ConfigDocument(Self.displays)
+        try document.set("layout.column-gap", to: .number(12))
+        #expect(Self.changedLines(Self.displays, document.rendered) == ["column-gap = 12"])
+        #expect(document.config.columnGap == 12)
+        #expect(document.config.displays.first?.columnGap == 8)
     }
 
     /// A GUI gets the file's own diagnostic instead of a second validator to keep in step with the

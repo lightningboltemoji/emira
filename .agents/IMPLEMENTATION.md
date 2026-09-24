@@ -889,10 +889,10 @@ displays by a name, rather than a second opinion about which display is looking 
 Displays as **containers of workspaces**: a workspace lives on exactly one monitor, and a verb naming a
 workspace works whichever monitor holds it. Its own container beside `Workspaces`, joined to it by a
 `WorkspaceName` exactly as `World` and `Workspaces` are joined by a `WindowId`. Geometry is _not_ here —
-`World.monitors` holds each display's frame, struts and whether macOS calls it **main**, because those are
-what observation refreshes — and keeping the last there is also what lets `setMonitors` read the *previous*
-main before folding the new report over it, rather than remembering one separately. `State.metrics(of:)` is
-where the two meet.
+`World.monitors` holds each display's frame, struts, name and whether macOS calls it **main**, because those
+are what observation refreshes — and keeping the last there is also what lets `setMonitors` read the
+*previous* main before folding the new report over it, rather than remembering one separately.
+`State.metrics(of:)` is where the two meet, and where a `[[display]]` block naming the display applies (§9).
 
 Four invariants, the first two kept structurally rather than checked:
 
@@ -1962,9 +1962,10 @@ thread never blocks on a client. The idle deadline bounds a peer that never spea
 never a request already accepted — an answer owed is delivered however long the hop to main takes, because how
 busy the daemon is was never the peer's doing.
 
-**`watch` is the desktop for someone else to show.** A bar or a script gets `DesktopStatus` — per display, the
-shown workspace, its columns named the way the names guide names them, pins; focus; the occupied workspaces;
-and `moving` — as one line of JSON on connect and another whenever it changes. It is a public contract with its
+**`watch` is the desktop for someone else to show.** A bar or a script gets `DesktopStatus` — per display, its
+name, the shown workspace, its columns named the way the names guide names them, pins; focus; the occupied
+workspaces; and `moving` — as one line of JSON on connect and another whenever it changes. The name is read
+off `State`, never asked of AppKit a second time, so it is the name a `[[display]]` block matches. It is a public contract with its
 own `version`, which is why it is not `State`, and it carries **discrete facts only**: no frame, offset or
 title, so a command costs a watcher about two lines (the change, then `moving` settling) rather than one per
 tick. Every line is a whole snapshot, and that buys the transport its two rules. **A slow watcher is sent the
@@ -2119,7 +2120,7 @@ and a save leaves the window up.
   `ConfigSchema.settings` filtered by section; a bespoke surface has no `kind` for `ControlFactory` to switch
   on, so each editor it gets is written — `OuterGapsControl` is four edges on one row because the file spells
   one value five ways and four rows would say the opposite, and `KeysEditor` is the other.
-  `BespokeEditors.notEditable` names the one with no editor and why, and `BespokeTests` requires one or the
+  `BespokeEditors.notEditable` names the two with no editor and why, and `BespokeTests` requires one or the
   other. Both protocols exist for this: a `PanelRow` shows a draft, a `SettingControl` is a `PanelRow` that is
   exactly one setting.
 - **`[keys]` is the editor that is a whole surface.** `KeysEditor` is one `PanelRow` owning its
@@ -2328,11 +2329,12 @@ knows and reports whatever is left, so "which keys are valid" _is_ the reading c
 `[layuot]` is caught too. Silence is the failure mode that matters: a window manager that ignores `colum-gap` is
 one the user believes is broken.
 
-**The three the table can't describe are still a list.** `outer-gap` (one logical value with five spellings),
+**The four the table can't describe are still a list.** `outer-gap` (one logical value with five spellings),
 `[keys]` (an open table whose names the user invents — editable in the window, but by a written editor rather
-than by the fold) and `[[window-rules]]` (repeating, ordered, cross-validated) each keep a hand-written reader
+than by the fold), `[[window-rules]]` (repeating, ordered, cross-validated) and `[[display]]` (a partial
+`[layout]` per display) each keep a hand-written reader
 — but they are on `ConfigSchema.bespoke`, carrying a label, a sentence, a section, the documentation block, a
-sample that disagrees with the default, and the reason the table cannot hold them. Every consumer that walks `settings` has to decide what to do about these three, and before
+sample that disagrees with the default, and the reason the table cannot hold them. Every consumer that walks `settings` has to decide what to do about these, and before
 the list they each decided by hand: the generated document placed three named constants, the coverage test
 spelled three fragments into a string, and the settings window did nothing at all — which is how `outer-gap`
 came to have no control without anyone choosing that. `after` names the key a surface is written
@@ -2340,6 +2342,18 @@ directly behind, and the document and the panel both read it, so the three gaps 
 covered by an entry, claimed by a surface on that list, or on an explicit not-a-key list, so a new field cannot
 be added without a config story; `EmiraSettings` pins the second half, that a surface either builds an editor or
 is named with the reason it has none (§7).
+
+**A display may override what is resolved against its working area, and nothing else.** A `[[display]]`
+block names a display by what macOS calls it (`name`, or `name-regex`) and sets any of `column-gap`,
+`window-gap` and `outer-gap` there — `[layout]`'s own keys, read by `[layout]`'s own entries, so a bound and
+its sentence are stated once. Blocks apply in file order over `[layout]`, later ones winning key by key, and an
+outer-gap edge is a key of its own. They are resolved in exactly one place, `LayoutMetrics(config:display:…)`,
+whose `display` has no default, so a caller that means `[layout]` as written says `nil` rather than forgetting.
+The rule is what bounds the list: the layout kind is a workspace's (PRINCIPLES §1), the resize keys are about
+the hand, and the presets — metrics, and so inside the rule — wait on what a stored rung means on a ladder of
+another length. A block is **standing**, consulted every time its display is laid out, which a window rule may
+not be; a gap is no fact about a window, so there is no second authority for it to disagree with. The settings
+window edits and previews `[layout]` alone, and says why (`BespokeEditors.notEditable`).
 
 **Writing goes back through `ConfigDocument`, not through serializing.** It holds the text beside its parse and
 changes one value by splicing over the bytes that value occupies, so a file keeps its comments, ordering and
@@ -2401,7 +2415,7 @@ emira/
 └── Sources/
     ├── EmiraMotion/     Curve · Spring (analytic, closed-form) · Animator · MotionBlur (+ Smear, its envelope)
     ├── EmiraCore/       Geometry · Ids · WorkspaceName · Command · CommandSyntax · KeyChord
-    │                    Event · Effect · Config · Rules · Engine
+    │                    Event · Effect · Config · Rules · DisplayRules · Engine
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
     │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll

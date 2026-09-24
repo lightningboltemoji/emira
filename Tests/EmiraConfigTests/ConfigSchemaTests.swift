@@ -41,23 +41,26 @@ import EmiraCore
         """)
     }
 
-    /// The document is a config file, not prose about one — including the three hand-written blocks,
+    /// The document is a config file, not prose about one — including the four hand-written blocks,
     /// whose spellings are checked here rather than by the eye that typed them.
     @Test func theDocumentParses() throws {
         _ = try Config.parse(ConfigSchema.document)
     }
 
     /// …and it is the *defaults*, so a file that says none of it means exactly what it says. Everything
-    /// but the two sections that have no default: no chord is bound and no rule exists until asked.
+    /// but the three sections that have no default: no chord is bound, no rule exists and no display is
+    /// named until asked.
     @Test func theDocumentSaysNothingButTheDefaults() throws {
         let parsed = try Config.parse(ConfigSchema.document)
         var expected = Config()
         expected.keys = parsed.keys
         expected.windowRules = parsed.windowRules
+        expected.displays = parsed.displays
         #expect(parsed == expected)
 
         #expect(parsed.keys.count == 5)
         #expect(parsed.windowRules.count == 3)
+        #expect(parsed.displays.count == 2)
     }
 
     /// Every setting reaches the document, so a new entry cannot be added without being documented.
@@ -82,7 +85,7 @@ import EmiraCore
     }
 
     /// **Empty, and that is the claim**: every stored property of `Config` is either a schema entry or
-    /// one of the three sections the table doesn't describe. A field added here needs a reason in
+    /// one of the four sections the table doesn't describe. A field added here needs a reason in
     /// writing, and the bar is that the file genuinely may not decide it — the struts were the last
     /// entry, and they left `Config` entirely rather than staying as an exemption, because they are per
     /// display and live (`MonitorInfo.struts`).

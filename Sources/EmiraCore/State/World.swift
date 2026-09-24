@@ -109,12 +109,16 @@ public struct MonitorState: Sendable, Equatable, Codable {
     /// refreshes it — which is also what lets `setMonitors` read the *previous* main out of `World`
     /// before folding the new report over it, rather than remembering one separately.
     public var isMain: Bool
+    /// What macOS calls the display — the name a `[[display]]` block matches.
+    public var name: String
 
-    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false,
+                name: String = "") {
         self.id = id
         self.frame = frame
         self.struts = struts
         self.isMain = isMain
+        self.name = name
     }
 
     /// Where the strip is laid out on this display: its bounds minus its own chrome.
@@ -431,6 +435,7 @@ public struct World: Sendable, Equatable, Codable {
             record.frame = info.frame
             record.struts = info.struts
             record.isMain = info.isMain
+            record.name = info.name
             return record
         }
     }

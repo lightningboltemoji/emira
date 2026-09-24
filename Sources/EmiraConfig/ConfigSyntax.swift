@@ -14,7 +14,7 @@ import EmiraCore
 // as `config.example.toml`. It used to be a hand-written block here, which is a restatement of the
 // reader that can silently drift from it.
 //
-// Three sections the table deliberately does not describe are read below by a function named for
+// Four sections the table deliberately does not describe are read below by a function named for
 // each, because forcing them into it would produce a worse table and a worse GUI both:
 //
 // `[keys]` is the one **open** table: its names are chords the user invents (`KeyChord.swift`) and
@@ -25,12 +25,13 @@ import EmiraCore
 // runs to the end of the line, so a shell line keeps its own spacing and quoting; in a `"…"` string
 // the inner double quotes are escaped (`\"`), and the daemon's PATH is launchd's, not the shell's.
 //
-// `[[window-rules]]` is the one **repeating** table, and the only place order in the file means
-// anything: matching rules apply top to bottom, later ones overriding earlier ones field by field
-// (`Rules.swift`). Regular expressions are compiled here rather than at match time, so a broken
-// pattern is a diagnostic about a line in a file the user is looking at instead of a rule that
-// quietly never fires. Write them in `'literal strings'` — a `"…"` string would need every backslash
-// doubled, and `"\d"` isn't an escape this grammar admits at all.
+// `[[window-rules]]` and `[[display]]` are the **repeating** tables, and the only places order in the
+// file means anything: matching blocks apply top to bottom, later ones overriding earlier ones field
+// by field (`Rules.swift`, `DisplayRules.swift`). A display block's gaps are `[layout]`'s own keys,
+// read by `[layout]`'s own entries. Regular expressions are compiled here rather than at match time,
+// so a broken pattern is a diagnostic about a line in a file the user is looking at instead of a rule
+// that quietly never fires. Write them in `'literal strings'` — a `"…"` string would need every
+// backslash doubled, and `"\d"` isn't an escape this grammar admits at all.
 //
 // `outer-gap` is spelled flat, never dotted: `layout.outer-gap.left` would parse (the grammar
 // flattens to dotted paths) but no reader looks at it, and it makes one key both a scalar and a
@@ -124,16 +125,16 @@ extension Config {
             try setting.apply(value, &config)
         }
 
-        // The three the table can't hold, each read by a function named for it. Called out here rather
+        // The four the table can't hold, each read by a function named for it. Called out here rather
         // than left as "whatever the loop didn't take", so the boundary is something you can see.
-        if let gaps = try table.edgeInsets("layout.outer-gap", default: config.outerGaps) {
-            config.outerGaps = gaps
-        }
+        config.outerGaps = try table.edgeInsets("layout.outer-gap").applied(to: config.outerGaps)
 
         table.acceptTable("keys")
         if let bindings = try table.keyBindings("keys") { config.keys = bindings }
 
         if let rules = try table.windowRules("window-rules") { config.windowRules = rules }
+
+        if let rules = try table.displayRules("display") { config.displays = rules }
 
         if let leftover = table.leftovers.first {
             throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
@@ -218,24 +219,23 @@ extension TOMLTable {
         return number
     }
 
-    /// A four-edge inset written as a base key plus per-side overrides: `outer-gap` sets all four,
-    /// `outer-gap-left` and its siblings replace one. `default` is what the per-side keys refine when
-    /// the base key is absent, which makes `outer-gap-left` alone mean "just the left edge" rather
-    /// than "left edge, zero elsewhere". `nil` when the file sets none of the five.
-    fileprivate mutating func edgeInsets(_ key: String, default fallback: EdgeInsets) throws -> EdgeInsets? {
-        let uniform = try number(key, atLeast: 0)
-        var insets = uniform.map(EdgeInsets.init(uniform:)) ?? fallback
-        var set = uniform != nil
+    /// A four-edge inset written as a base key plus per-side overrides: `outer-gap` sets all four and
+    /// `outer-gap-left` and its siblings replace one. A patch, so a side alone means that side of
+    /// whatever it is applied over. Empty when the file sets none of the five.
+    fileprivate mutating func edgeInsets(_ key: String) throws -> EdgeInsetsPatch {
+        var patch = EdgeInsetsPatch()
+        if let uniform = try number(key, atLeast: 0) {
+            patch = EdgeInsetsPatch(top: uniform, left: uniform, bottom: uniform, right: uniform)
+        }
         // Read order, not file order, decides which of two bad sides is reported.
-        let sides: [(String, WritableKeyPath<EdgeInsets, Double>)] = [
+        let sides: [(String, WritableKeyPath<EdgeInsetsPatch, Double?>)] = [
             ("top", \.top), ("left", \.left), ("bottom", \.bottom), ("right", \.right),
         ]
         for (name, edge) in sides {
             guard let value = try number("\(key)-\(name)", atLeast: 0) else { continue }
-            insets[keyPath: edge] = value
-            set = true
+            patch[keyPath: edge] = value
         }
-        return set ? insets : nil
+        return patch
     }
 
     /// One size on the same scale the cycles are written in (`presetCycle`) — a rule's `width`. The
@@ -317,13 +317,7 @@ extension TOMLTable {
     /// would apply to every window on the desktop, which nobody means) and a rule doing nothing.
     fileprivate mutating func windowRules(_ prefix: String) throws -> [WindowRule]? {
         guard let elements = takeArray(of: prefix) else {
-            // `[window-rules]` written singly parses fine and then goes nowhere, so say which it is
-            // rather than leaving the generic unknown-key complaint to imply the key is misspelled.
-            if let stray = leftovers.first(where: { $0.key == prefix || $0.key.hasPrefix(prefix + ".") }) {
-                throw ConfigSyntaxError.badValue(
-                    line: stray.line, key: prefix,
-                    message: "is a list of rules — write each one under its own '[[\(prefix)]]'")
-            }
+            try refuseSingleTable(prefix, listing: "rules")
             return nil
         }
 
@@ -365,6 +359,72 @@ extension TOMLTable {
             }
             return rule
         }
+    }
+
+    /// The `[[display]]` list, in file order — which is the order its blocks apply in. Each is read as
+    /// a little table of its own, as a window rule is, and refused for the same two shapes: naming no
+    /// display, and setting nothing.
+    fileprivate mutating func displayRules(_ prefix: String) throws -> [DisplayRule]? {
+        guard let elements = takeArray(of: prefix) else {
+            try refuseSingleTable(prefix, listing: "displays")
+            return nil
+        }
+
+        return try elements.map { element in
+            var body = element.table
+            var rule = DisplayRule()
+            do {
+                rule.name = try body.string("name")
+                rule.nameRegex = try body.pattern("name-regex")
+                rule.columnGap = try body.layout("column-gap", \.columnGap)
+                rule.windowGap = try body.layout("window-gap", \.windowGap)
+                rule.outerGaps = try body.edgeInsets("outer-gap")
+                if let leftover = body.leftovers.first {
+                    // A `[layout]` key no display overrides is a different mistake from a typo.
+                    guard ConfigSchema.setting(for: "layout.\(leftover.key)") != nil else {
+                        throw ConfigSyntaxError.unknownKey(line: leftover.line, key: leftover.key)
+                    }
+                    throw ConfigSyntaxError.badValue(
+                        line: leftover.line, key: leftover.key,
+                        message: "is set in [layout] for every display — a display can only set "
+                               + "column-gap, window-gap and outer-gap")
+                }
+            } catch let error as ConfigSyntaxError {
+                throw error.qualified(by: prefix)
+            }
+            guard rule.hasMatcher else {
+                throw ConfigSyntaxError.badValue(
+                    line: element.line, key: prefix,
+                    message: "must name a display — set name or name-regex")
+            }
+            guard rule.hasOverride else {
+                throw ConfigSyntaxError.badValue(
+                    line: element.line, key: prefix,
+                    message: "must set something — column-gap, window-gap or outer-gap")
+            }
+            return rule
+        }
+    }
+
+    /// `[prefix]` written singly where the file wants `[[prefix]]`: it parses fine and then goes
+    /// nowhere, so say which it is rather than leaving the unknown-key complaint to imply a misspelling.
+    private func refuseSingleTable(_ prefix: String, listing noun: String) throws {
+        guard let stray = leftovers.first(where: { $0.key == prefix || $0.key.hasPrefix(prefix + ".") })
+        else { return }
+        throw ConfigSyntaxError.badValue(
+            line: stray.line, key: prefix,
+            message: "is a list of \(noun) — write each one under its own '[[\(prefix)]]'")
+    }
+
+    /// A `[layout]` setting written somewhere else, read by the schema's own entry — so it is refused
+    /// there with the bound and the sentence `[layout]` refuses it with.
+    fileprivate mutating func layout<Value>(_ name: String, _ field: KeyPath<Config, Value>) throws -> Value? {
+        guard let setting = ConfigSchema.setting(for: "layout.\(name)"), let value = take(name) else {
+            return nil
+        }
+        var scratch = Config()
+        try setting.apply(value, spelled: name, &scratch)
+        return scratch[keyPath: field]
     }
 
     /// A plain string value.

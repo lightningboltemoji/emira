@@ -443,6 +443,9 @@ public struct Config: Sendable, Equatable, Codable {
     /// precedence order, since later matches win (`Rules.swift`). Consulted once per window, when emira
     /// first meets it, so editing this rearranges nothing that is already on screen.
     public var windowRules: [WindowRule]
+    /// The displays laid out differently from `[layout]` (`[[display]]`), in file order. Read through
+    /// `on(display:)` and nowhere else, so the fields above stay `[layout]`'s own.
+    public var displays: [DisplayRule]
 
     public init(
         defaultLayout: Layout.Kind = .strip,
@@ -477,7 +480,8 @@ public struct Config: Sendable, Equatable, Codable {
         trackpadScrollDirection: TrackpadScrollDirection = .standard,
         guide: GuideSettings = GuideSettings(),
         keys: [KeyBinding] = [],
-        windowRules: [WindowRule] = []
+        windowRules: [WindowRule] = [],
+        displays: [DisplayRule] = []
     ) {
         self.defaultLayout = defaultLayout
         self.widthPresets = widthPresets
@@ -509,22 +513,23 @@ public struct Config: Sendable, Equatable, Codable {
         self.guide = guide
         self.keys = keys
         self.windowRules = windowRules
+        self.displays = displays
     }
 }
 
 // The `Config → LayoutMetrics` mapping, here rather than beside `LayoutMetrics`: layout is geometry and
 // takes numbers, so `Layout.swift` naming `Config` would point the dependency the wrong way.
 //
-// Five of the nine inputs are the file's; the other four are the running desktop's, and default to
-// empty. That is not a stub — a caller with no world has no correction to apply and nothing parked, so
-// the empty is the honest answer rather than a placeholder for one.
+// Five of the nine inputs are the file's, as the named display sees it; the other four are the running
+// desktop's, and default to empty. That is not a stub — a caller with no world has no correction to
+// apply and nothing parked, so the empty is the honest answer rather than a placeholder for one.
 
 extension LayoutMetrics {
-    /// The metrics `config` asks for on a display whose working area is `workingArea`.
-    ///
-    /// The one place the file's geometry becomes the layout's, so a second caller cannot form a second
-    /// opinion of what `column-gap` means.
+    /// The metrics `config` asks for on the display called `display` (`nil`: `[layout]` as written). The
+    /// one place the file's geometry becomes the layout's, so a second caller cannot form a second
+    /// opinion of what `column-gap` means, or of which display's it is.
     public init(config: Config,
+                display: String?,
                 workingArea: Rect,
                 heightSelections: [WindowId: Int] = [:],
                 heightOverrides: [WindowId: PresetSize] = [:],
@@ -532,6 +537,7 @@ extension LayoutMetrics {
                 parkFloors: [WindowId: Double] = [:],
                 parkingLot: ParkingLot? = nil,
                 pins: [PinSide: PinBand] = [:]) {
+        let config = display.map(config.on(display:)) ?? config
         self.init(workingArea: workingArea,
                   widthPresets: config.widthPresets,
                   heightPresets: config.heightPresets,

@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import EmiraCore
 import EmiraProtocol
@@ -23,16 +22,12 @@ public final class DesktopPublisher {
     public weak var watchers: (any DesktopWatchers)?
 
     private let names: GuideNames
-    private let displayName: @MainActor (MonitorId) -> String?
-    /// Resolved once per display: a screen's name does not change while it is attached.
-    private var screens: [MonitorId: String] = [:]
     /// The snapshot every watcher has, or `nil` while there are none — the next one to attach is sent a
     /// fresh one, and the drains between built nothing to compare against.
     private var last: DesktopStatus?
 
-    public init(names: GuideNames, displayName: @escaping @MainActor (MonitorId) -> String?) {
+    public init(names: GuideNames) {
         self.names = names
-        self.displayName = displayName
     }
 
     /// One drain's worth of state.
@@ -56,25 +51,10 @@ public final class DesktopPublisher {
     }
 
     private func status(of state: State) -> DesktopStatus {
-        DesktopStatus(state: state, name: { names.name(for: $0) }, displayName: { screen($0) })
-    }
-
-    /// A display's name once something answers, and its number until then.
-    private func screen(_ monitor: MonitorId) -> String {
-        if let known = screens[monitor] { return known }
-        guard let name = displayName(monitor) else { return "Display \(monitor.raw)" }
-        screens[monitor] = name
-        return name
+        DesktopStatus(state: state, name: { names.name(for: $0) })
     }
 
     private static func reply(_ status: DesktopStatus) -> Reply? {
         (try? status.json()).map(Reply.desktop(json:))
-    }
-
-    /// What macOS calls a display, for the daemon's `displayName`. The id the core knows a screen by is
-    /// `ScreenGeometry`'s, so the lookup goes through the same reader.
-    public static func screenName(of monitor: MonitorId) -> String? {
-        NSScreen.screens.enumerated()
-            .first { ScreenGeometry.monitorId(of: $1, at: $0) == monitor }?.1.localizedName
     }
 }

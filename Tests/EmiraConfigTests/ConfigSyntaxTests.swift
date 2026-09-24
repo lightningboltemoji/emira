@@ -864,6 +864,69 @@ import EmiraCore
                  + "write each one under its own '[[window-rules]]'")
     }
 
+    // [[display]]
+
+    @Test func displayBlocksParseInFileOrder() throws {
+        let config = try Self.parse("""
+        [layout]
+        column-gap = 16
+
+        [[display]]
+        name = "Built-in Retina Display"
+        column-gap = 4
+        window-gap = 2
+        outer-gap = 8
+        outer-gap-top = 0
+
+        [[display]]
+        name-regex = '^DELL '
+        outer-gap-left = 30
+        """)
+        #expect(config.columnGap == 16)
+        #expect(config.displays == [
+            DisplayRule(name: "Built-in Retina Display", columnGap: 4, windowGap: 2,
+                        outerGaps: EdgeInsetsPatch(top: 0, left: 8, bottom: 8, right: 8)),
+            DisplayRule(nameRegex: "^DELL ", outerGaps: EdgeInsetsPatch(left: 30)),
+        ])
+    }
+
+    @Test func aDisplayBlockHasToNameADisplayAndSetSomething() {
+        #expect(Self.diagnostic("[[display]]\ncolumn-gap = 4\n")?.description
+                == "line 1: 'display' must name a display — set name or name-regex")
+        #expect(Self.diagnostic("[[display]]\nname = \"Built-in Retina Display\"\n")?.description
+                == "line 1: 'display' must set something — column-gap, window-gap or outer-gap")
+    }
+
+    /// A gap in a display block is `[layout]`'s key, read by `[layout]`'s own entry: the same bound, and
+    /// the same sentence, naming the key as the line spells it.
+    @Test func aDisplaysGapIsBoundedAsLayoutsIs() {
+        #expect(Self.diagnostic("[[display]]\nname = \"x\"\ncolumn-gap = -1\n")?.description
+                == "line 3: 'display.column-gap' must be at least 0")
+        #expect(Self.diagnostic("[[display]]\nname = \"x\"\nwindow-gap = \"wide\"\n")?.description
+                == "line 3: 'display.window-gap' must be a number, not a string")
+        #expect(Self.diagnostic("[[display]]\nname = \"x\"\nouter-gap-left = -2\n")?.description
+                == "line 3: 'display.outer-gap-left' must be at least 0")
+    }
+
+    /// A `[layout]` key no display overrides is a different mistake from a misspelt one, and is told so.
+    @Test func aLayoutKeyADisplayCannotSetSaysSo() {
+        #expect(Self.diagnostic("[[display]]\nname = \"x\"\ndefault = \"stack\"\n")?.description
+                == "line 3: 'display.default' is set in [layout] for every display — a display can "
+                 + "only set column-gap, window-gap and outer-gap")
+        #expect(Self.diagnostic("[[display]]\nname = \"x\"\ncolum-gap = 4\n")?.description
+                == "line 3: unknown setting 'display.colum-gap'")
+    }
+
+    @Test func aDisplaysPatternIsCompiledWhenTheFileIsRead() throws {
+        let error = try #require(Self.diagnostic("[[display]]\nname-regex = 'DELL('\ncolumn-gap = 4\n"))
+        #expect(error.description.hasPrefix("line 2: 'display.name-regex' is not a regular expression — "))
+    }
+
+    @Test func aSinglyBracketedDisplayTableSaysItIsAList() {
+        #expect(Self.diagnostic("[display]\nname = \"x\"\ncolumn-gap = 4\n")?.description
+                == "line 1: 'display' is a list of displays — write each one under its own '[[display]]'")
+    }
+
     @Test func malformedLinesAreSyntaxErrors() {
         #expect(Self.diagnostic("[layout\n")?.line == 1)
         #expect(Self.diagnostic("column-gap\n")?.description == "line 1: expected 'key = value'")

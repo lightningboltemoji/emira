@@ -270,12 +270,17 @@ public struct MonitorInfo: Sendable, Equatable, Codable {
     /// settings lets the user drag between screens. A third fact observation refreshes, beside the two
     /// above. Exactly one attached display carries it, and none when nothing is attached.
     public let isMain: Bool
+    /// What macOS calls the display — "Built-in Retina Display". What a `[[display]]` block names it by,
+    /// and what `emira watch` prints, so the one is always the other.
+    public let name: String
 
-    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false) {
+    public init(id: MonitorId, frame: Rect, struts: EdgeInsets = .zero, isMain: Bool = false,
+                name: String = "") {
         self.id = id
         self.frame = frame
         self.struts = struts
         self.isMain = isMain
+        self.name = name
     }
 }
 

@@ -14,11 +14,12 @@ import EmiraMotion
 // widths, no view types, and nothing here imports a framework.
 //
 // **What the table deliberately does not describe**: `outer-gap` (one value with five spellings),
-// `[keys]` (an open table whose names the user invents) and `[[window-rules]]` (repeating, ordered,
-// cross-validated). Each is read by a function named for it in `ConfigSyntax.swift` — forcing them in
-// here would produce a worse GUI, not a better schema.
+// `[keys]` (an open table whose names the user invents), `[[window-rules]]` (repeating, ordered,
+// cross-validated) and `[[display]]` (a partial `[layout]` per display). Each is read by a function
+// named for it in `ConfigSyntax.swift` — forcing them in here would produce a worse GUI, not a better
+// schema.
 //
-// **They are still a list.** `bespoke` is the three of them, carrying what a consumer needs to place
+// **They are still a list.** `bespoke` is the four of them, carrying what a consumer needs to place
 // one: a label, a sentence, the section it belongs to, the block the generated document writes, and a
 // fragment that sets it to something its default is not. A surface the table cannot describe is a
 // surface every consumer would otherwise name by hand — and one that no consumer names by hand is
@@ -42,10 +43,19 @@ public struct Setting: Sendable {
     /// A dial rather than a preference: behind a disclosure, not on the main surface.
     public let isAdvanced: Bool
 
-    /// Validate a value the file carried and write it into `config`. The two halves of `access`, kept
-    /// as closures because the table is one array and the values it moves are of different types.
-    let apply: @Sendable (TOMLValue, inout Config) throws -> Void
+    /// The two halves of `access`, kept as closures because the table is one array and the values it
+    /// moves are of different types. `read` takes the key a complaint should name.
+    private let read: @Sendable (TOMLValue, String, inout Config) throws -> Void
     private let render: @Sendable (Config) -> TOMLValue
+
+    /// Validate a value the file carried and write it into `config`.
+    func apply(_ value: TOMLValue, _ config: inout Config) throws { try read(value, key, &config) }
+
+    /// The same, for this setting written under another name — a `[[display]]` block spells
+    /// `layout.column-gap` as `column-gap` — so a complaint names the key the line carries.
+    func apply(_ value: TOMLValue, spelled name: String, _ config: inout Config) throws {
+        try read(value, name, &config)
+    }
 
     /// This setting's value in `config`, spelled as the file spells it — what `ConfigDocument.set`
     /// takes, and what the generated document shows.
@@ -83,7 +93,7 @@ public struct Setting: Sendable {
         self.kind = codec.kind
         self.section = section
         self.isAdvanced = advanced
-        self.apply = { value, config in set(&config, try codec.read(value, key)) }
+        self.read = { value, key, config in set(&config, try codec.read(value, key)) }
         self.render = { codec.write(get($0)) }
     }
 }
@@ -162,7 +172,7 @@ extension Setting {
     }
 
     /// The groups a settings window shows, in the order it shows them. `keys` and `windowRules` carry
-    /// no *settings* on purpose: they are two of the three surfaces the table cannot describe, and they
+    /// no *settings* on purpose: they are two of the four surfaces the table cannot describe, and they
     /// are on `bespoke` instead — naming them here is what keeps a window's list of sections one list
     /// rather than "the schema's, plus two".
     ///
@@ -200,9 +210,9 @@ extension Setting {
 /// A config surface the table cannot describe: what it is called, where it belongs, why it is here
 /// rather than in `settings`, and the block the generated document writes for it.
 ///
-/// **Not a `Setting` with holes in it.** Each of the three fails a different requirement of the table —
-/// one value with five spellings, a table of invented names, an ordered repeating block — so none of
-/// them has the `(read, write, default)` triple every entry rests on. What they *do* share is being
+/// **Not a `Setting` with holes in it.** Each of the four fails a requirement of the table — one value
+/// with five spellings, a table of invented names, an ordered repeating block — so none of them has
+/// the `(read, write, default)` triple every entry rests on. What they *do* share is being
 /// something a consumer has to place: the document has to write it, the coverage test has to name it,
 /// and a settings window has to either edit it or say why it doesn't. That much is a list.
 public struct Bespoke: Sendable {
@@ -407,9 +417,9 @@ public enum ConfigSchema {
     public static let settings: [Setting] =
         layout + focus + mouse + animation + motionBlur + springs + guide
 
-    /// The setting spelled `key`, or `nil` when the schema has no such key — which the three sections
-    /// it doesn't describe are also on the wrong side of: `[keys]` and `[[window-rules]]` are edited
-    /// as blocks, not as one value at a time.
+    /// The setting spelled `key`, or `nil` when the schema has no such key — which the sections it
+    /// doesn't describe are also on the wrong side of: `[keys]`, `[[window-rules]]` and `[[display]]`
+    /// are edited as blocks, not as one value at a time.
     public static func setting(for key: String) -> Setting? {
         settings.first { $0.key == key }
     }
@@ -418,7 +428,7 @@ public enum ConfigSchema {
     /// accept the header itself and not only the keys beneath it — `[layuot]` contributes no key.
     static let tables: Set<String> = Set(settings.map(\.table))
 
-    /// The three surfaces the table cannot describe, in the order the document writes them.
+    /// The four surfaces the table cannot describe, in the order the document writes them.
     ///
     /// Every consumer that walks `settings` has to decide what to do about these, and before this list
     /// existed each of them decided by hand: the document placed three named constants, the coverage
@@ -462,9 +472,24 @@ public enum ConfigSchema {
                 app-id = "com.example.app"
                 float = true
                 """),
+
+        Bespoke(key: "display",
+                label: "Displays",
+                help: "Gaps for one display that differ from the rest.",
+                section: .layout,
+                after: nil,
+                reason: "Repeating and ordered, like the window rules, and each block a partial "
+                      + "`[layout]` rather than a value: it matches a display by name and overrides "
+                      + "only the keys it writes.",
+                documentation: displayBlock,
+                sample: """
+                [[display]]
+                name = "Built-in Retina Display"
+                column-gap = 4
+                """),
     ]
 
-    // The prose the three carry into the generated document. Here rather than beside the renderer
+    // The prose the four carry into the generated document. Here rather than beside the renderer
     // because it is the *entry's* — a `Setting` carries its own sentence for the same reason, and a
     // block kept next to the code that prints it is a block that can be printed for a surface the
     // schema no longer has.
@@ -534,6 +559,26 @@ public enum ConfigSchema {
     # …and opened by the app that already had focus, so background apps don't count.
     from-focused-app = true
     float = true
+    """
+
+    /// The other repeating table — a partial `[layout]` per display.
+    private static let displayBlock = """
+    # A display laid out differently from the rest. One block per display, each setting only what it
+    # disagrees with [layout] about — column-gap, window-gap and outer-gap, spelled as [layout] spells
+    # them. Where two blocks name the same display, the later one wins key by key.
+    [[display]]
+
+    # What macOS calls the display, exactly as `emira watch` prints it…
+    name = "Built-in Retina Display"
+    column-gap = 8
+    window-gap = 8
+    outer-gap = 8
+
+    [[display]]
+
+    # …or a regular expression over that name, in a 'literal string' as a window rule's is.
+    name-regex = '^DELL '
+    outer-gap-top = 0
     """
 
     private static let layout: [Setting] = [

@@ -111,12 +111,11 @@ public struct PreviewState: Sendable, Equatable {
 /// The mock desktop's geometry, derived and never stored.
 public enum PreviewModel {
 
-    /// The metrics a draft asks for on a display whose working area is `workingArea`.
-    ///
-    /// The state-derived half of `LayoutMetrics` is empty and that is honest: a preview has no world to
-    /// correct and nothing parked, which is the same reason it may not reach the reducer at all.
+    /// The metrics a draft's `[layout]` asks for on a display whose working area is `workingArea`. Their
+    /// state-derived half is empty and that is honest: a preview has no world to correct and nothing
+    /// parked, which is the same reason it may not reach the reducer at all.
     public static func metrics(for config: Config, workingArea: Rect) -> LayoutMetrics {
-        LayoutMetrics(config: config, workingArea: workingArea)
+        LayoutMetrics(config: config, display: nil, workingArea: workingArea)
     }
 
     /// The mock desktop `t` seconds into `take`, under `config`.

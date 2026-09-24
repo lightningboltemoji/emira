@@ -36,7 +36,7 @@ import EmiraCore
 
     /// What `watch` publishes from `runtime`, wired the way the daemon wires it: on every drain.
     static func publisher(for runtime: Runtime) -> DesktopPublisher {
-        let desktop = DesktopPublisher(names: GuideNames(), displayName: { _ in "Screen" })
+        let desktop = DesktopPublisher(names: GuideNames())
         runtime.onStateChanged = { desktop.stateChanged($0) }
         return desktop
     }

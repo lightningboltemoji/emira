@@ -47,6 +47,11 @@ enum BespokeEditors {
         does not have, and deliberately: it splices single values, and `set` refuses a positional index \
         rather than making one public by accident.
         """,
+        "display": """
+        Each block overrides [layout] on one display, so an editor needs a scope — this display or \
+        every display — for the controls [layout] already has, and `ConfigDocument` cannot yet splice \
+        a value into an element of an array of tables.
+        """,
     ]
 }
 

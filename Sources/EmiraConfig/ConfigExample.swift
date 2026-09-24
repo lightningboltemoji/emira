@@ -5,7 +5,7 @@
 // the settings, their sentences and their defaults all come off the one table the reader runs, so the
 // document cannot describe a schema emira doesn't have.
 //
-// The three surfaces the table deliberately doesn't describe come off `ConfigSchema.bespoke`, which
+// The four surfaces the table deliberately doesn't describe come off `ConfigSchema.bespoke`, which
 // carries the prose each of them writes. Where one goes falls out of how the file spells it — a dotted
 // key joins the table it names, a bare one opens a header of its own — so this places nothing by hand
 // and cannot leave a surface out by saying nothing about it. Their prose is hand-written for the same

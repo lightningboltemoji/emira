@@ -393,7 +393,7 @@ let runtime = Runtime(
 }
 
 /// What `emira watch` streams. Its watchers are the socket server's, wired once that exists.
-let desktop = DesktopPublisher(names: GuideNames(), displayName: DesktopPublisher.screenName(of:))
+let desktop = DesktopPublisher(names: GuideNames())
 
 showWorkspaces(runtime.state)
 runtime.onStateChanged = { state in

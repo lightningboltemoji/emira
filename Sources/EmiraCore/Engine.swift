@@ -112,6 +112,7 @@ public struct State: Sendable, Equatable, Codable {
         guard let monitor = world.monitor(id) else { return nil }
         return LayoutMetrics(
             config: config,
+            display: monitor.name,
             workingArea: monitor.workingArea,
             heightSelections: workspaces.heightSelections,
             heightOverrides: workspaces.heightOverrides,
@@ -375,7 +376,7 @@ public struct State: Sendable, Equatable, Codable {
         world.monitors.count == infos.count
             && zip(world.monitors, infos).allSatisfy {
                 $0.id == $1.id && $0.frame == $1.frame && $0.struts == $1.struts
-                    && $0.isMain == $1.isMain
+                    && $0.isMain == $1.isMain && $0.name == $1.name
             }
     }
 

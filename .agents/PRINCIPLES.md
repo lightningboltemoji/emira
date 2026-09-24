@@ -292,7 +292,7 @@ happen on.
   than because somebody is holding it, and a dismissal that finds nothing listening takes the scrims off the
   screen itself — losing the teardown rather than the desktop. Saving is not a way out: it writes the file
   and the window stays up, so a save that read as a close would leave a dim nobody owns.
-- **What the file can hold, the window can reach — or the omission is written down.** Three surfaces are
+- **What the file can hold, the window can reach — or the omission is written down.** Four surfaces are
   not settings the schema can tabulate; they are still on a list (`ConfigSchema.bespoke`), and a surface
   with no editor names the reason it has none. A config the GUI silently cannot see is a config the GUI is
   lying about.

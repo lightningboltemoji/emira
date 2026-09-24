@@ -17,7 +17,7 @@ import EmiraProtocol
     static func name(_ bundle: String) -> String { bundle.split(separator: ".").last!.capitalized }
 
     static func status(_ state: State) -> DesktopStatus {
-        DesktopStatus(state: state, name: name, displayName: { "Screen \($0.raw)" })
+        DesktopStatus(state: state, name: name)
     }
 
     static func reduce(_ state: State, _ events: Event...) -> State {
@@ -34,7 +34,7 @@ import EmiraProtocol
         -> State {
         var state = State(config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                          transitionMode: .off, guide: guide))
-        state.setMonitors([MonitorInfo(id: display, frame: working, isMain: true)])
+        state.setMonitors([MonitorInfo(id: display, frame: working, isMain: true, name: "Screen 1")])
         return reduce(state, .windowCreated(snapshot(1, app: "alpha", title: titles.0)),
                       .windowCreated(snapshot(2, app: "beta", title: titles.1)))
     }
@@ -84,7 +84,7 @@ import EmiraProtocol
 
     @Test func anEmptyDesktopHasNoFocusAndNoColumns() throws {
         var state = State(config: Config(transitionMode: .off))
-        state.setMonitors([MonitorInfo(id: Self.display, frame: Self.working, isMain: true)])
+        state.setMonitors([MonitorInfo(id: Self.display, frame: Self.working, isMain: true, name: "Screen 1")])
         let status = Self.status(state)
 
         #expect(status.focus == nil)
@@ -149,7 +149,7 @@ import EmiraProtocol
     @Test func everyDisplayIsListedAndOneIsFocused() throws {
         var state = Self.world()
         state.setMonitors([
-            MonitorInfo(id: Self.display, frame: Self.working, isMain: true),
+            MonitorInfo(id: Self.display, frame: Self.working, isMain: true, name: "Screen 1"),
             MonitorInfo(id: MonitorId(2), frame: Rect(x: 1000, y: 0, width: 800, height: 600)),
         ])
         let status = Self.status(state)

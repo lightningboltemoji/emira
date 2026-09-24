@@ -27,7 +27,7 @@ final class RecordingWatchers: DesktopWatchers, @unchecked Sendable {
 @Suite @MainActor struct DesktopPublisherTests {
 
     static func publisher(_ watchers: RecordingWatchers) -> DesktopPublisher {
-        let publisher = DesktopPublisher(names: GuideNames(), displayName: { _ in "Screen" })
+        let publisher = DesktopPublisher(names: GuideNames())
         publisher.watchers = watchers
         return publisher
     }
@@ -94,7 +94,7 @@ final class RecordingWatchers: DesktopWatchers, @unchecked Sendable {
         }
         let first = try JSONDecoder().decode(DesktopStatus.self, from: Data(json.utf8))
         #expect(first.focus?.window == WindowId(2))
-        #expect(first.displays.first?.name == "Screen")
+        #expect(first.displays.first?.name == "Screen 1")
 
         publisher.stateChanged(state)
         #expect(watchers.lines.isEmpty)

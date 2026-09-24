@@ -125,7 +125,8 @@ public struct ScreenGeometry: Sendable, Equatable {
             MonitorInfo(id: Self.monitorId(of: screen, at: index),
                         frame: core(screen.frame),
                         struts: Self.struts(of: screen),
-                        isMain: Self.displayId(of: screen, at: index) == main)
+                        isMain: Self.displayId(of: screen, at: index) == main,
+                        name: screen.localizedName)
         }
     }
 }

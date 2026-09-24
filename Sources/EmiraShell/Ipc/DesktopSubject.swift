@@ -12,9 +12,9 @@ import EmiraProtocol
 extension DesktopStatus {
 
     /// The desktop as `watch` publishes it. `name` turns a bundle id into the word a user calls the app
-    /// and `displayName` a display into the word macOS calls it — the caller's, since only the shell
-    /// can answer either.
-    public init(state: State, name: (String) -> String, displayName: (MonitorId) -> String) {
+    /// — the caller's, since only the shell can answer it. A display's name is the state's own, which is
+    /// what makes it the name a `[[display]]` block matches.
+    public init(state: State, name: (String) -> String) {
         let focused = state.world.focusedWindow
         func window(_ id: WindowId) -> Window? {
             state.world.windows[id].map {
@@ -43,8 +43,9 @@ extension DesktopStatus {
             let pins = PinSide.allCases.compactMap { side in
                 bands[side].flatMap { window($0.window) }.map { Pin(side: side, window: $0) }
             }
-            return Display(id: Self.key(monitor), name: displayName(monitor),
-                           main: state.world.monitor(monitor)?.isMain ?? false,
+            let record = state.world.monitor(monitor)
+            return Display(id: Self.key(monitor), name: record?.name ?? "",
+                           main: record?.isMain ?? false,
                            focused: state.monitors.focused == monitor,
                            workspace: shown, layout: layout.kind, columns: columns, pins: pins)
         }
