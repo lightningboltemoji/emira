@@ -36,13 +36,14 @@ import EmiraCore
         #expect(text == #"{"client":{"pid":7},"command":{"focus":{"_0":"left"}},"version":1}"#)
     }
 
-    @Test func allThreeOutcomesRoundTrip() throws {
+    @Test func everyOutcomeRoundTrips() throws {
         let replies: [Reply] = [
             .ok,
             .failed(.versionMismatch(daemon: 1, client: 2)),
             .failed(.malformedRequest("unexpected end of JSON")),
             .failed(.internalError("the executor is gone")),
             .state(json: #"{"windows":[1,2,3]}"#),
+            .desktop(json: #"{"focus":null,"moving":false}"#),
         ]
         for reply in replies {
             #expect(try Self.roundTrip(reply) == reply, "round-trip changed \(reply)")
@@ -52,6 +53,7 @@ import EmiraCore
     @Test func onlyAFailureCarriesAnError() {
         #expect(Reply.ok.error == nil)
         #expect(Reply.state(json: "{}").error == nil)
+        #expect(Reply.desktop(json: "{}").error == nil)
         #expect(Reply.failed(.internalError("boom")).error?.code == .internalError)
     }
 
@@ -105,7 +107,7 @@ enum CommandSamples {
         .float(.on), .float(.toggle),
         .focusWorkspace(.name(.first)), .focusWorkspace(.next), .focusWorkspace(.previous),
         .focusWorkspace(.nextOccupied), .focusWorkspace(.previousOccupied),
-        .closeWindow, .centerColumn, .dumpState,
+        .closeWindow, .centerColumn, .dumpState, .watch,
         .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 }

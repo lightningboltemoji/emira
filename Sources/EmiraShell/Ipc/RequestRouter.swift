@@ -6,8 +6,8 @@ import EmiraProtocol
 // `emira-daemon/main.swift` (which can't be unit-tested).
 //
 // Commands are writes: they enter the core as `Event.command(_:)` and are answered `ok` — accepted,
-// not completed. `dumpState` is a read, answered here from `Runtime.state` without entering the
-// reducer. That's safe because the pump is never re-entrant: a hop from the socket lands strictly
+// not completed. `dumpState` and `watch` are reads, answered here from `Runtime.state` without entering
+// the reducer. That's safe because the pump is never re-entrant: a hop from the socket lands strictly
 // *between* pumps and can only observe a fully-reduced state.
 
 /// Turns a decoded `Request` into the `Reply` the daemon sends back.
@@ -16,7 +16,8 @@ public enum RequestRouter {
     /// Route one request against a live `Runtime`. `@MainActor` because the `Runtime` is; the call
     /// does no I/O and no waiting, so the socket server's hop is brief.
     @MainActor
-    public static func reply(to request: Request, from runtime: Runtime) -> Reply {
+    public static func reply(to request: Request, from runtime: Runtime,
+                             desktop: DesktopPublisher) -> Reply {
         switch request.command {
         case .dumpState:
             do {
@@ -24,6 +25,10 @@ public enum RequestRouter {
             } catch {
                 return .failed(.internalError("could not render the state dump: \(error)"))
             }
+
+        // The first line of the stream; the server keeps the connection for the rest.
+        case .watch:
+            return desktop.snapshot(runtime.state)
 
         // Every other verb is a write; the reducer decides what it means.
         default:

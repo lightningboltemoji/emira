@@ -1143,10 +1143,10 @@ public enum Engine {
             // `windowCreated` whenever it is ready, and *that* is what animates.
             return [.exec(line)]
 
-        // The only verb that is permanently a no-op here: `dumpState` is a *read*, answered out of band
-        // by the shell off `Runtime.state`. Everything else in the vocabulary does
+        // The only verbs that are permanently a no-op here: `dumpState` and `watch` are *reads*,
+        // answered out of band by the shell off `Runtime.state`. Everything else in the vocabulary does
         // something — a listed verb is a promise, since `Vocabulary.usage` is `emira --help`.
-        case .dumpState:
+        case .dumpState, .watch:
             return []
         }
     }

@@ -198,8 +198,8 @@ public struct NamesModel: Equatable, Sendable {
 
     /// The app the column is named after: its **largest** window, by area. A column stacked three deep
     /// has one name, and the window that earns it is the one taking most of the column — arithmetic over
-    /// the frames, which is why it lives here rather than in the renderer.
-    static func largest(of column: GuideInput.Column, in frames: [WindowId: Rect]) -> String {
+    /// the frames, which is why it lives here rather than in the renderer, and why `watch` asks it too.
+    public static func largest(of column: GuideInput.Column, in frames: [WindowId: Rect]) -> String {
         let placed = column.windows.compactMap { window in
             frames[window.id].map { (window, $0.area) }
         }

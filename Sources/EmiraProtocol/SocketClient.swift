@@ -1,11 +1,13 @@
 import Darwin
 import Foundation
+import EmiraCore
 
-// The client half of the seam: dial the daemon, write one `Request`, read one `Reply`, hang up.
-// `SocketServer` (EmiraShell) is the other half, speaking the same framing and version probe.
-// Blocking on purpose — `emira` is a one-shot process with no run loop and nothing else to do while
-// it waits, so a blocking socket with `SO_RCVTIMEO`/`SO_SNDTIMEO` is the simplest correct thing.
-// The daemon's side is the opposite and must never block its main thread.
+// The client half of the seam: dial the daemon, write one `Request`, read one `Reply`, hang up — or,
+// for `watch`, keep reading one per change until the daemon goes. `SocketServer` (EmiraShell) is the
+// other half, speaking the same framing and version probe. Blocking on purpose — `emira` is a one-shot
+// process with no run loop and nothing else to do while it waits, so a blocking socket with
+// `SO_RCVTIMEO`/`SO_SNDTIMEO` is the simplest correct thing. The daemon's side is the opposite and must
+// never block its main thread.
 
 /// What can go wrong dialing the daemon, as distinct from what the daemon *replies* (`ReplyError`).
 public enum SocketClientError: Error, Equatable, CustomStringConvertible {
@@ -14,6 +16,8 @@ public enum SocketClientError: Error, Equatable, CustomStringConvertible {
     case timedOut(seconds: TimeInterval)
     /// The connection closed before a complete reply line arrived (a daemon that crashed mid-request).
     case closedWithoutReply
+    /// A `watch` the daemon stopped answering, having answered at least once — it quit or restarted.
+    case streamEnded
     /// The mirror of `ReplyError.versionMismatch`, for when the *reply* is the unreadable message.
     case versionMismatch(daemon: Int, client: Int)
     case systemCall(String, code: Int32)
@@ -26,6 +30,8 @@ public enum SocketClientError: Error, Equatable, CustomStringConvertible {
             return "the daemon did not answer within \(Int(seconds))s"
         case .closedWithoutReply:
             return "the daemon closed the connection without answering"
+        case .streamEnded:
+            return "the daemon stopped streaming — it quit or restarted"
         case .versionMismatch(let daemon, let client):
             return "protocol version mismatch: the daemon speaks v\(daemon), this client speaks "
                  + "v\(client) — install the CLI and the daemon from the same build"
@@ -35,8 +41,8 @@ public enum SocketClientError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// The one-shot socket client. Stateless: one request, one reply, then close. Not `Client`
-/// (`Request.swift`), which is *who* is asking; this is *how*.
+/// The socket client. Stateless: one request, one reply, then close — or a stream of them for `watch`.
+/// Not `Client` (`Request.swift`), which is *who* is asking; this is *how*.
 public enum SocketClient {
 
     /// Send one request and return the daemon's reply. `timeout` bounds both the write and the wait,
@@ -69,6 +75,46 @@ public enum SocketClient {
             if received == 0 { throw SocketClientError.closedWithoutReply }
             if errno == EINTR { continue }
             if errno == EAGAIN || errno == EWOULDBLOCK { throw SocketClientError.timedOut(seconds: timeout) }
+            throw SocketClientError.systemCall("read", code: errno)
+        }
+    }
+
+    /// Hand each snapshot's JSON to `line` while the daemon keeps the connection open. No normal return:
+    /// the stream ending is `streamEnded`, and a caller stops early by throwing from `line`. `timeout`
+    /// bounds only dialing and asking, since a desktop nobody touches is silent for hours.
+    public static func watch(_ request: Request = Request(.watch),
+                             to path: String = Wire.socketPath(),
+                             timeout: TimeInterval = 5,
+                             _ line: (String) throws -> Void) throws -> Never {
+        let fd = try connect(to: path, timeout: timeout)
+        defer { close(fd) }
+
+        try writeAll(try Wire.encode(request), to: fd, timeout: timeout)
+        // No half-close: the daemon hears a watcher leave as its end of the socket closing.
+        var forever = timeval(tv_sec: 0, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &forever, socklen_t(MemoryLayout<timeval>.size))
+
+        var buffer = LineBuffer()
+        var chunk = [UInt8](repeating: 0, count: 4096)
+        var answered = false
+        while true {
+            let received = chunk.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
+            if received > 0 {
+                for reply in try buffer.append(Data(chunk[0..<received])) {
+                    switch try decodeReply(reply).outcome {
+                    case .desktop(let json):
+                        answered = true
+                        try line(json)
+                    case .failed(let error):
+                        throw error
+                    case let other:
+                        throw WireError.malformedMessage("a watch was answered with \(other)")
+                    }
+                }
+                continue
+            }
+            if received == 0 { throw answered ? SocketClientError.streamEnded : .closedWithoutReply }
+            if errno == EINTR { continue }
             throw SocketClientError.systemCall("read", code: errno)
         }
     }

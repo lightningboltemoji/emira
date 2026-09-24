@@ -1,8 +1,9 @@
-// The `emira` CLI: argv in, exit code out. Parses a `Command`, writes one JSON line to the daemon's
-// unix socket, prints the reply. Imports only EmiraCore, EmiraProtocol and EmiraConfig — no AppKit, no
-// AX — so launch is instant; the transport lives in `SocketClient` because an executable can't be
-// unit-tested, and `ConfigCommand`'s schema knowledge lives in `EmiraConfig` for the same reason.
-// Exit codes: 0 accepted, 2 usage error, 69 (`EX_UNAVAILABLE`) daemon unreachable, 1 anything else.
+// The `emira` CLI: argv in, exit code out. Parses a `Command`, writes one JSON line to the daemon's unix
+// socket, prints the reply — or, for `watch`, every reply until the daemon goes, which is exit 1.
+// Imports only EmiraCore, EmiraProtocol and EmiraConfig — no AppKit, no AX — so launch is instant; the
+// transport lives in `SocketClient` because an executable can't be unit-tested, and `ConfigCommand`'s
+// schema knowledge lives in `EmiraConfig` for the same reason. Exit codes: 0 accepted, 2 usage error, 69
+// (`EX_UNAVAILABLE`) daemon unreachable, 1 anything else.
 import Foundation
 import EmiraConfig
 import EmiraCore
@@ -95,12 +96,23 @@ do {
         exit(ExitCode.success)
     }
 
+    // A line per change, flushed as it comes: whatever reads this is reading it live.
+    if request.command == .watch {
+        try SocketClient.watch(request) { json in
+            print(json)
+            fflush(stdout)
+        }
+    }
+
     switch try SocketClient.send(request).outcome {
     case .ok:
         // Silence is success. `ok` means accepted, not completed — the work happens after we exit.
         exit(ExitCode.success)
     case .state(let json):
         print(json)                                 // `emira debug`
+        exit(ExitCode.success)
+    case .desktop(let json):
+        print(json)
         exit(ExitCode.success)
     case .failed(let error):
         complain("\(error)")

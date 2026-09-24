@@ -1,6 +1,7 @@
 import Foundation
 
-// The daemon→CLI message: exactly one per `Request`, then the connection closes. "Accepted", not
+// The daemon→CLI message: exactly one per `Request`, then the connection closes — except for `watch`,
+// whose connection stays open and carries one more whenever the desktop changes. "Accepted", not
 // "completed" — a command's real work finishes long after the CLI has exited.
 
 /// Why a request wasn't accepted. `CustomStringConvertible` because the message is what the user reads.
@@ -54,6 +55,9 @@ public struct Reply: Sendable, Equatable, Codable {
         /// The answer to `dumpState`. An opaque string, not a decoded `State`, so a CLI one release
         /// behind still prints a newer daemon's state instead of failing on an unknown field.
         case state(json: String)
+        /// One line of `watch`: a `DesktopStatus`, already encoded. A string for `state`'s reason — the
+        /// CLI prints it rather than reading it, so it prints fields it has never heard of.
+        case desktop(json: String)
     }
 
     public let version: Int
@@ -69,6 +73,8 @@ public struct Reply: Sendable, Equatable, Codable {
     public static func failed(_ error: ReplyError) -> Reply { Reply(.failed(error)) }
 
     public static func state(json: String) -> Reply { Reply(.state(json: json)) }
+
+    public static func desktop(json: String) -> Reply { Reply(.desktop(json: json)) }
 
     /// The error, if this reply is a failure.
     public var error: ReplyError? {

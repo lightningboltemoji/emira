@@ -45,7 +45,7 @@ public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
 // `Direction(rawValue:)` were two statements of one fact, and now there is one.
 //
 // The shape is `Argument`, and the rule is `Setting.Kind`'s one vocabulary over: **one case per shape of
-// control, never per verb.** Five cases carry twenty-four verbs.
+// control, never per verb.** Five cases carry twenty-five verbs.
 
 /// The command vocabulary: every verb emira answers to, and the grammar of what each one takes.
 ///
@@ -109,7 +109,7 @@ public struct Verb: Sendable {
     public func matches(_ word: String) -> Bool { word == name || aliases.contains(word) }
 
     /// What a verb takes after its name — **one case per shape of control**, which is why five of them
-    /// cover twenty-four verbs. A case serving a single verb is the sign the table has stopped paying for
+    /// cover twenty-five verbs. A case serving a single verb is the sign the table has stopped paying for
     /// itself; `.line` sits at that edge and earns it by being the only genuinely open argument here.
     public enum Argument: Sendable, Equatable {
         /// Nothing. The verb is the whole command, and a word after it is a typo.
@@ -199,6 +199,7 @@ extension Command {
         case .exec(let line):                 return ["exec", line]
         // `debug` is the user-facing spelling; `dump-state` parses as an alias.
         case .dumpState:                      return ["debug"]
+        case .watch:                          return ["watch"]
         }
     }
 
@@ -326,6 +327,9 @@ extension Vocabulary {
 
         Verb("debug", aliases: ["dump-state"], summary: "Print the daemon's live state as JSON.",
              build: bare(.dumpState)),
+
+        Verb("watch", summary: "Print the desktop as JSON, and again whenever it changes.",
+             build: bare(.watch)),
     ]
 
     /// A verb that takes no arguments: any word after it is a typo, not something to ignore.

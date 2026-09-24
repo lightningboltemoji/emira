@@ -163,8 +163,8 @@ public enum Catalog {
     /// workspace**, so every verb whose subject is another display or another workspace is genuinely
     /// undemonstrable on it. **Three verbs need a mechanism the mock has no beat for** — membership,
     /// floating, closing — and a take that mimed one would be teaching a picture the desktop cannot
-    /// actually make. **Two have no picture at all**: a shell line and a JSON dump both happen off
-    /// screen, which is the point of `exec` and the whole of `debug`.
+    /// actually make. **Three have no picture at all**: a shell line and JSON on a socket happen off
+    /// screen, which is the point of `exec` and the whole of `debug` and `watch`.
     public static let notDemonstrableVerbs: [String: String] = [
         "consume-or-expel": """
         Changes which column a window belongs to, and no beat moves a window between a column and its \
@@ -216,6 +216,11 @@ public enum Catalog {
         "debug": """
         A read, answered out of band over the socket. Nothing happens on the desktop at all, which is \
         the one case where a still picture is the honest one.
+        """,
+
+        "watch": """
+        A read that stays open, answered over the socket for as long as someone listens. It reports the \
+        desktop and changes nothing on it, so `debug`'s reason is its reason too.
         """,
     ]
 

@@ -34,9 +34,21 @@ import EmiraCore
         return runtime
     }
 
+    /// What `watch` publishes from `runtime`, wired the way the daemon wires it: on every drain.
+    static func publisher(for runtime: Runtime) -> DesktopPublisher {
+        let desktop = DesktopPublisher(names: GuideNames(), displayName: { _ in "Screen" })
+        runtime.onStateChanged = { desktop.stateChanged($0) }
+        return desktop
+    }
+
     /// A started server routing to `runtime`. Callers `defer { server.stop() }`.
-    static func started(at path: String, routing runtime: Runtime) throws -> SocketServer {
-        let server = SocketServer(path: path) { RequestRouter.reply(to: $0, from: runtime) }
+    static func started(at path: String, routing runtime: Runtime,
+                        idleTimeout: TimeInterval = 5) throws -> SocketServer {
+        let desktop = publisher(for: runtime)
+        let server = SocketServer(path: path, idleTimeout: idleTimeout) {
+            RequestRouter.reply(to: $0, from: runtime, desktop: desktop)
+        }
+        desktop.watchers = server
         try server.start()
         return server
     }
@@ -184,9 +196,10 @@ import EmiraCore
         let path = Self.temporaryPath()
         let runtime = Self.bootedRuntime()
         // A handler slower than its own deadline: what a main actor busy elsewhere looks like from here.
+        let desktop = Self.publisher(for: runtime)
         let server = SocketServer(path: path, idleTimeout: 0.5) { request in
             usleep(1_500_000)
-            return RequestRouter.reply(to: request, from: runtime)
+            return RequestRouter.reply(to: request, from: runtime, desktop: desktop)
         }
         try server.start()
         defer { server.stop() }

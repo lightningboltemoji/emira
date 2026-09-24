@@ -101,11 +101,13 @@ import Testing
 
     /// A *read* is not a command that moves anything, and it emits no effects at all — which is what
     /// excludes it, rather than a name in a list.
-    @Test func aStateDumpHidesNothing() {
+    @Test func aReadHidesNothing() {
         let s = Self.world()
-        let (next, effects) = Engine.reduce(s, .command(.dumpState))
-        #expect(effects.isEmpty)
-        #expect(!next.pointer.isCursorHidden)
+        for read in [Command.dumpState, .watch] {
+            let (next, effects) = Engine.reduce(s, .command(read))
+            #expect(effects.isEmpty, "\(read)")
+            #expect(!next.pointer.isCursorHidden)
+        }
     }
 
     /// A window emira did not ask for is not the user looking away from the desktop, so the whole

@@ -21,6 +21,7 @@ func summary(of reply: Reply) -> String {
     case .ok:                 return "ok"
     case .failed(let error):  return "failed (\(error.code.rawValue))"
     case .state(let json):    return "state (\(json.utf8.count) bytes)"
+    case .desktop(let json):  return "desktop (\(json.utf8.count) bytes)"
     }
 }
 
@@ -380,9 +381,10 @@ let runtime = Runtime(
     // An AX write's landing depends on another process's run loop; this bounds the wait.
     hold: DispatchHoldTimer())
 
-// Once per drain, not once per event, and one closure for both peripherals: they display state rather
+// Once per drain, not once per event, and one closure for every peripheral: they display state rather
 // than change it, and a per-event observer would show them states the user never sees. `MenuBarItem`
-// diffs and `Guide` diffs its own trigger, so a scroll costs neither of them a redraw.
+// diffs, `Guide` diffs its own trigger and `desktop` diffs what it publishes, so a scroll costs none of
+// them a redraw or a line.
 /// The acting display's address for the title, the rest for the tooltip — `shownWorkspaces` is already
 /// acting-monitor-first, which is the order both want.
 @MainActor func showWorkspaces(_ state: State) {
@@ -390,10 +392,14 @@ let runtime = Runtime(
     menuBar.setWorkspaces(state.monitors.shown, elsewhere: Array(shown.dropFirst()))
 }
 
+/// What `emira watch` streams. Its watchers are the socket server's, wired once that exists.
+let desktop = DesktopPublisher(names: GuideNames(), displayName: DesktopPublisher.screenName(of:))
+
 showWorkspaces(runtime.state)
 runtime.onStateChanged = { state in
     showWorkspaces(state)
     for entry in parts.values { entry.guide.stateChanged(state) }
+    desktop.stateChanged(state)
 }
 
 //
@@ -735,11 +741,13 @@ loader.start()
 
 let socketPath = Wire.socketPath()
 let server = SocketServer(path: socketPath) { request in
-    let reply = RequestRouter.reply(to: request, from: runtime)
+    let reply = RequestRouter.reply(to: request, from: runtime, desktop: desktop)
     log("\(request.command.words.joined(separator: " ")) "
         + "(pid \(request.client.pid)) → \(summary(of: reply))")
     return reply
 }
+
+desktop.watchers = server
 
 do {
     try server.start()

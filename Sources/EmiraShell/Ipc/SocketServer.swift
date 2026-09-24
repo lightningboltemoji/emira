@@ -5,11 +5,12 @@ import EmiraCore
 import EmiraProtocol
 
 // The daemon's half of the CLI seam: a unix-domain listener that turns each connection into exactly
-// one `Request` → one `Reply` → close. Everything runs on one private serial queue and only the
-// handler hops to main, so no socket syscall is issued from the main thread and a wedged or hostile
-// peer can at worst occupy this one queue. The path is never trusted, only checked: `Wire.socketPath()`
-// may resolve into world-writable `/tmp`, so we bind only over nothing, or over a socket we own with
-// nobody answering. Anything else is refused without being deleted.
+// one `Request` → one `Reply` → close — except a `watch`, which stays open and is sent another `Reply`
+// whenever the desktop changes. Everything runs on one private serial queue and only the handler hops
+// to main, so no socket syscall is issued from the main thread and a wedged or hostile peer can at worst
+// occupy this one queue. The path is never trusted, only checked: `Wire.socketPath()` may resolve into
+// world-writable `/tmp`, so we bind only over nothing, or over a socket we own with nobody answering.
+// Anything else is refused without being deleted.
 
 /// Why the daemon couldn't start listening.
 public enum SocketServerError: Error, Equatable, CustomStringConvertible {
@@ -34,8 +35,8 @@ public enum SocketServerError: Error, Equatable, CustomStringConvertible {
 }
 
 /// The unix-domain socket server the CLI dials. `@unchecked Sendable` on a stated invariant: every
-/// stored property is read and written only on `queue`.
-public final class SocketServer: @unchecked Sendable {
+/// stored property is read and written only on `queue`, except `watching`, which is behind its lock.
+public final class SocketServer: DesktopWatchers, @unchecked Sendable {
 
     /// `@MainActor` because that's where the `Runtime` lives; the server hops for this call only.
     public typealias Handler = @MainActor @Sendable (Request) -> Reply
@@ -58,6 +59,11 @@ public final class SocketServer: @unchecked Sendable {
     private var connections: [UInt64: Connection] = [:]
     private var nextConnectionId: UInt64 = 1
 
+    /// Connections that have asked to `watch` and not yet gone — counted from the moment the request is
+    /// read, before its first line exists, so the publisher never builds for nobody or misses somebody.
+    private var watching = 0
+    private let watchLock = NSLock()
+
     public init(path: String, idleTimeout: TimeInterval = 5, handler: @escaping Handler) {
         self.path = path
         self.idleTimeout = idleTimeout
@@ -77,6 +83,23 @@ public final class SocketServer: @unchecked Sendable {
     }
 
     public var isListening: Bool { queue.sync { listener >= 0 } }
+
+    // Watchers
+
+    /// Whether anyone is watching. Read from the main actor on every drain, so it takes a lock rather
+    /// than a hop to `queue`, which may be waiting on a slow peer.
+    public var isWatched: Bool { watchLock.withLock { watching > 0 } }
+
+    /// Queue `reply` for every watcher. Each keeps at most one line waiting: a newer one replaces it.
+    public func broadcast(_ reply: Reply) {
+        guard let line = try? Wire.encode(reply) else { return }
+        queue.async { [weak self] in
+            guard let self else { return }
+            for connection in self.connections.values where connection.outbox != nil {
+                self.publish(line, to: connection)
+            }
+        }
+    }
 
     private func startOnQueue() throws {
         guard listener < 0 else { return }
@@ -156,7 +179,7 @@ public final class SocketServer: @unchecked Sendable {
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
         source.setEventHandler { [weak self] in self?.receive(id) }
-        source.setCancelHandler { close(fd) }
+        source.setCancelHandler { connection.drop() }
         connection.source = source
         source.resume()
 
@@ -172,7 +195,9 @@ public final class SocketServer: @unchecked Sendable {
     // One request, one reply
 
     private func receive(_ id: UInt64) {
-        guard let connection = connections[id], !connection.isAnswering else { return }
+        guard let connection = connections[id] else { return }
+        if connection.outbox != nil { return listen(to: connection) }
+        guard !connection.isAnswering else { return }
         var chunk = [UInt8](repeating: 0, count: 4096)
         while true {
             let received = chunk.withUnsafeMutableBytes { read(connection.fd, $0.baseAddress, $0.count) }
@@ -215,6 +240,10 @@ public final class SocketServer: @unchecked Sendable {
         }
 
         connection.isAnswering = true
+        if request.command == .watch {
+            connection.asksToWatch = true
+            watchLock.withLock { watching += 1 }
+        }
         let id = connection.id
         let handler = self.handler
         // The one hop to main. Capturing the id, not the connection, makes one closed during the hop
@@ -224,7 +253,11 @@ public final class SocketServer: @unchecked Sendable {
             guard let self else { return }
             self.queue.async {
                 guard let connection = self.connections[id] else { return }
-                self.answer(reply, on: connection)
+                if connection.asksToWatch, reply.error == nil, let line = try? Wire.encode(reply) {
+                    self.beginWatching(connection, first: line)
+                } else {
+                    self.answer(reply, on: connection)
+                }
             }
         }
     }
@@ -259,8 +292,77 @@ public final class SocketServer: @unchecked Sendable {
 
     private func closeConnection(_ id: UInt64) {
         guard let connection = connections.removeValue(forKey: id) else { return }
-        connection.source?.cancel()                 // its cancel handler closes the fd, exactly once
+        if connection.asksToWatch { watchLock.withLock { watching -= 1 } }
+        // Each source's cancel handler drops its hold on the fd; the last one closes it. A suspended
+        // source never runs its cancel handler, so each is resumed after it is cancelled.
+        if let outbox = connection.outbox {
+            outbox.writes.cancel()
+            if !outbox.isWriting { outbox.writes.resume() }
+        }
+        connection.source?.cancel()
+        if connection.outbox?.isDeaf == true { connection.source?.resume() }
         connection.source = nil
+    }
+
+    // A watch
+
+    /// Make `connection` a watcher and send it its first line. The read side stays open only to hear
+    /// the peer leave; the write side is a source armed while a line is waiting.
+    private func beginWatching(_ connection: Connection, first: Data) {
+        let writes = DispatchSource.makeWriteSource(fileDescriptor: connection.fd, queue: queue)
+        let id = connection.id
+        writes.setEventHandler { [weak self] in
+            guard let self, let connection = self.connections[id] else { return }
+            self.flush(connection)
+        }
+        connection.hold()
+        writes.setCancelHandler { connection.drop() }
+        writes.activate()
+        writes.suspend()
+        connection.outbox = Outbox(writes: writes)
+        publish(first, to: connection)
+    }
+
+    private func publish(_ line: Data, to connection: Connection) {
+        connection.outbox?.waiting = line
+        flush(connection)
+    }
+
+    /// Write what is waiting, finishing a line already begun before starting a newer one — a torn line
+    /// is a broken frame. Stops at a full send buffer and arms the write source to come back.
+    private func flush(_ connection: Connection) {
+        guard let outbox = connection.outbox else { return }
+        while true {
+            if outbox.unsent.isEmpty {
+                guard let next = outbox.waiting else { return outbox.setWriting(false) }
+                outbox.unsent = next
+                outbox.waiting = nil
+            }
+            let written = outbox.unsent.withUnsafeBytes { write(connection.fd, $0.baseAddress, $0.count) }
+            if written > 0 { outbox.unsent = outbox.unsent.dropFirst(written); continue }
+            if written < 0, errno == EINTR { continue }
+            if written < 0, errno == EAGAIN || errno == EWOULDBLOCK { return outbox.setWriting(true) }
+            return closeConnection(connection.id)                    // the watcher has gone
+        }
+    }
+
+    /// A watcher has nothing to say after its request, so a read is only ever the peer leaving. End of
+    /// file is also what closing just the write half looks like, and a zero-byte write tells the two
+    /// apart: it fails only for a peer that has gone.
+    private func listen(to connection: Connection) {
+        var chunk = [UInt8](repeating: 0, count: 512)
+        while true {
+            let received = chunk.withUnsafeMutableBytes { read(connection.fd, $0.baseAddress, $0.count) }
+            if received > 0 { continue }                             // said something anyway: ignored
+            if received < 0, errno == EINTR { continue }
+            if received < 0, errno == EAGAIN || errno == EWOULDBLOCK { return }
+            if received == 0, chunk.withUnsafeBytes({ write(connection.fd, $0.baseAddress, 0) }) == 0 {
+                connection.source?.suspend()                         // half-closed: still listening
+                connection.outbox?.isDeaf = true
+                return
+            }
+            return closeConnection(connection.id)
+        }
     }
 }
 
@@ -272,10 +374,47 @@ private final class Connection {
     var source: DispatchSourceRead?
     /// Set once the request has been taken: one request per connection, and no second answer.
     var isAnswering = false
+    /// Set when the request is a `watch`, which is what `watching` counts.
+    var asksToWatch = false
+    /// A watcher's writing, once its first line exists.
+    var outbox: Outbox?
+    /// The sources still holding the fd. Each one's cancel handler drops its hold; the last closes it.
+    private var holds = 1
 
     init(id: UInt64, fd: Int32, maxLineBytes: Int) {
         self.id = id
         self.fd = fd
         self.buffer = LineBuffer(maxLineBytes: maxLineBytes)
+    }
+
+    func hold() { holds += 1 }
+
+    func drop() {
+        holds -= 1
+        if holds == 0 { close(fd) }
+    }
+}
+
+/// What a watcher has still to be sent.
+private final class Outbox {
+    let writes: DispatchSourceWrite
+    /// The rest of a line already begun, which is finished before anything newer starts.
+    var unsent = Data()
+    /// The newest line not yet begun. A newer one replaces it: each is a whole snapshot, so a watcher
+    /// that reads slowly misses the ones in between and never the current one.
+    var waiting: Data?
+    /// Whether the write source is armed.
+    private(set) var isWriting = false
+    /// Whether the peer closed its write half, so the read source is suspended.
+    var isDeaf = false
+
+    init(writes: DispatchSourceWrite) {
+        self.writes = writes
+    }
+
+    func setWriting(_ writing: Bool) {
+        guard writing != isWriting else { return }
+        isWriting = writing
+        if writing { writes.resume() } else { writes.suspend() }
     }
 }

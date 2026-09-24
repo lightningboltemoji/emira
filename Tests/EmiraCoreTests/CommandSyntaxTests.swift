@@ -36,7 +36,7 @@ import Testing
         .moveToMonitorAndFocus(.next), .moveToMonitorAndFocus(.direction(.up)),
         .moveWorkspaceToMonitor(.previous), .moveWorkspaceToMonitor(.index(3)),
         .moveWorkspaceToMonitorAndFocus(.next), .moveWorkspaceToMonitorAndFocus(.direction(.left)),
-        .closeWindow, .centerColumn, .dumpState,
+        .closeWindow, .centerColumn, .dumpState, .watch,
         .exec("ghostty"), .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
     ]
 
@@ -170,6 +170,7 @@ import Testing
                 "move-workspace-to-monitor-and-focus <N|left|right|up|down|next|prev>",
             "exec": "exec <shell command>",
             "debug": "debug",
+            "watch": "watch",
         ]
         #expect(Set(expected.keys) == Set(Vocabulary.verbs.map(\.name)))
         for verb in Vocabulary.verbs {
@@ -212,6 +213,7 @@ import Testing
         #expect(Command.closeWindow.words == ["close-window"])
         // `emira debug` is the documented user-facing verb for `dumpState`.
         #expect(Command.dumpState.words == ["debug"])
+        #expect(Command.watch.words == ["watch"])
     }
 
     @Test func aliasesParseToTheSameCommand() throws {

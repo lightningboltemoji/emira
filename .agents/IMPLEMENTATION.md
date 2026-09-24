@@ -85,7 +85,7 @@ than something surprising.
 **The table is `Vocabulary`, and the grammar in it is data.** A surface that must _offer_ the vocabulary
 rather than read it can call neither `usage` nor `parse`, since both answer only once something has been typed.
 So a `Verb` carries its argument as a **shape**, `Verb.Argument`, and the printed grammar is derived from it.
-Five shapes carry twenty-four verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
+Five shapes carry twenty-five verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
 control, never per verb** — and each reads its choices off the type that parses them back. It is top-level
 rather than nested in `Command`: a consumer of the _spellings_ is not a consumer of the reducer's input.
 
@@ -117,7 +117,8 @@ EmiraMotion     pure math — springs, easing curves, the scalar Animator.  (zer
 EmiraCore       pure — geometry, ids, Command/Event/Effect, State, layout engine,
     │           rules, Config values, the Engine reducer.        (deps: EmiraMotion)
     ▲
-   ├── EmiraProtocol   Codable request/reply envelope, wire framing, one-shot socket client.
+   ├── EmiraProtocol   Codable request/reply envelope, wire framing, the socket client, and
+   │                   `DesktopStatus`, the schema `watch` publishes.
    └── EmiraConfig     pure — the TOML grammar and the config schema; text ⇄ `Config`.
     ▲
 EmiraGuide      AppKit — the guides' layer tree, and no window; with it the layer pieces a
@@ -237,8 +238,8 @@ protocols so the pump stays headless-testable.
 
 **`onStateChanged` fires once per drain, not once per event.** A single command cascades through capture →
 raise → on-screen → teleport → landings, and an observer seeing each step would see states the user never does.
-Peripherals that _display_ state (`MenuBarItem`, `Guide`) hang off it and diff their own projection; they are
-deliberately not `Effect`s. `PointerFocus` is the one exception and holds a `() -> State` reader instead,
+Peripherals that _display_ state (`MenuBarItem`, `Guide`, `DesktopPublisher`) hang off it and diff their own
+projection; they are deliberately not `Effect`s. `PointerFocus` is the one exception and holds a `() -> State` reader instead,
 because it reads on a _sample_, which is not an event and must not become one.
 
 ---
@@ -1507,7 +1508,7 @@ pin — cut out of the cover — and a hoisted float are never under a stand-in.
 | `Display/`                | `CADisplayLink` → `tick(dt)`, a hold deadline per cover, and the display set as a source                 | `FrameClock`, `HoldTimer`                           |
 | `Input/`                  | the two intent sources: chords → `Event.command` through Carbon `RegisterEventHotKey`, or a consuming `CGEventTap` for the fn ones; and a gesture `CGEventTap` → the three trackpad events | `HotkeyBinder`, `GestureTapper`   |
 | `Config/`                 | the half that needs a disk: read → watch → report                                                        | `FileWatcher`                                       |
-| `Ipc/`                    | unix socket, JSON-lines, `Request` → `Reply`                                                             | a real socket, in-test                              |
+| `Ipc/`                    | unix socket, JSON-lines, `Request` → `Reply`; `watch`'s stream (`DesktopSubject`, `DesktopPublisher`)     | a real socket, in-test; `DesktopWatchers`           |
 | `MenuBar/`, `Onboarding/` | the two GUIs; the policy half of each is pure                                                            | `StatusModel`, `OnboardingModel`                    |
 | `Teardown.swift`          | the exit path: place the quit cascade, wait, bounded                                                     | `WindowWriter`                                      |
 
@@ -1951,14 +1952,28 @@ reducer never reads. **There are no default bindings**: a registered chord is ta
 the machine, so a default is emira confiscating a keystroke nobody asked it to. That is also what puts `exec` in
 the vocabulary — what emira takes, it must be able to give back.
 
-**IPC is one `Request`, one `Reply`, then close.** Versioning is a **probe, not a decode**: `version` is a flat
-top-level `Int` on both messages and `Wire.probeVersion` reads it _before_ decoding, so a peer from another
-build gets a sentence instead of an undecodable envelope. `Reply.state` carries **opaque JSON**, so a CLI one
-release behind still dumps a newer daemon's state. `dumpState` is a **read**, answered out of band straight off
-`Runtime.state` — safe _because of_ invariant 4, since the socket's main-actor hop always lands between pumps.
-All socket I/O runs on one private serial queue; the main thread never blocks on a client. The idle deadline
-bounds a peer that never speaks or never drains its reply, never a request already accepted — an answer owed is
-delivered however long the hop to main takes, because how busy the daemon is was never the peer's doing.
+**IPC is one `Request`, one `Reply`, then close — except `watch`.** Versioning is a **probe, not a decode**:
+`version` is a flat top-level `Int` on both messages and `Wire.probeVersion` reads it _before_ decoding, so a
+peer from another build gets a sentence instead of an undecodable envelope. `Reply.state` and `Reply.desktop`
+carry **opaque JSON**, so a CLI one release behind still prints what a newer daemon sends. `dumpState` and
+`watch` are **reads**, answered out of band straight off `Runtime.state` — safe _because of_ invariant 4, since
+the socket's main-actor hop always lands between pumps. All socket I/O runs on one private serial queue; the main
+thread never blocks on a client. The idle deadline bounds a peer that never speaks or never drains its reply,
+never a request already accepted — an answer owed is delivered however long the hop to main takes, because how
+busy the daemon is was never the peer's doing.
+
+**`watch` is the desktop for someone else to show.** A bar or a script gets `DesktopStatus` — per display, the
+shown workspace, its columns named the way the names guide names them, pins; focus; the occupied workspaces;
+and `moving` — as one line of JSON on connect and another whenever it changes. It is a public contract with its
+own `version`, which is why it is not `State`, and it carries **discrete facts only**: no frame, offset or
+title, so a command costs a watcher about two lines (the change, then `moving` settling) rather than one per
+tick. Every line is a whole snapshot, and that buys the transport its two rules. **A slow watcher is sent the
+newest line, never every line** — one line waits per watcher and a newer one replaces it, finishing only a line
+already begun. **A watcher is counted from the moment its request is read**, not from its first line, so a
+change landing during the hop to main is published rather than lost; `DesktopPublisher` builds nothing on a
+drain nobody is watching. The connection is exempt from the idle deadline, and a watcher leaving is heard when it
+happens: end of file on its read side, told apart from a half-close by a zero-byte write, which only fails for
+a peer that has gone.
 
 **The socket path is checked, never trusted.** `$TMPDIR/emira.sock` (per-user and `0700` by construction,
 reboot-cleaned, short enough for `sun_path`), overridable via `EMIRA_SOCKET`. Bind only if nothing is there, or
@@ -2226,7 +2241,8 @@ and a save leaves the window up.
   no amount of `emira debug` polling tells them apart (worse, polling perturbs the subject). So
   **frames-per-transition** is reported permanently on cover dismissal, with the capture head stitched in by the
   daemon: `41 frames in 336 ms (122 fps); 145 ms capture head → 481 ms`.
-- **Observability.** `emira debug` dumps the live `State` as JSON over the socket; `os_log` behind a small
+- **Observability.** `emira debug` dumps the live `State` as JSON over the socket, and `emira watch` streams the
+  public `DesktopStatus` as it changes; `os_log` behind a small
   `Logging` wrapper; the daemon logs every command, key press, capture batch and transition to stderr. Note that
   a bundled app's stderr goes nowhere — reading `capture:` / `transition:` lines means running the daemon from a
   terminal.
@@ -2395,6 +2411,7 @@ emira/
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
+    │                    DesktopStatus (what `watch` publishes: the public schema)
     ├── EmiraGuide/      GuideRenderer (the seam: a drawing · scale · palette · sources) · GuideFade
     │                    RoundedLayer · GuideTypeface (the face, and the one thing that measures it)
     │                    SmearLayer (the motion blur, hosted by the cover and by the mock)
@@ -2426,6 +2443,7 @@ emira/
     │   ├── Input/       Hotkeys (policy) · CarbonHotkeys · FunctionKeyTap · Gestures (policy) · GestureTap
     │   ├── Config/      ConfigLoader · ConfigFile
     │   ├── Ipc/         SocketServer · RequestRouter
+    │   │                DesktopSubject (State → DesktopStatus) · DesktopPublisher (the diff, on every drain)
     │   ├── MenuBar/     StatusItem — StatusModel (pure) + LoginItem + MenuBarItem
     │   ├── Onboarding/  Onboarding (policy) · OnboardingWindow · Wordmark · PulseButton
     │   └── Resources/   logo.webp — a resource of the target that draws it, so `Bundle.module`
@@ -2487,7 +2505,8 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
 - **`EmiraConfigTests`** — the grammar and schema (every diagnostic, by line number), the document model
   (round-trip identity over a corpus), and the schema as text (every entry reads back whatever it prints, and
   `config.example.toml` matches its golden).
-- **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions.
+- **`EmiraProtocolTests`** — envelope round-trips, framing, version mismatch in both directions, and
+  `DesktopStatus` as text: its keys, and an absent fact spelled `null`.
 - **`EmiraSettingsTests`** — the draft (an edit as text, unset-on-default, a refusal that does not land), the
   preview's geometry against `Layout`'s own, a take's arrangement at a given `t`, which spring drives which
   quantity, the wallpaper's luminance under the menu bar, that the mock hands the guides' own models a real
@@ -2525,6 +2544,8 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   room — that the smear pad holds the widest of the two, since a filter clips what it cannot fit. No window
   server: a layer tree needs none.
 - **`EmiraShellTests`** — the pump (FIFO / non-re-entrancy / clock gating), the IPC seam over a real socket,
+  `watch` over one (`WatchStreamTests`: the newest line to a slow reader, a hang-up told from a half-close) and
+  what it publishes (`DesktopSubjectTests`, `DesktopPublisherTests`: a title is no line, a command about two),
   identity (`GhostIdentityTests`, `NativeTabTests`), the write path, the truth plane, capture (including the
   per-display covers in `MultiDisplayCaptureTests`), compositing (including the routing and the per-display
   raise fence in `CompositorTests`), the pointer plane, the read that turns a `State` into a `GuideInput`

@@ -194,4 +194,7 @@ public enum Command: Sendable, Codable, Equatable {
     case exec(String)
     /// Dump the live `State` as JSON over the socket — introspection for `emira debug`.
     case dumpState
+    /// Stream the desktop as JSON lines, a snapshot now and another whenever it changes — for a bar or
+    /// a script that shows where you are. A read, like `dumpState`, but the connection stays open.
+    case watch
 }
