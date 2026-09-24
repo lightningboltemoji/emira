@@ -248,7 +248,7 @@ public final class WorldWatcher {
     /// about *this scan*, not about a window — the enumerator runs identical code at boot and after.
     public func start(completion: @escaping @MainActor (AXEnumerator.Report) -> Void = { _ in }) {
         source.start { [weak self] observation in self?.handle(observation) }
-        intent.onCleared = { [weak self] in self?.settleFocus() }
+        intent.onCleared = { [weak self] ours in self?.settleFocus(after: ours) }
         heartbeat?.start(every: Self.reconcileInterval) { [weak self] in self?.reconcile() }
         enumerator.enumerate { [weak self] report in
             self?.absorb(report, attempt: 0, alreadyOpen: true)
@@ -364,11 +364,11 @@ public final class WorldWatcher {
         // picking its next key window is nobody's focus, and a real move to another app arrives as its
         // activation. The fade check still runs, since a report is when a window may have gone.
         case .focusMoved(let id):
-            guard isActive(registry.record(id)?.pid) else { dbg("watcher: gate drop focusMoved \(id) active=\(String(describing: active))"); return checkShownAfterFade() }
+            guard isActive(registry.record(id)?.pid) else { return checkShownAfterFade() }
             resolveFocus(id)
 
         case .focusMovedUnmanaged(let pid):
-            guard isActive(pid) else { dbg("watcher: gate drop unmanaged pid=\(pid)"); return checkShownAfterFade() }
+            guard isActive(pid) else { return checkShownAfterFade() }
             // The app is the only thing that can say which window that element belongs to, so the
             // report carries no answer of its own — see `readFocus`.
             readFocus(of: pid)
@@ -391,7 +391,6 @@ public final class WorldWatcher {
             onPointerMoved?(point)
 
         case .appActivated(let pid):
-            dbg("watcher: appActivated pid=\(pid)")
             active = pid
             emit(.appActivated)
             readFocus(of: pid)
@@ -413,27 +412,28 @@ public final class WorldWatcher {
     }
 
     /// One attempt of `readFocus`. A retry keeps the first attempt's marker: the report left then.
+    /// `settling` marks the clearing's read, and `ours` is what it is judged against (`settleFocus`).
     private func readFocus(of pid: pid_t, since asked: FocusIntent.Ticket, attempt: Int,
-                           settling: Bool = false) {
+                           settling: Bool = false, ours: WindowId? = nil) {
         source.focusedWindow(of: pid) { [weak self] read in
-            guard let self, !isStopped, intent.isCurrent(asked) else { dbg("watcher: read superseded pid=\(pid) read=\(read)"); return }
-            dbg("watcher: read pid=\(pid) -> \(read) settling=\(settling)")
+            guard let self, !isStopped, intent.isCurrent(asked) else { return }
             guard case .window(let id) = read else {
                 guard attempt < Self.maxFocusReadAttempts else { return }
-                return readFocus(of: pid, since: asked, attempt: attempt + 1, settling: settling)
+                return readFocus(of: pid, since: asked, attempt: attempt + 1, settling: settling, ours: ours)
             }
             guard settling else { return resolveFocus(id) }
             noteFocus(id)
+            guard id != ours else { return }
             emit(.focusChanged(id, origin: .system))
         }
     }
 
-    /// Ask the active app which window has focus once `FocusIntent`'s record clears, and pass the answer
-    /// on as it stands. While the record stood, a real report could be taken for our own echo; nothing
-    /// repeats one, and a desktop that has gone quiet is not guessing, so no filter applies to this read.
-    private func settleFocus() {
+    /// Ask the active app which window has focus once `FocusIntent`'s record clears, since a report it
+    /// swallowed has nothing coming to repeat it. Passed on unfiltered, except an answer naming `ours`: the
+    /// focus the core last wrote, still standing, which the core may since have chosen to leave.
+    private func settleFocus(after ours: WindowId?) {
         guard let active, apps[active] != nil else { return }
-        readFocus(of: active, since: intent.newest, attempt: 1, settling: true)
+        readFocus(of: active, since: intent.newest, attempt: 1, settling: true, ours: ours)
     }
 
     // Retirement (the destroy that waits for one answer)
@@ -861,7 +861,6 @@ public final class WorldWatcher {
     /// forgets the quitting app, which is the one case where macOS does pick the next app.
     private func resolveFocus(_ id: WindowId?) {
         checkShownAfterFade()
-        dbg("watcher: resolve \(String(describing: id)) verdict=\(intent.resolve(id)) displaced=\(String(describing: focus)) focusApp=\(String(describing: focusApp)) active=\(String(describing: active))")
         switch intent.resolve(id) {
         // News about the past. `focus` is deliberately not advanced: it names the window a *new* report
         // displaces, and a window we stopped considering focused two presses ago is not that.
@@ -894,12 +893,12 @@ public final class WorldWatcher {
             emit(.focusChanged(id, origin: .system))
             return
         }
-        guard isLive(displaced) else { dbg("watcher: drop \(String(describing: id)) displaced dead"); return }   // already known dead — free answer
+        guard isLive(displaced) else { return }   // already known dead — free answer
         // The probe is a queued read too: a focus request issued while it is out makes this report
         // news about the past (case 6 above).
         let asked = intent.newest
         source.isAlive(displaced) { [weak self] alive in
-            guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { dbg("watcher: drop \(String(describing: id)) after probe alive=\(alive)"); return }
+            guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { return }
             emit(.focusChanged(id, origin: .system))
         }
     }

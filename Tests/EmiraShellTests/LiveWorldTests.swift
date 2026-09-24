@@ -1802,6 +1802,43 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.recorder.events.count == before)
     }
 
+    @Test func theFocusWeLastWroteStillStandingIsNoNews() {
+        // Switch to a workspace, then on to an empty one before the record clears: the empty one asks
+        // for nothing, so the window the first switch focused is still key when the clearing reads it.
+        // The core has already left it, and hearing it as `.system` would take the user back.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        _ = world.intent.request(one)
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))      // the echo: `expected`
+        let before = world.recorder.events.count
+
+        world.intentClock.fire()
+
+        #expect(world.source.focusReads == [200, 200], "the active app is still asked")
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func aPinTheFenceBroughtForwardIsNotAFocusWeWrote() {
+        // The fence's request is the newest on the record and its owed focus never followed (that window
+        // closed): the pin holds the keyboard, and the core — which ignored the fence's echo — has to
+        // hear it from the clearing.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let term = try! #require(world.id(titled: "term"))
+        _ = world.intent.request(term)
+        _ = world.intent.request(one, for: .stacking)
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        let before = world.recorder.events.count
+
+        world.intentClock.fire()
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
     @Test func minimizingAWindowWeDoNotManageIsSilence() {
         let world = LiveWorld()
         world.watcher.start()

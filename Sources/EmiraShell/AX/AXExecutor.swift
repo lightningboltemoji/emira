@@ -96,7 +96,7 @@ public final class AXExecutor: Executor {
                     continue
                 }
                 fence.confirm(id, over: over, within: band) { feedback(.focusConfirmed(id)) }
-                writer.focus(record) { [scheduler] in
+                writer.bringForward(record) { [scheduler] in
                     fence.activated(id)
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }

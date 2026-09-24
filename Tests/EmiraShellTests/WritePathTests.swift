@@ -673,6 +673,7 @@ final class ScriptedWriter: WindowWriter {
     private(set) var placements: [Placement] = []
     private(set) var focused: [WindowId] = []
     private(set) var restored: [WindowId] = []
+    private(set) var broughtForward: [WindowId] = []
     private(set) var raised: [WindowId] = []
     private(set) var closed: [WindowId] = []
 
@@ -697,6 +698,12 @@ final class ScriptedWriter: WindowWriter {
     /// the turn `AXExecutor` waits before reporting it is that type's, not this one's.
     func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void) {
         focused.append(window.id)
+        completion()
+    }
+
+    func bringForward(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor () -> Void) {
+        broughtForward.append(window.id)
         completion()
     }
 
@@ -728,6 +735,8 @@ private final class SilentFocusWriter: WindowWriter {
     func place(_ moves: [WindowMove], of app: pid_t,
                then completion: @escaping @MainActor ([WindowLanding]) -> Void) {}
     func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void) {}
+    func bringForward(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor () -> Void) {}
     func restoreFocus(_ window: WindowRegistry.Record,
                       then completion: @escaping @MainActor () -> Void) {}
     func raise(_ window: WindowRegistry.Record) {}

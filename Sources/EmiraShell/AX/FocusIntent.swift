@@ -35,6 +35,16 @@ public final class FocusIntent {
         fileprivate let number: UInt64
     }
 
+    /// Why a window is being asked for. Both go on the record, since either provokes an echo that has
+    /// to be told from the user's own Cmd-Tab; only one is a focus the core then holds.
+    public enum Purpose: Equatable, Sendable {
+        /// `Effect.focus` or `.restoreFocus`: the core wrote this focus when it asked.
+        case focus
+        /// The pin fence's `Effect.confirmFocus`: an activation for the stacking it buys, onto a window
+        /// the core does not consider focused.
+        case stacking
+    }
+
     /// What a focus report turned out to be.
     public enum Verdict: Equatable, Sendable {
         /// The echo of the focus we asked for most recently. Truthful, and the core already believes it.
@@ -57,9 +67,14 @@ public final class FocusIntent {
     /// entry when its first echo lands would let the second one back through as external.
     private var requested: [WindowId] = []
 
-    /// Called as the record clears. A report swallowed while it stood has nothing coming to repeat it,
-    /// so this is when the desktop is asked again (`WorldWatcher.settleFocus`).
-    public var onCleared: (@MainActor () -> Void)?
+    /// The newest request on the record made for `.focus` — the focus the core wrote when it asked. `nil`
+    /// when the record holds only `.stacking` requests.
+    private var held: WindowId?
+
+    /// Called as the record clears, with `held`. A report swallowed while the record stood has nothing
+    /// coming to repeat it, so this is when the desktop is asked again (`WorldWatcher.settleFocus`), and
+    /// an answer naming `held` is the core's own write, still standing.
+    public var onCleared: (@MainActor (WindowId?) -> Void)?
 
     public init(scheduler: any DelayScheduler, grace: TimeInterval = FocusIntent.defaultGrace) {
         self.scheduler = scheduler
@@ -67,18 +82,19 @@ public final class FocusIntent {
     }
 
     /// Record that we are about to ask for `id`, superseding whatever we asked for before it.
-    public func request(_ id: WindowId) -> Ticket {
+    public func request(_ id: WindowId, for purpose: Purpose = .focus) -> Ticket {
         issued += 1
         requested.append(id)
-        dbg("intent.request \(id) requested=\(requested)")
+        if purpose == .focus { held = id }
         let ticket = Ticket(number: issued)
         // Re-armed per request, never cancelled — `DelayScheduler` has none, so the generation check on
         // arrival is what keeps a superseded deadline from clearing a record still being written to.
         scheduler.schedule(after: grace) { [weak self] in
             guard let self, issued == ticket.number else { return }
-            dbg("intent: grace expired, record cleared")
             requested.removeAll()
-            onCleared?()
+            let ours = held
+            held = nil
+            onCleared?(ours)
         }
         return ticket
     }

@@ -70,6 +70,11 @@ public protocol WindowWriter {
     /// answer for.
     func focus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
 
+    /// The same write and completion contract as `focus`, made for stacking — the pin fence bringing a
+    /// pin's app above what is landing across it (`Effect.confirmFocus`). Apart from `focus` because the
+    /// core does not hold the focus it causes, and the record has to know which of its requests it does.
+    func bringForward(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
+
     /// Raise a window within its app's stack, without touching focus.
     func raise(_ window: WindowRegistry.Record)
 
@@ -148,6 +153,11 @@ public final class AXWindowWriter: WindowWriter {
         focus(window, correcting: false, then: completion)
     }
 
+    public func bringForward(_ window: WindowRegistry.Record,
+                             then completion: @escaping @MainActor () -> Void) {
+        focus(window, correcting: false, for: .stacking, then: completion)
+    }
+
     /// The same write under `canHoldFocus`, asked twice around it: before `makeKey`, which alone brings
     /// a hidden app back, and in its completion — the last instant, and a lane round trip into the
     /// departing app later than the report being corrected.
@@ -158,24 +168,20 @@ public final class AXWindowWriter: WindowWriter {
     }
 
     private func focus(_ window: WindowRegistry.Record, correcting: Bool,
+                       for purpose: FocusIntent.Purpose = .focus,
                        then completion: @escaping @MainActor () -> Void) {
-        let ticket = intent.request(window.id)
+        let ticket = intent.request(window.id, for: purpose)
         let element = window.element
         let pid = window.pid
         let number = window.number
         client.perform(app: pid) { _ in
             element.makeKey()
         } then: { [intent, client] _ in
-            guard intent.isCurrent(ticket) else { dbg("writer: superseded before activate \(window.id)"); return }
+            guard intent.isCurrent(ticket) else { return }
             guard !correcting || Self.canHoldFocus(pid: pid, window: number) else { return }
             // Nil when the process exited between the two halves — a normal race, and the observers
             // will report the truth.
-            let ok = NSRunningApplication(processIdentifier: pid)?.activate()
-            dbg("writer: activate \(window.id) pid=\(pid) -> \(String(describing: ok)) front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                dbg("writer: +150ms after activate \(window.id): front=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")")
-            }
-            if ok == true {
+            if NSRunningApplication(processIdentifier: pid)?.activate() == true {
                 return completion()
             }
             let application = client.application(for: pid)
@@ -213,11 +219,4 @@ public final class AXWindowWriter: WindowWriter {
             element.close()
         } then: { _ in }
     }
-}
-
-
-/// Temporary instrumentation.
-func dbg(_ message: String) {
-    let t = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1e9
-    FileHandle.standardError.write(Data(String(format: "%.4f DBG ", t).appending(message + "\n").utf8))
 }

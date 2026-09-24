@@ -1599,6 +1599,13 @@ same read covers an activation of ours that macOS refused, which otherwise leave
 app never came forward. A read overtaken by a new request is dropped, since that request's own clearing asks
 again.
 
+**Except an answer naming the focus the core last wrote**, which is no news: the desktop agrees with the core's
+own request, and whatever the core has done since is its own decision. That includes leaving it — a switch to
+an empty workspace focuses nothing and asks for nothing, so the app it left stays key, and hearing that as
+`.system` takes the user back. So the record keeps which of its requests were focus (`FocusIntent.Purpose`):
+the pin fence's activation goes on it through `WindowWriter.bringForward` as `.stacking`, since the core never
+holds the pin it raises, and a pin that keeps the keyboard is still passed on.
+
 **An app's own focus report is keyboard focus only while that app is the active one.** A close lands when its
 app gets round to it, so an app the user has already clicked away from still picks its next key window and
 still posts `AXFocusedWindowChanged` for it — which, believed, puts the core on a window of an app nobody
