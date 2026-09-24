@@ -50,7 +50,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 
     @Test func onlyAStandardWindowTiles() {
         let role = WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
-                              isFullScreen: false, canBecomeMain: true)
+                              isFullScreen: false, canBecomeMain: true,
+                              isResizable: true, hasTitleBar: true)
         #expect(role == .standard)
         #expect(role?.tiles == true)
     }
@@ -60,12 +61,15 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // whose role is `AXScrollArea`. `.other` means "a real window emira leaves alone", so filing
         // the desktop there would leave it in `World`, unbindable, reported as a failure every scan.
         #expect(WindowRole(axRole: "AXScrollArea", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: true) == nil)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == nil)
         #expect(WindowRole(axRole: "AXGroup", axSubrole: "AXStandardWindow",
-                           isFullScreen: false, canBecomeMain: true) == nil)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == nil)
         // An app that won't say what it is, isn't something we can classify.
         #expect(WindowRole(axRole: nil, axSubrole: "AXStandardWindow",
-                           isFullScreen: false, canBecomeMain: true) == nil)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == nil)
     }
 
     @Test func aMenuBarIsDeclinedBecauseTheChildrenFallbackCarriesOne() {
@@ -73,7 +77,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // windows *and* the app's menu bar. Nothing filters that list before the classifier, so this
         // is the only thing standing between the fallback and a menu bar in the strip.
         #expect(WindowRole(axRole: "AXMenuBar", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: true) == nil)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == nil)
     }
 
     @Test func theFloatingKindsAreClassifiedFromTheSubrole() {
@@ -85,7 +90,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         ]
         for (subrole, expected) in cases {
             #expect(WindowRole(axRole: "AXWindow", axSubrole: subrole,
-                               isFullScreen: false, canBecomeMain: true) == expected)
+                               isFullScreen: false, canBecomeMain: true,
+                               isResizable: true, hasTitleBar: true) == expected)
         }
     }
 
@@ -93,20 +99,24 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // Why the initializer takes the role at all: an attached sheet reports `AXSheet` and often
         // answers `AXSubrole` with nothing, so a subrole-only taxonomy would be right by accident.
         #expect(WindowRole(axRole: "AXSheet", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: true) == .sheet)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == .sheet)
         #expect(WindowRole(axRole: "AXPopover", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: true) == .popover)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == .popover)
     }
 
     @Test func aNativeFullScreenWindowIsExcludedDespiteLookingOrdinary() {
         // A window in native full screen is on a macOS Space of its own, territory the charter says we
         // don't enter, so it must not tile.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
-                           isFullScreen: true, canBecomeMain: true) == .other)
+                           isFullScreen: true, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == .other)
         // Why full-screen is checked before the subrole: full-screen Safari reports its subrole as
         // `AXDialog` and its title as empty.
         let observedInTheWild = WindowRole(axRole: "AXWindow", axSubrole: "AXDialog",
-                                           isFullScreen: true, canBecomeMain: true)
+                                           isFullScreen: true, canBecomeMain: true,
+                                           isResizable: true, hasTitleBar: true)
         #expect(observedInTheWild == .other)
         #expect(observedInTheWild?.tiles == false)
     }
@@ -115,9 +125,11 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // The safe direction: misclassifying as floating leaves a window alone; the opposite drags a
         // popover into the strip. The role already said "window", so there is something real here.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: true) == .other)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == .other)
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXSomethingNew",
-                           isFullScreen: false, canBecomeMain: true) == .other)
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: true) == .other)
     }
 
     @Test func appChromeCarryingAnNSWindowIsDeclined() {
@@ -125,7 +137,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // a title — that is a strip of app chrome. Chrome declines to classify it and AppKit will not
         // let it be the app's main window, and those two facts together are the whole test.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXUnknown",
-                           isFullScreen: false, canBecomeMain: false) == nil)
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: true, hasTitleBar: true) == nil)
     }
 
     @Test func anUnclassifiedWindowThatCanBeMainIsKeptBecauseTheSubroleAloneProvesNothing() {
@@ -133,7 +146,8 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // that path the two never disagree — this pairing only arises for a toolkit building its own
         // AX tree, where `AXUnknown` is habit and the settable `AXMain` is the fact worth believing.
         let role = WindowRole(axRole: "AXWindow", axSubrole: "AXUnknown",
-                              isFullScreen: false, canBecomeMain: true)
+                              isFullScreen: false, canBecomeMain: true,
+                              isResizable: true, hasTitleBar: true)
         #expect(role == .other)
         #expect(role?.tiles == false)
     }
@@ -143,22 +157,76 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // one that answers "AXUnknown", and the safe direction for less information is to leave a real
         // window alone rather than to stop managing it.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: nil,
-                           isFullScreen: false, canBecomeMain: false) == .other)
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: true, hasTitleBar: true) == .other)
     }
 
     @Test func aWindowThatNamedItsSubroleIsNeverAskedWhetherItCanBeMain() {
-        // `canBecomeMain` is one more AX round trip on top of `snapshot`'s seven, and every ordinary
+        // `canBecomeMain` is one more AX round trip on top of `snapshot`'s eight, and every ordinary
         // window would pay it. The autoclosure in the signature is what keeps that off the common path,
         // so the laziness is a contract rather than an implementation detail.
         var asked = 0
         func probe() -> Bool { asked += 1; return true }
 
         _ = WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
-                       isFullScreen: false, canBecomeMain: probe())
+                       isFullScreen: false, canBecomeMain: probe(),
+                       isResizable: true, hasTitleBar: true)
         #expect(asked == 0)
 
         _ = WindowRole(axRole: "AXWindow", axSubrole: "AXUnknown",
-                       isFullScreen: false, canBecomeMain: probe())
+                       isFullScreen: false, canBecomeMain: probe(),
+                       isResizable: true, hasTitleBar: true)
+        #expect(asked == 1)
+    }
+
+    @Test func aWindowWithNoTitleBarThatCannotResizeIsDeclinedWhateverItCallsItself() {
+        // Zoom's toolbar popups claim `AXStandardWindow` and can be main; its menus and toasts share the
+        // shape under other subroles. The subrole is the app's claim, the shape is AppKit's.
+        for subrole in ["AXStandardWindow", "AXSystemDialog", "AXFloatingWindow", "AXSubrole", nil] {
+            #expect(WindowRole(axRole: "AXWindow", axSubrole: subrole,
+                               isFullScreen: false, canBecomeMain: true,
+                               isResizable: false, hasTitleBar: false) == nil)
+        }
+    }
+
+    @Test func eitherHalfOfTheChromeShapeAloneIsARealWindow() {
+        // A decorationless terminal has no title bar but resizes, and must stay tileable.
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: true, hasTitleBar: false) == .standard)
+        // Safari's Settings is fixed-size but titled, and is a window we must keep.
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: false, hasTitleBar: true) == .standard)
+    }
+
+    @Test func theAttachedKindsAndFullScreenAreNeverJudgedByTheirShape() {
+        // A sheet has no title bar and often a fixed size, and is still the document's own dialog. A
+        // native full-screen window is excluded, not declined: it comes back to the strip on exit.
+        #expect(WindowRole(axRole: "AXSheet", axSubrole: nil,
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: false, hasTitleBar: false) == .sheet)
+        #expect(WindowRole(axRole: "AXPopover", axSubrole: nil,
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: false, hasTitleBar: false) == .popover)
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
+                           isFullScreen: true, canBecomeMain: true,
+                           isResizable: false, hasTitleBar: false) == .other)
+    }
+
+    @Test func aResizableWindowIsNeverAskedForItsTitleBar() {
+        // Up to four round trips, and nearly every window resizes. Same contract as `canBecomeMain`.
+        var asked = 0
+        func probe() -> Bool { asked += 1; return true }
+
+        _ = WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
+                       isFullScreen: false, canBecomeMain: true,
+                       isResizable: true, hasTitleBar: probe())
+        #expect(asked == 0)
+
+        _ = WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
+                       isFullScreen: false, canBecomeMain: true,
+                       isResizable: false, hasTitleBar: probe())
         #expect(asked == 1)
     }
 }

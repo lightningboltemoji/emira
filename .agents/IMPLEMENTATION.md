@@ -1535,18 +1535,28 @@ can quietly break:
   nothing simply leaves `World`. An answer that is *empty* is asked again as `AXChildren`; an answer that
   *failed* is not, since that is usually the messaging timeout and a second one would double what a hung app
   costs its lane.
-- **The window classifier is failable, in two directions.** `kAXWindowsAttribute` is not a list of windows —
+- **The window classifier is failable, in three directions.** `kAXWindowsAttribute` is not a list of windows —
   Finder answers it with the desktop, and the fallback above adds a menu bar. An unrecognized **role** means
-  "not a window", which is what filters both. And a window whose subrole is the literal `AXUnknown` **and**
-  whose `AXMain` is not *settable* is app chrome that happens to be an `NSWindow` — Chrome's Cmd-F find bar is
-  a full entry in the list, frame and title and all. Both are dropped at the AX boundary. An unrecognized
-  subrole that can still be main means "a real window we leave alone".
+  "not a window", which is what filters both. The other two are app chrome that happens to be an `NSWindow`,
+  each a conjunction because either half alone has real windows behind it, and both are dropped at the AX
+  boundary:
+  - **No title bar and not resizable**, whatever the subrole says. Zoom's toolbar popups answer
+    `AXStandardWindow`, can be main and take focus; only their shape gives them away. A decorationless
+    terminal has no title bar but resizes, and a settings window is fixed-size but titled. "Title bar" is any
+    stoplight button *or* `AXTitleUIElement`: a unified toolbar hides the title, and a titled window with
+    none of closable, miniaturizable or resizable lists no buttons.
+  - The literal subrole `AXUnknown` **and** an `AXMain` that is not *settable* — Chrome's Cmd-F find bar, a
+    full entry in the list, frame and title and all. An unrecognized subrole that can still be main means "a
+    real window we leave alone".
+
+  Sheets and popovers are classified by role before either test, and a full-screen window by `AXFullScreen`,
+  so neither is ever judged by its shape.
 - **AppKit derives a window's subrole from `canBecomeMain`.** Two windows with identical style masks report
   `AXStandardWindow` or `AXDialog` purely according to whether the app overrode that method, so a decorationless
-  terminal — which must override it to be typable at all — is indistinguishable from a decorated one, and the
-  stoplight buttons are worthless as a signal. It also means subrole and settable-`AXMain` are one fact read
-  twice on the AppKit path; the conjunction earns its keep off that path, where a toolkit growing its own AX
-  tree can answer `AXUnknown` for an ordinary window and the settable `AXMain` is the half to believe.
+  terminal — which must override it to be typable at all — is indistinguishable from a decorated one by subrole,
+  and the stoplight buttons alone are worthless as a signal. It also means subrole and settable-`AXMain` are one
+  fact read twice on the AppKit path; the conjunction earns its keep off that path, where a toolkit growing its
+  own AX tree can answer `AXUnknown` for an ordinary window and the settable `AXMain` is the half to believe.
 - **Adopting a non-window is not free even though it never tiles.** It mints a `WindowId` per appearance (a find
   bar is opened and closed all day), attaches an observer, and enters `World.window(at:)` — which prefers floats
   over tiled windows, so it wins the `follows-mouse` hit test over the page underneath it and takes focus it

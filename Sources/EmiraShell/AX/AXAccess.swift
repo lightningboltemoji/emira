@@ -44,11 +44,15 @@ private enum AXKey {
     /// What an element hangs from: the window, for a sheet; the application, for a window. Read upward,
     /// so it is not the descent the file header rules out.
     static let parent = "AXParent"
-    /// The window's own close button. A window-level *attribute*, not a child walk — the one element
-    /// below a window emira ever asks for, and the only public way to close a foreign window
-    /// (`IMPLEMENTATION.md` §7's "never walk children" is about enumerating a tree, not naming a
-    /// standard part). A window that cannot be closed simply doesn't answer.
+    /// The window's own close button, and the only public way to close a foreign window. Like the title
+    /// bar's parts below, a window-level *attribute* naming a standard part — not the child walk §7 rules
+    /// out. A window that cannot be closed simply doesn't answer.
     static let closeButton = "AXCloseButton"
+    static let minimizeButton = "AXMinimizeButton"
+    static let zoomButton = "AXZoomButton"
+    /// The title bar's text. Present exactly when a title bar shows its title — which is what answers
+    /// for a titled window with no buttons, since AX lists only the buttons the style mask asked for.
+    static let titleUIElement = "AXTitleUIElement"
 }
 
 /// The AX *actions* emira performs. Separate from attributes because an action is performed, not
@@ -165,6 +169,19 @@ public struct AXWindow: @unchecked Sendable {
     /// `false` is the framework saying this surface is not a primary window and never will be.
     public var canBecomeMain: Bool { isSettable(element, AXKey.main) }
 
+    /// `AXSize`'s **settability**: AppKit exposes it as writable only on a window whose style mask is
+    /// resizable. A round trip, and asked of every window at first sight.
+    public var isResizable: Bool { isSettable(element, AXKey.size) }
+
+    /// Any stoplight button, or the title bar's own text: a unified toolbar hides the title, and a titled
+    /// window that is neither closable, miniaturizable nor resizable lists no buttons. Up to four round
+    /// trips, short-circuiting.
+    public var hasTitleBar: Bool {
+        [AXKey.closeButton, AXKey.titleUIElement, AXKey.minimizeButton, AXKey.zoomButton].contains {
+            copyElement(element, $0) != nil
+        }
+    }
+
     /// A destroyed element answers `kAXErrorInvalidUIElement` to everything, so any attribute would do;
     /// `role` is the cheapest. **A busy app answers `false` too**, when the read times out — treat this
     /// as evidence, not proof.
@@ -181,15 +198,16 @@ public struct AXWindow: @unchecked Sendable {
                     width: Double(size.width), height: Double(size.height))
     }
 
-    /// Every attribute emira cares about in one pass: seven round trips, once, at first sight, plus an
-    /// eighth only for a window that declines to name its own subrole.
+    /// Every attribute emira cares about in one pass: eight round trips, once, at first sight, and up to
+    /// five more only where the classifier needs them.
     ///
     /// `nil` when the element has no readable frame, or is not a window at all — `kAXWindowsAttribute`
     /// is not the pure list its name promises, e.g. Finder answers it with the desktop, an
     /// `AXScrollArea`. Dropped here rather than reported unbound, since it will never bind.
     public func snapshot(bundleId: String) -> ObservedWindow? {
         guard let role = WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen,
-                                    canBecomeMain: canBecomeMain),
+                                    canBecomeMain: canBecomeMain, isResizable: isResizable,
+                                    hasTitleBar: hasTitleBar),
               let frame
         else { return nil }
         return ObservedWindow(
@@ -310,21 +328,15 @@ extension WindowRole {
     /// Classify an AX element: only `.standard` tiles, everything else floats — or `nil` if this is not
     /// a window at all.
     ///
-    /// Failable in two directions, because `kAXWindowsAttribute` lies about its contents twice over. An
-    /// unrecognized *role* is not a window (Finder answers it with the desktop). A subrole of literally
-    /// `AXUnknown` on a window whose `AXMain` is not settable is app chrome carrying an `NSWindow`, and
-    /// **both halves are required** — either alone has real windows behind it. An unrecognized subrole
-    /// that can still be main means "a real window we leave alone".
-    ///
-    /// Full-screen wins over everything, since such a window's subrole often still looks ordinary; role
-    /// catches the attached kinds, because sheets and popovers are their own role and a sheet frequently
-    /// reports no subrole at all.
-    ///
-    /// `canBecomeMain` is a round trip, so it is read only on the branch that needs it.
+    /// `nil` for an unrecognized *role*, and for app chrome carrying an `NSWindow`: no title bar *and* not
+    /// resizable, whatever the subrole claims, or `AXUnknown` *and* never main. Either half alone has
+    /// real windows behind it. The last three arguments are round trips, read only where they decide.
     public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool,
-                 canBecomeMain: @autoclosure () -> Bool) {
+                 canBecomeMain: @autoclosure () -> Bool,
+                 isResizable: @autoclosure () -> Bool,
+                 hasTitleBar: @autoclosure () -> Bool) {
         switch axRole {
-        case "AXWindow":  break                       // an ordinary window; the subrole decides
+        case "AXWindow":  break                       // an ordinary window; shape, then subrole, decide
         case "AXSheet":   self = isFullScreen ? .other : .sheet;   return
         case "AXPopover": self = isFullScreen ? .other : .popover; return
         default:          return nil                  // not a window (Finder's desktop, and friends)
@@ -333,6 +345,7 @@ extension WindowRole {
             self = .other
             return
         }
+        if !isResizable() && !hasTitleBar() { return nil }   // app chrome, whatever it calls itself
         switch axSubrole {
         case "AXStandardWindow":       self = .standard
         case "AXDialog":               self = .dialog
@@ -355,6 +368,15 @@ private func copyAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef?
         return nil
     }
     return value
+}
+
+/// An attribute whose value is another element — a window's buttons, its title text — or `nil` when
+/// it answers with anything else.
+private func copyElement(_ element: AXUIElement, _ name: String) -> AXUIElement? {
+    guard let raw = copyAttribute(element, name), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+        return nil
+    }
+    return (raw as! AXUIElement)
 }
 
 /// Whether an attribute can be *written*, a different question from what it currently reads. A round
