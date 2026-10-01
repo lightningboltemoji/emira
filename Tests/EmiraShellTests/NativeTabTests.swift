@@ -42,6 +42,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     var targets: [ScanTarget] = [ghostty]
     var windowsByPid: [pid_t: [ScannedWindow]] = [:]
     var entries: [WindowListEntry] = []
+    var screens: [Rect] = []
 
     func applications() -> [ScanTarget] { targets }
     func windows(of target: ScanTarget,
@@ -49,6 +50,7 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries))
     }
     func windowList() -> [WindowListEntry] { entries }
+    func screenAreas() -> [Rect] { screens }
 }
 
 /// A registry with one adopted tab group, ready for the second scan to change under it.
@@ -58,11 +60,11 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     let enumerator: AXEnumerator
     let id: WindowId
 
-    /// Adopts tab 1 (element seed 1, number 1) as the group's window.
-    init() {
+    /// Adopts tab 1 (element seed 1, number 1) as the group's window, standing on `frame`.
+    init(at frame: Rect = groupFrame) {
         enumerator = AXEnumerator(source: source, registry: registry)
-        source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one")]]
-        source.entries = [entry(1)]
+        source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one", frame: frame)]]
+        source.entries = [entry(1, frame: frame)]
         var report: AXEnumerator.Report?
         enumerator.enumerate(apps: [ghostty]) { report = $0 }
         id = report!.snapshots[0].id
@@ -290,6 +292,81 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         #expect(report.departed.isEmpty)
         #expect(report.succeeded.isEmpty)
         #expect(report.rebound == [group.id])
+    }
+}
+
+// A tab shown for the first time
+
+/// AppKit fits a window onto the screen the first time it shows it, and a tab nobody has selected has
+/// never been shown — so the group's next tab can land on the group's rectangle slid onto the display.
+/// The fixtures are the 2560×1440 display, with its 30-point menu bar, that this was measured on.
+@Suite @MainActor struct NativeTabFirstShowTests {
+
+    static let display = Rect(x: 0, y: 0, width: 2560, height: 1440)
+    static let visible = Rect(x: 0, y: 30, width: 2560, height: 1410)
+
+    /// A peeking column: the group hangs off the right edge, and the tab it shows lands flush with it.
+    @Test func aNeverShownTabSlidOntoTheScreenStillSucceedsTheGroup() {
+        let hanging = Rect(x: 2000, y: 100, width: 900, height: 700)
+        let group = Group(at: hanging)
+        group.source.screens = [Self.display, Self.visible]
+
+        let landed = Rect(x: 1660, y: 100, width: 900, height: 700)
+        group.source.windowsByPid = [ghostty.pid: [tab(2, title: "tab two", frame: landed)]]
+        group.source.entries = [entry(1, frame: hanging, onScreen: false), entry(2, frame: landed)]
+        let report = group.rescan()
+
+        #expect(report.succeeded == [group.id])
+        #expect(report.snapshots.isEmpty, "a tab switch is not a new window")
+        #expect(group.registry.record(group.id)?.number == 2)
+    }
+
+    /// A parked column hangs off the bottom right, so the slide is on both axes.
+    @Test func aParkedGroupsTabSlidesOnBothAxes() {
+        let parked = Rect(x: 2559, y: 1400, width: 887, height: 1374)
+        let group = Group(at: parked)
+        group.source.screens = [Self.display, Self.visible]
+
+        let landed = Rect(x: 1673, y: 66, width: 887, height: 1374)
+        group.source.windowsByPid = [ghostty.pid: [tab(2, title: "tab two", frame: landed)]]
+        group.source.entries = [entry(1, frame: parked, onScreen: false), entry(2, frame: landed)]
+
+        #expect(group.rescan().succeeded == [group.id])
+    }
+
+    /// The slide is one place, not a size match: the same size anywhere else is a different window.
+    @Test func theSameSizeAnywhereButTheSlidRectangleIsNotASuccessor() {
+        let hanging = Rect(x: 2000, y: 100, width: 900, height: 700)
+        let group = Group(at: hanging)
+        group.source.screens = [Self.display, Self.visible]
+
+        let elsewhere = Rect(x: 300, y: 100, width: 900, height: 700)
+        group.source.windowsByPid = [ghostty.pid: [tab(2, title: "other", frame: elsewhere)]]
+        group.source.entries = [entry(1, frame: hanging, onScreen: false), entry(2, frame: elsewhere)]
+        let report = group.rescan()
+
+        #expect(report.succeeded.isEmpty)
+        #expect(report.departed == [group.id])
+        #expect(report.snapshots.count == 1)
+    }
+
+    /// A group already on the screen has nowhere to slide to, so its successor stands on it exactly.
+    @Test func aGroupOnTheScreenIsSucceededOnlyWhereItStands() {
+        let group = Group()
+        group.source.screens = [Self.display, Self.visible]
+
+        let nudged = Rect(x: groupFrame.minX + 40, y: groupFrame.minY, width: groupFrame.width,
+                          height: groupFrame.height)
+        group.source.windowsByPid = [ghostty.pid: [tab(2, title: "other", frame: nudged)]]
+        group.source.entries = [entry(1, onScreen: false), entry(2, frame: nudged)]
+
+        #expect(group.rescan().succeeded.isEmpty)
+    }
+
+    @Test func aRectangleTooBigForTheScreenHasNoSlidPlace() {
+        #expect(WindowIdentity.slid(Rect(x: 0, y: 0, width: 3000, height: 700), into: Self.display) == nil)
+        #expect(WindowIdentity.slid(Rect(x: -400, y: 100, width: 900, height: 700), into: Self.display)
+                    == Rect(x: 0, y: 100, width: 900, height: 700))
     }
 }
 

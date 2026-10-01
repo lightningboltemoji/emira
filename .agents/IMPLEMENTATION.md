@@ -1581,6 +1581,13 @@ the `WindowId` makes a tab switch _unobservable to the core_, so the column, its
 float state survive one without a single `Event`. Three maps move together or the seam leaks — number, element,
 and the record's element. A destroy notification therefore **waits for one scan** before retiring an id.
 
+**The group's rectangle is the only evidence, and the tab AppKit selects is given it** — not a background
+tab's own frame, which is wherever that tab was last shown, since a write reaches only the selected one. The
+first time a tab is ever shown, AppKit also fits it onto the screen, so a never-selected tab picked in a group
+hanging off an edge — a peeking or a parked column — lands on the group's rectangle **slid** onto the display
+(`WindowIdentity.slid`, against each display's frame and visible frame from `WindowSource.screenAreas`). Same
+size, one place, so the join is still on the frame and nothing looser.
+
 **Whether emira may change which app is active is macOS's decision, and `activate()` returning `false` is the
 only sign it went the other way.** A background agent is not always eligible, and one launched from a terminal
 can find itself able to bring _that terminal_ forward and nothing else — which reads as one app refusing focus
@@ -1711,11 +1718,13 @@ a native tab group carries on under its next tab — so `vanish` holds the *id* 
 anything stood in. But that scan is a round trip into the app that just tore the window down, which is
 the process least able to answer it, so paying it on every close spends `successionGrace` on windows
 nothing could ever have succeeded. It is therefore asked first whether a successor is even possible,
-and both halves of that are needed. A group is several window-server entries standing on **one**
-rectangle with exactly one of them on screen, so a candidate is another entry of the app on this
-window's own frame — a synchronous read of a list emira already holds. And a *newly made* tab is
-described by AX before the window server lists it, which the rectangle cannot see, so an app whose last
-scan could not place everything keeps the wait regardless. With neither, the id retires at once. A window number outlives everything a window does short of closing,
+and there are three witnesses. **A scan of the app already out** is the one ⌘W leaves: AppKit makes the
+group's next tab main before it destroys the closing one, so `AXMainWindowChanged` names an element the
+registry does not know and its scan is out when the destroy lands. Another entry of the app on this
+window's own frame — a synchronous read of a list emira already holds — is a background tab last shown
+where the group stands, which stops being true the moment emira moves the group. And a *newly made* tab
+is described by AX before the window server lists it, so an app whose last scan could not place
+everything keeps the wait regardless. With none of them, the id retires at once. A window number outlives everything a window does short of closing,
 **native full screen included**: the window goes off screen and changes frame across that transition and
 keeps its number, while the full-screen-sized and menu-bar-height windows the transition mints and
 destroys around it are the ones that come and go. The set is layer-0 only, so a level change would read as a
@@ -1849,7 +1858,11 @@ carry the plural:
   `WindowRegistry` keeps every forgotten number as _departed_ until reconciliation finds it unlisted, and a
   head batch cuts them all (`BaseRequest.departed`) while filming none. And everything above `Overlay.level`
   is cut whatever it is: the cover cannot hide the menu bar or the Dock, so a copy of either inside it could
-  only double with the live one.
+  only double with the live one. **And the batches asked for in the same turn**, which grow the cover before
+  it is up (`baseCuts`): the boot scan adopts a window per event and the core asks for a batch per window, so
+  a base cut for the first alone carries every other window frozen under its own sliding layer. The
+  capturer puts a turn's batches on the wire once the turn is over — when a task would have started them
+  anyway — and each batch keeps a grab of its own.
 - **The photographs are one store, and a cover's hold on one is an entitlement.** A window two covers show is
   released by the last of them, so one cover coming down cannot blank a layer still on screen on the other
   display — and what that last release drops is the entitlement, not the photograph. A head batch that ends

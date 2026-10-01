@@ -470,12 +470,12 @@ public final class WorldWatcher {
             retire(id)
             return
         }
-        // Whether there is an answer worth waiting for. A succession needs *something to succeed
-        // with*: a native tab group is one AX window over several window-server entries on a single
-        // rectangle, so a candidate is another entry of this app on this window's own frame. With no
-        // candidate visible and nothing outstanding from the last scan, the wait buys only latency —
-        // and on an app busy tearing the window down, that is the whole of `successionGrace`.
-        guard pendingArrivals.contains(record.pid) || couldBeSucceeded(record) else {
+        // Whether a successor is possible: a scan of the app already out (AppKit makes a group's next tab
+        // main before destroying the closing one), an arrival the last scan could not place, or another
+        // entry of this app on this window's own frame. With none, the wait buys only latency — on an app
+        // busy tearing the window down, the whole of `successionGrace`.
+        guard scanning[record.pid] != nil || pendingArrivals.contains(record.pid)
+                || couldBeSucceeded(record) else {
             retire(id)
             return
         }
@@ -490,15 +490,9 @@ public final class WorldWatcher {
         }
     }
 
-    /// Whether the window server shows anything that could take this window's place: another entry of
-    /// the same app standing on the same rectangle.
-    ///
-    /// Asked of the window server because the app is the one process that cannot answer promptly — it
-    /// is mid-teardown, which is what the grace is really bounding. Not sufficient on its own, which is
-    /// why `vanish` asks it beside `pendingArrivals`: a *newly made* tab is described by AX before the
-    /// window server lists it, and in that gap a real successor is invisible here.
-    ///
-    /// An empty list is a failed read rather than an empty desktop, and a failed read is not evidence.
+    /// Whether another entry of the app stands on this window's rectangle — a background tab last shown
+    /// where the group stands, which stops being so once the group moves. Asked of the window server: the
+    /// app is mid-teardown. An empty list is a failed read, and a failed read is not evidence.
     private func couldBeSucceeded(_ record: WindowRegistry.Record) -> Bool {
         let list = enumerator.windowList()
         guard !list.isEmpty else { return true }

@@ -1567,6 +1567,29 @@ import EmiraCore
     }
 }
 
+/// The holes a base owes the batches asked for in its turn. A scan adopting a desktop asks for a batch per
+/// window, every one before the cover is up — so the opening batch's base has to cut all of them, or each
+/// stands frozen in the base under its own sliding layer.
+@Suite struct BaseCutTests {
+
+    @Test func anOpeningBatchCutsEveryBatchThatGrowsItInTheSameTurn() {
+        let cuts = baseCuts([([1], true), ([2], false), ([3, 4], false)])
+        #expect(cuts == [[1, 2, 3, 4], [], []])
+    }
+
+    /// A batch asked for ahead of the opening one belongs to a cover already up, and a second opening
+    /// batch is a second cover: neither is the first base's to cut.
+    @Test func aBaseCutsOnlyItsOwnCover() {
+        let cuts = baseCuts([([1], false), ([2], true), ([3], false), ([4], true), ([5], false)])
+        #expect(cuts == [[], [2, 3], [], [4, 5], []])
+    }
+
+    @Test func aTurnWithNoOpeningBatchCutsNothing() {
+        #expect(baseCuts([([1], false), ([2], false)]) == [[], []])
+        #expect(baseCuts([]).isEmpty)
+    }
+}
+
 /// The call shapes a single-cover test wants: ids alone, at a size no still was ever filmed at (so
 /// nothing kept can stand in), and a default display — a cover is one screen's, and a test about the
 /// batch rather than about the routing should not have to say which.

@@ -41,6 +41,10 @@ import EmiraCore
 // acks per window. The base is captured before any window because it is the gate — no layer can be
 // raised until it lands.
 //
+// **A base cuts every batch asked for in its turn** (`baseCuts`). A scan adopting a desktop is a window
+// per event and a batch per window, all before the cover is up, and a base cut only for the first batch
+// carries every other window frozen under its own sliding layer.
+//
 // None of ScreenCaptureKit's descriptor types are `Sendable`, so everything derived from one content
 // fetch shares an isolation region. Hence free functions at file scope (isolation propagates into nested
 // types) and `nonisolated(unsafe)` on the base filter — narrow and true, since it is built at the send
@@ -56,6 +60,17 @@ public final class SCKCapturer: SurfaceCapturer {
     /// stretched onto a 2× layer is soft, and the cross-fade back to the real window is a visible pop.
     private let scale: CGFloat
 
+    /// One batch as it was asked for, waiting for the end of the turn.
+    private struct Order {
+        let requests: [CaptureRequest]
+        let base: BaseRequest?
+        let piece: @MainActor (CapturePiece) -> Void
+        let done: @MainActor () -> Void
+    }
+
+    /// The batches asked for this turn. Non-empty exactly while a flush is scheduled.
+    private var queued: [Order] = []
+
     public init(displayId: CGDirectDisplayID, scale: CGFloat) {
         self.displayId = displayId
         self.scale = scale
@@ -64,13 +79,31 @@ public final class SCKCapturer: SurfaceCapturer {
     public func capture(_ requests: [CaptureRequest], base: BaseRequest?,
                         piece: @escaping @MainActor (CapturePiece) -> Void,
                         done: @escaping @MainActor () -> Void) {
-        let numbers = Dictionary(requests.map { ($0.number, $0.id) }, uniquingKeysWith: { first, _ in first })
+        // A grab is a task, which starts once this turn is over — so letting the rest of the turn's batches
+        // say what the base has to cut costs nothing.
+        if queued.isEmpty { Task { self.flush() } }
+        queued.append(Order(requests: requests, base: base, piece: piece, done: done))
+    }
+
+    private func flush() {
+        let orders = queued
+        queued = []
+        let cuts = baseCuts(orders.map { ($0.requests.map(\.number), $0.base != nil) })
+        for (order, cut) in zip(orders, cuts) { run(order, cutting: cut) }
+    }
+
+    /// One batch's grab, in flight beside any other batch's. Only the base's holes are pooled across the
+    /// turn.
+    private func run(_ order: Order, cutting cut: Set<CGWindowID>) {
+        let numbers = Dictionary(order.requests.map { ($0.number, $0.id) },
+                                 uniquingKeysWith: { first, _ in first })
         let displayId = self.displayId
         let scale = self.scale
+        let piece = order.piece
 
         Task {
-            await grab(windows: Set(numbers.keys), display: displayId, scale: scale,
-                       base: base) { shot in
+            await grab(windows: Set(numbers.keys), cutting: cut, display: displayId, scale: scale,
+                       base: order.base) { shot in
                 switch shot {
                 case .base(let image):
                     await piece(.base(image))
@@ -84,9 +117,22 @@ public final class SCKCapturer: SurfaceCapturer {
                         isWhole: CapturedSurface.measuredWhole(of: window.image))))
                 }
             }
-            done()
+            order.done()
         }
     }
+}
+
+/// What each base asked for in one turn must cut. A batch opening a cover is grown by every batch after
+/// it until the next one opens another, all before it is raised — so its base cuts their windows as well
+/// as its own. Empty for a batch that takes no base.
+func baseCuts(_ batches: [(numbers: [CGWindowID], opensCover: Bool)]) -> [Set<CGWindowID>] {
+    var cuts = Array(repeating: Set<CGWindowID>(), count: batches.count)
+    var opening: Int?
+    for (index, batch) in batches.enumerated() {
+        if batch.opensCover { opening = index }
+        if let opening { cuts[opening].formUnion(batch.numbers) }
+    }
+    return cuts
 }
 
 //
@@ -114,12 +160,13 @@ private enum Piece: Sendable {
 ///
 /// `windows` is both lists at once: what to photograph, and what the base has to have a hole where. A
 /// cover belongs to one display, so the windows it shows and the windows its own base must not contain
-/// are the same set — plus `base.departed`, which is a hole and nothing more.
+/// are the same set — plus `base.departed` and `cut` (`baseCuts`), which are holes and nothing more.
 ///
 /// **The read is `onScreenWindowsOnly` until it comes up short.** A scoped window the read does not
 /// carry is neither photographed nor cut out of the base, and stands frozen in it for the whole cover;
 /// the long read costs ~10 ms, so it is asked for only when the short one is missing one of `windows`.
 private func grab(windows: Set<CGWindowID>,
+                  cutting cut: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
                   base: BaseRequest?,
@@ -144,7 +191,7 @@ private func grab(windows: Set<CGWindowID>,
     // everything that composites above the cover. See the file header.
     let chrome = Overlay.level.rawValue
     let excluded = content.windows.filter {
-        windows.contains($0.windowID) || departed.contains($0.windowID)
+        windows.contains($0.windowID) || cut.contains($0.windowID) || departed.contains($0.windowID)
             || $0.owningApplication?.processID == mine
             || $0.windowLayer > chrome
     }

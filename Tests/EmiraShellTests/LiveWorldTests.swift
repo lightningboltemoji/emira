@@ -985,10 +985,9 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     // the selected tab and the group carries on under the next one. Only a scan can see the successor,
     // and it answers later than the notification — so the id waits for it. See `WorldWatcher.vanish`.
     //
-    // The wait is not unconditional, and these fixtures say why: a group is several window-server
-    // entries standing on *one* rectangle, exactly one of them on screen, so `backgroundTab` is what
-    // makes a window one that could be succeeded at all. Without it there is nothing to wait for and
-    // the id retires at once — which is the ordinary close, and is asserted on its own below.
+    // The wait is not unconditional: something has to say a successor is possible — `backgroundTab`, a tab
+    // last shown on the window's rectangle, or a scan of the app already out. With neither the id retires
+    // at once, which is the ordinary close, asserted on its own below.
 
     /// A native tab group's other tab: a second entry of the same app on the window's own rectangle,
     /// listed by the window server and off screen, exactly as a background tab is.
@@ -1187,6 +1186,36 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.windows.entries.append(WindowListEntry(number: 11, pid: 100, frame: rect(0)))
         world.scheduler.fire()
         #expect(world.registry.record(id)?.number == 11, "the id moved onto the tab that took over")
+    }
+
+    /// ⌘W on a group emira has moved since its other tabs were last shown, so none stands on its rectangle.
+    /// AppKit makes the next tab main before destroying the closing one, so that arrival is being scanned
+    /// when the destroy lands — and the scan already out is what earns the wait.
+    @Test func aDestroyLandingWhileTheAppsArrivalIsBeingScannedWaitsForThatScan() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+        let lastShown = rect(0, 600)
+
+        world.windows.holdsAnswers = true
+        world.windows.entries.append(WindowListEntry(number: 11, pid: 100, frame: lastShown,
+                                                     isOnScreen: false))
+        world.watcher.handle(.windowAppeared(100))     // the next tab becomes main
+        world.watcher.handle(.windowVanished(id))      // …and the closing one is destroyed
+
+        #expect(!world.recorder.events.contains(.windowDestroyed(id)), "the scan out may name a successor")
+        #expect(world.registry.record(id) != nil)
+
+        // The scan answers with the next tab on the group's rectangle and the closed one gone.
+        world.windows.windowsByPid[100] = [scanned(pid: 100, seed: 11, bundle: "com.mitchellh.ghostty",
+                                                   title: "next tab", frame: rect(0))]
+        world.windows.entries = world.windows.entries.filter { $0.pid != 100 }
+            + [WindowListEntry(number: 11, pid: 100, frame: rect(0))]
+        world.windows.answerScan()
+
+        #expect(world.registry.record(id)?.number == 11, "the id moved onto the tab that took over")
+        #expect(!world.recorder.events.contains(.windowDestroyed(id)))
+        #expect(!world.created.contains { $0.title == "next tab" }, "and nothing new reached the core")
     }
 
     @Test func aVanishedWindowWeNeverManagedIsSilence() {

@@ -69,6 +69,9 @@ public protocol WindowSource {
     /// sweep has to guess which apps are worth the footprint, this one already has a window on screen.
     /// `nil` for a pid that is no app we could manage.
     func target(for pid: pid_t) -> ScanTarget?
+    /// Every rectangle AppKit may fit a window into the first time it shows it — each display's frame
+    /// and its visible frame, in core coordinates (`WindowIdentity.slid`).
+    func screenAreas() -> [Rect]
 }
 
 public extension WindowSource {
@@ -77,6 +80,9 @@ public extension WindowSource {
     func target(for pid: pid_t) -> ScanTarget? {
         applications().first { $0.pid == pid }
     }
+
+    /// By default no screens, which leaves a successor only the departed window's own rectangle.
+    func screenAreas() -> [Rect] { [] }
 }
 
 /// Scans every running app, binds each window to its public window number, takes the bound ones into
@@ -244,11 +250,12 @@ public final class AXEnumerator {
         var seenWindows = 0
         var unclaimed = 0
         var rejected: [pid_t: Set<AXWindow>] = [:]
+        let screens = source.screenAreas()
 
         for target in apps {
             let answer = answers[target.pid] ?? ScanAnswer(windows: [], entries: [])
             seenWindows += answer.windows.count
-            let outcome = join(answer, of: target, ignoring: unmanageable)
+            let outcome = join(answer, of: target, ignoring: unmanageable, onto: screens)
 
             snapshots += outcome.snapshots
             rebound += outcome.rebound
@@ -312,7 +319,7 @@ public final class AXEnumerator {
     /// instants and *we* are what moves windows in between, so under a burst of window creation a stale
     /// read can report window A at the frame B has since taken and match B's entry uniquely.
     private func join(_ answer: ScanAnswer, of target: ScanTarget,
-                      ignoring unmanageable: Unmanageable) -> AppOutcome {
+                      ignoring unmanageable: Unmanageable, onto screens: [Rect]) -> AppOutcome {
         var outcome = AppOutcome()
 
         var fresh: [ScannedWindow] = []
@@ -365,7 +372,8 @@ public final class AXEnumerator {
             .filter { !listed.contains($0.id) }
             .map { WindowIdentity.Departure(id: $0.id, pid: $0.pid, frame: $0.frame) }
         let arrivals = binding.matches.map { fresh[$0.observed].observed }
-        let (successions, orphaned) = WindowIdentity.succeed(departed: departures, arrived: arrivals)
+        let (successions, orphaned) = WindowIdentity.succeed(departed: departures, arrived: arrivals,
+                                                             onto: screens)
 
         // Applied before anything is adopted: a succeeded arrival must not also mint an id of its own.
         var leaving = orphaned
@@ -511,5 +519,12 @@ public final class AXWindowSource: WindowSource {
 
     public func windowList() -> [WindowListEntry] {
         WindowListEntry.current()
+    }
+
+    /// Read live rather than from the display set the core was handed: this is a question about where
+    /// AppKit puts a window right now.
+    public func screenAreas() -> [Rect] {
+        let geometry = ScreenGeometry.current()
+        return NSScreen.screens.flatMap { [geometry.core($0.frame), geometry.core($0.visibleFrame)] }
     }
 }

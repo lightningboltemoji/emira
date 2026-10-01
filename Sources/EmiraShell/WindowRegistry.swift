@@ -19,6 +19,10 @@ import Foundation
 // listing, paired with the window standing where it stood — and `rebind` moves the `WindowId` onto the
 // new number and element. The core is never told: it holds one window for the group, so the column, its
 // width, its workspace and its float state survive every tab switch.
+//
+// "Where it stood" is the group's rectangle and nothing else. A background tab keeps the frame it was
+// last shown at, since a write reaches only the selected tab; the one AppKit selects is given the
+// group's frame — and, the first time that tab is ever shown, slid fully onto the screen.
 
 // The two sides of the join
 
@@ -228,8 +232,8 @@ public enum WindowIdentity {
     public struct Departure: Sendable, Equatable {
         public let id: WindowId
         public let pid: pid_t
-        /// The last frame the shell recorded for it. For a tab group this is the *group's* frame:
-        /// background tabs are never placed on their own, so every member reports where the group sits.
+        /// The last frame the shell recorded for it. For a tab group this is the *group's* frame, which
+        /// the tab selected next is given; the background tabs themselves stand wherever they were last shown.
         public let frame: Rect
 
         public init(id: WindowId, pid: pid_t, frame: Rect) {
@@ -252,21 +256,13 @@ public enum WindowIdentity {
         }
     }
 
-    /// Pair each departed window with the arriving window standing where it stood.
-    ///
-    /// The signal is the frame, exactly as in `bind`: a tab that becomes selected takes the group's
-    /// geometry, so the newcomer is sitting on the departed tab's last known rectangle. That covers all
-    /// three ways a tab group changes which window it shows — a switch, a `⌘T`, and closing the selected
-    /// tab (where the departed element is already dead and no other evidence survives it).
-    ///
-    /// Deliberately *only* the frame. "Exactly one window left and one arrived, so they must be the same
-    /// one" is tempting and wrong: an app that closes one window while opening another looks identical,
-    /// and the cost of believing it is a window inheriting a stranger's column, permanently and
-    /// invisibly. Uniqueness is required in both directions for the same reason `bind` requires it.
+    /// Pair each departed window with the arriving window standing where it stood: on its rectangle, or on
+    /// that slid onto one of `screens` (`slid`), as a tab shown for the first time is. Only the frame, and
+    /// unique both ways as in `bind` — one closing as another opens is not a succession.
     ///
     /// - Returns: the pairings, and the departures with no successor — windows that have left the strip
     ///   for good (merged into someone else's tab group, or closed without a destroy notification).
-    public static func succeed(departed: [Departure], arrived: [ObservedWindow],
+    public static func succeed(departed: [Departure], arrived: [ObservedWindow], onto screens: [Rect] = [],
                                tolerance: Double = frameTolerance) -> (successions: [Succession],
                                                           orphaned: [WindowId]) {
         var tentative: [Int: Int] = [:]         // departure index → arrival index
@@ -274,9 +270,12 @@ public enum WindowIdentity {
         var orphaned: [WindowId] = []
 
         for (index, departure) in departed.enumerated() {
-            let candidates = arrived.indices.filter {
-                arrived[$0].pid == departure.pid
-                    && sameFrame(arrived[$0].frame, departure.frame, tolerance: tolerance)
+            // Where the group's next tab may stand: its rectangle, or that rectangle fitted onto a screen.
+            let landings = [departure.frame] + screens.compactMap { slid(departure.frame, into: $0) }
+            let candidates = arrived.indices.filter { arrival in
+                arrived[arrival].pid == departure.pid && landings.contains {
+                    sameFrame(arrived[arrival].frame, $0, tolerance: tolerance)
+                }
             }
             guard candidates.count == 1 else {
                 orphaned.append(departure.id)
@@ -300,9 +299,18 @@ public enum WindowIdentity {
     }
 
     /// How far apart two frames may be and still be one window. Absorbs the rounding between an AX
-    /// read and the window server's integers, and nothing wider: a successor stands on the *identical*
-    /// rectangle, because a tab group is one window drawn from several entries.
+    /// read and the window server's integers, and nothing wider: a successor stands on an *identical*
+    /// rectangle — the group's own, or that one slid onto the screen.
     public static let frameTolerance: Double = 2
+
+    /// Where AppKit shows a window for the first time when asked for `rect`: moved — never resized —
+    /// the shortest way to lie inside `area`. `nil` for a rectangle too big to fit.
+    public static func slid(_ rect: Rect, into area: Rect) -> Rect? {
+        guard rect.width <= area.width, rect.height <= area.height else { return nil }
+        return Rect(x: min(max(rect.minX, area.minX), area.maxX - rect.width),
+                    y: min(max(rect.minY, area.minY), area.maxY - rect.height),
+                    width: rect.width, height: rect.height)
+    }
 
     /// Whether two rectangles describe the same window, within per-edge slack.
     public static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double = frameTolerance) -> Bool {
