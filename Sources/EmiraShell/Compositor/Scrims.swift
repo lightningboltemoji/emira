@@ -274,8 +274,8 @@ public final class Scrims: ScrimPlane {
     }
 
     /// Cut every mask against the window server again: the reading one was cut against has moved with
-    /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it,
-    /// or a scan has named one (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
+    /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it
+    /// (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
     public func recut() {
         for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
             paint(monitor, change: .cut)

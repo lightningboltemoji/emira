@@ -103,9 +103,9 @@ public final class WorldWatcher {
     /// A window manager quietly not managing something is the failure a user cannot debug.
     public var onIncompleteScan: (@MainActor (AXEnumerator.Report) -> Void)?
 
-    /// The windows on the glass are not the ones a mask was last cut against: the sweep found the set
-    /// changed, or a scan put names to windows already on it. A plane masking itself against that reading
-    /// (`Scrims`) has no event of its own for either.
+    /// The set of windows on the glass is not the one the last sweep saw. Fanned out for the same
+    /// reason pointer samples are: this type owns the window-server sweep, and a plane that masks
+    /// itself against that reading (`Scrims`) has no event of its own to hear a foreign window close.
     public var onStackChanged: (@MainActor () -> Void)?
 
     /// An app has announced a window, which the window server will show in its own time and say nothing
@@ -767,8 +767,6 @@ public final class WorldWatcher {
         for snapshot in report.snapshots {
             emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
         }
-        // A window just named was on the glass as a stranger, and may have been cut as one.
-        if !report.snapshots.isEmpty || !report.succeeded.isEmpty { onStackChanged?() }
 
         // Something was asked for while the scan was out: ask again now rather than through the retry
         // budget, since this is a request we coalesced, not a race we are waiting out. Split by the

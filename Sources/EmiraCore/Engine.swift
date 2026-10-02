@@ -529,6 +529,7 @@ public enum Engine {
         let placedItself = if case .windowSelfPlaced(let id) = event {
             s.world.inFlight.isEmpty && standsWhereItPlacedItself(s, id)
         } else { false }
+        let restacked = Self.restacked(by: event, from: old, into: s)
 
         var sets: [Effect] = []
         for monitor in s.monitors.ids {
@@ -537,7 +538,7 @@ public enum Engine {
             else { continue }
             let next = fresh[monitor] ?? []
             let changed = next != s.scrims[monitor] ?? []
-            let settled = placedItself
+            let settled = placedItself || restacked == monitor
                 || (old.world.hasWritesInFlight(on: monitor) && !s.world.hasWritesInFlight(on: monitor))
             // A set that draws nothing has no geometry to recut.
             guard changed || (!next.isEmpty && settled) else { continue }
@@ -553,6 +554,23 @@ public enum Engine {
         // Ahead of a dismissal in the same batch, so a recut is painted while the cover still hides it.
         let dismissal = effects.firstIndex { if case .endTransition = $0 { true } else { false } }
         effects.insert(contentsOf: sets, at: dismissal ?? effects.endIndex)
+    }
+
+    /// The display a window off the layout reached or left the glass on in this event. It moves no veil,
+    /// so no set changes for it, but a mask was cut around it or now has to be.
+    private static func restacked(by event: Event, from old: State, into s: State) -> MonitorId? {
+        let id: WindowId
+        switch event {
+        case .windowCreated(let snapshot): id = snapshot.id
+        case .windowDestroyed(let window), .windowMinimized(let window), .windowDeminimized(let window),
+             .windowShown(let window, _): id = window
+        default: return nil
+        }
+        guard !old.world.participatesInTiling(id), !s.world.participatesInTiling(id),
+              old.world.isOnScreen(id) != s.world.isOnScreen(id),
+              let frame = (s.world.windows[id] ?? old.world.windows[id])?.frame
+        else { return nil }
+        return s.world.monitor(at: frame.center)
     }
 
     /// The windows on `monitor` whose place the window server may not have caught up with: a write

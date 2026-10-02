@@ -490,6 +490,35 @@ import Testing
         #expect(Self.change(effects) == .cut)
     }
 
+    /// **A window off the layout reaching or leaving the glass is a recut.** It moves no veil, so no set
+    /// changes for it — but a mask was cut around a float that has since closed or gone to the Dock, and
+    /// one that has just arrived needs cutting out. Each sends the same set again, at once.
+    @Test func aFloatReachingOrLeavingTheGlassIsARecut() throws {
+        let float = WindowId(9)
+        let rest = Self.world(2)
+        let (arrived, arriving) = Engine.reduce(rest, .windowCreated(EngineFix.snapshot(9, role: .dialog)))
+        #expect(Self.setScrims(arriving) == Self.set(rest), "it arrived")
+        #expect(Self.change(arriving) == .cut)
+        let s = EngineFix.settle(arrived, arriving)
+
+        for leaving in [Event.windowDestroyed(float), .windowMinimized(float), .windowShown(float, false)] {
+            let (_, effects) = Engine.reduce(s, leaving)
+            #expect(Self.setScrims(effects) == Self.set(s), "\(leaving)")
+            #expect(Self.change(effects) == .cut)
+        }
+    }
+
+    /// One that was not on the glass on either side of the event — a float minimized and then closed —
+    /// left nothing a mask was cut around.
+    @Test func aFloatThatWasNotOnTheGlassIsNoRecut() throws {
+        let float = WindowId(9)
+        var s = Self.world(2)
+        (s, _) = Engine.reduce(s, .windowCreated(EngineFix.snapshot(9, role: .dialog)))
+        (s, _) = Engine.reduce(s, .windowMinimized(float))
+        let (_, effects) = Engine.reduce(s, .windowDestroyed(float))
+        #expect(Self.setScrims(effects) == nil)
+    }
+
     /// **A hand resize sets the veil down once the neighbours it re-tiled have landed**, not at
     /// `dragEnded` itself: adopting a width moves them, and a mask cut first is cut where they were.
     @Test func aHandResizeSetsTheVeilDownOnceItsNeighboursLand() throws {

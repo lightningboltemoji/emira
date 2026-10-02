@@ -473,9 +473,8 @@ watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
 }
 
-// The sweep's and the scans' other reader: a mask cut against the window server has no event of its own
-// for a window emira never managed leaving the glass, or for a stranger on it being named. A cut that
-// changes nothing paints nothing.
+// The sweep's other reader: a mask cut against the window server has no event of its own for a window
+// emira never managed leaving the glass, and a cut that changes nothing paints nothing.
 watcher.onStackChanged = { [weak scrims] in scrims?.recut() }
 
 // An announced window reaches the glass milliseconds later, under whatever veil it lands on.
