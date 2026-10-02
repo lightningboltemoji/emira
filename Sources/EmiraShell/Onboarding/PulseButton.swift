@@ -45,8 +45,8 @@ final class PulseButton: NSButton {
         layer?.shadowOpacity = 0.35
 
         base.colors = Self.fill
-        base.startPoint = CGPoint(x: 0.5, y: 0)
-        base.endPoint = CGPoint(x: 0.5, y: 1)
+        base.startPoint = CGPoint(x: 0.5, y: 1)
+        base.endPoint = CGPoint(x: 0.5, y: 0)
         base.cornerRadius = Self.cornerRadius
         base.cornerCurve = .continuous
         base.masksToBounds = true                 // …and the sheen is clipped to the rounded rect
