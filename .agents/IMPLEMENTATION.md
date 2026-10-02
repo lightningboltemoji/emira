@@ -1322,7 +1322,10 @@ standing wholly on a see-through one, is left out of the mask rather than painte
 that window's veil. The photograph standing in for the window behind the sheet is the one standing in for it
 everywhere else, so the whole window reads as see-through, sheet included — and it is how the cover already
 draws it, because a window's still carries its child windows. *Wholly* is what keeps a popup hanging off the
-edge of a window opaque, rather than veiled only where it overlaps.
+edge of a window opaque, rather than veiled only where it overlaps. **The frontmost window on the glass is
+never a sheet**: a window is veiled because focus has left it, so its sheet stands behind whatever focus went
+to, and a stranger in front of everything is a window just opened that no scan has named yet — which, taken for
+a sheet, would open under the veil it landed on.
 
 **Which layout a window is on is the core's fact; how the desktop stacks is the shell's**, which is the seam
 `capture` already sits on. So a `stack` workspace declines in the core — `State.scrimBindings` never names its
@@ -1401,8 +1404,21 @@ showing its last frames, against a hole that outlives it by the length of a quit
 window emira never managed arrives on the glass or leaves it, and no set is coming to recut the hole the mask
 was cut around. So the reconciliation sweep — which reads the whole window list every interval anyway, past
 its own paint gate — fans out the one fact it can see for free, that the on-screen set is not the one it saw
-last (`WorldWatcher.onStackChanged` → `Scrims.recut`). A re-cut that comes out the same paints nothing, so a
-quiet desktop costs a set comparison. A foreign window that *moves* is still corrected only by the next set.
+last (`WorldWatcher.onStackChanged` → `Scrims.recut`). So does a scan that names a window already on the
+glass, which a mask may have been cut around as a stranger. A re-cut that comes out the same paints nothing,
+so a quiet desktop costs a set comparison. A foreign window that *moves* is still corrected only by the next set.
+
+**An announced window is watched onto the glass** (`WorldWatcher.onWindowAnnounced` → `Scrims.expectArrival`).
+An app announces a window — an unknown main window, then `AXWindowCreated` — 13 to 34 ms before the window
+server lists it, measured on an AppKit window, and the scan that names it lands 150 to 190 ms after that. A
+window opened over a see-through one would stand under the veil until its arrival's cover rose, or until the
+sweep for a float, which raises none. The announcement arms a watch of the settle watch's shape across every
+veiling display: each reading at `arrivalInterval` cuts every mask, quiet counts only once the stacking has
+moved — before that the window is still on its way — and the watch ends `arrivalQuiet` readings after the last
+change, which outlasts the open animation's hold at its overshoot, or after `arrivalLimit` readings
+regardless. It yields to the frame loop as reconciliation does (`Scrims.isPainting`): a reading mid-transition
+is skipped rather than waited on, and the set at that transition's teleport cuts the mask anyway. The newcomer
+is a stranger in front of everything, so it comes out of the veil at the first reading that has it.
 
 **A pane the reading has not caught up with declines nothing** (`Effect.setScrims`'s `moving`,
 `Scrims.staleFrames`). Painting at once and correcting is enough wherever a cover hides the first cut, and a

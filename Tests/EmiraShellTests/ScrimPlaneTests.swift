@@ -349,14 +349,16 @@ import EmiraCore
     }
 
     /// A sheet is part of its window: a window emira never adopted, standing wholly on a see-through
-    /// one, is veiled with it rather than taken out of it.
+    /// one, is veiled with it rather than taken out of it — behind the window focus went to, as a veiled
+    /// window's sheet always is.
     @Test func anUnmanagedWindowWhollyOnAScrimIsVeiledWithIt() {
         let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let focused = Rect(x: 420, y: 0, width: 400, height: 400)
         let sheet = Rect(x: 100, y: 100, width: 200, height: 100)
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 == 77 ? nil : WindowId(UInt64($0)) },
-                            stack: { [Self.pane(77, sheet), Self.pane(1, scrimmed)] },
+                            stack: { [Self.pane(2, focused), Self.pane(77, sheet), Self.pane(1, scrimmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         Self.show(scrims, [Self.binding(1)])
@@ -375,14 +377,34 @@ import EmiraCore
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 >= 77 ? nil : WindowId(UInt64($0)) },
-                            stack: { [Self.pane(77, popup), Self.pane(78, dialog),
-                                      Self.pane(1, scrimmed), Self.pane(2, focused)] },
+                            stack: { [Self.pane(78, dialog), Self.pane(2, focused),
+                                      Self.pane(77, popup), Self.pane(1, scrimmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         Self.show(scrims, [Self.binding(1)])
 
         #expect(!Self.shows(surface, 1, 380, 150), "the popup overhangs, so it occludes")
         #expect(Self.shows(surface, 1, 200, 150))
+    }
+
+    /// **The frontmost window is never a sheet.** A window just opened lands in front of everything,
+    /// and until a scan names it, it is a stranger wholly on a see-through window — which is a sheet's
+    /// shape. A veiled window's sheet stands behind the window focus went to, so in front is an arrival.
+    @Test func aStrangerInFrontOfEverythingOccludesTheVeilItLandedOn() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let focused = Rect(x: 420, y: 0, width: 400, height: 400)
+        let arrival = Rect(x: 100, y: 100, width: 200, height: 100)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 == 77 ? nil : WindowId(UInt64($0)) },
+                            stack: { [Self.pane(77, arrival), Self.pane(2, focused),
+                                      Self.pane(1, scrimmed)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1)])
+
+        #expect(!Self.shows(surface, 1, 200, 150), "the arrival is cut out of the veil")
+        #expect(Self.shows(surface, 1, 50, 50))
     }
 
     /// **Every frame in the mask is the window server's**, the see-through windows' included, read when
@@ -456,6 +478,93 @@ import EmiraCore
             stack.panes[0] = Self.pane(9, Rect(x: 100 + Double(step) * 10, y: 100, width: 100, height: 100))
             #expect(clock.fire(), "a desktop that is still moving is still watched (step \(step))")
         }
+    }
+
+    // The arrival — an app announces a window, and the window server shows it in its own time.
+
+    /// A plane holding one veiled window, with the set's own settle watch already over.
+    static func veiling(_ stack: Stack, _ clock: ManualScheduler) -> (Scrims, RecordingSurface) {
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+        while clock.fire() {}
+        return (scrims, surface)
+    }
+
+    /// **An announced window is cut out of the veil it lands on**, at the first reading that has it —
+    /// no set is coming for a window nobody has adopted yet.
+    @Test func anAnnouncedWindowIsCutOutOfTheVeilItLandsOn() {
+        let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)
+        let stack = Stack([Self.pane(2, Rect(x: 420, y: 0, width: 400, height: 400)), Self.pane(1, scrimmed)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.veiling(stack, clock)
+
+        scrims.expectArrival()
+        clock.fire()
+        #expect(Self.shows(surface, 1, 200, 150), "not on the glass yet")
+
+        stack.panes.insert(Self.pane(9, Rect(x: 100, y: 100, width: 200, height: 100)), at: 0)
+        clock.fire()
+        #expect(!Self.shows(surface, 1, 200, 150), "cut out the reading it arrives in")
+        #expect(surface.changes.last == .cut)
+    }
+
+    /// The watch waits for the stacking to move, then for it to stand still `arrivalQuiet` readings over.
+    @Test func theArrivalWatchEndsOnceTheStackingHasMovedAndStoodStill() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.veiling(stack, clock)
+
+        scrims.expectArrival()
+        for _ in 0..<(Scrims.arrivalQuiet * 2) { #expect(clock.fire(), "nothing has arrived: still waiting") }
+
+        stack.panes.insert(Self.pane(9, Rect(x: 500, y: 0, width: 100, height: 100)), at: 0)
+        #expect(clock.fire(), "the arrival")
+        for _ in 0..<Scrims.arrivalQuiet { #expect(clock.fire(), "still settling") }
+        #expect(!clock.fire(), "and it stood still")
+    }
+
+    /// An announcement nothing answers on these displays — a window elsewhere, or one never shown — is
+    /// given up on after `arrivalLimit` readings. A second announcement replaces the first watch.
+    @Test func anAnnouncementNothingAnswersIsGivenUpOn() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.veiling(stack, clock)
+
+        scrims.expectArrival()
+        scrims.expectArrival()
+        var readings = 1
+        while clock.fire() { readings += 1 }
+        #expect(readings == Scrims.arrivalLimit)
+    }
+
+    /// **It yields to the frame loop**, as reconciliation does: a list read mid-frame waits on our own
+    /// commit. The skipped reading still counts against the limit, and the watch reads once frames stop.
+    @Test func anArrivalWatchReadsNothingWhileFramesArePainted() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.veiling(stack, clock)
+        var painting = true
+        scrims.isPainting = { painting }
+        let before = stack.reads
+
+        scrims.expectArrival()
+        #expect(clock.fire(), "still watching")
+        #expect(stack.reads == before, "nothing read mid-frame")
+
+        painting = false
+        #expect(clock.fire())
+        #expect(stack.reads == before + 1)
+    }
+
+    /// With nothing veiled there is nothing for an arrival to land under, and nothing is read.
+    @Test func anAnnouncementWithNothingVeiledReadsNothing() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+
+        scrims.expectArrival()
+        #expect(stack.reads == 0)
+        #expect(!clock.fire())
     }
 
     // The hand, and the other display.

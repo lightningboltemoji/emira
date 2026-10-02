@@ -372,6 +372,39 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
 @Suite @MainActor struct WorldWatcherAdoptionTests {
 
+    /// An announcement goes to the planes before the scan it starts: the window reaches the glass long
+    /// before any scan can name it.
+    @Test func anAnnouncedWindowIsFannedOutAtOnce() {
+        let world = LiveWorld()
+        world.watcher.start()
+        var announced = 0
+        world.watcher.onWindowAnnounced = { announced += 1 }
+
+        world.watcher.handle(.windowAppeared(100))
+        #expect(announced == 1)
+    }
+
+    /// A scan that names a window on the glass is news to a mask cut around it as a stranger; one that
+    /// names nothing is not.
+    @Test func aScanThatNamesAWindowSaysTheStackChanged() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.scheduler.fire()
+        var changes = 0
+        world.watcher.onStackChanged = { changes += 1 }
+
+        world.watcher.handle(.windowAppeared(100))
+        #expect(changes == 0, "nothing new")
+
+        world.windows.entries.append(
+            WindowListEntry(number: 9, pid: 100, frame: rect(2100), isOnScreen: true))
+        world.windows.windowsByPid[100]?.append(
+            scanned(pid: 100, seed: 9, bundle: "com.mitchellh.ghostty", title: "new", frame: rect(2100)))
+        world.watcher.handle(.windowAppeared(100))
+        #expect(world.created.map(\.title).last == "new")
+        #expect(changes == 1)
+    }
+
     @Test func bootAnnouncesEveryWindowAndWatchesEveryAppAndWindow() {
         let world = LiveWorld()
 

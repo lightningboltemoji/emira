@@ -473,14 +473,19 @@ watcher.onIncompleteScan = { report in
     log("scan gave up: \(report.summary)")
 }
 
-// The sweep's other reader: a mask cut against the window server has no event of its own for a window
-// emira never managed leaving the glass, and a cut that changes nothing paints nothing.
+// The sweep's and the scans' other reader: a mask cut against the window server has no event of its own
+// for a window emira never managed leaving the glass, or for a stranger on it being named. A cut that
+// changes nothing paints nothing.
 watcher.onStackChanged = { [weak scrims] in scrims?.recut() }
 
-// The one thing reconciliation needs from the core, through a reader for `PointerFocus`'s reason: the
-// watcher holds no core state, and what it is asking is not about the world it watches but about
-// whether *we* are mid-frame. See `WorldWatcher.reconcile`.
+// An announced window reaches the glass milliseconds later, under whatever veil it lands on.
+watcher.onWindowAnnounced = { [weak scrims] in scrims?.expectArrival() }
+
+// The one thing reconciliation and an arrival watch need from the core, through a reader for
+// `PointerFocus`'s reason: neither holds core state, and what each is asking is not about the world it
+// watches but about whether *we* are mid-frame. See `WorldWatcher.reconcile`.
 watcher.isPainting = { runtime.state.motion.needsFrames }
+scrims.isPainting = { runtime.state.motion.needsFrames }
 
 // `EMIRA_TRACE=1` prints every reduce — the event, the effects, and the wall clock between them.
 // Bursts are separated by 400 ms of quiet, so one interaction is one block. Instrumentation only.

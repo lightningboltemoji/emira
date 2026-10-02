@@ -133,6 +133,13 @@ public final class Scrims: ScrimPlane {
     static let settleQuiet = 4
     static let settleLimit: TimeInterval = 0.4
 
+    /// How often the window server is read while an announced window is expected, how many unchanged
+    /// readings after it moved end the wait (~150 ms, past the open animation's hold at its overshoot),
+    /// and how many readings it may take regardless (~a second).
+    static let arrivalInterval: TimeInterval = 1.0 / 120
+    static let arrivalQuiet = 18
+    static let arrivalLimit = 120
+
     /// A window's corner rounding, in points, until a capture has measured it. A guess, and it goes stale
     /// with the next macOS: what it costs is a corner-sized triangle of the window's shadow lightened by
     /// the veil, or of the window left unveiled.
@@ -154,6 +161,10 @@ public final class Scrims: ScrimPlane {
     private var geometry = ScreenGeometry(flipHeight: 0)
     /// What the settling re-reads are scheduled on.
     private let scheduler: any DelayScheduler
+
+    /// Whether the shell is committing a Core Animation transaction every frame — when a window-list read
+    /// waits on our own commit, so an arrival watch takes none (`WorldWatcher.isPainting`'s reason).
+    public var isPainting: @MainActor () -> Bool = { false }
 
     private var surfaces: [MonitorId: any ScrimSurface] = [:]
     private var frames: [MonitorId: Rect] = [:]
@@ -189,6 +200,8 @@ public final class Scrims: ScrimPlane {
     private var stale: [MonitorId: [WindowId: Rect]] = [:]
     /// What the last set named as moving, until the next reading records their frames.
     private var naming: [MonitorId: Set<WindowId>] = [:]
+    /// Bumped by every announcement, so an arrival watch an announcement has replaced owns nothing.
+    private var arrivalGeneration = 0
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
@@ -261,12 +274,43 @@ public final class Scrims: ScrimPlane {
     }
 
     /// Cut every mask against the window server again: the reading one was cut against has moved with
-    /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it
-    /// (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
+    /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it,
+    /// or a scan has named one (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
     public func recut() {
         for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
             paint(monitor, change: .cut)
         }
+    }
+
+    /// An app has announced a window, which the window server shows milliseconds later without saying
+    /// when (`WorldWatcher.onWindowAnnounced`). Cut every mask against each reading until the stacking
+    /// has moved and stood still, so the newcomer is not left under the veil it landed on.
+    public func expectArrival() {
+        guard surfaces.keys.contains(where: { current[$0]?.isEmpty == false }) else { return }
+        arrivalGeneration &+= 1
+        let mine = arrivalGeneration
+        func again(after previous: [StackedWindow]?, moved: Bool, quiet: Int, left: Int) {
+            guard left > 1 else { return }
+            scheduler.schedule(after: Self.arrivalInterval) { [weak self] in
+                guard let self, arrivalGeneration == mine else { return }
+                read(after: previous, moved: moved, quiet: quiet, left: left - 1)
+            }
+        }
+        func read(after previous: [StackedWindow]?, moved: Bool, quiet: Int, left: Int) {
+            // Mid-frame the reading is skipped, not waited for: it still spends one of `left`.
+            guard !isPainting() else { return again(after: previous, moved: moved, quiet: quiet, left: left) }
+            let reading = stack()
+            for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
+                paint(monitor, change: .cut, against: reading)
+            }
+            // Quiet counts only once something has moved: before that the newcomer is still on its way.
+            let changed = previous.map { $0 != reading } ?? false
+            let moved = moved || changed
+            let quiet = changed || !moved ? 0 : quiet + 1
+            guard quiet < Self.arrivalQuiet else { return }
+            again(after: reading, moved: moved, quiet: quiet, left: left)
+        }
+        read(after: nil, moved: false, quiet: 0, left: Self.arrivalLimit)
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
@@ -336,11 +380,12 @@ public final class Scrims: ScrimPlane {
         watch(monitor)
     }
 
-    /// Cut `monitor`'s mask against the window server as it stands now, for the set the core last named.
-    /// Answers whether what the surface draws changed, which is what tells a settling desktop from a
-    /// settled one.
+    /// Cut `monitor`'s mask against the window server as it stands now — or as `reading` already found
+    /// it — for the set the core last named. Answers whether what the surface draws changed, which is what
+    /// tells a settling desktop from a settled one.
     @discardableResult
-    private func paint(_ monitor: MonitorId, change: ScrimChange) -> Bool {
+    private func paint(_ monitor: MonitorId, change: ScrimChange,
+                       against reading: [StackedWindow]? = nil) -> Bool {
         guard let surface = surfaces[monitor], let display = frames[monitor] else { return false }
         let bindings = current[monitor] ?? []
         // A set that draws nothing needs no stacking: there is no mask to cut against it.
@@ -357,7 +402,7 @@ public final class Scrims: ScrimPlane {
         // **A window management has let go of takes nothing out of anything.** Nothing announces the
         // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
         let gone = departed()
-        let identified = stack()
+        let identified = (reading ?? stack())
             .filter { !gone.contains($0.number) }
             .map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
@@ -440,12 +485,14 @@ public final class Scrims: ScrimPlane {
             return CGPath(roundedRect: box, cornerWidth: corner, cornerHeight: corner, transform: nil)
         }
 
+        // The frontmost window is never a sheet: a veiled window's sheet stands behind whatever took focus.
+        let front = stacked.first?.pane.number
         // Front to back, which is the order the sheet rule is decided in: "is anything behind me" is a
         // question about the tail. A sheet is left out rather than subtracted, so its window's veil
         // carries it — the photograph standing in for the window behind the sheet is the same one.
         let here = stacked.filter { $0.pane.frame.intersects(display) }
         let panes = here.enumerated().filter { index, entry in
-            guard entry.window == nil,
+            guard entry.window == nil, entry.pane.number != front,
                   let beneath = here[(index + 1)...].first(where: {
                       $0.pane.frame.intersects(entry.pane.frame)
                   })
