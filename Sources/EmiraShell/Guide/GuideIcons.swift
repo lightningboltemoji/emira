@@ -33,9 +33,7 @@ public final class GuideIcons {
     public func removeAll() { icons.removeAll() }
 
     private static func rasterize(_ bundleId: String) -> CGImage? {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
-            return nil
-        }
+        guard let url = AppId.location(of: bundleId) else { return nil }
         let icon = NSWorkspace.shared.icon(forFile: url.path)
         // A rect, not `nil`: `NSImage` icons are multi-representation and `cgImage(forProposedRect:)`
         // picks the representation nearest the size asked for rather than the largest one.

@@ -534,7 +534,8 @@ public enum ConfigSchema {
     # broken one is a line number rather than a rule that quietly never fires.
     [[window-rules]]
 
-    # …or app-id-regex / title / title-regex, all of which must match.
+    # …or app-id-regex / title / title-regex, all of which must match. An app with no bundle is matched
+    # by its executable's path.
     app-id = "com.tinyspeck.slackmacgap"
     # Where a matching window starts…
     workspace = "3"

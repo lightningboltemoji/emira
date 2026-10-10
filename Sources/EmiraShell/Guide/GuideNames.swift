@@ -30,9 +30,7 @@ public final class GuideNames {
     public func removeAll() { names.removeAll() }
 
     private static func resolve(_ bundleId: String) -> String? {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
-            return nil
-        }
+        guard let url = AppId.location(of: bundleId) else { return nil }
         return FileManager.default.displayName(atPath: url.path)
             .replacingOccurrences(of: ".app", with: "")
     }

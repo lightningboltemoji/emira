@@ -67,14 +67,14 @@ private func axObserverCallback(_ observer: AXObserver, _ element: AXUIElement,
 /// `NSRunningApplication` is not `Sendable` and cannot travel into the main-actor hop.
 private struct AppFacts: Sendable {
     let pid: pid_t
-    let bundleId: String?
+    let appId: String?
     let isRegular: Bool
 
     init?(_ note: Notification) {
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
         else { return nil }
         pid = app.processIdentifier
-        bundleId = app.bundleIdentifier
+        appId = app.appId
         isRegular = app.activationPolicy == .regular
     }
 
@@ -463,8 +463,8 @@ public final class AXObservationSource: ObservationSource {
     /// A launched app becomes a scan target if it is the kind we manage. Must stay the same filter
     /// `AXWindowSource.applications()` applies at boot; the two have to agree about which apps exist.
     private func launched(_ app: AppFacts) {
-        guard app.isRegular, !app.isSelfOrInvalid, let bundleId = app.bundleId else { return }
-        deliver?(.appLaunched(ScanTarget(pid: app.pid, bundleId: bundleId)))
+        guard app.isRegular, !app.isSelfOrInvalid, let appId = app.appId else { return }
+        deliver?(.appLaunched(ScanTarget(pid: app.pid, bundleId: appId)))
     }
 
     /// An app came forward. Every app but us, whatever its activation policy: what the notification

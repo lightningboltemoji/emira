@@ -3,8 +3,9 @@ import Foundation
 // The truth-plane half of core `State`: a framework-free mirror of what AX + `NSWorkspace` observations
 // report. Deliberately dumb — it enforces one invariant (focus can never reference a destroyed window)
 // and one bookkeeping rule (`apps` is reference-counted by window membership); anything with a choice in
-// it is policy and lives in the reducer. App identity is the `bundleId`, never a pid (the core never
-// sees one), which assumes one running instance per bundle; the shell would disambiguate before here.
+// it is policy and lives in the reducer. App identity is the `bundleId` — a bundle identifier, or an
+// unbundled executable's path — never a pid (the core never sees one), which assumes one running instance
+// per app; the shell would disambiguate before here.
 
 /// The core's record of a live window — distinct from `WindowSnapshot`, the boundary DTO the shell hands
 /// in at first sight. `id` and `bundleId` are identity and never change; the rest is mutable truth.

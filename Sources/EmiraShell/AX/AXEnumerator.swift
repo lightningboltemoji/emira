@@ -14,7 +14,7 @@ import Foundation
 public struct ScanTarget: Sendable, Equatable {
     /// The process to address over AX.
     public let pid: pid_t
-    /// Its bundle identifier — the core's app-grouping key, resolved here so the AX layer never has to.
+    /// Its `appId` — the core's app-grouping key, resolved here so the AX layer never has to.
     public let bundleId: String
 
     public init(pid: pid_t, bundleId: String) {
@@ -472,7 +472,6 @@ public final class AXWindowSource: WindowSource {
     /// The ordinary, user-facing apps — `.regular` activation policy, still alive, not us. `.accessory`
     /// and `.prohibited` processes are menu-bar agents and background helpers whose AX trees cost
     /// footprint for nothing tileable, and they outnumber the regular apps by an order of magnitude.
-    /// Apps with no bundle identifier are skipped: the core groups by it.
     ///
     /// Narrow because it asks *speculatively*; `target(for:)` is the same question with evidence.
     public func applications() -> [ScanTarget] {
@@ -480,9 +479,9 @@ public final class AXWindowSource: WindowSource {
         return NSWorkspace.shared.runningApplications.compactMap { app in
             guard app.activationPolicy == .regular, !app.isTerminated,
                   app.processIdentifier != me, app.processIdentifier > 0,
-                  let bundleId = app.bundleIdentifier
+                  let appId = app.appId
             else { return nil }
-            return ScanTarget(pid: app.processIdentifier, bundleId: bundleId)
+            return ScanTarget(pid: app.processIdentifier, bundleId: appId)
         }
     }
 
@@ -493,9 +492,9 @@ public final class AXWindowSource: WindowSource {
         guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier,
               let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
               app.activationPolicy != .prohibited,
-              let bundleId = app.bundleIdentifier
+              let appId = app.appId
         else { return nil }
-        return ScanTarget(pid: pid, bundleId: bundleId)
+        return ScanTarget(pid: pid, bundleId: appId)
     }
 
     /// Read one app's windows on its own lane, and the window list with them. A window whose frame is

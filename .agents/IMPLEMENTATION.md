@@ -1773,6 +1773,12 @@ wider question affordable. `.prohibited` stays out of both (it can never be acti
 never take focus), as does the daemon's own pid: emira is itself an accessory app. An app reached this way
 lands in `apps` and is observed from then on, so the route is paid once rather than every interval.
 
+**An app's key is its bundle identifier, or its executable's path where it has none** (`appId`,
+`AppId.swift`). A bare binary run out of a build directory is `.regular` and puts up ordinary windows, so
+having no bundle is no reason to leave it unmanaged. The path is unique and survives a relaunch, and a bundle
+identifier admits no `/`, so the two spellings cannot collide and the key alone says which way back to the
+app on disk — what the guide's names and icons need. It is the core's `bundleId` and what `app-id` matches.
+
 **`alreadyOpen` is provenance, and every seam a scan request crosses has to carry it.** A window emira
 watched open is snapped onto the first preset and followed to the workspace a rule sends it to; one it met
 mid-life keeps the width it already has and moves nobody's desktop. Only a birth notification says the
