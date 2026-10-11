@@ -60,7 +60,7 @@ public struct SizeCorrection: Sendable, Equatable, Codable {
     /// This answer's width, if it answers `question` — in *either* direction, because a column's width is
     /// strip extent (it sets where the next column begins, what a scroll reveals, what is parked), so an
     /// under-filled slot isn't cosmetic. Direction is `Layout.resolvedWidth`'s job, via one `max`.
-    public func width(forQuestion question: Double, tolerance: Double = 0.5) -> Double? {
+    public func width(forQuestion question: Double, tolerance: Double = Tolerance.placement) -> Double? {
         guard abs(wanted.width - question) <= tolerance else { return nil }
         return actual.width
     }
@@ -75,7 +75,8 @@ public struct SizeCorrection: Sendable, Equatable, Codable {
     /// Direction is `Column`'s job, via the water-fill: it is what tells a share of 400 offered to a
     /// window that answered 200 (pin it) from the same share offered to one that answered 500 (pin it
     /// too) from either offered to a window that answered nothing (share it).
-    public func heightBound(forQuestion question: Double, tolerance: Double = 0.5) -> HeightBound? {
+    public func heightBound(forQuestion question: Double,
+                            tolerance: Double = Tolerance.placement) -> HeightBound? {
         guard abs(wanted.height - question) <= tolerance else { return nil }
         if actual.height > question + tolerance { return .atLeast(actual.height) }
         if actual.height < question - tolerance { return .atMost(actual.height) }

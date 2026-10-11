@@ -249,6 +249,9 @@ import EmiraCore
             requests.append(targets)
             timeline.record("capture@\(monitor.raw)[\(targets.map { "\($0.id.raw)" }.joined(separator: ","))]")
         }
+        func keep(_ target: CaptureTarget, on monitor: MonitorId) {
+            timeline.record("keep@\(monitor.raw)[\(target.id.raw)]")
+        }
         func surface(for window: WindowId) -> CapturedSurface? { nil }
         func base(of monitor: MonitorId) -> CGImage? { nil }
         func closeCover(on monitor: MonitorId) -> CoverToken {
@@ -360,6 +363,9 @@ import EmiraCore
             let windows = bindings.map { "\($0.window.raw)" }.joined(separator: ",")
             timeline.record("\(change)@\(monitor.raw)(\(windows))")
         }
+        func setCovered(_ covered: Bool, on monitor: MonitorId) {
+            timeline.record("\(covered ? "covered" : "uncovered")@\(monitor.raw)")
+        }
     }
 
     /// The scrim plane's harness — the set and the cover over it, so a test can say in which order a
@@ -411,6 +417,27 @@ import EmiraCore
         #expect(timeline.entries == ["dissolve@1(1)", "dissolve@2(2)", "veils"])
     }
 
+    /// The scrim is out of sight from the raise until the dismissal begins — not until the fade ends,
+    /// because the fade is what reveals it.
+    @Test func theScrimPlaneHearsWhenACoverStandsOverItAndWhenItLifts() {
+        let (executor, _, timeline, log) = Self.scrimHarness()
+        executor.execute([.beginTransition(MonitorId(1), [])], feedback: log.sink)
+        executor.execute([.endTransition(MonitorId(1))], feedback: log.sink)
+
+        let covering = timeline.entries.filter { $0.contains("covered") }
+        #expect(covering == ["covered@1", "uncovered@1"])
+    }
+
+    /// A still kept for the next cover reaches the store as one target per window, with no batch and no
+    /// ack — nothing waits on it.
+    @Test func aKeptStillReachesTheStore() {
+        let (executor, _, timeline, log) = Self.scrimHarness()
+        executor.execute([.keepStill(MonitorId(1), WindowId(3), size: Size(width: 10, height: 10))],
+                         feedback: log.sink)
+        #expect(timeline.entries == ["keep@1[3]"])
+        #expect(log.events.isEmpty)
+    }
+
     /// Whether a hand emptied the set is the core's to say, and it reaches the plane as said.
     @Test func aLiftedSetReachesThePlaneLifted() {
         let (executor, _, timeline, log) = Self.scrimHarness()
@@ -429,6 +456,7 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .raise(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .capture(MonitorId(1), WindowId(1), size: .zero)) == .capture)
+        #expect(CompositingExecutor.plane(of: .keepStill(MonitorId(1), WindowId(1), size: .zero)) == .capture)
         #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .hideLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .setCursorHidden(true)) == .pointer)

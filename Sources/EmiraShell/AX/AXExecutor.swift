@@ -14,12 +14,6 @@ import Foundation
 @MainActor
 public final class AXExecutor: Executor {
 
-    /// How far a window may land from its requested frame before we tell the core about it, in points.
-    /// One point: layout works in `Double`s and asks for `x = 740.5` while AX stores integers, so smaller
-    /// drift is arithmetic. Anything beyond is the app having an opinion (a minimum size, a
-    /// character-cell grid) that the core should hold instead of our optimistic guess.
-    public static let landingTolerance: Double = 1
-
     private let registry: WindowRegistry
     private let writer: any WindowWriter
     private let scheduler: any DelayScheduler
@@ -27,16 +21,20 @@ public final class AXExecutor: Executor {
     /// nothing can ask — a headless test, or a machine with no window server answer — and the report
     /// then goes out at once, which is the same degradation the grace expiring already gives.
     private let fence: PinFence?
+    /// The writes out on the lanes, which `WorldWatcher` reads to drop their echoes.
+    private let writes: FrameWrites
 
     /// - Parameter scheduler: for the one turn `appActivated` waits (see `execute`). Defaulted because
     ///   it is the only asynchrony in this type and every other test of it is about geometry; a test
     ///   that cares injects a manual one rather than every test that doesn't naming a real one.
     public init(registry: WindowRegistry, writer: any WindowWriter,
-                scheduler: any DelayScheduler = DispatchScheduler(), fence: PinFence? = nil) {
+                scheduler: any DelayScheduler = DispatchScheduler(), fence: PinFence? = nil,
+                writes: FrameWrites = FrameWrites()) {
         self.registry = registry
         self.writer = writer
         self.scheduler = scheduler
         self.fence = fence
+        self.writes = writes
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -113,7 +111,7 @@ public final class AXExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .setHoists, .setScrims, .setCoverClearing, .beginTransition, .extendCover,
+            case .capture, .keepStill, .setHoists, .setScrims, .setCoverClearing, .beginTransition, .extendCover,
                  .elevateLayer, .setLayerFrame,
                  .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec:
                 break
@@ -122,7 +120,14 @@ public final class AXExecutor: Executor {
 
         for pid in lanes {
             guard let moves = groups[pid] else { continue }
-            writer.place(moves, of: pid) { landings in
+            let ids = moves.map(\.record.id)
+            writes.begin(ids)
+            writer.place(moves, of: pid) { [registry, writes] landings in
+                writes.end(ids)
+                // The echoes this write provoked were dropped, so its read-back is the frame on record.
+                for landing in landings {
+                    if let frame = landing.frame { registry.noteFrame(landing.id, frame) }
+                }
                 Self.report(landings, for: moves, to: feedback)
             }
         }
@@ -152,7 +157,7 @@ public final class AXExecutor: Executor {
                                    uniquingKeysWith: { _, last in last })
         for landing in landings {
             if let actual = landing.frame, let move = requested[landing.id],
-               !approximatelyEqual(actual, move.target) {
+               !actual.isClose(to: move.target, within: Tolerance.placement) {
                 feedback(move.isPark
                     ? .parkCorrected(landing.id, requested: move.target, actual: actual)
                     : .placementCorrected(landing.id, requested: move.target, actual: actual))
@@ -162,10 +167,4 @@ public final class AXExecutor: Executor {
         }
     }
 
-    /// Whether a landing is close enough to the request to be silent. See `landingTolerance`.
-    private static func approximatelyEqual(_ a: Rect, _ b: Rect) -> Bool {
-        let tolerance = landingTolerance
-        return abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
-               abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
-    }
 }

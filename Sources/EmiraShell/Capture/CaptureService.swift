@@ -285,6 +285,10 @@ public protocol CaptureStore: AnyObject {
     /// Release the stills the cover `token` names, minus any another live cover is still showing.
     /// Ignored if a newer cover on that display claimed them.
     func discard(_ token: CoverToken)
+
+    /// Keep a still of `target` at its size for `monitor`'s next cover, filming it now unless one is
+    /// kept already. Owes no ack, and a store that keeps no stills has nothing to do.
+    func keep(_ target: CaptureTarget, on monitor: MonitorId)
 }
 
 /// What one batch cost and yielded. Reported because the other instrument cannot see it:
@@ -322,15 +326,10 @@ public struct CaptureReport: Sendable {
 @MainActor
 public final class CaptureService: CaptureStore, SurfaceFilmer {
 
-    /// How long a batch may take before we proceed without it.
-    ///
-    /// A user-latency budget, not a safety margin: this wait sits at the head of the transition, before
-    /// anything has moved or been covered, so every millisecond looks like a keypress doing nothing. A
-    /// batch costs ~10 ms for `SCShareableContent` plus ~10 ms per capture — linear, because the window
-    /// server serializes them — so a four-window batch lands near 60 ms and ~22 windows would reach this
-    /// bound. It can afford to be tight because overrunning degrades honestly: a head batch with no base
-    /// answers `Event.coverUnavailable` and the user gets an instant placement instead of a black screen.
-    public static let defaultDeadline: TimeInterval = 0.25
+    /// How long a batch may hold the head of a transition: a five-window strip on a 5K display lands near
+    /// 320 ms. Past it a head batch with no base snaps (`Event.coverUnavailable`), and a window still out
+    /// is a hole in the cover, or a stand-in that sharpens late.
+    public static let defaultDeadline: TimeInterval = 0.4
 
     private let registry: WindowRegistry
     /// One capturer per display, keyed by it. **A batch goes to exactly one of them** — the display
@@ -411,6 +410,16 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         var standingAtGate = 0
     }
     private var pending: [Int: Pending] = [:]
+    /// A batch the deadline settled while its capturer was still filming. Its acks are paid; its stills
+    /// still reach the store, and one that overtakes a stand-in still repaints it while the cover is up.
+    private struct Trailing {
+        let stoodIn: Set<WindowId>
+        let feedback: EventSink
+        let monitor: MonitorId
+        let cover: Int
+    }
+    /// Keyed as `pending` is, and dropped when the capturer reports itself done.
+    private var trailing: [Int: Trailing] = [:]
     /// Bumped by every batch, so the two racers — the capturer answering and the deadline firing — can
     /// each tell whether they are still the live one. The loser must do nothing at all.
     private var generation = 0
@@ -477,6 +486,11 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         clearStore(of: token.monitor)
     }
 
+    public func keep(_ target: CaptureTarget, on monitor: MonitorId) {
+        guard cache.keepsStills, cache.surface(for: target.id, at: target.size) == nil else { return }
+        film(target.id, on: monitor) { _ in }
+    }
+
     public func film(_ window: WindowId, on monitor: MonitorId,
                      then: @escaping @MainActor (CapturedSurface?) -> Void) {
         guard let number = registry.record(window)?.number,
@@ -539,8 +553,10 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         // dropped from the *request*, kept in the ack list. It reaches the cover as a missing layer,
         // which is truthful for the likely cause: destroyed between the reducer scoping it and here —
         // and its number, if the registry let it go, is among the departed the base cuts below.
-        // A stood-in window is still filmed: the stand-in buys the raise, not the transition.
-        let requests = targets.compactMap { target in
+        // A stood-in window is still filmed: the stand-in buys the raise, not the transition. Filmed
+        // *last*, because the window server serializes stills and the gate waits on the others.
+        let gating = targets.filter { !stoodIn.contains($0.id) }
+        let requests = (gating + targets.filter { stoodIn.contains($0.id) }).compactMap { target in
             registry.record(target.id).map { CaptureRequest(id: target.id, number: $0.number) }
         }
 
@@ -572,7 +588,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
 
     /// One capturer has nothing further to deliver. The batch resolves when the last of them says so.
     private func replied(generation: Int) {
-        guard var batch = pending[generation] else { return }
+        guard var batch = pending[generation] else { trailing[generation] = nil; return }
         batch.repliesOwed -= 1
         pending[generation] = batch
         guard batch.repliesOwed <= 0 else { return }
@@ -582,10 +598,12 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     /// Take one piece of the batch `generation` names, from `monitor`'s capturer: store it, then say so.
     private func receive(generation: Int, from monitor: MonitorId, piece: CapturePiece) {
         let batch = pending[generation]
+        let late = batch == nil ? trailing[generation] : nil
         // Whether this batch's cover still exists: a session can be abandoned, or a whole further
         // transition can start, while a slow batch is out, and its pixels would then be somebody else's
         // desktop. The acks are still owed; the entitlement to paint stops here.
-        let isCurrent = batch.map { $0.cover == coverGeneration[$0.monitor] ?? 0 } ?? false
+        let isCurrent = batch.map { isLive($0.monitor, $0.cover) }
+            ?? late.map { isLive($0.monitor, $0.cover) } ?? false
 
         // The one write, and it precedes both guards below. A piece arriving after its batch stopped
         // owing acks, or after its cover was superseded, is a photograph that was paid for and reached
@@ -599,10 +617,17 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         var stored = false
         if case .window(let id, let surface) = piece {
             stored = cache.record(surface, mintedAt: generation, for: id,
-                                  pinnedBy: isCurrent ? batch?.monitor : nil)
+                                  pinnedBy: isCurrent ? monitor : nil)
         }
 
-        guard let batch else { return }         // already finished; nothing owes an ack
+        guard let batch else {
+            // Settled by the deadline: nothing owes an ack, but a stand-in overtaken now is still on the
+            // cover. A late base is dropped — its batch either had one or abandoned the cover without.
+            if let late, isCurrent, stored, case .window(let id, _) = piece, late.stoodIn.contains(id) {
+                late.feedback(.captureRefreshed(id))
+            }
+            return
+        }
 
         switch piece {
         case .base(let image):
@@ -672,6 +697,10 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     private func finish(generation: Int, timedOut: Bool) {
         guard let batch = pending.removeValue(forKey: generation) else { return }
         let isCurrent = batch.cover == coverGeneration[batch.monitor] ?? 0
+        if batch.repliesOwed > 0 {
+            trailing[generation] = Trailing(stoodIn: batch.stoodIn, feedback: batch.feedback,
+                                            monitor: batch.monitor, cover: batch.cover)
+        }
 
         onBatchResolved?(CaptureReport(
             windows: batch.windows.count,
@@ -701,6 +730,13 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         for window in batch.windows where batch.owed.contains(window) {
             batch.feedback(.captureReady(window))
         }
+    }
+
+    /// Whether the cover session `cover` on `monitor` is still up — entitled to paint what it filmed.
+    /// Closed counts as gone: a still landing after `closeCover` would otherwise stay pinned at full
+    /// resolution past the `discard` meant to release it.
+    private func isLive(_ monitor: MonitorId, _ cover: Int) -> Bool {
+        cover == coverGeneration[monitor] ?? 0 && openCovers.contains(monitor)
     }
 
     /// One display's cover is over: it stops being entitled to the photographs it was showing, and its

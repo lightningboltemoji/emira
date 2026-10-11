@@ -257,6 +257,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     /// scan retries — two unrelated deadlines that would otherwise share a `fire()`.
     let intentClock: ManualScheduler
     let heartbeat: ManualHeartbeat
+    /// The executor's half of the echo record, which a test marks by hand.
+    let writes: FrameWrites
     let watcher: WorldWatcher
 
     /// Two apps: Ghostty with one window, TextEdit with two. Everything bindable.
@@ -269,6 +271,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         intentClock = ManualScheduler()
         heartbeat = ManualHeartbeat()
         intent = FocusIntent(scheduler: intentClock)
+        writes = FrameWrites()
         windows.targets = [ScanTarget(pid: 100, bundleId: "com.mitchellh.ghostty"),
                            ScanTarget(pid: 200, bundleId: "com.apple.TextEdit")]
         windows.windowsByPid = [
@@ -290,6 +293,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
             registry: registry,
             scheduler: scheduler,
             intent: intent,
+            writes: writes,
             sink: recorder.sink,
             heartbeat: heartbeat)
     }
@@ -632,6 +636,25 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         #expect(world.source.frameReads == [id])
         #expect(world.recorder.events.count == before)
+    }
+
+    /// A move reported while our own write to that window is out on its lane is the write's echo: the
+    /// executor reads back where it landed, so nothing is asked and no stillness wait is armed. Once the
+    /// write is back, a report is the app moving itself and is read as ever.
+    @Test func aMoveReportedWhileOurWriteIsOutCostsNoRead() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try! #require(world.id(titled: "term"))
+        world.scheduler.fire()                              // drain the boot scan's retries
+        world.writes.begin([id])
+
+        world.watcher.handle(.windowMoved(id))
+        #expect(world.source.frameReads.isEmpty)
+        #expect(world.scheduler.fire(after: WorldWatcher.stillnessQuiet) == 0, "no stillness wait either")
+
+        world.writes.end([id])
+        world.watcher.handle(.windowMoved(id))
+        #expect(world.source.frameReads == [id])
     }
 
     @Test func aMoveOfAWindowWeDoNotManageCostsNoRoundTrip() {

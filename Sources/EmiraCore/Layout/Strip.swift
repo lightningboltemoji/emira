@@ -97,11 +97,10 @@ public struct Strip: Sendable, Equatable {
         return left >= offset && left + width <= offset + viewportWidth
     }
 
-    /// How much of a column must be inside the viewport to count as on screen — the sub-pixel
-    /// tolerance `Engine` diffs placements at. `leftEdge` and `maxOffset` sum the widths differently,
-    /// so a viewport-wide column can leave its neighbour ~1e-13 pt over the edge, and tiling a window
-    /// that far off-screen gets it clamped back into view by macOS.
-    public static let visibilityTolerance: Double = 0.5
+    /// How much of a column must be inside the viewport to count as on screen — `Tolerance.placement`,
+    /// the one `Engine` diffs placements at. `leftEdge` and `maxOffset` sum the widths differently, so a
+    /// viewport-wide column can leave its neighbour ~1e-13 pt over the edge.
+    public static let visibilityTolerance = Tolerance.placement
 
     /// Indices of every column overlapping the viewport by more than `visibilityTolerance`. Flush
     /// against the edge — or within the tolerance of it — is excluded, matching `Rect.intersects`.

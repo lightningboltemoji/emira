@@ -50,6 +50,23 @@ import EmiraMotion
         #expect(EngineFix.approx(try #require(EngineFix.placement(of: WindowId(2), in: fx)), belongs))
     }
 
+    /// AX stores whole points, so a fractional target lands where AX rounds it and reads back as a window
+    /// that placed itself somewhere else. A 10 pt gap puts a ⅓ column on a fraction: 1010/3 − 10.
+    @Test func everyFrameTheTruthPlaneWritesIsWhole() {
+        var config = EngineFix.laddered(Config(transitionMode: .off))
+        config.columnGap = 10
+        let (_, fx) = EngineFix.run(EngineFix.booted(config: config),
+                                    (1...4).map { .windowCreated(EngineFix.snapshot($0)) })
+        let written = fx.compactMap { effect -> Rect? in
+            switch effect {
+            case .setFrame(_, let frame), .park(_, let frame): frame
+            default: nil
+            }
+        }
+        #expect(!written.isEmpty)
+        #expect(written.allSatisfy { $0 == $0.rounded() })
+    }
+
     /// The pass is the comparison. A window that stopped where it already belonged — our own placement
     /// echoing back, which is most of what this event ever reports — writes nothing at all.
     @Test func aWindowThatIsWhereItBelongsCostsNoWrite() {

@@ -8,6 +8,14 @@ import Testing
     // Reused fixture: a 1440×900 working area at the origin; 1 pt sliver of width, 40 pt of chrome,
     // 8 pt stagger. rows-per-lane = floor((900 − 40) / 8) + 1 = 108.
     private let lot = ParkingLot(frame: Rect(x: 0, y: 0, width: 1440, height: 900))
+
+    /// Two nubs of one app are told apart at rebind by the window-list join, which calls frames within
+    /// `Tolerance.identity` one window. Every step the lot takes between nubs has to clear it.
+    @Test func aNubStepClearsTheIdentityJoinsSlack() {
+        #expect(lot.stagger > Tolerance.identity)
+        #expect(lot.laneStep > Tolerance.identity)
+        #expect(Stack.minimumStagger > Tolerance.identity, "a cascade's tiles are one size too")
+    }
     private let size = Size(width: 400, height: 300)
 
     @Test func slotPokesACornerNubInFromTheBottomRight() {

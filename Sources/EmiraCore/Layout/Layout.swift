@@ -783,10 +783,11 @@ public struct Layout: Sendable, Equatable, Codable {
 
         var frames: [WindowId: Rect] = [:]
         // Layout order, because the ordinals are handed out along it and a run has to be reproducible.
+        // Whole points, because AX stores nothing finer and a fractional target lands where AX rounds it.
         for id in allWindowIds {
             guard let frame = natural[id] else { continue }
-            frames[id] = visible.contains(id) ? frame
-                : Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)
+            frames[id] = (visible.contains(id) ? frame
+                : Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)).rounded()
         }
         return frames
     }
@@ -808,7 +809,7 @@ public struct Layout: Sendable, Equatable, Codable {
         var frames: [WindowId: Rect] = [:]
         for id in allWindowIds {
             guard let frame = natural[id] else { continue }
-            frames[id] = Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)
+            frames[id] = Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics).rounded()
         }
         return frames
     }

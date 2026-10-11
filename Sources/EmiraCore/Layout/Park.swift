@@ -21,12 +21,12 @@ public struct ParkingLot: Sendable, Equatable {
     /// Points of a parked window's top edge that stay on-screen — its title bar. The rest hangs off
     /// the bottom.
     public let visibleChrome: Double
-    /// How much taller the nub grows per ordinal. Must clear `WindowRegistry`'s ±2 pt binding tolerance,
+    /// How much taller the nub grows per ordinal. Must clear `Tolerance.identity`, the binding's slack,
     /// or two parked windows of one app are ambiguous at rebind and neither is managed — a right-edge
     /// park gives them all the same `minX`, so height is the only thing telling them apart.
     public let stagger: Double
     /// How much further on-screen each new lane pokes — the horizontal counterpart of `stagger`, and
-    /// there for the same ±2 pt tolerance: at one sliver, lane 1 row 0 sat 1 pt from lane 0 row 0 in
+    /// there for the same tolerance: at one sliver, lane 1 row 0 sat 1 pt from lane 0 row 0 in
     /// `x` and identical otherwise. Kept as small as clears the tolerance, since `x` is the axis the
     /// user sees.
     public let laneStep: Double

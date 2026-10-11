@@ -50,7 +50,7 @@ import EmiraMotion
         // w1 took, which is derived — the strip accumulates from the same widths.
         #expect(EngineFix.placement(of: WindowId(1), in: fx) == nil)
         let moved = try! #require(EngineFix.placement(of: WindowId(2), in: fx))
-        #expect(EngineFix.approx(moved, Rect(x: 500, y: 0, width: EngineFix.third, height: 800)))
+        #expect(moved == Rect(x: 500, y: 0, width: EngineFix.third, height: 800).rounded())
     }
 
     @Test func aCorrectedWindowIsNeverAskedTheSameQuestionAgain() {
@@ -359,7 +359,7 @@ import EmiraMotion
         let parked = try! #require(s.layout.parkedFrames(metrics: metrics,
                                                          parkingFrom: &cursor)[WindowId(1)])
         #expect(tiled.size == parked.size)
-        #expect(parked.size == Size(width: EngineFix.third, height: 200))
+        #expect(parked.size == Size(width: EngineFix.third.rounded(), height: 200))
     }
 
     @Test func aShorterAnswerCapsTheWindowInItsColumnAndTheStackmateTakesTheRest() {

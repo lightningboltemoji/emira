@@ -467,11 +467,12 @@ import Testing
         // ⅓ of the content width *and its gap*: (900 + 10)/3 − 10 ≈ 293.33, so three of them and the two
         // gaps between fill the 900 exactly.
         let third = (900.0 + 10) / 3 - 10
-        // col0 at strip x 0 → screen x = 100 (origin) − 0 (scroll); y = 25; fills 620 tall.
-        #expect(frames[w10] == Rect(x: 100, y: 25, width: third, height: 620))
+        // col0 at strip x 0 → screen x = 100 (origin) − 0 (scroll); y = 25; fills 620 tall. Every frame is
+        // written in whole points, the only frames AX stores.
+        #expect(frames[w10] == Rect(x: 100, y: 25, width: third, height: 620).rounded())
         // col1 at strip x third + 10 gap → screen x = 100 + that; two windows split (620 − 20)/2 = 300.
-        #expect(frames[w20] == Rect(x: 100 + third + 10, y: 25, width: third, height: 300))
-        #expect(frames[w21] == Rect(x: 100 + third + 10, y: 345, width: third, height: 300))
+        #expect(frames[w20] == Rect(x: 100 + third + 10, y: 25, width: third, height: 300).rounded())
+        #expect(frames[w21] == Rect(x: 100 + third + 10, y: 345, width: third, height: 300).rounded())
     }
 
     @Test func targetFramesParkOrdinalsAreUniqueSoParkedFramesDontCollide() {

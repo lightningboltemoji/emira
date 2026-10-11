@@ -51,10 +51,6 @@ public final class SurfaceCache {
     /// working limit: at this ratio a full-screen 2× window is under 2 MB.
     public static let defaultBudget = 48 << 20
 
-    /// Per-edge slack when matching a photograph's size against the window's — the rounding between what
-    /// AX answered and what ScreenCaptureKit filmed. The identity join allows the same.
-    private static let tolerance = 2.0
-
     /// One window's best photograph, and the three things about it that are not in its pixels.
     private struct Photo {
         var surface: CapturedSurface
@@ -68,6 +64,9 @@ public final class SurfaceCache {
         /// Whether it has already been through `reduced(_:)`. Reducing a photograph twice fades a window
         /// that is never re-filmed to nothing, one transition at a time.
         var isReduced = false
+        /// Released at capture resolution, its reduction in flight. Outside the budget until it lands, or
+        /// stand-ins would be evicted to make room for pixels about to shrink sixteenfold.
+        var isReducing = false
     }
 
     private let budget: Int
@@ -83,14 +82,19 @@ public final class SurfaceCache {
     /// so nothing that drops a photograph drops the radius with it.
     private var corners: [WindowId: (radius: Double, mint: Int)] = [:]
 
+    /// Where a released photograph is scaled down — off the main actor in the daemon.
+    private let reducer: Reducer
+
     /// Whether a photograph outlives the cover that took it. Off, the last cover to let one go forgets
     /// it instead of reducing it. Two features want it on and neither is the other's, so the daemon
     /// names the union of the two conditions in one place (`applyShellConfig`).
     public var keepsStills: Bool
 
-    public init(budget: Int = SurfaceCache.defaultBudget, keepsStills: Bool = false) {
+    public init(budget: Int = SurfaceCache.defaultBudget, keepsStills: Bool = false,
+                reducer: Reducer = .detached) {
         self.budget = budget
         self.keepsStills = keepsStills
+        self.reducer = reducer
     }
 
     // The four operations
@@ -131,8 +135,9 @@ public final class SurfaceCache {
         // Nothing may paint it at capture resolution, so nothing holds it there (rule 1) — and one
         // too small to reduce is not stored at all: a copy that is neither affordable nor honest is
         // worth less than the miss it becomes.
-        guard keepsStills, let small = Self.reduced(surface) else { return false }
-        store(Photo(surface: small, mint: mint, isReduced: true), for: id)
+        guard keepsStills, Self.reducedSize(of: surface.image) != nil else { return false }
+        store(Photo(surface: surface, mint: mint, isReducing: true), for: id)
+        reduce(id)
         return true
     }
 
@@ -141,26 +146,25 @@ public final class SurfaceCache {
     /// film of it.
     public func pin(_ id: WindowId, to monitor: MonitorId) {
         guard var photo = photos[id] else { return }
-        if photo.pins.isEmpty { bytes -= Self.byteCount(photo.surface) }
+        bytes -= Self.budgeted(photo)
         photo.pins.insert(monitor)
+        photo.isReducing = false            // on screen at full size again; a reduction in flight is moot
         photos[id] = photo
     }
 
-    /// `monitor`'s cover is over. The last cover to let a photograph go reduces it in place — never
-    /// removed, never twice — or forgets it where nothing keeps stills. **Synchronous**: the next
-    /// transition's head batch releases the outgoing cover a line before it reads this store.
+    /// `monitor`'s cover is over. The last cover to let a photograph go has it reduced — never removed,
+    /// never twice — or forgets it where nothing keeps stills. The release is synchronous, since the next
+    /// head batch reads this store a line later; the reduction lands when it lands (`land`).
     public func unpin(_ monitor: MonitorId) {
         for (id, held) in photos where held.pins.contains(monitor) {
             var photo = held
             photo.pins.remove(monitor)
             guard photo.pins.isEmpty else { photos[id] = photo; continue }
             guard keepsStills else { forget(id); continue }
-            if !photo.isReduced, let small = Self.reduced(photo.surface) {
-                photo.surface = small
-                photo.isReduced = true
-            }
+            photo.isReducing = !photo.isReduced && Self.reducedSize(of: photo.surface.image) != nil
             photos[id] = photo
-            bytes += Self.byteCount(photo.surface)
+            bytes += Self.budgeted(photo)
+            if photo.isReducing { reduce(id) }
         }
         evict()
     }
@@ -175,10 +179,10 @@ public final class SurfaceCache {
         return photo.surface
     }
 
-    /// Two sizes the tolerance calls one. The stand-in match and the hole rule ask the same question of
-    /// it, so they ask it in one place.
+    /// Two sizes `Tolerance.still` calls one. The stand-in match and the hole rule ask the same question
+    /// of it, so they ask it in one place.
     private static func sameSize(_ a: Size, _ b: Size) -> Bool {
-        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+        a.isClose(to: b, within: Tolerance.still)
     }
 
     /// The photograph a live cover is entitled to paint — what `CaptureStore.surface(for:)` answers
@@ -219,20 +223,39 @@ public final class SurfaceCache {
     /// Replace `id`'s photograph, moving it to the back of the eviction order: it was just taken.
     private func store(_ photo: Photo, for id: WindowId) {
         if let previous = photos[id] {
-            if previous.pins.isEmpty { bytes -= Self.byteCount(previous.surface) }
+            bytes -= Self.budgeted(previous)
             order.removeAll { $0 == id }
         }
         photos[id] = photo
         order.append(id)
-        guard photo.pins.isEmpty else { return }
-        bytes += Self.byteCount(photo.surface)
+        bytes += Self.budgeted(photo)
         evict()
     }
 
     private func forget(_ id: WindowId) {
         guard let photo = photos.removeValue(forKey: id) else { return }
-        if photo.pins.isEmpty { bytes -= Self.byteCount(photo.surface) }
+        bytes -= Self.budgeted(photo)
         order.removeAll { $0 == id }
+    }
+
+    /// Send `id`'s photograph to be reduced, naming the film it was made from.
+    private func reduce(_ id: WindowId) {
+        guard let photo = photos[id] else { return }
+        let mint = photo.mint
+        reducer.run(photo.surface) { [weak self] small in self?.land(small, for: id, mint: mint) }
+    }
+
+    /// A reduction is taken only by the film it was made from, and only while that is still released: a
+    /// newer film, a cover pinning it again, or a forget each leave it nobody's. A reduction that failed
+    /// leaves the photograph as it is, marked so it is never tried again.
+    private func land(_ small: CapturedSurface?, for id: WindowId, mint: Int) {
+        guard var photo = photos[id], photo.mint == mint, photo.isReducing else { return }
+        photo.isReducing = false
+        photo.isReduced = true
+        if let small { photo.surface = small }
+        photos[id] = photo
+        bytes += Self.budgeted(photo)
+        evict()
     }
 
     /// Back under budget, oldest first, over the photographs nothing is showing. **A pinned photograph
@@ -257,9 +280,7 @@ public final class SurfaceCache {
     public nonisolated static func reduced(_ surface: CapturedSurface,
                                            by ratio: Double = SurfaceCache.ratio) -> CapturedSurface? {
         let image = surface.image
-        let width = max(1, Int((Double(image.width) * ratio).rounded()))
-        let height = max(1, Int((Double(image.height) * ratio).rounded()))
-        guard width < image.width, height < image.height else { return nil }
+        guard let (width, height) = reducedSize(of: image, by: ratio) else { return nil }
 
         // The still's own colour space where it can host a context, the device's otherwise — a space
         // `CGBitmapContext` refuses (indexed, or a pattern) is worth a colour shift in a stand-in.
@@ -281,7 +302,39 @@ public final class SurfaceCache {
                                cornerRadius: surface.cornerRadius, isWhole: surface.isWhole)
     }
 
+    /// The pixel size `reduced` would produce, or `nil` for an image too small to shrink.
+    private nonisolated static func reducedSize(of image: CGImage,
+                                                by ratio: Double = SurfaceCache.ratio) -> (Int, Int)? {
+        let width = max(1, Int((Double(image.width) * ratio).rounded()))
+        let height = max(1, Int((Double(image.height) * ratio).rounded()))
+        guard width < image.width, height < image.height else { return nil }
+        return (width, height)
+    }
+
     private static func byteCount(_ surface: CapturedSurface) -> Int {
         surface.image.height * surface.image.bytesPerRow
     }
+
+    /// What a photograph costs the budget: nothing while a cover shows it or its reduction is in flight.
+    private static func budgeted(_ photo: Photo) -> Int {
+        photo.pins.isEmpty && !photo.isReducing ? byteCount(photo.surface) : 0
+    }
+}
+
+/// How a released photograph is scaled down: handed the full one, answering on the main actor.
+public struct Reducer: Sendable {
+    let run: @MainActor @Sendable (CapturedSurface,
+                                   @escaping @MainActor @Sendable (CapturedSurface?) -> Void) -> Void
+
+    /// Off the main actor. A 5K still's draw costs tens of milliseconds, and releases land at the end of
+    /// every cross-fade — where the next keypress's head batch wants the main thread.
+    public static let detached = Reducer { surface, done in
+        Task.detached(priority: .utility) {
+            let small = SurfaceCache.reduced(surface)
+            await done(small)
+        }
+    }
+
+    /// In the caller's turn: what a test of the outcome, rather than of its timing, wants.
+    public static let inline = Reducer { surface, done in done(SurfaceCache.reduced(surface)) }
 }

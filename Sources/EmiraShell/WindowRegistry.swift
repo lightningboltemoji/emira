@@ -182,7 +182,7 @@ public enum WindowIdentity {
     /// candidate, and no two observed windows may land on the same entry (which happens when a window's
     /// own entry is missing from the list and it falls onto its neighbour's).
     public static func bind(_ observed: [ObservedWindow], to entries: [WindowListEntry],
-                            tolerance: Double = 2) -> Binding {
+                            tolerance: Double = Tolerance.identity) -> Binding {
         var byPid: [pid_t: [WindowListEntry]] = [:]
         for entry in entries { byPid[entry.pid, default: []].append(entry) }
 
@@ -263,7 +263,7 @@ public enum WindowIdentity {
     /// - Returns: the pairings, and the departures with no successor — windows that have left the strip
     ///   for good (merged into someone else's tab group, or closed without a destroy notification).
     public static func succeed(departed: [Departure], arrived: [ObservedWindow], onto screens: [Rect] = [],
-                               tolerance: Double = frameTolerance) -> (successions: [Succession],
+                               tolerance: Double = Tolerance.identity) -> (successions: [Succession],
                                                           orphaned: [WindowId]) {
         var tentative: [Int: Int] = [:]         // departure index → arrival index
         var claimants: [Int: [Int]] = [:]       // arrival index → departure indices
@@ -298,11 +298,6 @@ public enum WindowIdentity {
         return (successions, orphaned.sorted())
     }
 
-    /// How far apart two frames may be and still be one window. Absorbs the rounding between an AX
-    /// read and the window server's integers, and nothing wider: a successor stands on an *identical*
-    /// rectangle — the group's own, or that one slid onto the screen.
-    public static let frameTolerance: Double = 2
-
     /// Where AppKit shows a window for the first time when asked for `rect`: moved — never resized —
     /// the shortest way to lie inside `area`. `nil` for a rectangle too big to fit.
     public static func slid(_ rect: Rect, into area: Rect) -> Rect? {
@@ -312,10 +307,11 @@ public enum WindowIdentity {
                     width: rect.width, height: rect.height)
     }
 
-    /// Whether two rectangles describe the same window, within per-edge slack.
-    public static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double = frameTolerance) -> Bool {
-        abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
-        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    /// Whether two rectangles describe the same window, within per-edge slack — `Tolerance.identity`
+    /// unless a caller says otherwise. A successor stands on an *identical* rectangle, or that one slid
+    /// onto the screen, so nothing wider than the two subsystems' rounding is wanted.
+    public static func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double = Tolerance.identity) -> Bool {
+        a.isClose(to: b, within: tolerance)
     }
 }
 

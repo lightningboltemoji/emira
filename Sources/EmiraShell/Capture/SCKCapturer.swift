@@ -33,13 +33,14 @@ import EmiraCore
 // screenshot requests, so overlapping them hides nothing — and worse, inflates each one: ~25 ms taken
 // alone against ~41 ms with anything else in flight, which is 1.55–1.90× on the batch and grows under
 // CPU load. Two in flight pays that in full, so there is no concurrency width to tune, only overlap to
-// avoid. Pixel dimensions do not enter into it, a 500×400 window costing what an 1100×800 one does, so
-// **the scope size alone is the latency** at ~25 ms a window.
+// avoid. **The scope size is most of the latency** — ~50 ms a window on a 5K display, for a 2500×2750 px
+// still, less for a smaller one — so the order a batch is filmed in decides what the gate waits behind.
 //
-// Pieces are handed back as they land rather than as a batch, and in scope order: a cover gated on the
-// base alone (`CoverMode.immediate`) waits for one capture rather than all of them, and the extend gate
-// acks per window. The base is captured before any window because it is the gate — no layer can be
-// raised until it lands.
+// Pieces are handed back as they land rather than as a batch, and in request order — which is the
+// caller's policy, not ScreenCaptureKit's enumeration order: a cover gated on the base alone
+// (`CoverMode.immediate`) waits for one capture rather than all of them, and the extend gate acks per
+// window. The base is captured before any window because it is the gate — no layer can be raised until
+// it lands.
 //
 // **A base cuts every batch asked for in its turn** (`baseCuts`). A scan adopting a desktop is a window
 // per event and a batch per window, all before the cover is up, and a base cut only for the first batch
@@ -101,8 +102,11 @@ public final class SCKCapturer: SurfaceCapturer {
         let scale = self.scale
         let piece = order.piece
 
+        var seen = Set<CGWindowID>()
+        let ordered = order.requests.map(\.number).filter { seen.insert($0).inserted }
+
         Task {
-            await grab(windows: Set(numbers.keys), cutting: cut, display: displayId, scale: scale,
+            await grab(windows: ordered, cutting: cut, display: displayId, scale: scale,
                        base: order.base) { shot in
                 switch shot {
                 case .base(let image):
@@ -158,23 +162,24 @@ private enum Piece: Sendable {
 /// One `SCShareableContent` read, because it is a window-server round trip and one per window would put
 /// the enumeration cost back at the head of the transition.
 ///
-/// `windows` is both lists at once: what to photograph, and what the base has to have a hole where. A
-/// cover belongs to one display, so the windows it shows and the windows its own base must not contain
-/// are the same set — plus `base.departed` and `cut` (`baseCuts`), which are holes and nothing more.
+/// `windows` is both lists at once — what to photograph, in that order, and what the base has to have a
+/// hole where, a cover belonging to one display — plus `base.departed` and `cut` (`baseCuts`), which are
+/// holes and nothing more.
 ///
 /// **The read is `onScreenWindowsOnly` until it comes up short.** A scoped window the read does not
 /// carry is neither photographed nor cut out of the base, and stands frozen in it for the whole cover;
 /// the long read costs ~10 ms, so it is asked for only when the short one is missing one of `windows`.
-private func grab(windows: Set<CGWindowID>,
+private func grab(windows: [CGWindowID],
                   cutting cut: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
                   base: BaseRequest?,
                   deliver: @Sendable (Piece) async -> Void) async {
+    let wanted = Set(windows)
     var content: SCShareableContent
     do {
         content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-        if !windows.isSubset(of: Set(content.windows.map(\.windowID))) {
+        if !wanted.isSubset(of: Set(content.windows.map(\.windowID))) {
             content = try await SCShareableContent.excludingDesktopWindows(true,
                                                                            onScreenWindowsOnly: false)
         }
@@ -184,14 +189,16 @@ private func grab(windows: Set<CGWindowID>,
         return
     }
 
-    let targets = content.windows.filter { windows.contains($0.windowID) }
+    let byNumber = Dictionary(content.windows.map { ($0.windowID, $0) },
+                              uniquingKeysWith: { first, _ in first })
+    let targets = windows.compactMap { byNumber[$0] }
     let mine = ProcessInfo.processInfo.processIdentifier
     let departed = base?.departed ?? []
     // The base excludes what we are about to animate, what is still fading out, our own overlay, *and*
     // everything that composites above the cover. See the file header.
     let chrome = Overlay.level.rawValue
     let excluded = content.windows.filter {
-        windows.contains($0.windowID) || cut.contains($0.windowID) || departed.contains($0.windowID)
+        wanted.contains($0.windowID) || cut.contains($0.windowID) || departed.contains($0.windowID)
             || $0.owningApplication?.processID == mine
             || $0.windowLayer > chrome
     }
@@ -212,7 +219,7 @@ private func grab(windows: Set<CGWindowID>,
         }
     }
 
-    // One at a time, in scope order. See the file header: overlapping these is measurably slower.
+    // One at a time, in the order asked. See the file header: overlapping these is measurably slower.
     for window in targets {
         let frame = window.frame
         guard frame.width >= 1, frame.height >= 1 else { continue }

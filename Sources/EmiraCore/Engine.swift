@@ -100,6 +100,14 @@ public struct State: Sendable, Equatable, Codable {
                   trackpadScroll: trackpadScroll)
     }
 
+    /// Bring every strip's membership into line with the world's tiled set: departures leave every
+    /// workspace, newcomers join the acting display's beside `anchor` (`Workspaces.reconcile`). Idempotent,
+    /// and run at the top of every event but a tick, so a handler starts from a strip that matches `World`.
+    mutating func reconcileTiling(insertingAfter anchor: WindowId? = nil) {
+        workspaces.reconcile(tiledWindowIds: world.tiledWindowIds, onto: monitors.shown,
+                             insertingAfter: anchor)
+    }
+
     /// Layout metrics for one display — its working area (bounds minus its own struts) under the current
     /// config. `nil` for a display that is not attached, which is what makes every geometry query a
     /// no-op before the first `screensChanged`.
@@ -713,6 +721,8 @@ public enum Engine {
 
     private static func fold(_ state: State, _ event: Event) -> (State, [Effect]) {
         var s = state
+        // A tick changes no membership and runs at the refresh rate; everything else starts reconciled.
+        if case .tick = event {} else { s.reconcileTiling() }
         switch event {
 
         case .command(let command):
@@ -948,6 +958,8 @@ public enum Engine {
             // A display that left took its session with it, and the overlay it was drawing on still
             // has to be told — a dismissal is the one call that is safe for a screen that is gone.
             let abandoned = s.setMonitors(infos).map { Effect.endTransition($0) }
+            // Re-homing a stranded pin can evict the one already on that side back onto a strip.
+            s.reconcileTiling()
             if let focused = s.world.focusedWindow {
                 // **A reconfiguration may not leave focus on a strip nobody is showing** (§4): a
                 // display leaving hands its workspaces to a survivor as *owned*, which parks them.
@@ -1072,10 +1084,13 @@ public enum Engine {
             // scrolled off the strip's near end is at a frame reaching across the pin.
             //
             // Guarded on there being no layers, because a command arriving during a cross-fade opens a
-            // *new* cover on that display — and the shape then belongs to that one.
-            guard !s.motion.hasLayers(on: monitor),
-                  s.coverClearing.removeValue(forKey: monitor) != nil else { return (s, []) }
-            return (s, [.setCoverClearing(monitor, [])])
+            // *new* cover on that display — and the shape then belongs to that one, as the stills do.
+            guard !s.motion.hasLayers(on: monitor) else { return (s, []) }
+            var effects = keptStills(s, on: monitor)
+            if s.coverClearing.removeValue(forKey: monitor) != nil {
+                effects.append(.setCoverClearing(monitor, []))
+            }
+            return (s, effects)
         }
     }
 
@@ -1175,7 +1190,6 @@ public enum Engine {
     /// Untiled focus is an entry condition, not a dead end: either direction re-enters at the near
     /// end, since `World` records whatever the system says is focused, column or not.
     private static func handleFocus(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
 
         // Untiled because it is pinned: the layout lies one way and the display's edge the other,
         // so only one of the four directions goes anywhere. Ahead of the re-entry clause below, which
@@ -1281,7 +1295,6 @@ public enum Engine {
     /// Cycle focus through what this display holds pinned and then back to the layout — left, right,
     /// layout — skipping the sides that are empty. With one pin that is the plain toggle it reads as.
     private static func handleFocusPinned(_ s: inout State) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let monitor = s.monitors.focused else { return [] }
         let held = PinSide.allCases.filter { s.world.pinned(on: monitor, $0) != nil }
         guard let first = held.first else { return [] }
@@ -1307,7 +1320,6 @@ public enum Engine {
     /// geometries as every structural edit's does, which is what carries a column that was scrolled off
     /// the strip into the cascade it now belongs in.
     private static func handleSetLayout(_ s: inout State, _ kind: Layout.Kind) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         let shown = s.monitors.shown
         guard s.workspaces[shown].kind != kind else { return [] }
         let old = actingSnapshot(s)
@@ -1327,7 +1339,6 @@ public enum Engine {
     /// Fold `Command.pin`. The subject is the focused window in every case but one: `off` with focus on
     /// the strip releases what the display is holding, so a pin can be let go without visiting it first.
     private static func handlePin(_ s: inout State, _ intent: PinIntent) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let (monitor, metrics) = s.acting(), let focused = s.world.focusedWindow,
               s.world.windows[focused] != nil else { return [] }
 
@@ -1531,7 +1542,6 @@ public enum Engine {
     /// new single-window column on that side. Vertical swaps it with a stack neighbour. No wrap, and no
     /// `.focus` effect — focus already sits on the mover, and a redundant AX set can make an app raise.
     private static func handleMoveWindow(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // Metrics guard before the mutation: with no display known there is no correct frame to land on.
         guard s.metrics() != nil,
               let focused = s.world.focusedWindow,
@@ -1571,7 +1581,6 @@ public enum Engine {
     /// of this one, `up` pushes the focused window out right. At the strip's end a consume no-ops but an
     /// expel still creates its column: the strip has an origin rather than an edge.
     private static func handleConsumeOrExpel(_ s: inout State, _ direction: Direction) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // Inert on a cascade, which never puts two windows in one slot (§7).
         guard s.layout.kind == .strip else { return [] }
         guard s.metrics() != nil,
@@ -1798,7 +1807,6 @@ public enum Engine {
     /// already showing is a silent no-op, which is also how `next` at the top of the monitor's own set
     /// comes out — `State.resolve` clamps rather than wrapping.
     private static func handleFocusWorkspace(_ s: inout State, _ ref: WorkspaceRef) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         let destination = s.resolve(ref)
         guard destination != s.monitors.shown else { return [] }
         // Read before anything moves: the geometry the switch is about to stop being true, on the
@@ -1810,7 +1818,6 @@ public enum Engine {
     /// strip at all. Focus lands on that address's remembered window, or on nothing, which is exactly
     /// what invariant 3 buys: an empty display can hold emira's focus, and the next window opens there.
     private static func handleFocusMonitor(_ s: inout State, _ ref: MonitorRef) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let target = s.resolve(ref), target != s.monitors.focused,
               let destination = s.monitors.shown(on: target) else { return [] }
         return switchWorkspace(&s, to: destination, animatingFrom: snapshots(s, of: [target]))
@@ -1821,7 +1828,6 @@ public enum Engine {
     /// focused on and becomes its remembered focus, so a run of moves builds a group.
     private static func handleMoveToWorkspace(_ s: inout State, _ ref: WorkspaceRef,
                                               follow: Bool) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         return moveToWorkspace(&s, s.resolve(ref), follow: follow)
     }
 
@@ -1829,7 +1835,6 @@ public enum Engine {
     /// named by the display holding it rather than by its own letter.
     private static func handleMoveToMonitor(_ s: inout State, _ ref: MonitorRef,
                                             follow: Bool) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let target = s.resolve(ref), target != s.monitors.focused,
               let destination = s.monitors.shown(on: target) else { return [] }
         return moveToWorkspace(&s, destination, follow: follow)
@@ -1887,7 +1892,6 @@ public enum Engine {
     /// travels *between* displays, so each screen runs the vertical slide it already has.
     private static func handleMoveWorkspaceToMonitor(_ s: inout State, _ ref: MonitorRef,
                                                      follow: Bool) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let source = s.monitors.focused, let target = s.resolve(ref),
               target != source else { return [] }
         let travelling = s.monitors.shown
@@ -2083,7 +2087,6 @@ public enum Engine {
         // layout is per-workspace and moves under the pointer, so the shell keeps its motion monitor
         // installed and keeps reporting crossings, and the core drops them.
         guard !isCascade(s, holding: id) else { return [] }
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // **The pointer crossing onto another screen is the user moving to it** — otherwise focus lands
         // on the far screen while the acting monitor stays behind, and the window is read against the
         // wrong strip. Only onto a display already *showing* that strip: the pointer had to get there.
@@ -2106,7 +2109,6 @@ public enum Engine {
         // No screen for a reveal to happen on, and `unattached` is the sole authority on what the
         // desktop shows while nothing is attached — a switch here would overwrite it.
         guard !s.monitors.ids.isEmpty else { return nil }
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let home = s.workspaces.workspace(of: focused),
               !s.monitors.shownWorkspaces.contains(home) else { return nil }
         return switchWorkspace(&s, to: home, focusing: focused, animatingFrom: [],
@@ -2126,7 +2128,6 @@ public enum Engine {
     /// the window it is closing, so a focus report is routinely the first half of a structural edit — and
     /// a transition is what the second half can ride.
     private static func revealAcrossWorkspaces(_ s: inout State, _ id: WindowId) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         if let home = s.workspaces.workspace(of: id), home != s.monitors.shown {
             // Read before `focused` moves, exactly as `handleFocusWorkspace` does: the geometry the
             // switch is about to stop being true, on the display that is going to do the switching.
@@ -2221,7 +2222,6 @@ public enum Engine {
     /// against it. A snap-path event arriving mid-scroll is redirected through `driveTransition`, so it
     /// cannot snap the viewport out from under a raised cover.
     private static func reveal(_ s: inout State, _ id: WindowId, center: Bool) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let (monitor, metrics) = s.acting() else { return [] }
         let start = s.viewport.offset.current
         let offset = center
@@ -2245,7 +2245,6 @@ public enum Engine {
     /// which a missing Screen Recording grant forces), degrades to a snap-place; otherwise a fresh session
     /// is scoped to every window the viewport sweeps between start and end.
     private static func scrollReveal(_ s: inout State, to id: WindowId, center: Bool) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let (monitor, metrics) = s.acting() else { return [] }
         let start = s.viewport.offset.current
 
@@ -2389,6 +2388,19 @@ public enum Engine {
         ids.map { .capture(monitor, $0, size: s.world.windows[$0]?.frame.size ?? .zero) }
     }
 
+    /// The windows at rest on `monitor`'s glass, at the sizes the world records — what its next cover most
+    /// likely scopes. A head batch films a window at its size *before* the transition, so one the
+    /// transition resized would otherwise have no stand-in next time (`Effect.keepStill`).
+    private static func keptStills(_ s: State, on monitor: MonitorId) -> [Effect] {
+        guard s.config.coverMode == .immediate, let metrics = s.metrics(of: monitor),
+              let shown = s.monitors.shown(on: monitor) else { return [] }
+        let resting = s.workspaces[shown].visibleWindowIds(
+            scrollOffset: s.motion.offset(of: monitor).current, metrics: metrics)
+        return (resting + metrics.pinFrames.map(\.window)).compactMap { id in
+            s.world.windows[id].map { .keepStill(monitor, id, size: $0.frame.size) }
+        }
+    }
+
     /// The offset that frames `id`'s column, from `offset` — centred, or the minimal reveal. `nil` for a
     /// window with no column. In one place so that "where would this come to rest" and "is it already
     /// there" cannot answer differently.
@@ -2440,7 +2452,6 @@ public enum Engine {
         // The cover is the presentation plane a 120 Hz scroll happens on. `applyEnvironment` clamps the
         // setting off without one, so this is the reducer declining to be a second opinion about it.
         guard s.config.transitionMode.covers else { return [] }
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // The strip the user is working on, not the one the cursor happens to sit over: the fingers are
         // not on a screen, and the focused monitor is the only thing that can answer.
         guard let (monitor, metrics) = s.acting() else { return [] }
@@ -2609,7 +2620,6 @@ public enum Engine {
     /// window in it forgets what it last answered about its size. The user asked again; a bound learned
     /// against the old share would hold the column at the shape it is trying to leave.
     private static func handleCycleHeight(_ s: inout State) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // Inert on a cascade: tile size is a function of `n` and there is no height stack to step.
         guard s.layout.kind == .strip else { return [] }
         guard s.metrics() != nil,
@@ -2694,7 +2704,6 @@ public enum Engine {
     /// column of its own — the branch `move-window` and `consume-or-expel` make — and the `Fullscreen`
     /// record it carries is what puts it back.
     private static func handleFullscreen(_ s: inout State, _ toggle: Toggle) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let metrics = s.metrics(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
@@ -2808,7 +2817,6 @@ public enum Engine {
         framedAt: Double? = nil,
         _ retarget: (inout Layout, ColumnLayout, LayoutMetrics, Double) -> Void
     ) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         guard let (monitor, metrics) = s.acting(),
               let focused = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: focused) else { return [] }
@@ -2902,7 +2910,6 @@ public enum Engine {
     /// desktop's — every display writes what its own phase entitles it to — but the wait it replaces is
     /// this one session's, and only scoped moves are waited on, park→park motion being invisible.
     private static func teleportBehindCover(_ s: inout State, on monitor: MonitorId) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         return placeTruthPlane(&s, replacingFor: monitor)
     }
 
@@ -3013,7 +3020,6 @@ public enum Engine {
     /// The layout's geometry as it stands right now, reconciled first — what an arrival is about to
     /// change. Empty with no display known, which is also the caller's signal that nothing can be placed.
     private static func strandedGeometry(_ s: inout State) -> [StructuralSnapshot] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         return actingSnapshot(s)
     }
 
@@ -3031,7 +3037,7 @@ public enum Engine {
                                       old: [StructuralSnapshot], width: PresetSize? = nil,
                                       keepingWidth: Bool = false,
                                       announcingFocus: Bool = true) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown, insertingAfter: anchor)
+        s.reconcileTiling(insertingAfter: anchor)
         let announce: [Effect] = announcingFocus ? [.focus(id)] : []
         // A window that didn't join a column has nothing to animate; ordinary placement still runs.
         guard s.layout.columnIndex(ofWindow: id) != nil else { return reassertTruthPlane(&s) + announce }
@@ -3082,7 +3088,7 @@ public enum Engine {
         // `Workspaces.reconcile` admits every newcomer to the *focused* strip, so an assignment is the
         // move `move-to-workspace` performs, from a column this window has held for one statement. It
         // is long enough to be given a width, which `move` then carries across.
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
+        s.reconcileTiling()
         seedWidth(&s, snapshot.id, to: width, keepingExisting: snapshot.wasAlreadyOpen)
         s.move(window: snapshot.id, to: destination,
                insertingAfter: s.workspaces[lastFocusOf: destination])
@@ -3105,9 +3111,11 @@ public enum Engine {
         guard let metrics = s.metrics(), metrics.nominalArea.width > 0,
               let index = s.layout.columnIndex(ofWindow: id),
               let width = s.world.windows[id]?.frame.width, width > 0 else { return }
-        // Against the nominal area, because that is the extent the proportion resolves back against.
-        let fraction = Swift.min(width / metrics.nominalArea.width, 1.0)
-        s.layout.setWidthOverride(.proportion(fraction), ofColumn: s.layout.columns[index].id)
+        // `proportion(of:)`, the inverse `resolve` is stated beside, so the window is asked for its own
+        // width back rather than one the gap term moved.
+        let fitted = Swift.min(width, metrics.nominalArea.width)
+        s.layout.setWidthOverride(metrics.widthExtent.proportion(of: fitted) ?? .fixed(fitted),
+                                  ofColumn: s.layout.columns[index].id)
     }
 
     /// Where focus lands when the window holding it leaves the strip: a surviving stackmate in the same
@@ -3137,7 +3145,6 @@ public enum Engine {
     ///   what turns "gone from `World`" into "gone from `Layout`".
     private static func departFromLayout(_ s: inout State, _ id: WindowId,
                                         _ leave: (inout State) -> Void) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
         // All three read *before* the removal: the column's id, to tell afterwards whether it died; its
         // index, so focus can land where the window was; and the geometry we are leaving.
         let index = s.layout.columnIndex(ofWindow: id)
@@ -3147,7 +3154,7 @@ public enum Engine {
         leave(&s)
         // The departed window's own lag is measured against a layout that no longer places it.
         s.motion.removeWindowAnimator(id)
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
+        s.reconcileTiling()
         // Before the geometry below is read, so a survivor left alone widens under the same cover the
         // departure opens rather than snapping after it.
         s.applySoloFullscreen(on: s.monitors.shown)
@@ -3434,7 +3441,7 @@ public enum Engine {
         guard let name = s.workspaces.workspace(of: id),
               let monitor = s.monitors.monitor(of: name), let metrics = s.metrics(of: monitor),
               approximatelyEqualScalar(actual.minX, requested.minX),
-              actual.minY < requested.minY - 0.5
+              actual.minY < requested.minY - Tolerance.placement
         else { return [] }
 
         // Measured against the lot's own bottom edge, which is the desktop's parking corner rather
@@ -3520,7 +3527,7 @@ public enum Engine {
     /// there is nothing on its glass to hide a write and its own teleport will read whatever this would
     /// have written. `placements()` carries the first two; `writeTruthPlane` holds back the third.
     private static func reassertTruthPlane(_ s: inout State) -> [Effect] {
-        s.workspaces.reconcile(tiledWindowIds: s.world.tiledWindowIds, onto: s.monitors.shown)
+        s.reconcileTiling()
         clampRestingViewports(&s)
         return placeTruthPlane(&s)
     }
@@ -3617,10 +3624,11 @@ public enum Engine {
             let held = !s.motion.mayPlace(on: monitor)
             for pin in metrics.pinFrames {
                 visible.insert(pin.window)
+                let frame = pin.frame.rounded()            // whole points, as `Layout.targetFrames` writes
                 guard !held,
-                      !isAlreadyPlaced(s.world, pin.window, at: pin.frame, question: nil) else { continue }
-                effects.append(.setFrame(pin.window, pin.frame))
-                s.world.noteWrite(pin.window, to: pin.frame)
+                      !isAlreadyPlaced(s.world, pin.window, at: frame, question: nil) else { continue }
+                effects.append(.setFrame(pin.window, frame))
+                s.world.noteWrite(pin.window, to: frame)
                 moved.append(pin.window)
             }
         }
@@ -3630,28 +3638,31 @@ public enum Engine {
         return (effects, moved)
     }
 
-    /// Frames within half a point on every edge are "already there" — a placement no-op, so sub-pixel
-    /// rounding drift between the layout math and observed truth does not re-emit sets.
-    private static func approximatelyEqual(_ a: Rect, _ b: Rect, tolerance: Double = 0.5) -> Bool {
-        abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
-        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    /// Frames within `Tolerance.placement` on every edge are "already there" — a placement no-op, and
+    /// the same threshold the executor reports a landing against.
+    private static func approximatelyEqual(_ a: Rect, _ b: Rect,
+                                           tolerance: Double = Tolerance.placement) -> Bool {
+        a.isClose(to: b, within: tolerance)
     }
 
     /// Whether one axis of an answer came back smaller than a request that was **not** the question —
     /// the recursion guard, per axis. The request being the question is what makes an answer a fact
     /// about the app rather than a fact about our own last concession to it.
     private static func shrankOffQuestion(_ actual: Double, requested: Double, question: Double) -> Bool {
-        actual < requested - 0.5 && !approximatelyEqualScalar(requested, question)
+        actual < requested - Tolerance.placement && !approximatelyEqualScalar(requested, question)
     }
 
-    /// Two sizes within half a point on both axes — the comparison a `SizeCorrection` is matched with.
-    private static func approximatelyEqualSize(_ a: Size, _ b: Size, tolerance: Double = 0.5) -> Bool {
-        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    /// Two sizes within `Tolerance.placement` on both axes — the comparison a `SizeCorrection` is matched
+    /// with.
+    private static func approximatelyEqualSize(_ a: Size, _ b: Size,
+                                               tolerance: Double = Tolerance.placement) -> Bool {
+        a.isClose(to: b, within: tolerance)
     }
 
-    /// Two scroll offsets within half a point are "the same" — the guard that keeps a reveal of an
-    /// already-in-view column a snap-place rather than a zero-distance transition.
-    private static func approximatelyEqualScalar(_ a: Double, _ b: Double, tolerance: Double = 0.5) -> Bool {
+    /// Two scroll offsets within `Tolerance.placement` are "the same" — the guard that keeps a reveal of
+    /// an already-in-view column a snap-place rather than a zero-distance transition.
+    private static func approximatelyEqualScalar(_ a: Double, _ b: Double,
+                                                 tolerance: Double = Tolerance.placement) -> Bool {
         abs(a - b) <= tolerance
     }
 }

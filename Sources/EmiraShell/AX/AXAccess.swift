@@ -246,7 +246,7 @@ public struct AXWindow: @unchecked Sendable {
         var accepted = setSize(rect.size)
         accepted = setPosition(rect.origin) && accepted
         guard let landed = frame else { return (accepted, nil) }
-        guard !sameFrame(landed, rect) else { return (accepted, landed) }
+        guard !landed.isClose(to: rect, within: Tolerance.landing) else { return (accepted, landed) }
         // One corrective pass, same order: the size write may have been clamped against the *old*
         // position and can succeed now. Bounded at one — an app that refuses twice is asserting a
         // constraint we are not entitled to override.
@@ -287,12 +287,6 @@ public struct AXWindow: @unchecked Sendable {
         guard let raw = copyAttribute(element, AXKey.closeButton),
               CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
         return performAction(raw as! AXUIElement, AXAction.press)
-    }
-
-    /// Only gates the corrective pass; the *reported* drift threshold is `AXExecutor.landingTolerance`.
-    private func sameFrame(_ a: Rect, _ b: Rect, tolerance: Double = 1) -> Bool {
-        abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
-        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
     }
 
     /// Not IPC — `AXUIElementGetPid` reads it out of the element — so it is free and cannot time out.

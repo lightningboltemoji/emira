@@ -464,6 +464,39 @@ import EmiraCore
         #expect(!clock.fire(), "a set that draws nothing has no desktop to wait for")
     }
 
+    /// **Under a cover a set is cut once and not watched.** The cover hides the scrim, and every re-read
+    /// waits on the cover's own commit each frame. The cut still happens, because the cover's stand-ins
+    /// draw the veils it decides. The watch comes once the cover lifts.
+    @Test func aCoveredSetIsCutOnceAndWatchedWhenTheCoverLifts() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        scrims.setCovered(true, on: Self.monitor)
+
+        Self.show(scrims, [Self.binding(1)])
+        #expect(stack.reads == 1)
+        #expect(scrims.veil(of: WindowId(1)) == 0.3)
+        #expect(!clock.fire(), "nothing is re-read under the cover")
+
+        scrims.setCovered(false, on: Self.monitor)
+        #expect(clock.fire(), "the lift is what the watch was waiting for")
+        #expect(stack.reads == 2)
+    }
+
+    /// A cover rising over a watch already in flight disowns it, for the same reason.
+    @Test func aRisingCoverDisownsAWatchInFlight() {
+        let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+        let read = stack.reads
+
+        scrims.setCovered(true, on: Self.monitor)
+        clock.fire()
+        #expect(stack.reads == read)
+        #expect(!clock.fire(), "and nothing is scheduled after it")
+    }
+
     /// A reading that *does* change keeps the watch alive, which is what carries a desktop still moving.
     @Test func aReadingThatChangesKeepsTheWatchAlive() {
         let scrimmed = Rect(x: 0, y: 0, width: 400, height: 400)

@@ -211,6 +211,9 @@ gestureTap.remove()
 // One `FocusIntent` too, for the same reason and on the other axis: the writer records the focus it
 // asks for and the watcher reads that record to tell our own echo from the user's Cmd-Tab.
 let focusIntent = FocusIntent(scheduler: DispatchScheduler())
+// And one `FrameWrites`, read on the way back in the same way: the executor marks the frames it is
+// writing, and the watcher drops the move reports those writes provoke.
+let frameWrites = FrameWrites()
 
 // One cache for the daemon's life: it outlives every cover, which is the whole of what it is for.
 let surfaceCache = SurfaceCache()
@@ -304,7 +307,7 @@ let stackProbe = CGStackProbe(registry: registry)
 let pinFence = PinFence(probe: stackProbe)
 let truth = AXExecutor(registry: registry,
                        writer: AXWindowWriter(client: axClient, intent: focusIntent),
-                       fence: pinFence)
+                       fence: pinFence, writes: frameWrites)
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this
@@ -465,6 +468,7 @@ let watcher = WorldWatcher(
     registry: registry,
     scheduler: DispatchScheduler(),
     intent: focusIntent,
+    writes: frameWrites,
     sink: runtime.sink,
     heartbeat: DispatchHeartbeat())
 

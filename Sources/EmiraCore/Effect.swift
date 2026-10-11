@@ -69,6 +69,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// it was filmed with. Zero for a window the world has lost, which no kept still matches.
     case capture(MonitorId, WindowId, size: Size)
 
+    /// `win` is at rest on `monitor` at `size` with that display's cover just gone: keep a still of it at
+    /// that size, so the next cover can stand in for it (`CoverMode.immediate`). Owes no ack and gates
+    /// nothing; a still already kept at that size is enough, and is most of them.
+    case keepStill(MonitorId, WindowId, size: Size)
+
     // Transition lifecycle — the layered reconstruction (Compositor)
 
     /// Open a transition session on one display: build the layered reconstruction and raise it. Carries

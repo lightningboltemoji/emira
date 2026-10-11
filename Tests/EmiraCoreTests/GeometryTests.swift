@@ -178,4 +178,17 @@ import Testing
         let decoded = try JSONDecoder().decode(Rect.self, from: data)
         #expect(decoded == original)
     }
+
+    /// What AX can store: origin and size each to the nearest point, so no size moves by more than half
+    /// of one — which is what keeps a written frame within `Tolerance.placement` of the layout's own.
+    @Test func roundingTakesOriginAndSizeSeparately() {
+        let rounded = Rect(x: -40.476, y: 8.5, width: 1310.476, height: 600.4).rounded()
+        #expect(rounded == Rect(x: -40, y: 9, width: 1310, height: 600))
+    }
+
+    @Test func closenessIsPerEdgeAndInclusive() {
+        let a = Rect(x: 10, y: 10, width: 100, height: 100)
+        #expect(a.isClose(to: Rect(x: 10.5, y: 9.5, width: 100.5, height: 99.5), within: 0.5))
+        #expect(!a.isClose(to: Rect(x: 11, y: 10, width: 100, height: 100), within: 0.5))
+    }
 }

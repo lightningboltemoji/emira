@@ -48,6 +48,11 @@ public struct Size: Sendable, Equatable, Codable, CustomStringConvertible {
 
     public var isEmpty: Bool { width <= 0 || height <= 0 }
 
+    /// Within `tolerance` of `other` on both axes.
+    public func isClose(to other: Size, within tolerance: Double) -> Bool {
+        abs(width - other.width) <= tolerance && abs(height - other.height) <= tolerance
+    }
+
     public var description: String { "\(width)×\(height)" }
 }
 
@@ -151,7 +156,43 @@ public struct Rect: Sendable, Equatable, Codable, CustomStringConvertible {
              height: height - insets.top - insets.bottom)
     }
 
+    /// Origin and size each rounded to whole points — what AX stores, so the only frame a write can land
+    /// on exactly. Rounded separately rather than by edge, so no size moves more than half a point.
+    public func rounded() -> Rect {
+        Rect(x: minX.rounded(), y: minY.rounded(), width: width.rounded(), height: height.rounded())
+    }
+
+    /// Within `tolerance` of `other` on every edge.
+    public func isClose(to other: Rect, within tolerance: Double) -> Bool {
+        abs(minX - other.minX) <= tolerance && abs(minY - other.minY) <= tolerance &&
+            abs(width - other.width) <= tolerance && abs(height - other.height) <= tolerance
+    }
+
     public var description: String { "Rect(\(origin.x), \(origin.y), \(size.width)×\(size.height))" }
+}
+
+/// How far apart two geometries may be and still be one, by what is being compared. Kept together so the
+/// relations between them are stated rather than latent: a check that must agree with another reads the
+/// same constant, and one that must clear another says so beside it.
+public enum Tolerance {
+    /// A placement and its landing. Frames are written whole (`Rect.rounded()`), so a window a whole point
+    /// off is its app's answer and anything less is arithmetic. The reducer's diff and the executor's
+    /// landing report both read this: two thresholds would re-write a window landing between them.
+    public static let placement = 0.5
+
+    /// How far a landing may sit from its request before the writer re-sets it once (`AXWindow.place`).
+    /// A clamp worth a second size → position pass is more than a point; within one is an app's own
+    /// rounding, which a second pass would only repeat.
+    public static let landing = 1.0
+
+    /// Two subsystems describing one window's frame — an AX read against the window list, or a departing
+    /// tab against its successor (`WindowIdentity`). Their rounding and nothing wider: a parked nub's
+    /// stagger has to clear it (`ParkingLot`), or two parked windows of one app bind ambiguously.
+    public static let identity = 2.0
+
+    /// A kept still's size against the window it would stand in for (`SurfaceCache`): the same rounding
+    /// as `identity`, between what AX answered and what ScreenCaptureKit filmed.
+    public static let still = identity
 }
 
 /// Per-edge insets: struts (asymmetric, e.g. the menu bar) and gaps (uniform). `top` is the menu edge.

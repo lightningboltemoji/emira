@@ -194,8 +194,8 @@ import EmiraCore
 
     @Test("sub-point rounding is not drift and is not reported")
     func subPointRoundingIsNotDrift() {
-        // The layout engine asks for `x = 40.5`; AX stores integers. That disagreement is arithmetic,
-        // not an opinion, and reporting it would have the core chasing half-points forever.
+        // AX stores integers, so half a point is arithmetic rather than an opinion, and reporting it
+        // would have the core chasing half-points forever.
         let registry = WindowRegistry()
         let id = Self.adopt(registry, pid: 100, number: 1)
         let writer = ScriptedWriter()
@@ -211,6 +211,55 @@ import EmiraCore
                      feedback: events.sink)
 
         #expect(events.events == [.axLanded(id)])
+    }
+
+    @Test("a write is on the echo record from dispatch until its landing, which stands as the window's frame")
+    func aWriteIsOnTheRecordUntilItLands() {
+        let registry = WindowRegistry()
+        let id = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.defersCompletion = true
+        let writes = FrameWrites()
+
+        AXExecutor(registry: registry, writer: writer, writes: writes)
+            .execute([.setFrame(id, Self.rect(40))], feedback: Recorder().sink)
+        #expect(writes.isWriting(id))
+
+        writer.flush()
+        #expect(!writes.isWriting(id))
+        // The echo that would have carried this to the registry was dropped, so the read-back does.
+        #expect(registry.record(id)?.frame == Self.rect(40))
+    }
+
+    @Test("two writes out to one window keep it on the record until both are back")
+    func overlappingWritesAreCounted() {
+        let writes = FrameWrites()
+        writes.begin([WindowId(1)])
+        writes.begin([WindowId(1)])
+        writes.end([WindowId(1)])
+        #expect(writes.isWriting(WindowId(1)))
+        writes.end([WindowId(1)])
+        #expect(!writes.isWriting(WindowId(1)))
+    }
+
+    @Test("a whole point off is the app's answer, at the threshold the reducer diffs against")
+    func aWholePointOffIsReported() {
+        // The core writes whole points, so a landing a point away is not rounding. Staying silent here
+        // while the reducer's own diff says "not placed" re-writes the identical frame on every pass.
+        let registry = WindowRegistry()
+        let id = Self.adopt(registry, pid: 100, number: 1)
+        let landed = Rect(x: 39, y: 0, width: 200, height: 100)
+        let writer = ScriptedWriter()
+        writer.landing = { WindowLanding(id: $0.record.id, accepted: true, frame: landed) }
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.setFrame(id, Self.rect(40))], feedback: events.sink)
+
+        #expect(events.events == [
+            .placementCorrected(id, requested: Self.rect(40), actual: landed),
+            .axLanded(id),
+        ])
     }
 
     @Test("a write the app refused is an ax failure, which is a different fact from landing elsewhere")

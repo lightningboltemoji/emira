@@ -33,13 +33,14 @@ import EmiraMotion
         // available the same arrival animates — see `GhostWindowTests`.)
         let snap = EngineFix.laddered(Config(transitionMode: .off))
         let (s, fx) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(EngineFix.snapshot(1)))
-        // One column, one window, focused, placed to a ⅓-width tile at the working-area origin.
+        // One column, one window, focused, placed to a ⅓-width tile at the working-area origin, in whole
+        // points.
         #expect(s.world.focusedWindow == WindowId(1))
         #expect(s.layout.columns.count == 1)
         #expect(fx.contains(.focus(WindowId(1))))
         let placed = EngineFix.placement(of: WindowId(1), in: fx)
         #expect(placed != nil)
-        #expect(EngineFix.approx(placed!, Rect(x: 0, y: 0, width: 1000.0 / 3.0, height: 800)))
+        #expect(placed == Rect(x: 0, y: 0, width: 1000.0 / 3.0, height: 800).rounded())
     }
 
     @Test func nonTilingWindowIsRecordedButNotPlacedOrFocused() {
@@ -75,7 +76,7 @@ import EmiraMotion
         let (_, fx) = Engine.reduce(s, .dragEnded)
         let placed = EngineFix.placement(of: WindowId(1), in: fx)
         #expect(placed != nil)
-        #expect(EngineFix.approx(placed!, Rect(x: 0, y: 0, width: 1000.0 / 3.0, height: 800)))
+        #expect(placed == Rect(x: 0, y: 0, width: 1000.0 / 3.0, height: 800).rounded())
     }
 
     /// **Every click is a mouse-up**, so `dragEnded` routinely lands inside the reveal that same click
@@ -222,6 +223,18 @@ import EmiraMotion
         let placed = EngineFix.placement(of: WindowId(1), in: fx)
         #expect(placed != nil)
         #expect(EngineFix.approx(placed!, Rect(x: 0, y: 0, width: 640, height: 800)))
+    }
+
+    /// The gap is part of what a proportion is a share of, so the seed is that share and not the bare
+    /// ratio of widths — or the window would be asked to give up a few points on every placement.
+    @Test func anAdoptedWidthIsTheWindowsOwnAcrossAGap() {
+        var snap = EngineFix.laddered(Config(transitionMode: .off))
+        snap.columnGap = 20
+        let adopted = EngineFix.snapshot(1, frame: Rect(x: 120, y: 90, width: 640, height: 500),
+                                         wasAlreadyOpen: true)
+        let (s, _) = Engine.reduce(EngineFix.booted(config: snap), .windowCreated(adopted))
+
+        #expect(EngineFix.approxScalar(EngineFix.width(s), 640, tol: 1e-9))
     }
 
     /// The one correction we do make: wider than the viewport is not a state the strip reaches on its

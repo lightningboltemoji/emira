@@ -367,4 +367,34 @@ import EmiraMotion
         #expect(afx.isEmpty)
     }
 
+    // Stills for the next cover
+
+    /// A head batch films each window at its size *before* the transition, so one the transition resized
+    /// has no stand-in next time. Once the cover is down every window at rest on that display is named at
+    /// the size it rests at, and the shell films only those whose kept still no longer fits.
+    @Test func theCoverComingDownNamesTheSizesWindowsRestAt() throws {
+        let config = EngineFix.laddered(Config(coverMode: .immediate))
+        let (built, builtFx) = EngineFix.run(EngineFix.booted(config: config),
+                                             (1...2).map { .windowCreated(EngineFix.snapshot($0)) })
+        let (resized, fx) = EngineFix.run(EngineFix.settle(built, builtFx), [.command(.cycleWidth)])
+        let settled = EngineFix.settle(resized, fx)
+        let focused = try #require(settled.world.focusedWindow)
+
+        let (_, out) = Engine.reduce(settled, .crossfadeDone(MonitorId(1)))
+        let kept = out.compactMap { effect -> (WindowId, Size)? in
+            if case .keepStill(_, let id, let size) = effect { (id, size) } else { nil }
+        }
+        let size = try #require(kept.first { $0.0 == focused }?.1)
+        #expect(size == settled.world.windows[focused]?.frame.size)
+    }
+
+    /// Only `immediate` stands in by size, so only `immediate` asks.
+    @Test func anExactCoverKeepsNothingOnTheWayDown() {
+        let config = EngineFix.laddered(Config())
+        let (built, builtFx) = EngineFix.run(EngineFix.booted(config: config),
+                                             (1...2).map { .windowCreated(EngineFix.snapshot($0)) })
+        let (resized, fx) = EngineFix.run(EngineFix.settle(built, builtFx), [.command(.cycleWidth)])
+        let (_, out) = Engine.reduce(EngineFix.settle(resized, fx), .crossfadeDone(MonitorId(1)))
+        #expect(!out.contains { if case .keepStill = $0 { true } else { false } })
+    }
 }

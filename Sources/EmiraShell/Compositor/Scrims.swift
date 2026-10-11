@@ -59,6 +59,10 @@ public protocol ScrimPlane: AnyObject {
     /// names the windows whose reported place the server may not have caught up with.
     func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
                    moving: Set<WindowId>)
+
+    /// Whether a cover stands over `monitor`, from its raise until its dismissal begins. A covered scrim
+    /// is out of sight, and every re-read of the window server waits on that cover's commit each frame.
+    func setCovered(_ covered: Bool, on monitor: MonitorId)
 }
 
 /// The plane on a machine that has none — no Screen Recording grant, or a test that does not care.
@@ -69,6 +73,7 @@ public final class NoScrims: ScrimPlane {
     public init() {}
     public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
                           moving: Set<WindowId>) {}
+    public func setCovered(_ covered: Bool, on monitor: MonitorId) {}
 }
 
 /// One on-screen window as the window server reports it, front to back.
@@ -202,6 +207,8 @@ public final class Scrims: ScrimPlane {
     private var naming: [MonitorId: Set<WindowId>] = [:]
     /// Bumped by every announcement, so an arrival watch an announcement has replaced owns nothing.
     private var arrivalGeneration = 0
+    /// The displays a cover stands over. A set there is cut once and watched only when the cover lifts.
+    private var covered: Set<MonitorId> = []
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
@@ -245,6 +252,17 @@ public final class Scrims: ScrimPlane {
         // glass until `setDesktop` gives it one, so the film lands behind a mask already in place.
         if photographs[monitor] == nil, !bindings.isEmpty { refilmIfStale(monitor) }
         apply(bindings, on: monitor, change: change)
+    }
+
+    public func setCovered(_ isCovered: Bool, on monitor: MonitorId) {
+        guard isCovered else {
+            covered.remove(monitor)
+            // What moved under the cover is settled by now, or settling; one watch finds out which.
+            if current[monitor]?.isEmpty == false { watch(monitor) }
+            return
+        }
+        covered.insert(monitor)
+        settleGeneration[monitor, default: 0] &+= 1        // a watch in flight would read every frame
     }
 
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
@@ -376,7 +394,8 @@ public final class Scrims: ScrimPlane {
 
     private func apply(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
         paint(monitor, change: change)
-        guard !bindings.isEmpty else { return }
+        // Cut once even under a cover: its stand-ins draw the veils this cut decides (`veil(of:)`).
+        guard !bindings.isEmpty, !covered.contains(monitor) else { return }
         watch(monitor)
     }
 

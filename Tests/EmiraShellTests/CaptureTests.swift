@@ -148,7 +148,7 @@ import EmiraCore
     }
 
     static func service(_ ids: [UInt64], mode: CoverMode = .exact,
-                        cache: SurfaceCache = SurfaceCache())
+                        cache: SurfaceCache = SurfaceCache(reducer: .inline))
         -> (CaptureService, ManualCapturer, ManualScheduler, EventLog) {
         let capturer = ManualCapturer()
         let scheduler = ManualScheduler()
@@ -232,7 +232,8 @@ import EmiraCore
 
         capturer.answer(with: [WindowId(2)], batch: 1)   // arrives after we gave up
         #expect(log.capturedIds == [WindowId(1), WindowId(2)])   // still once
-        #expect(service.surface(for: WindowId(2)) == nil)        // and its late image is not adopted
+        // The deadline settles acks, not entitlement: the cover is still up, so the still is its to paint.
+        #expect(service.surface(for: WindowId(2)) != nil)
     }
 
     @Test func theDeadlineAfterTheCapturerAnsweredAcksNothingFurther() {
@@ -282,7 +283,6 @@ import EmiraCore
 
         capturer.answer(with: [WindowId(2)], batch: 1)          // …and answers anyway
         #expect(log.capturedIds == [WindowId(1), WindowId(2)])  // still once each
-        #expect(service.surface(for: WindowId(2)) == nil)       // its late image is not adopted
     }
 
     // The cover session: one base, one lifetime
@@ -633,7 +633,7 @@ import EmiraCore
     /// so its first batch is 1. A fixture film is older than anything the service takes, and a stand-in
     /// that did not sort below its own refresh would never be overtaken by it.
     static func warm(_ id: WindowId, _ size: Size) -> SurfaceCache {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Capturer.surface(id, size, pixels: 40), mintedAt: 0, for: id, pinnedBy: nil)
         return cache
     }
@@ -761,6 +761,83 @@ import EmiraCore
         capturer.send(WindowId(1), size: Self.size, batch: 0)   // …and the old batch answers at last
         #expect(Self.refreshed(log).isEmpty)
         #expect(service.surface(for: WindowId(1)) == nil)
+    }
+
+    /// The window server films one still at a time, so the order asked is the order they land. The gate
+    /// waits on the windows nothing stands in for; a stand-in's own still is a refresh, and queues behind.
+    @Test func theWindowsTheGateWaitsOnAreFilmedFirst() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        let (service, capturer, _, log) = CaptureServiceTests.service([1, 2, 3], mode: .immediate,
+                                                                     cache: cache)
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size),
+                         CaptureTarget(id: WindowId(2), size: Self.size),
+                         CaptureTarget(id: WindowId(3), size: Self.size)], feedback: log.sink)
+
+        #expect(capturer.requests.first?.map(\.id) == [WindowId(2), WindowId(3), WindowId(1)])
+    }
+
+    /// The deadline settles a batch's acks, not its refreshes. A stand-in on a raised cover is still
+    /// standing when its own still lands late, and that still is what sharpens it.
+    @Test func aStandInOvertakenAfterTheDeadlineIsStillRepainted() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        let (service, capturer, scheduler, log) = CaptureServiceTests.service([1, 2], mode: .immediate,
+                                                                             cache: cache)
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size),
+                         CaptureTarget(id: WindowId(2), size: Self.size)], feedback: log.sink)
+        capturer.sendBase()
+        scheduler.fire()                                     // 2 never landed; the deadline acks it
+        #expect(log.capturedIds == [WindowId(1), WindowId(2)])
+
+        capturer.send(WindowId(1), size: Self.size)          // …and 1's own still lands after it
+        #expect(Self.refreshed(log) == [WindowId(1)])
+        #expect(log.capturedIds.count == 2, "still one ack each")
+    }
+
+    /// …but only while the cover is up. A still landing during the cross-fade has no layer to sharpen
+    /// that is worth the swap, and one pinned then would outlive the `discard` meant to release it.
+    @Test func aLateStillAfterTheCoverClosedAsksForNoRepaint() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        let (service, capturer, scheduler, log) = CaptureServiceTests.service([1], mode: .immediate,
+                                                                             cache: cache)
+        service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
+        capturer.sendBase()
+        scheduler.fire()
+        service.discard(service.closeCover())
+
+        capturer.send(WindowId(1), size: Self.size, pixels: 40)
+        #expect(Self.refreshed(log).isEmpty)
+        #expect(service.surface(for: WindowId(1)) == nil, "kept, but no cover may paint it")
+    }
+
+    // Keeping a still for the next cover
+
+    /// A window the transition resized is filmed at the size it rests at, unpinned — nothing is showing
+    /// it — so the next cover finds a stand-in that fits. One that kept its size costs nothing.
+    @Test func aWindowRestingAtANewSizeIsFilmedForTheNextCover() {
+        let cache = Self.warm(WindowId(1), Self.size)
+        let (service, capturer, _, _) = CaptureServiceTests.service([1, 2], mode: .immediate, cache: cache)
+        cache.record(Capturer.surface(WindowId(2), Self.size, pixels: 40), mintedAt: 0, for: WindowId(2),
+                     pinnedBy: nil)
+
+        service.keep(CaptureTarget(id: WindowId(1), size: Self.size), on: CaptureServiceTests.display)
+        #expect(capturer.requests.isEmpty, "a still that fits is enough")
+
+        let wider = Size(width: 1000, height: 600)
+        service.keep(CaptureTarget(id: WindowId(2), size: wider), on: CaptureServiceTests.display)
+        #expect(capturer.requests.map { $0.map(\.id) } == [[WindowId(2)]])
+        #expect(capturer.bases == [nil], "a film for no cover takes no base")
+
+        capturer.send(WindowId(2), size: wider, pixels: 40)
+        capturer.close()
+        #expect(cache.surface(for: WindowId(2), at: wider) != nil)
+        #expect(service.surface(for: WindowId(2)) == nil, "kept, and painted by no cover")
+    }
+
+    /// Nothing wants a still kept, so nothing is filmed.
+    @Test func aStoreKeepingNoStillsFilmsNothing() {
+        let (service, capturer, _, _) = CaptureServiceTests.service([1], mode: .exact)
+        service.keep(CaptureTarget(id: WindowId(1), size: Self.size), on: CaptureServiceTests.display)
+        #expect(capturer.requests.isEmpty)
     }
 
     // When a kept still may not stand in
@@ -928,7 +1005,7 @@ import EmiraCore
         /// Two covers film the window, at 80 pixels and then 40, and a third raises over what they
         /// left. A store one film behind answers 20 where 10 is right.
         func standIn(fadingLate: Bool) -> Int? {
-            let cache = SurfaceCache(keepsStills: true)
+            let cache = SurfaceCache(keepsStills: true, reducer: .inline)
             let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
                                                                           cache: cache)
             var fading: CoverToken?
@@ -957,7 +1034,7 @@ import EmiraCore
     /// while the first display is still showing it.
     @Test func aStandInDoesNotWriteTheStore() {
         let left = MonitorId(1), right = MonitorId(2)
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         let a = Capturer(), b = Capturer(), log = Log()
         let service = CaptureService(registry: CaptureServiceTests.registry([1]),
                                      capturers: [(left, a), (right, b)],
@@ -986,7 +1063,7 @@ import EmiraCore
     /// paint it — the cover it belonged to has been resolved without it — but forgetting it costs the
     /// next transition a capture it need not pay.
     @Test func aPieceArrivingAfterItsBatchIsStillAPhotograph() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         let (service, capturer, scheduler, log) = CaptureServiceTests.service([1], mode: .immediate,
                                                                              cache: cache)
         service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
@@ -1001,7 +1078,7 @@ import EmiraCore
     /// The same for a piece whose cover was superseded while it was in flight. Its pixels are somebody
     /// else's desktop *to paint*, and a perfectly good photograph of the window to keep.
     @Test func aPieceArrivingAfterItsCoverWasSupersededIsStillAPhotograph() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         let (service, capturer, _, log) = CaptureServiceTests.service([1, 2], mode: .immediate,
                                                                      cache: cache)
         service.capture([CaptureTarget(id: WindowId(1), size: Self.size)], feedback: log.sink)
@@ -1022,7 +1099,7 @@ import EmiraCore
     /// `.addLayers` reads this store *at* the raise, so the layer would be built from the window as it
     /// was a transition ago and stretched into the geometry it has now.
     @Test func aSupersededFilmDoesNotReplaceTheOneTheCoverIsShowing() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         let (service, capturer, _, log) = CaptureServiceTests.service([1], mode: .immediate,
                                                                      cache: cache)
         // A cover opens and its capturer goes slow: the film of the window is still out.
@@ -1080,11 +1157,77 @@ import EmiraCore
                                cornerRadius: radius, isWhole: isWhole)
     }
 
+    // The reduction lands later
+
+    /// A reducer that answers when told to, so a test can hold a reduction in flight.
+    @MainActor final class ManualReducer {
+        private var pending: [(CapturedSurface, @MainActor @Sendable (CapturedSurface?) -> Void)] = []
+        var reducer: Reducer { Reducer { [self] surface, done in pending.append((surface, done)) } }
+        var inFlight: Int { pending.count }
+
+        func land() {
+            let due = pending
+            pending.removeAll()
+            for (surface, done) in due { done(SurfaceCache.reduced(surface)) }
+        }
+    }
+
+    /// The release is the entitlement and is synchronous; the reduction is pixels and is not. Between the
+    /// two the store serves the full photograph, and the budget does not count it.
+    @Test func aReleaseIsImmediateAndItsReductionLandsLater() {
+        let manual = ManualReducer()
+        let cache = SurfaceCache(keepsStills: true, reducer: manual.reducer)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
+
+        cache.unpin(MonitorId(1))
+        #expect(cache.pinnedSurface(for: WindowId(1)) == nil)           // released at once
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 400)  // …and still whole
+        #expect(cache.byteCount == 0)
+        #expect(manual.inFlight == 1)
+
+        manual.land()
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 100)
+        #expect(cache.byteCount > 0)
+    }
+
+    /// A reduction is of one film. A newer one recorded while it was in flight — released too, so its
+    /// own reduction is behind it — is not overwritten by a shrunken copy of the one it replaced.
+    @Test func aReductionIsTakenOnlyByTheFilmItWasMadeFrom() {
+        let manual = ManualReducer()
+        let cache = SurfaceCache(keepsStills: true, reducer: manual.reducer)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
+        cache.unpin(MonitorId(1))
+
+        cache.record(Self.surface(1, width: 800, height: 600), mintedAt: 2, for: WindowId(1),
+                     pinnedBy: nil)
+        #expect(manual.inFlight == 2)
+        manual.land()                                   // the older reduction lands first
+
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 200)
+    }
+
+    /// A cover that stands in with the photograph before its reduction lands is showing it at full size,
+    /// so the reduction is moot — and the next release reduces it once, not twice.
+    @Test func aPhotographPinnedAgainBeforeItsReductionLandsStaysWhole() {
+        let manual = ManualReducer()
+        let cache = SurfaceCache(keepsStills: true, reducer: manual.reducer)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
+        cache.unpin(MonitorId(1))
+
+        cache.pin(WindowId(1), to: MonitorId(1))
+        manual.land()
+        #expect(cache.pinnedSurface(for: WindowId(1))?.image.width == 400)
+
+        cache.unpin(MonitorId(1))
+        manual.land()
+        #expect(cache.anySurface(for: WindowId(1))?.image.width == 100)
+    }
+
     // Who wants a still kept
 
     /// A cache holding one photograph of `id` filmed at `size` that no cover is showing.
     static func kept(_ id: WindowId, at size: Size) -> SurfaceCache {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Capturer.surface(id, size, pixels: 40), mintedAt: 0, for: id, pinnedBy: nil)
         return cache
     }
@@ -1095,7 +1238,7 @@ import EmiraCore
     /// cover to let go forgets the photograph instead of reducing it.
     @Test func aCoverKeepsItsPhotographOnlyWhenSomethingWantsIt() {
         func kept(_ keepsStills: Bool) -> Int {
-            let cache = SurfaceCache(keepsStills: keepsStills)
+            let cache = SurfaceCache(keepsStills: keepsStills, reducer: .inline)
             let (service, capturer, _, log) = CaptureServiceTests.service([1], cache: cache)
             service.capture(windows: [WindowId(1)], feedback: log.sink)
             capturer.sendBase()
@@ -1142,7 +1285,7 @@ import EmiraCore
     /// A window that only moved is showing the pixels it was filmed with, and the kept still's own
     /// origin is stale by construction — the caller places every layer from the core's geometry.
     @Test func positionIsNotPartOfTheMatch() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         let filmed = Capturer.surface(WindowId(1), Size(width: 800, height: 600), pixels: 40)
         cache.record(CapturedSurface(image: filmed.image,
                                      frame: Rect(x: 4000, y: 12, width: 800, height: 600)),
@@ -1188,7 +1331,7 @@ import EmiraCore
     @Test func theOldestStillsAreDroppedAtTheBudget() throws {
         let one = try #require(SurfaceCache.reduced(Self.surface(1)))
         let cache = SurfaceCache(budget: 2 * one.image.height * one.image.bytesPerRow,
-                                 keepsStills: true)
+                                 keepsStills: true, reducer: .inline)
 
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(2), mintedAt: 2, for: WindowId(2), pinnedBy: nil)
@@ -1203,7 +1346,7 @@ import EmiraCore
 
     /// Re-filming a window replaces its photograph rather than adding a second, and its bytes with it.
     @Test func keepingAWindowTwiceDoesNotDoubleCountIt() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
         let after = cache.byteCount
 
@@ -1218,7 +1361,7 @@ import EmiraCore
     @Test func evictionSkipsThePhotographsACoverIsShowing() throws {
         let one = try #require(SurfaceCache.reduced(Self.surface(1)))
         let budget = one.image.height * one.image.bytesPerRow
-        let cache = SurfaceCache(budget: budget, keepsStills: true)
+        let cache = SurfaceCache(budget: budget, keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))  // a cover's own
 
         for id in UInt64(2)...4 {
@@ -1236,7 +1379,7 @@ import EmiraCore
     /// newer of the two whichever way round they land.
     @Test func theOlderOfTwoLateFilmsLosesWhicheverOrderTheyLandIn() {
         func held(newerFirst: Bool) -> Double? {
-            let cache = SurfaceCache(keepsStills: true)
+            let cache = SurfaceCache(keepsStills: true, reducer: .inline)
             let older = (Self.surface(1, width: 400, height: 300), 7)
             let newer = (Self.surface(1, width: 800, height: 600), 9)
             for (surface, mint) in newerFirst ? [newer, older] : [older, newer] {
@@ -1253,7 +1396,7 @@ import EmiraCore
     /// that asked for a window and was answered late may paint what the store holds — a *better*
     /// photograph than the one it arrived with — so the pin lands even where the pixels do not.
     @Test func anOvertakenFilmStillRecordsItsEntitlement() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1, width: 800, height: 600), mintedAt: 9, for: WindowId(1),
                      pinnedBy: nil)
         #expect(cache.pinnedSurface(for: WindowId(1)) == nil)     // nothing is showing it yet
@@ -1269,7 +1412,7 @@ import EmiraCore
     /// viewport films each of them whole on the transition that leaves it, and holed on the one that
     /// returns — so the held photograph is the complete one exactly when the fresh film is not.
     @Test func aHoledFilmLosesToAWholeOneTheSameSize() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
 
         let took = cache.record(Self.surface(1, isWhole: false), mintedAt: 2, for: WindowId(1),
@@ -1283,7 +1426,7 @@ import EmiraCore
     /// could stand in for nothing — and holding it over a holed film of the *right* size would leave the
     /// cover with neither. The resize is the case: an app re-laid out while it hung off the display.
     @Test func aHoledFilmOfANewSizeIsTakenAnyway() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1, width: 400, height: 300), mintedAt: 1, for: WindowId(1),
                      pinnedBy: nil)
 
@@ -1298,7 +1441,7 @@ import EmiraCore
     /// holed film over a holed one. A hole is not a reason to hold a photograph that is older *and* no
     /// better, and a cover with no photograph at all shows the base through where the window was.
     @Test func aHoledFilmIsTakenWithNothingBetterHeld() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
 
         #expect(cache.record(Self.surface(1, isWhole: false), mintedAt: 1, for: WindowId(1),
                              pinnedBy: nil))
@@ -1313,7 +1456,7 @@ import EmiraCore
     /// invariant, over the other way a film can lose. A cover that asked for this window may paint what
     /// the store holds, which is the better photograph of the two.
     @Test func aHoledFilmStillRecordsItsEntitlement() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
         #expect(cache.pinnedSurface(for: WindowId(1)) == nil)     // nothing is showing it yet
 
@@ -1335,7 +1478,7 @@ import EmiraCore
     /// The scrim rounds a see-through window at rest, when no photograph need be left: with nothing
     /// keeping stills, the last cover to let one go forgets it, and the radius measured off it stays.
     @Test func aRadiusOutlivesThePhotographItWasMeasuredOff() {
-        let cache = SurfaceCache(keepsStills: false)
+        let cache = SurfaceCache(keepsStills: false, reducer: .inline)
         cache.record(Self.surface(1, radius: 17), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
         cache.unpin(MonitorId(1))
 
@@ -1347,7 +1490,7 @@ import EmiraCore
     /// A film whose pixels could not say leaves the last answer standing, and an overtaken one does not
     /// replace a newer one — recency is the radius's own, because its photograph may be gone.
     @Test func aRadiusIsReplacedOnlyByALaterMeasurement() {
-        let cache = SurfaceCache(keepsStills: false)
+        let cache = SurfaceCache(keepsStills: false, reducer: .inline)
         cache.record(Self.surface(1, radius: 17), mintedAt: 9, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(1, radius: nil), mintedAt: 10, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(1, radius: 12), mintedAt: 7, for: WindowId(1), pinnedBy: nil)
@@ -1360,7 +1503,7 @@ import EmiraCore
     /// A display change drops the photographs, whose freshness was a size on the old geometry. A radius
     /// is in points and belongs to the window, so it stays.
     @Test func clearingDropsEverythingNoCoverIsShowing() {
-        let cache = SurfaceCache(keepsStills: true)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
         cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(2), mintedAt: 2, for: WindowId(2), pinnedBy: MonitorId(1))
         cache.removeAll()

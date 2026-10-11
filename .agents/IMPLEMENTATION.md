@@ -287,6 +287,7 @@ command                                            (m = the display it acts on)
                            └─ Event.tick(dt) × N  →  Effect.setLayerFrame
                                 └─ m's animators settled AND every scoped axLanded
                                      └─ Effect.endTransition(m) → Event.crossfadeDone(m)
+                                          └─ Effect.keepStill(m, win, size:) per resting win  (immediate)
 ```
 
 **Which calls carry a display and which do not is the whole of the vocabulary change.** A cover belongs to one
@@ -360,9 +361,11 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
   `[min, max + w]`, so `Layout.sweptWindowIds` needs no new geometry.
 - **It carries a shoulder** — the column just outside each end — because a retarget's new stills take a capture
   round trip and nothing holds the layers back while they are out. Not free: the window server serializes
-  screenshot requests, so every shouldered window adds ~25 ms to the head of every scroll, whatever its size.
-  That number is the reason `SCKCapturer` takes its batch one capture at a time rather than through a task
-  group — overlapping requests does not hide the serialization, it inflates each request to ~41 ms.
+  screenshot requests, so every shouldered window adds ~50 ms of capture queue to every scroll on a 5K display.
+  That serialization is the reason `SCKCapturer` takes its batch one capture at a time rather than through a
+  task group — overlapping requests does not hide it, it inflates each request — and the reason the batch is
+  filmed in an order `CaptureService` chooses: the windows the gate waits on first, the stand-ins' refreshes
+  behind them.
 - **A cover's layer order is the desktop's, not the layout's.** `Engine.scopeUnion` builds a session's
   window list bottom→top, and inside one workspace it takes layout order for a `strip` — nothing there
   overlaps, so any order produces the same pixels — and `State.stackingOrder` for a `stack`, whose tiles do.
@@ -447,10 +450,18 @@ that went stale under the cover, never geometry. The numbers live in `Compositin
 
 `CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept photograph fits is acked
 at once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one
-layer's _contents_ that settles no gate. `SurfaceCache` holds **one photograph per window** — the best one
+layer's _contents_ that settles no gate — and so is owed for as long as the cover is up, the batch deadline
+having settled the acks and nothing else. `SurfaceCache` holds **one photograph per window** — the best one
 taken of it, whether or not a cover is showing it — and matches on **size alone**, which is freshness only while
 the geometry a size was computed against holds, so a display change drops the lot
 (`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
+
+A head batch films a window at the size it has *before* the transition, so a window the transition resizes —
+`cycle-width`, `grow`, a column widening on a departure, every arrival — would have no stand-in for the next
+one. So once a cover is down, the core names every window resting on that display at its size
+(`Effect.keepStill`, at `crossfadeDone` unless a new cover has opened there), and the store films the ones
+whose kept still no longer fits (`CaptureService.keep`). Most fit, so most transitions film nothing; the
+capture plane is idle at that moment, and a film for no cover takes no base and owes no ack.
 
 The best one is the newest, except where the newest has a hole in it. An app that rasterizes what is on
 screen leaves a still transparent where the window hung off the display, and a stand-in built from one
@@ -470,11 +481,14 @@ Capture resolution is an entitlement rather than a lifetime. A live cover _pins_
 the last release reduces one to quarter scale in place rather than dropping it, and the reduction is both the
 memory budget (16× at rest) and the disclosure that keeps a photograph filmed minutes ago from passing for the
 window as it is now. Three things follow. A photograph outlives the batch that produced it, so a piece arriving
-after its ack deadline or after its cover was superseded is still recorded — those guards are about the right to
-_paint_ pixels, never a reason to forget them. The release is **synchronous**, because the head batch of the
-next transition releases the outgoing cover a few lines before it reads the store for its own stand-ins: a
-demotion landing a turn later would hand a keypress inside the cross-fade the film before last. And every
-photograph carries the batch that took it, because those recordings reach the store in _arrival_ order and a
+after its ack deadline or after its cover was superseded is still recorded — the right to _paint_ it lasts as
+long as its cover is open, and losing that right is never a reason to forget the pixels. The release is
+**synchronous**, because the head batch of the next transition releases the outgoing cover a few lines before
+it reads the store for its own stand-ins: a demotion landing a turn later would hand a keypress inside the
+cross-fade the film before last. The *reduction* is not — scaling a 5K still down costs tens of milliseconds,
+due at the end of every cross-fade — so it runs off the main actor (`Reducer.detached`) and lands only on the
+film it was made from, and only while that is still released; a read in between gets the full photograph. And
+every photograph carries the batch that took it, because those recordings reach the store in _arrival_ order and a
 batch that runs long answers after the one that superseded it — a film is replaced only by a later film, while
 the entitlement an overtaken piece carries is recorded regardless, over whatever the store already holds.
 
@@ -505,6 +519,11 @@ the flush one a returning display is rebuilt with, and the decision is never re-
 `State.layout` is a **settable computed projection** of `workspaces[monitors.shown]` — single storage, not a
 second authority. Only the genuinely cross-strip queries bypass it: reconcile, `targetFrames`, the placement
 walks, and the mutators that mint a `ColumnId`.
+
+**Strip membership is reconciled once, at the top of every event but a tick** (`State.reconcileTiling`), so a
+handler starts from strips that match `World`'s tiled set. Inside an event it is reconciled again only after a
+mutation of that set, before anything reads a layout: a departure once the window has left, an arrival beside
+its anchor, a display change that re-homed a pin, and the placement pass, which the refusal paths fall back on.
 
 **Three joins, and each is one method on `State` because the containers must move together.** Where a step
 touches two of them, the pair is not something a caller may be trusted to remember:
@@ -636,10 +655,10 @@ serialises it — and not one existing signature changed.
 from the content area's top-left, sized as the region less the whole spread, so a tile's size is a function
 of `n` and an arrival or a departure resizes every window on the workspace. Two floors bound the compression
 and both are live at once: below `minimumSize` the stagger gives way first, and it stops at
-`minimumStagger` — `WindowRegistry` binds by ±2 pt uniqueness and every tile here is the same size, so two
-tiles closer than that are two windows nothing can tell apart. It is deliberately **not** `Cascade`, which
-answers a different question (rescue every parked window into one readable pile before the daemon dies) and
-shares only the word and a stagger.
+`minimumStagger` — `WindowRegistry` binds uniquely within `Tolerance.identity` and every tile here is the same
+size, so two tiles closer than that are two windows nothing can tell apart. It is deliberately **not**
+`Cascade`, which answers a different question (rescue every parked window into one readable pile before the
+daemon dies) and shares only the word and a stagger.
 
 **A cascade reads through the column partition to the flat window list and never writes to it.** So switching
 to `stack` and back finds the columns and their widths exactly as they were, and no width intent is ever
@@ -780,6 +799,13 @@ re-place `dragEnded` makes, once the reports go quiet (`Event.windowSelfPlaced`,
 Nothing is learned from it: a rectangle nobody drew is not intent, so the layout is unchanged and only the
 window moves. Waiting is what makes it one write rather than a fight — an app animating its own size reports at
 the refresh rate, and re-placing under each frame would write the layout over an animation still running.
+
+**Our own writes are not a window placing itself** (`FrameWrites`). An app posts its move reports while it
+applies a set, and they reach the watcher while that set's lane job is still running; the executor reads back
+where every write landed, so a report for a window whose write is still out is dropped — no read, no
+stillness wait, no placement pass that writes nothing — and the landing's frame is what the registry keeps.
+Measured on a 5K desktop, 43 of 44 reports over nine commands were echoes caught this way. A report after the
+landing is read as ever: that is the app moving itself afterwards.
 
 **There is one `ParkingLot` for the whole desktop, and the display arrangement picks it.** A nub is the corner
 of a window whose body hangs off the bottom right of the lot, so a screen sitting beyond that corner catches
@@ -1396,6 +1422,12 @@ affordable is the layer tree — a re-cut moves the shapes and names the veils t
 leaves a veil fading through it undisturbed (`ScrimWindow.set`), and a reading that changes nothing paints
 nothing at all.
 
+**Under a cover the watch waits** (`ScrimPlane.setCovered`, from the raise until the dismissal begins). Every
+reading synchronizes the cover's own commit, one a frame, so a watch running under a spring costs frames, and
+the scrim it would correct is out of sight. A set there is cut once, because the cover's stand-ins draw the
+veils that cut decides (`veil(of:)`), and a watch already running is disowned. The dismissal starts one watch
+for a display that holds a set — not the end of the fade, since the fade is what reveals the scrim.
+
 **A pane management has let go of is out of the walk entirely** (`Scrims.departed`, from
 `WindowRegistry.departedNumbers` — the set a cover's base already cuts a hole for). A window closes on the
 glass long after AX says it is gone, the length of its app's teardown, and nothing announces the moment it
@@ -1550,6 +1582,10 @@ can quietly break:
   pending Core Animation commit, so no thread makes it cheap and the caller yields instead (§ reconciliation).
 - **Expect clamping.** Apps clamp to their own min/max, so landing exactly can take size → position → size. What
   an app answered is then a fact the geometry consults (`World.corrections`, §6) rather than something re-asked.
+- **Write whole points.** AX stores integers — a position floors, a size rounds half down — so the truth plane
+  rounds every frame it writes (`Layout.targetFrames`, the pins) and a landing is exact or is the app's answer.
+  The reducer's diff and the executor's landing report read one threshold, `Tolerance.placement`; a window
+  landing between two thresholds is re-written with the identical frame on every pass.
 - **An empty `AXWindows` is not proof of an app with no windows.** Finder stops answering it — `.success`, empty
   array — while those same window elements are still the application element's children, and an app contributing
   nothing simply leaves `World`. An answer that is *empty* is asked again as `AXChildren`; an answer that
@@ -1582,10 +1618,11 @@ can quietly break:
   over tiled windows, so it wins the `follows-mouse` hit test over the page underneath it and takes focus it
   cannot hold.
 
-**AX identity is the fragile part.** A match must be **unique in both directions** within 2 pt or it is not a
-match — a nearest-position match always answers, and a wrong answer is permanent and invisible. Two joins run on
-the same scan against the same two lists: `WindowIdentity.bind` (which window-list entry is this AX window) and
-`WindowIdentity.succeed` (which arriving window is standing where a departed one stood). Both are pure.
+**AX identity is the fragile part.** A match must be **unique in both directions** within `Tolerance.identity`
+(2 pt) or it is not a match — a nearest-position match always answers, and a wrong answer is permanent and
+invisible. Two joins run on the same scan against the same two lists: `WindowIdentity.bind` (which
+window-list entry is this AX window) and `WindowIdentity.succeed` (which arriving window is standing where a
+departed one stood). Both are pure.
 
 **The list is read at every level an app's own windows stand at** (`WindowListEntry.windowLevels`) — normal,
 floating, and the modal-panel level an open/save panel is presented on. Above them is chrome nothing binds to,
@@ -2480,7 +2517,7 @@ emira/
     ├── EmiraShell/      Runtime · Executor · WindowRegistry · WorldWatcher · Teardown
     │                    ProcessLauncher · Scheduler · Permissions · Logging
     │   ├── AX/          AXAccess · AXClient · AXEnumerator · AXWriter · AXExecutor
-    │   │                Observation · AXObservers · FocusIntent · EnhancedUI
+    │   │                Observation · AXObservers · FocusIntent · FrameWrites · EnhancedUI
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   │                DesktopCapturer (one display with every window taken out of it)

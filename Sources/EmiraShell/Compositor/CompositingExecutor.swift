@@ -196,6 +196,10 @@ public final class CompositingExecutor: Executor {
                 for batch in Self.captureTargets(run.effects) {
                     store.capture(batch.targets, on: batch.monitor, feedback: feedback)
                 }
+                for effect in run.effects {
+                    guard case .keepStill(let monitor, let id, let size) = effect else { continue }
+                    store.keep(CaptureTarget(id: id, size: size), on: monitor)
+                }
             case .hoist:
                 // Last wins, and there is only ever one in a run: the core emits the whole set, so two
                 // in a batch would be a decision superseded before it reached the screen.
@@ -262,7 +266,7 @@ public final class CompositingExecutor: Executor {
         case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer,
              .endTransition, .setCoverClearing:
             return .presentation
-        case .capture:
+        case .capture, .keepStill:
             return .capture
         case .setHoists:
             return .hoist
@@ -290,6 +294,7 @@ public final class CompositingExecutor: Executor {
         for effect in effects {
             switch effect {
             case .beginTransition(let monitor, let bindings):
+                scrims.setCovered(true, on: monitor)
                 // Stamped when the cover is *on the glass*, not when it was asked for: the fence can
                 // wait out a window-server deferral, and counting that as animation would report a
                 // whole transition as a slow one.
@@ -322,7 +327,7 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .setHoists, .setScrims, .focus, .restoreFocus,
+            case .setFrame, .park, .capture, .keepStill, .setHoists, .setScrims, .focus, .restoreFocus,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here
@@ -342,6 +347,7 @@ public final class CompositingExecutor: Executor {
         // opens a *new* cover on that display and must take its own base, not inherit the fading one's
         // desktop.
         let token = store.closeCover(on: monitor)
+        scrims.setCovered(false, on: monitor)       // the fade reveals the scrim from its first frame
         surface.dismiss(on: monitor, over: dismissalDuration) { [onCoverDismissed, store] in
             // Released only once the cover is *down* — `CALayer.contents` holds the stills for the
             // whole cross-fade. And only *these* stills: `discard` ignores a superseded token.

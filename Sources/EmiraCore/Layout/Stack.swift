@@ -20,9 +20,8 @@ public enum Stack {
     public static let minimumSize = Size(width: 480, height: 320)
 
     /// …and the hard one, which compression stops at. `WindowRegistry` binds AX windows to window-list
-    /// entries by ±2 pt uniqueness, and every tile here is the same size, so two tiles closer than that
-    /// are two windows nothing can tell apart — and a wrong answer there is permanent and invisible.
-    /// `ParkingLot.stagger` carries the identical constraint and the identical number.
+    /// entries uniquely within `Tolerance.identity`, and every tile here is the same size, so two tiles
+    /// closer than that are two windows nothing can tell apart. `ParkingLot.stagger` carries the same.
     public static let minimumStagger: Double = 8
 
     /// The stagger `count` tiles are actually laid out at: `stagger`, compressed to whatever the region

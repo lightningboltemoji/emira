@@ -13,6 +13,7 @@ import Testing
         .park(WindowId(2), Rect(x: -1, y: 500, width: 1, height: 40)),
         .setLayerFrame(LayerId(3), Rect(x: 0, y: 0, width: 800, height: 600)),
         .capture(MonitorId(1), WindowId(4), size: Size(width: 300, height: 200)),
+        .keepStill(MonitorId(1), WindowId(4), size: Size(width: 320, height: 200)),
         .beginTransition(MonitorId(1), [LayerBinding(window: WindowId(7), layer: LayerId(8)),
                                         LayerBinding(window: WindowId(9), layer: LayerId(10))]),
         .extendCover(MonitorId(2), [LayerBinding(window: WindowId(11), layer: LayerId(12))]),

@@ -94,6 +94,9 @@ public final class WorldWatcher {
     private let registry: WindowRegistry
     private let scheduler: any DelayScheduler
     private let intent: FocusIntent
+    /// The frame writes out on the lanes (`FrameWrites`): a move reported for one of those windows is its
+    /// echo, and the executor's read-back already answers it.
+    private let writes: FrameWrites
     private let sink: EventSink
     /// The reconciliation tick. Optional because the watcher is complete without it — it is a backstop,
     /// not a mechanism anything depends on — and a test that isn't about reconciliation leaves it out.
@@ -233,13 +236,14 @@ public final class WorldWatcher {
     private var quietId = 0
 
     public init(source: any ObservationSource, enumerator: AXEnumerator, registry: WindowRegistry,
-                scheduler: any DelayScheduler, intent: FocusIntent, sink: EventSink,
-                heartbeat: (any Heartbeat)? = nil) {
+                scheduler: any DelayScheduler, intent: FocusIntent, writes: FrameWrites = FrameWrites(),
+                sink: EventSink, heartbeat: (any Heartbeat)? = nil) {
         self.source = source
         self.enumerator = enumerator
         self.registry = registry
         self.scheduler = scheduler
         self.intent = intent
+        self.writes = writes
         self.sink = sink
         self.heartbeat = heartbeat
     }
@@ -352,7 +356,7 @@ public final class WorldWatcher {
             vanish(id)
 
         case .windowMoved(let id):
-            guard isLive(id) else { return }
+            guard isLive(id), !writes.isWriting(id) else { return }
             guard !reading.contains(id) else { moved.insert(id); return }
             readFrame(of: id)
 
