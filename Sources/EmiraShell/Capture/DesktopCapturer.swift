@@ -41,6 +41,10 @@ public final class DesktopCapturer: DesktopFilmer {
     /// nobody asked for rather than as transparency.
     private var scales: [MonitorId: CGFloat]
 
+    /// Whether a photograph is still being taken or frosted.
+    public var isFilming: Bool { filming > 0 }
+    private var filming = 0
+
     public init(scales: [MonitorId: CGFloat] = [:]) {
         self.scales = scales
     }
@@ -53,11 +57,13 @@ public final class DesktopCapturer: DesktopFilmer {
                      then: @escaping @MainActor (DesktopFilm) -> Void) {
         let display = CGDirectDisplayID(monitor.raw)
         let scale = scales[monitor] ?? 2
+        filming += 1
         Task {
             // The photograph is taken at native resolution, so the radius crosses into pixels with it.
             let film = await desktop(of: display, scale: scale, sigma: radius.map { $0 * Double(scale) },
                                      strip: strip)
-            await then(film)
+            filming -= 1
+            then(film)
         }
     }
 }

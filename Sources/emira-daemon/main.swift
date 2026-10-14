@@ -325,10 +325,21 @@ let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
 /// plane, and for a sharper version of its reason: a scrim *is* one display's photograph, so the
 /// surfaces are per display and the rule that drives them is not. `syncDisplays` builds them.
 let desktopCapturer = DesktopCapturer()
+/// The radii of the windows no cover films — a dialog emira never adopted, a managed window before its first
+/// film — each measured once, while the capture plane is idle.
+let cornerSurvey = CornerSurvey()
+cornerSurvey.isIdle = { [capture, desktopCapturer] in capture.isIdle && !desktopCapturer.isFilming }
 let scrims = Scrims(filmer: desktopCapturer,
                     identify: { [weak registry] in registry?.id(forNumber: $0) },
                     departed: { [weak registry] in registry?.departedNumbers ?? [] },
-                    cornerRadius: { [surfaceCache] in surfaceCache.cornerRadius(of: $0) })
+                    cornerRadius: { [surfaceCache, cornerSurvey] id, number in
+                        id.flatMap(surfaceCache.cornerRadius(of:)) ?? cornerSurvey.radius(of: number)
+                    })
+scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
+    cornerSurvey.retain(onScreen)
+    cornerSurvey.survey(guessed)
+}
+cornerSurvey.onMeasured = { [weak scrims] in scrims?.cornersMeasured() }
 
 // A cover's base leaves out what the tarp hides, or a transition would show the nubs it covers.
 capture.concealed = { [weak scrims] in scrims?.concealedNumbers ?? [] }
@@ -369,6 +380,7 @@ executor.onCoverDismissed = { monitor, frames, seconds in
     // costs one photograph rather than one each, and never taken on the way *into* a transition, where
     // it would queue behind the cover's own batch (`Scrims`).
     scrims.desktopMayHaveChanged()
+    cornerSurvey.resume()
     let head = captureHeadMs[monitor] ?? 0
     log(String(format: "transition:%@ %d frames in %.0f ms (%.0f fps); %.0f ms capture head → %.0f ms",
                on(monitor), frames, seconds * 1000, Double(frames) / max(seconds, 0.001),

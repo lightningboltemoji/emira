@@ -164,7 +164,7 @@ import EmiraCore
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { WindowId(UInt64($0)) },
-                            cornerRadius: { $0 == WindowId(1) ? 17 : nil },
+                            cornerRadius: { id, _ in id == WindowId(1) ? 17 : nil },
                             stack: { [Self.pane(1, measured), Self.pane(2, unfilmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
@@ -347,6 +347,73 @@ import EmiraCore
         #expect(!Self.shows(surface, 1, 150, 150))
         // Outside the stranger's own rounded corner the window beneath keeps its veil.
         #expect(Self.shows(surface, 1, 101, 101))
+    }
+
+    /// A dialog an app puts up over its own veiled window, frontmost and so no sheet. No cover films it, so
+    /// its radius is asked for by window number — and it is cut out at that, not at the guess.
+    @Test func anUnmanagedWindowInFrontIsCutOutAtTheRadiusMeasuredForItsNumber() {
+        let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
+        let dialog = Rect(x: 100, y: 100, width: 300, height: 200)
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 == 1 ? WindowId(1) : nil },
+                            cornerRadius: { id, number in id == nil && number == 77 ? 17 : nil },
+                            stack: { [Self.pane(77, dialog), Self.pane(1, veiled)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1)])
+
+        #expect(!Self.shows(surface, 1, 140, 140), "the dialog is cut out of the veil")
+        // 4 pt in from its corner: outside a 17 pt rounding, so still veiled — inside the 12 pt fallback's.
+        #expect(Self.shows(surface, 1, 104, 104))
+    }
+
+    /// Every cut names the windows it outlined without a radius — a veiled one, or one taken out of it,
+    /// managed or not — and every number on screen, departed too, so answers for windows gone can be dropped.
+    @Test func aCutNamesTheWindowsItOutlinedAtAGuess() {
+        let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
+        let dialog = Rect(x: 100, y: 100, width: 300, height: 200)
+        let beside = Rect(x: 820, y: 0, width: 160, height: 200)
+        let alone = Rect(x: 820, y: 300, width: 160, height: 200)
+        let elsewhere = Rect(x: 2000, y: 0, width: 300, height: 200)
+        var asked: [(guessed: [CGWindowID], onScreen: Set<CGWindowID>)] = []
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 <= 2 ? WindowId(UInt64($0)) : nil },
+                            departed: { [66] },
+                            cornerRadius: { id, _ in id == WindowId(1) ? 17 : nil },
+                            stack: { [Self.pane(77, dialog), Self.pane(1, veiled), Self.pane(2, beside),
+                                      Self.pane(99, alone), Self.pane(66, dialog),
+                                      Self.pane(88, elsewhere)] },
+                            build: { _, _, _ in surface })
+        scrims.surveyCorners = { asked.append(($0, $1)) }
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1), Self.binding(2)])
+
+        // Not the measured window, nor one no veil touches, nor one departed or on no part of this display.
+        #expect(asked.last?.guessed == [77, 2])
+        #expect(asked.last?.onScreen == [77, 1, 2, 99, 66, 88])
+    }
+
+    /// A radius arriving is a mask cut without it: the plane cuts again, and the dialog comes out at it.
+    @Test func aMeasuredRadiusCutsTheMaskAgain() {
+        let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
+        let dialog = Rect(x: 100, y: 100, width: 300, height: 200)
+        var measured: Double?
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 == 1 ? WindowId(1) : nil },
+                            cornerRadius: { id, _ in id == nil ? measured : nil },
+                            stack: { [Self.pane(77, dialog), Self.pane(1, veiled)] },
+                            build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1)])
+        #expect(!Self.shows(surface, 1, 104, 104), "unmeasured: the fallback's 12 pt cuts the corner out")
+
+        measured = 17
+        scrims.cornersMeasured()
+        #expect(Self.shows(surface, 1, 104, 104))
+        #expect(surface.changes.last == .cut)
     }
 
     /// A sheet is part of its window: a window emira never adopted, standing wholly on a see-through

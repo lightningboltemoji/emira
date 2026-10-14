@@ -15,6 +15,9 @@ import EmiraCore
 //    draws appears twice, once frozen and once sliding, and a scoped window the content read never
 //    named appears once, frozen, while the strip travels around it.
 //
+// A window still comes back at the resolution its window is drawn at, whatever display filmed it, and holds
+// that window and the children inside its frame — never its parent (`surfaceShot`).
+//
 // The base excludes our own overlay too: it is a real window kept ordered-in at `alpha 0`, and capturing
 // the base through it would be a feedback loop. One `processID` comparison closes that.
 //
@@ -59,8 +62,8 @@ public final class SCKCapturer: SurfaceCapturer {
 
     /// The display the base is captured from — the one the overlay covers and the strip is laid out on.
     private let displayId: CGDirectDisplayID
-    /// The display's backing scale, so every still is captured at native pixel resolution. A 1× still
-    /// stretched onto a 2× layer is soft, and the cross-fade back to the real window is a visible pop.
+    /// The display's backing scale, so the base is captured at native pixel resolution. A 1× base under a
+    /// 2× cover is soft. Window stills need no scale: each comes back at the one its window is drawn at.
     private let scale: CGFloat
 
     /// One batch as it was asked for, waiting for the end of the turn.
@@ -73,6 +76,11 @@ public final class SCKCapturer: SurfaceCapturer {
 
     /// The batches asked for this turn. Non-empty exactly while a flush is scheduled.
     private var queued: [Order] = []
+
+    /// Windows whose children were once what kept a still from being their frame (`SurfaceStill.needsAlone`),
+    /// filmed alone from then on, so the retake is paid once rather than in every cover. Never pruned: a
+    /// number reused by another window costs that window its sheets, never a wrong still.
+    private var alone: Set<CGWindowID> = []
 
     public init(displayId: CGDirectDisplayID, scale: CGFloat) {
         self.displayId = displayId
@@ -102,6 +110,7 @@ public final class SCKCapturer: SurfaceCapturer {
                                  uniquingKeysWith: { first, _ in first })
         let displayId = self.displayId
         let scale = self.scale
+        let alone = self.alone
         let piece = order.piece
 
         var seen = Set<CGWindowID>()
@@ -109,23 +118,27 @@ public final class SCKCapturer: SurfaceCapturer {
 
         Task {
             await grab(windows: ordered, cutting: cut, display: displayId, scale: scale,
-                       base: order.base) { shot in
+                       alone: alone, base: order.base) { shot in
                 switch shot {
                 case .base(let image):
                     await piece(.base(image))
                 case .window(let window):
+                    if window.needsAlone { await self.filmAlone(window.number) }
                     guard let id = numbers[window.number] else { return }
                     // Measured here, once per still, where the scale it was taken at is known for certain.
                     await piece(.window(id, CapturedSurface(
                         image: window.image, frame: window.frame,
-                        cornerRadius: CapturedSurface.measuredCornerRadius(of: window.image,
-                                                                           scale: scale),
+                        cornerRadius: window.scale.flatMap {
+                            CapturedSurface.measuredCornerRadius(of: window.image, scale: CGFloat($0))
+                        },
                         isWhole: CapturedSurface.measuredWhole(of: window.image))))
                 }
             }
             order.done()
         }
     }
+
+    private func filmAlone(_ number: CGWindowID) { alone.insert(number) }
 }
 
 /// What each base asked for in one turn must cut. A batch opening a cover is grown by every batch after
@@ -151,6 +164,10 @@ private struct Shot: Sendable {
     let number: CGWindowID
     let image: CGImage
     let frame: Rect
+    /// Pixels per point in `image`, or `nil` for a surface that is not the window's frame (`surfaceShot`).
+    let scale: Double?
+    /// `SurfaceStill.needsAlone`.
+    let needsAlone: Bool
 }
 
 /// One thing the batch produced, handed to `deliver` the moment it lands rather than with the rest.
@@ -175,6 +192,7 @@ private func grab(windows: [CGWindowID],
                   cutting cut: Set<CGWindowID>,
                   display: CGDirectDisplayID,
                   scale: CGFloat,
+                  alone: Set<CGWindowID>,
                   base: BaseRequest?,
                   deliver: @Sendable (Piece) async -> Void) async {
     let wanted = Set(windows)
@@ -225,17 +243,68 @@ private func grab(windows: [CGWindowID],
     for window in targets {
         let frame = window.frame
         guard frame.width >= 1, frame.height >= 1 else { continue }
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let size = (width: Int(frame.width * scale), height: Int(frame.height * scale))
         // A capture that failed is simply not delivered; the batch carries on without it.
-        guard let image = try? await shot(filter, width: size.width, height: size.height) else {
+        guard let still = await surfaceShot(of: window,
+                                            carryingChildren: !alone.contains(window.windowID)) else {
             continue
         }
         let rect = Rect(x: Double(frame.minX), y: Double(frame.minY),
                         width: Double(frame.width), height: Double(frame.height))
-        await deliver(.window(Shot(number: window.windowID, image: image, frame: rect)))
+        await deliver(.window(Shot(number: window.windowID, image: still.image, frame: rect,
+                                   scale: still.scale, needsAlone: still.needsAlone)))
     }
 }
+
+/// One window's own surface at the resolution it is drawn at, as `keptStill` chooses it. `carryingChildren`
+/// keeps a sheet in its stand-in, and retakes alone a still holding the family ScreenCaptureKit films with a
+/// window.
+func surfaceShot(of window: SCWindow, carryingChildren: Bool = true) async -> SurfaceStill? {
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    return await keptStill(of: window.frame, at: Double(filter.pointPixelScale),
+                           carryingChildren: carryingChildren) { withChildren in
+        let configuration = SCScreenshotConfiguration()
+        configuration.showsCursor = false
+        configuration.dynamicRange = .sdr
+        configuration.includeChildWindows = withChildren
+        return try? await SCScreenshotManager.captureScreenshot(contentFilter: filter,
+                                                               configuration: configuration).sdrImage
+    }
+}
+
+/// A window's still, and what it says about the window.
+struct SurfaceStill: Sendable {
+    let image: CGImage
+    /// Pixels per point in `image`, or `nil` for a still that is not its window's frame at that scale.
+    let scale: Double?
+    /// Filmed with its children the window held more than its frame, and alone it did not.
+    let needsAlone: Bool
+}
+
+/// The still to keep of a window at `frame`, drawn at `scale`, from `take` filming it with its children or
+/// without. A still that is not the frame is retaken alone, and kept only if that one is — anything else
+/// wrong with it (a frame read before a resize, a window still opening) is no reason to drop its sheets.
+func keptStill(of frame: CGRect, at scale: Double, carryingChildren: Bool,
+               take: (_ withChildren: Bool) async -> CGImage?) async -> SurfaceStill? {
+    func fits(_ image: CGImage) -> Bool {
+        isSurface(CGSize(width: image.width, height: image.height), of: frame, at: scale)
+    }
+    guard let first = await take(carryingChildren) else { return nil }
+    let kept = SurfaceStill(image: first, scale: fits(first) ? scale : nil, needsAlone: false)
+    guard carryingChildren, kept.scale == nil, let alone = await take(false), fits(alone) else { return kept }
+    return SurfaceStill(image: alone, scale: scale, needsAlone: true)
+}
+
+/// Whether `pixels` draw `frame` at `scale`, each axis within `surfaceSlack` — which an opening window's
+/// lagging frame stays inside, and a still holding other windows with this one does not.
+func isSurface(_ pixels: CGSize, of frame: CGRect, at scale: Double) -> Bool {
+    guard scale > 0, frame.width >= 1, frame.height >= 1 else { return false }
+    let want = CGSize(width: frame.width * scale, height: frame.height * scale)
+    return abs(pixels.width - want.width) <= want.width * surfaceSlack
+        && abs(pixels.height - want.height) <= want.height * surfaceSlack
+}
+
+/// How far a still may stand from its window's frame and still be that window, per axis.
+let surfaceSlack = 0.02
 
 /// One `SCScreenshotManager` still at an explicit pixel size. `showsCursor = false` — a captured cursor
 /// would freeze mid-transition and put two pointers on screen for the length of the scroll.

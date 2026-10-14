@@ -61,7 +61,8 @@ public struct TarpCut: Equatable, Sendable {
                     over stacked: [(window: WindowId?, pane: StackedWindow)],
                     on display: Rect,
                     within strip: Rect,
-                    cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil }) -> TarpCut? {
+                    cornerRadius: @MainActor (WindowId?, CGWindowID) -> Double? = { _, _ in nil })
+        -> TarpCut? {
         func parked(_ entry: (window: WindowId?, pane: StackedWindow)) -> Bool {
             guard let id = entry.window, let slot = tarp.slots[id] else { return false }
             let at = entry.pane.frame.origin
@@ -89,7 +90,7 @@ public struct TarpCut: Equatable, Sendable {
             let shadow = WindowShadow.of(focused: focused)
             guard entry.pane.frame.insetBy(dx: -shadow.reach, dy: -shadow.reach).intersects(region)
             else { return nil }
-            let radius = entry.window.flatMap(cornerRadius) ?? Scrims.fallbackCornerRadius
+            let radius = cornerRadius(entry.window, entry.pane.number) ?? Scrims.fallbackCornerRadius
             return TarpNeighbour(frame: entry.pane.frame, cornerRadius: radius, isFocused: focused)
         }
         let edge = TarpWindow.feather

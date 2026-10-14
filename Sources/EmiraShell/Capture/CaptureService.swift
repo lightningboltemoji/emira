@@ -370,6 +370,8 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     private var openCovers: Set<MonitorId> = []
     /// Names each display's current cover session, bumped by every head batch for it.
     private var coverGeneration: [MonitorId: Int] = [:]
+    /// Stills `film` has asked for that have not come back. They gate nothing, but hold the window server.
+    private var filming = 0
 
     /// A batch in flight: which windows still owe an ack, and where to send it.
     ///
@@ -477,6 +479,10 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
 
     public func base(of monitor: MonitorId) -> CGImage? { baseImages[monitor] }
 
+    /// Whether no batch is owed, no cover is open and no film is out, so a screenshot taken now delays none
+    /// of theirs.
+    public var isIdle: Bool { pending.isEmpty && openCovers.isEmpty && filming == 0 }
+
     public func closeCover(on monitor: MonitorId) -> CoverToken {
         openCovers.remove(monitor)
         return CoverToken(monitor, coverGeneration[monitor] ?? 0)
@@ -504,6 +510,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         // order). The batch machinery is untouched: this owes no ack and gates nothing.
         generation &+= 1
         let mint = generation
+        filming += 1
         var filmed: CapturedSurface?
         capturer.capture([CaptureRequest(id: window, number: number)], base: nil,
                          piece: { [weak self] piece in
@@ -514,7 +521,10 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
                              // A cover that comes along meanwhile gets a stand-in it did not pay for.
                              self?.cache.record(surface, mintedAt: mint, for: id, pinnedBy: nil)
                          },
-                         done: { then(filmed) })
+                         done: { [weak self] in
+                             self?.filming -= 1
+                             then(filmed)
+                         })
     }
 
     public func capture(_ targets: [CaptureTarget], on monitor: MonitorId, feedback: EventSink) {

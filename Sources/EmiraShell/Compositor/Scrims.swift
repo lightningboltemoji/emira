@@ -180,9 +180,10 @@ public final class Scrims: ScrimPlane {
     /// The numbers management has let go of that the glass may still be showing
     /// (`WindowRegistry.departedNumbers`) — a hole to the mask, as they are to a cover's base.
     private let departed: @MainActor () -> Set<CGWindowID>
-    /// A window's corner radius as a capture last measured it, or `nil` for one never filmed
-    /// (`SurfaceCache.cornerRadius(of:)`). A scrim films no window, so it asks the plane that does.
-    private let cornerRadius: @MainActor (WindowId) -> Double?
+    /// A window's corner radius as a capture last measured it — by id where emira manages it, by number
+    /// where it does not — or `nil` for one never measured. A scrim films no window, so it asks the plane
+    /// that does.
+    private let cornerRadius: @MainActor (WindowId?, CGWindowID) -> Double?
     /// The window server's own ordering. Injected so the rule can be tested without a desktop.
     private let stack: @MainActor () -> [StackedWindow]
     /// The flip between core and Cocoa coordinates — the shapes are built in each surface's own space.
@@ -193,6 +194,11 @@ public final class Scrims: ScrimPlane {
     /// Whether the shell is committing a Core Animation transaction every frame — when a window-list read
     /// waits on our own commit, so an arrival watch takes none (`WorldWatcher.isPainting`'s reason).
     public var isPainting: @MainActor () -> Bool = { false }
+
+    /// Told, with every cut, which windows it outlined at a guess and which numbers are on screen at all —
+    /// so they can be measured (`CornerSurvey`), and `cornersMeasured` can cut again once they are.
+    public var surveyCorners: @MainActor (_ guessed: [CGWindowID], _ onScreen: Set<CGWindowID>) -> Void
+        = { _, _ in }
 
     private var surfaces: [MonitorId: any ScrimSurface] = [:]
     private var frames: [MonitorId: Rect] = [:]
@@ -248,7 +254,7 @@ public final class Scrims: ScrimPlane {
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
                 departed: @escaping @MainActor () -> Set<CGWindowID> = { [] },
-                cornerRadius: @escaping @MainActor (WindowId) -> Double? = { _ in nil },
+                cornerRadius: @escaping @MainActor (WindowId?, CGWindowID) -> Double? = { _, _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
                 scheduler: any DelayScheduler = DispatchScheduler(),
                 build: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
@@ -405,6 +411,13 @@ public final class Scrims: ScrimPlane {
         read(after: nil, moved: false, quiet: 0, left: Self.arrivalLimit)
     }
 
+    /// A radius `surveyCorners` asked for has been measured: cut every mask again with it.
+    public func cornersMeasured() {
+        for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
+            paint(monitor, change: .cut)
+        }
+    }
+
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
     /// Space switch, a display change. Throttled by `desktopMaxAge`, so a burst of transitions costs
     /// one photograph rather than one each.
@@ -549,6 +562,8 @@ public final class Scrims: ScrimPlane {
             .map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
                              cornerRadius: cornerRadius, stale: staleFrames(monitor, in: identified))
+        // Every number the server reads, departed or concealed too: an answer outlives only its number.
+        surveyCorners(cut.guessed, Set(stacked.map(\.number)))
         var drawn: [WindowId: Double] = [:]
         for (window, veil) in cut.drawn where veil > 0 { drawn[window] = veil }
         applied[monitor] = drawn
@@ -605,24 +620,23 @@ public final class Scrims: ScrimPlane {
         again(0)
     }
 
-    /// The shape the desktop shows through for each see-through window on `display`, bottom→top, and what
-    /// each is drawn at. The only place the rule lives: **a window is see-through where the desktop is
-    /// behind it, or another this set draws see-through**. `stale` is where a moving pane was last read.
+    /// Each see-through window's shape on `display`, bottom→top, its veil, and what was outlined at a guess.
+    /// The only place the rule lives: **a window is see-through where the desktop is behind it, or another
+    /// this set draws see-through**. `stale` is where a moving pane was last read.
     static func veils(for bindings: [ScrimBinding],
                       over stacked: [(window: WindowId?, pane: StackedWindow)],
                       on display: Rect,
                       geometry: ScreenGeometry,
-                      cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil },
+                      cornerRadius: @MainActor (WindowId?, CGWindowID) -> Double? = { _, _ in nil },
                       stale: [WindowId: Rect] = [:])
-        -> (veils: [ScrimVeil], drawn: [(WindowId, Double)]) {
+        -> (veils: [ScrimVeil], drawn: [(WindowId, Double)], guessed: [CGWindowID]) {
         let wanted = Dictionary(bindings.map { ($0.window, $0.veil) }, uniquingKeysWith: { a, _ in a })
-        func radius(_ id: WindowId?) -> Double { id.flatMap(cornerRadius) ?? fallbackCornerRadius }
         let surface = geometry.cocoa(display)
         /// A window's outline in the surface's own coordinates. Outside a rounded corner is whatever the
         /// window stands on, so a square silhouette would veil a shadow or clear a corner of its neighbour.
-        func silhouette(_ frame: Rect, _ id: WindowId?) -> CGPath {
+        func silhouette(_ frame: Rect, _ radius: Double?) -> CGPath {
             let box = geometry.local(frame, in: surface)
-            let corner = radius(id)
+            let corner = radius ?? fallbackCornerRadius
             guard corner > 0 else { return CGPath(rect: box, transform: nil) }
             return CGPath(roundedRect: box, cornerWidth: corner, cornerHeight: corner, transform: nil)
         }
@@ -642,9 +656,10 @@ public final class Scrims: ScrimPlane {
             let isSheet = beneath.window.flatMap { wanted[$0] } != nil
                 && beneath.pane.frame.intersection(entry.pane.frame) == entry.pane.frame
             return !isSheet
-        }.map { (id: $0.element.window, frame: $0.element.pane.frame) }
+        }.map { (id: $0.element.window, frame: $0.element.pane.frame, number: $0.element.pane.number) }
 
-        let shapes = panes.map { silhouette($0.frame, $0.id) }
+        let radii = panes.map { cornerRadius($0.id, $0.number) }
+        let shapes = zip(panes, radii).map { silhouette($0.frame, $1) }
 
         /// Whether the pane at `other` comes out of the pane at `index`'s shape. `panes` runs front to
         /// back, so a lower index is in front — and in front always comes out, those pixels not being
@@ -659,17 +674,21 @@ public final class Scrims: ScrimPlane {
 
         var veils: [ScrimVeil] = []
         var drawn: [(WindowId, Double)] = []
+        /// The panes whose outline some veil was drawn with: its own, and every one taken out of it.
+        var outlined = IndexSet()
         for (index, pane) in panes.enumerated() {
             guard let id = pane.id, let veil = wanted[id] else { continue }
             var shape = shapes[index]
+            outlined.insert(index)
             for other in panes.indices where other != index && cuts(other, from: index) {
                 shape = shape.subtracting(shapes[other])
+                outlined.insert(other)
             }
             veils.append(ScrimVeil(window: id, shape: shape, veil: veil))
             drawn.append((id, veil))
         }
         // Bottom→top, the convention every binding array carries. Nothing overlaps, so it decides
         // nothing about the drawing; it decides what a reader of this list expects.
-        return (veils.reversed(), drawn)
+        return (veils.reversed(), drawn, outlined.filter { radii[$0] == nil }.map { panes[$0].number })
     }
 }

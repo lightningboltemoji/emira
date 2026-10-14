@@ -313,6 +313,24 @@ import EmiraCore
         #expect(service.surface(for: WindowId(3)) != nil)       // and the newcomer merged in
     }
 
+    /// What a corner survey waits on: anything the plane has on the wire, a film that gates nothing included.
+    @Test func thePlaneIsIdleOnlyWithNothingOut() {
+        let (service, capturer, _, log) = Self.service([1, 2])
+        #expect(service.isIdle)
+
+        service.film(WindowId(1), on: Self.display) { _ in }
+        #expect(!service.isIdle, "a film holds the window server too")
+        capturer.close()
+        #expect(service.isIdle)
+
+        service.capture(windows: [WindowId(2)], feedback: log.sink)
+        #expect(!service.isIdle)
+        capturer.answer(with: [WindowId(2)])
+        #expect(!service.isIdle, "the cover it opened is still up")
+        _ = service.closeCover()
+        #expect(service.isIdle)
+    }
+
     /// After `closeCover` the next batch opens a *new* session: fresh base, fresh store. Without the
     /// clear, a transition would inherit the previous one's stills for any window it didn't re-capture.
     @Test func closingTheCoverStartsTheNextBatchFresh() {
@@ -591,6 +609,111 @@ import EmiraCore
         let image = Self.unpainting(Self.unpainting(whole, 4, onRight: false), 4, onRight: true)
         let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
         #expect(measured == nil || (measured ?? 0) >= 12 - 0.25)
+    }
+}
+
+/// Whether a native still is its window's frame at the scale it is drawn at, and which of a window's stills
+/// to keep. The sizes are ones ScreenCaptureKit returned: a child films its whole family, and a parent with a
+/// child reaching past its edge films the union of both.
+@Suite struct SurfaceStillTests {
+    @Test func aStillThatIsItsWindowMatchesTheScaleItIsDrawnAt() {
+        let frame = CGRect(x: 303, y: 267, width: 1314, height: 762)
+        #expect(isSurface(CGSize(width: 2628, height: 1524), of: frame, at: 2))
+        #expect(isSurface(CGSize(width: 1314, height: 762), of: frame, at: 1))
+        #expect(!isSurface(CGSize(width: 1314, height: 762), of: frame, at: 2))
+    }
+
+    @Test func aFrameAtFractionalPointsStillMatches() {
+        #expect(isSurface(CGSize(width: 2689, height: 2354),
+                          of: CGRect(x: 0, y: 0, width: 1344.36, height: 1177), at: 2))
+    }
+
+    @Test func aWindowFilmedWhileOpeningStillMatches() {
+        // Filmed at its final 400×300 while the window list still said 398×298.
+        #expect(isSurface(CGSize(width: 800, height: 600),
+                          of: CGRect(x: 1474, y: 246, width: 398, height: 298), at: 2))
+    }
+
+    @Test func aChildFilmedWithItsParentDoesNot() {
+        // Zoom's "Join meeting", 400×441 on screen, filmed as its 1314×710 main window.
+        #expect(!isSurface(CGSize(width: 2628, height: 1420),
+                           of: CGRect(x: 760, y: 402, width: 400, height: 441), at: 2))
+    }
+
+    @Test func aParentFilmedWithAChildPastItsEdgeDoesNot() {
+        // 1000×700 with a 400-wide child hanging 150 pt off the right: one axis grows, the other does not.
+        #expect(!isSurface(CGSize(width: 2300, height: 1400),
+                           of: CGRect(x: 400, y: 200, width: 1000, height: 700), at: 2))
+    }
+
+    /// The scale is the one the window is drawn at, not whichever whole number the pixels divide into.
+    @Test func aFamilyAWholeMultipleOfItsChildIsNotTheChildAtAFinerScale() {
+        // A 400×300 child of an 800×600 parent, filmed at 2× with its family: the child's frame at 4×.
+        #expect(!isSurface(CGSize(width: 1600, height: 1200),
+                           of: CGRect(x: 0, y: 0, width: 400, height: 300), at: 2))
+    }
+
+    static let frame = CGRect(x: 200, y: 437, width: 600, height: 432)
+
+    /// `keptStill` of `frame` at 2×, its takes answering `sizes` in order, and what each take asked for.
+    static func kept(_ sizes: [CGSize?], carryingChildren: Bool = true) async
+        -> (still: SurfaceStill?, asked: [Bool]) {
+        var asked: [Bool] = [], sizes = sizes
+        let still = await keptStill(of: frame, at: 2, carryingChildren: carryingChildren) { withChildren in
+            asked.append(withChildren)
+            guard let size = sizes.removeFirst() else { return nil }
+            return CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+                             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)?.makeImage()
+        }
+        return (still, asked)
+    }
+
+    @Test func aStillThatIsItsWindowIsTheOneTake() async {
+        let (still, asked) = await Self.kept([CGSize(width: 1200, height: 864)])
+        #expect(asked == [true])
+        #expect(still?.scale == 2)
+        #expect(still?.needsAlone == false)
+    }
+
+    /// The sizes are the probe's: a parent with a child 150 pt past its edge, with and without it.
+    @Test func aFamilyIsRetakenAloneAndKeptSo() async {
+        let (still, asked) = await Self.kept([CGSize(width: 1500, height: 864),
+                                              CGSize(width: 1200, height: 864)])
+        #expect(asked == [true, false])
+        #expect(still?.image.width == 1200)
+        #expect(still?.scale == 2)
+        #expect(still?.needsAlone == true)
+    }
+
+    /// A frame read before the window was resized fits neither take. Its children were not the trouble, so it
+    /// keeps the still that carries them and is never filmed alone for it.
+    @Test func aWindowResizedSinceItsFrameWasReadKeepsItsChildren() async {
+        let (still, asked) = await Self.kept([CGSize(width: 1360, height: 864),
+                                              CGSize(width: 1360, height: 866)])
+        #expect(asked == [true, false])
+        #expect(still?.image.height == 864, "the still taken with its children")
+        #expect(still?.scale == nil)
+        #expect(still?.needsAlone == false)
+    }
+
+    @Test func aRetakeThatFailsKeepsTheFirst() async {
+        let (still, _) = await Self.kept([CGSize(width: 1500, height: 864), nil])
+        #expect(still?.image.width == 1500)
+        #expect(still?.needsAlone == false)
+    }
+
+    @Test func aWindowFilmedAloneIsOneTakeWhateverItHolds() async {
+        let (still, asked) = await Self.kept([CGSize(width: 1500, height: 864)], carryingChildren: false)
+        #expect(asked == [false])
+        #expect(still?.scale == nil)
+        #expect(still?.needsAlone == false)
+    }
+
+    @Test func aFirstTakeThatFailsIsNoStill() async {
+        let (still, asked) = await Self.kept([nil])
+        #expect(asked == [true])
+        #expect(still == nil)
     }
 }
 

@@ -471,11 +471,24 @@ that has been through `reduced` — soft, and whole, which is the better of the 
 whose pixels the store declined asks for no `captureRefreshed`: the layer is already painting what the store
 holds.
 
+**A still is its window and whatever is attached inside its frame — never what the window is attached to.**
+ScreenCaptureKit films a child window's whole family, parent included, and a parent with a child reaching past
+its edge as the union of both, squeezed either way into the one frame it was asked for. So a still is taken at
+the resolution its window is drawn at (the macOS 26 screenshot API, which answers a surface's true size), and
+one that is not its frame at the filter's `pointPixelScale` is taken again without the window's children
+(`surfaceShot`). The retake is kept only if it fits, and only then is the window filmed alone from then on
+(`SCKCapturer.alone`), so the second capture is paid once and not in every cover. A still that fits neither (a
+frame read before a resize) keeps its children; a sheet inside its window's frame always rides in the stand-in.
+
 **Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
-that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), ordered
-by its own batch, and outlives the pixels under every `CoverMode`, the budget and a display change. The scrim
-is what reads it (`SurfaceCache.cornerRadius(of:)`): it rounds a see-through window at rest, when no
-photograph need be left, and only a window no cover has filmed takes `Scrims.fallbackCornerRadius`.
+that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), at the
+scale the still was drawn at, ordered by its own batch, and outlives the pixels under every `CoverMode`, the
+budget and a display change; a still that is not its window's frame measures nothing. The scrim is what reads
+it (`SurfaceCache.cornerRadius(of:)`): it rounds a see-through window at rest, when no photograph need be left.
+A window no cover has filmed — one emira never adopted, which nothing films, or a managed one before its first
+film — is measured once by `CornerSurvey` if a veil cut outlines it: by window number, alone, started only
+while none of emira's captures is out, and again after a pause if it was caught opening. Until that lands it
+takes `Scrims.fallbackCornerRadius`.
 
 Capture resolution is an entitlement rather than a lifetime. A live cover _pins_ every photograph it paints;
 the last release reduces one to quarter scale in place rather than dropping it, and the reduction is both the
@@ -1338,10 +1351,14 @@ standing on the photograph as well. The scope follows from the surface: only wha
 display is in the walk at all, so a column hanging off the viewport, its frame running through the parking lot
 in the corner, forfeits a sliver a pixel wide and keeps the screen it is on.
 
-**Every shape is a window's silhouette, rounded by that window's measured radius** (`Scrims.veils`). A
+**Every shape is a window's silhouette, rounded by that window's measured radius** (`Scrims.veils`) — by id
+from a cover's film, or by number from `CornerSurvey` for a window no cover films (§5, *The modes*). A
 see-through window stops at its corners because outside them is its own shadow, and what is taken out of it
 stops at *its* corners because outside those is whatever that window stands on — which keeps the veil beneath.
-Subtracted square, an occluder or a decline leaves the window beneath unveiled in a sharp corner.
+Subtracted square, an occluder or a decline leaves the window beneath unveiled in a sharp corner, and
+subtracted too sharply, a crescent of one: what an app's dialog over its own veiled window shows until it is
+measured. Every cut names the windows it outlined at that guess (`surveyCorners`): a veiled window or one taken
+out of it, never one no veil touches. A radius arriving cuts again.
 
 **A sheet is part of its window, so it is veiled with it** (`Scrims.veils`). A window emira never adopted,
 standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes
@@ -1964,9 +1981,9 @@ carry the plural:
 - **A batch goes to the capturer whose screen its cover is over.** A base is a photograph of one screen, so a
   head batch owes exactly one — its own — and a second display costs an ordinary transition nothing, neither a
   base nor the `SCShareableContent` fetch that comes with it. The still is not per display
-  (`SCContentFilter(desktopIndependentWindow:)` is display-independent), but a window owed by two covers is
-  filmed once *per cover*, which is what carries each destination overlay's backing scale — a still filmed at
-  2× shown on a 1× overlay pops on the cross-fade. Photographing and cutting out of the base are one list
+  (`SCContentFilter(desktopIndependentWindow:)` is display-independent, and comes back at the scale its window
+  is drawn at, whichever capturer asked), but a window owed by two covers is filmed once *per cover*, each
+  batch being its own cover's. Photographing and cutting out of the base are one list
   again for the same reason: the windows a cover shows and the windows its own base must not contain are the
   same set. That binds the **content read** and not just the filter over it — `isOnScreen` is no more a
   liveness test here than it is for the registry above, and a scoped window the read omits is neither filmed
@@ -2579,6 +2596,7 @@ emira/
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   │                DesktopCapturer (one display with every window taken out of it)
+    │   │                CornerSurvey (the radius of each window no cover films, measured once)
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)
