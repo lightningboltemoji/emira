@@ -1754,6 +1754,10 @@ unanswered read is then nothing at all, never `nil`.** The element such a report
 arriving that nothing has bound yet as one emira will never manage, and only the app tells them apart — where
 a `nil` read into a timeout puts the core on no window, which draws every window on the strip see-through
 (§ _Scrims_) with nothing standing to correct it. A stale belief is corrected by the next report.
+**A read that answers `nil` is asked again when the active app's next arrival is bound**: a window that takes focus as
+it opens is reported before the scan binds it, and reads as focus on nothing emira manages, with no report
+after it. A tiled arrival hides that, the core focusing it on adoption; a floated one — a rule's, a dialog's —
+would hold the keyboard while the core believed nothing did, and `close-window` would close nothing.
 
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The

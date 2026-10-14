@@ -1367,6 +1367,76 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
     }
 
+    /// The report for a window that takes focus as it opens arrives before the window is bound, and reads
+    /// as focus on nothing emira manages. Nothing follows to correct it, so the binding asks again — or a
+    /// window floated as it arrived would hold the keyboard while the core believes nothing does.
+    @Test func aWindowThatTookFocusAsItOpenedIsAskedAboutOnceItIsBound() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .window(nil)
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.focusMovedUnmanaged(200))           // the new window, not bound yet
+        world.source.holdsFocusReads = true
+        let reads = world.source.focusReads.count
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three",
+                    frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.watcher.handle(.windowAppeared(200))
+        let three = try #require(world.id(titled: "three"))
+        #expect(world.source.focusReads.count == reads + 1, "asked once the window is bound")
+        world.source.answerFocusRead(.window(three))
+
+        #expect(world.recorder.events.last == .focusChanged(three, origin: .system))
+    }
+
+    /// An arrival announced while a reconciliation scan is out is folded into it, and bound as one met
+    /// already open. It is no less the window that took focus, so it is asked about all the same.
+    @Test func anArrivalBoundByAScanAlreadyOutIsAskedAboutToo() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .window(nil)
+        world.watcher.handle(.appActivated(200))
+        world.windows.holdsAnswers = true
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three",
+                    frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.heartbeat.beat()                                    // reconciliation's scan, parked
+        world.watcher.handle(.windowAppeared(200))                // coalesced into it
+        world.watcher.handle(.focusMovedUnmanaged(200))           // the new window, not bound yet
+        world.source.holdsFocusReads = true
+        let reads = world.source.focusReads.count
+
+        world.windows.answerScan()
+        let three = try #require(world.id(titled: "three"))
+        #expect(world.created.last?.wasAlreadyOpen == true)
+        #expect(world.source.focusReads.count == reads + 1, "asked once the window is bound")
+        world.source.answerFocusRead(.window(three))
+
+        #expect(world.recorder.events.last == .focusChanged(three, origin: .system))
+    }
+
+    /// Focus standing on a managed window is an answer already, and an arrival that did not take it is
+    /// not a question — so nothing is asked.
+    @Test func anArrivalWhileFocusIsOnAManagedWindowAsksNothing() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.focusMoved(try #require(world.id(titled: "one"))))
+        let reads = world.source.focusReads.count
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three",
+                    frame: rect(2100)))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.watcher.handle(.windowAppeared(200))
+
+        #expect(world.id(titled: "three") != nil)
+        #expect(world.source.focusReads.count == reads)
+    }
+
     @Test func anUnmanagedFocusTheAppCannotAnswerForIsNotAnAnswer() {
         // The element such a report names is as likely a window arriving that nothing has bound yet as
         // one emira will never manage, and only the app tells the two apart. Read as `nil`, a timeout

@@ -198,10 +198,9 @@ public final class WorldWatcher {
     /// window emira never managed arriving on the glass or leaving it (`onStackChanged`).
     private var onGlass: Set<CGWindowID> = []
 
-    /// The window last reported as focused *in the present* — whether or not we passed it on, but not
-    /// counting an echo of our own that arrived out of order. It exists only to name the window a new
-    /// report displaces (`resolveFocus`), so it tracks reports rather than deliveries and is
-    /// deliberately not cleared when its window dies.
+    /// The window last reported as focused *in the present* — reports, not deliveries, and never an echo
+    /// of ours that arrived out of order. It outlives its window, since it names what a new report
+    /// displaces (`resolveFocus`); so `nil` is an app naming no window emira has bound (`absorb`).
     private var focus: WindowId?
 
     /// The app `focus` belonged to when it was reported. Its own record, because a window that has
@@ -770,6 +769,13 @@ public final class WorldWatcher {
 
         for snapshot in report.snapshots {
             emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
+        }
+        // A window that takes focus as it opens is reported before it is bound — as focus on nothing
+        // emira manages — and no later report corrects that. So the active app is asked again once one
+        // of its arrivals is bound while focus stands on nothing.
+        if focus == nil, let active,
+           report.snapshots.contains(where: { registry.record($0.id)?.pid == active }) {
+            readFocus(of: active)
         }
 
         // Something was asked for while the scan was out: ask again now rather than through the retry
