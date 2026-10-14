@@ -40,6 +40,8 @@ public struct State: Sendable, Equatable, Codable {
     /// `hoists`' reason, and re-derived by `settleScrims` on the same terms. A display holding its set
     /// keeps its own entry while its neighbour's moves on.
     public var scrims: [MonitorId: [ScrimBinding]] = [:]
+    /// The tarp each display is drawing over its parked windows — kept and re-derived with `scrims`.
+    public var tarps: [MonitorId: Tarp] = [:]
     /// The focus a command asked for while a pin was being brought to the top, per display. Kept on
     /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
@@ -527,12 +529,13 @@ public enum Engine {
         effects.append(.setHoists(next))
     }
 
-    /// Bring the see-through windows into line with the desktop this batch produced — a post-pass for
-    /// `settleHoists`' reason, emitted on a change. **A set waits for the desktop it describes**, and goes
-    /// again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6, *Scrims*).
+    /// Bring the see-through windows and the tarp into line with the desktop this batch produced — a
+    /// post-pass for `settleHoists`' reason, emitted on a change. **A set waits for the desktop it
+    /// describes**, and goes again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6).
     private static func settleScrims(on event: Event, from old: State, into s: inout State,
                                      effects: inout [Effect]) {
         let fresh = s.scrimBindings()
+        let freshTarps = s.tarp()
         // Only with nothing in flight: a landing still to come recuts this desktop anyway.
         let placedItself = if case .windowSelfPlaced(let id) = event {
             s.world.inFlight.isEmpty && standsWhereItPlacedItself(s, id)
@@ -544,10 +547,16 @@ public enum Engine {
             guard s.motion.mayPlace(on: monitor),
                   s.motion.isCovered(on: monitor) || !s.world.hasWritesInFlight(on: monitor)
             else { continue }
-            let next = fresh[monitor] ?? []
-            let changed = next != s.scrims[monitor] ?? []
             let settled = placedItself || restacked == monitor
                 || (old.world.hasWritesInFlight(on: monitor) && !s.world.hasWritesInFlight(on: monitor))
+            let tarp = freshTarps[monitor]
+            // Ahead of the veils, so the plane holds the tarp before it reads the desktop for both.
+            if tarp != s.tarps[monitor] || (tarp != nil && settled) {
+                s.tarps[monitor] = tarp
+                sets.append(.setTarp(monitor, tarp))
+            }
+            let next = fresh[monitor] ?? []
+            let changed = next != s.scrims[monitor] ?? []
             // A set that draws nothing has no geometry to recut.
             guard changed || (!next.isEmpty && settled) else { continue }
             s.scrims[monitor] = next.isEmpty ? nil : next
@@ -3593,14 +3602,16 @@ public enum Engine {
         var effects: [Effect] = []
         var moved: [WindowId] = []
         var visible: Set<WindowId> = []
+        var parked: [WindowId: Rect] = [:]
         for placement in placements {
             let strip = s.workspaces[placement.name]
             let owner = s.monitors.monitor(of: placement.name)
             guard s.motion.mayPlace(on: owner) else {
                 // Nothing has moved on this display and nothing may — its cover is not on the glass, or
                 // it is and a pin has yet to come to the top of the band that cover is leaving clear.
-                // Either way its share of the on-screen record is the one the last completed pass made.
+                // Either way its share of the record is the one the last completed pass made.
                 visible.formUnion(strip.allWindowIds.filter(s.world.isOnScreen))
+                for id in strip.allWindowIds { parked[id] = s.world.parkedSlots[id] }
                 continue
             }
             if let offset = placement.scrollOffset {
@@ -3609,6 +3620,7 @@ public enum Engine {
             }
             for id in strip.allWindowIds {
                 guard let target = frames[id] else { continue }
+                if !visible.contains(id) { parked[id] = target }
                 if isAlreadyPlaced(s.world, id, at: target, question: questions[id]) { continue }
                 effects.append(visible.contains(id) ? .setFrame(id, target) : .park(id, target))
                 s.world.noteWrite(id, to: target)      // optimistic: AX will land here (or axFailed)
@@ -3634,7 +3646,7 @@ public enum Engine {
         }
         // Every managed window was just answered for, including the ones already standing correctly, so
         // this describes the whole desktop rather than the subset that needed a set.
-        s.world.notePlaced(onScreen: visible)
+        s.world.notePlaced(onScreen: visible, parked: parked)
         return (effects, moved)
     }
 

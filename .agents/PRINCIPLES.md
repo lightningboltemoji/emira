@@ -322,7 +322,9 @@ happen on.
   beyond that corner catches the body, and a window that is meant to be parked is instead sitting in view on
   another display. There is one corner with nothing beyond it, and the arrangement says which. The
   compensation is large: **a window that cannot hide cannot be throttled for being hidden**, so parked
-  windows stay warm and revealing one does not flash.
+  windows stay warm and revealing one does not flash. While emira runs the nub is not on show: the
+  presentation plane draws the corner back over it as the desktop would look with nothing parked in it —
+  and a hair short of opaque, since a window it occluded could be throttled after all.
 - **Only the owning app can produce resized pixels, and AX latency is its main thread's, not ours.** A busy
   Chrome or JVM window services us when it gets around to it. We can mask that; we cannot fix it.
 - **The pointer composites above everything, including our cover**, and the public API will not let a

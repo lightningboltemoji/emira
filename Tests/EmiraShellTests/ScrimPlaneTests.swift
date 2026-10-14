@@ -48,11 +48,12 @@ import EmiraCore
     /// A filmer that answers with a 1×1 image, immediately — enough for "there is a photograph".
     final class InstantFilmer: DesktopFilmer {
         var answers = true
-        private(set) var films: [(monitor: MonitorId, radius: Double)] = []
-        func film(desktopOf monitor: MonitorId, blurredBy radius: Double,
-                  then: @escaping @MainActor (CGImage?) -> Void) {
-            films.append((monitor, radius))
-            then(answers ? Self.pixel : nil)
+        private(set) var films: [(monitor: MonitorId, radius: Double?, strip: Rect?)] = []
+        func film(desktopOf monitor: MonitorId, blurredBy radius: Double?, keeping strip: Rect?,
+                  then: @escaping @MainActor (DesktopFilm) -> Void) {
+            films.append((monitor, radius, strip))
+            then(DesktopFilm(veiled: answers && radius != nil ? Self.pixel : nil,
+                             strip: answers && strip != nil ? Self.pixel : nil))
         }
         static let pixel: CGImage = {
             let ctx = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,

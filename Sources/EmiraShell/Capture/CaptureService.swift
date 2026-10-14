@@ -180,14 +180,16 @@ public enum CapturePiece: Sendable {
     case window(WindowId, CapturedSurface)
 }
 
-/// What a batch that opens a cover asks of its base beyond the requests' own holes. `departed` is cut
-/// from it and filmed by nobody: windows management has let go of that the window server may still be
-/// fading out, which a base photographed in between would carry frozen under the layers sliding over it.
+/// What a batch opening a cover cuts from its base beyond the requests' own holes, filming none of it:
+/// `departed`, windows management has let go of that the server may still be fading out, and `concealed`,
+/// the parked windows a tarp is drawing over.
 public struct BaseRequest: Sendable, Equatable {
     public let departed: Set<CGWindowID>
+    public let concealed: Set<CGWindowID>
 
-    public init(departed: Set<CGWindowID> = []) {
+    public init(departed: Set<CGWindowID> = [], concealed: Set<CGWindowID> = []) {
         self.departed = departed
+        self.concealed = concealed
     }
 }
 
@@ -343,6 +345,8 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     /// unplug would put every transition for the rest of the session on the `snap` path. The shell's
     /// set of capturers is fixed at launch; which of them still name a display is not.
     public var isAttached: @MainActor (MonitorId) -> Bool = { _ in true }
+    /// The parked windows a tarp is drawing over (`Scrims.concealedNumbers`), cut from every base.
+    public var concealed: @MainActor () -> Set<CGWindowID> = { [] }
     private let scheduler: any DelayScheduler
     private let deadline: TimeInterval
     /// Where stills go to outlive their cover, and where `.immediate`'s stand-ins come from.
@@ -571,7 +575,8 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         // being covered. The departed are the hole's other half — still on the glass, filmed by nobody,
         // and the close that let them go is very often what opened this cover.
         if let asked {
-            asked.capture(requests, base: isHead ? BaseRequest(departed: registry.departedNumbers) : nil,
+            let base = BaseRequest(departed: registry.departedNumbers, concealed: concealed())
+            asked.capture(requests, base: isHead ? base : nil,
                           piece: { [weak self] piece in
                               self?.receive(generation: mine, from: monitor, piece: piece)
                           },

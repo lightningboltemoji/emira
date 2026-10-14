@@ -218,7 +218,7 @@ its executor. There are seven planes:
 | presentation | `Reconstruction` (via `CoverSurface`) | Core Animation, main thread, instant                 |
 | capture      | `CaptureService`                      | ScreenCaptureKit, own queue, deadline-bounded        |
 | hoist        | `HoistPanels` (via `HoistPlane`)      | one `NSWindow` per hoisted float, outside every cover |
-| scrim        | `Scrims` (via `ScrimPlane`)           | one `NSWindow` per display, under every cover        |
+| scrim        | `Scrims` (via `ScrimPlane`)           | one `NSWindow` per display + the tarp, under covers  |
 | truth        | `AXExecutor`                          | AX Mach IPC, serial per-app queues, slow, may refuse |
 | pointer      | `PointerExecutor`                     | CoreGraphics on the cursor itself                    |
 | system       | `ShellLauncher`                       | `/bin/sh -c`, fire and forget                        |
@@ -226,7 +226,7 @@ its executor. There are seven planes:
 **The hoist and scrim planes are the presentation plane outside a transition**, and each is its own
 plane because nothing it does is a cover's: no base, no session, no ack the reducer counts down, and
 windows that outlive every transition. `Effect.setHoists` carries the whole desktop's set and
-`Effect.setScrims` one display's, each every time, and each plane diffs it.
+`Effect.setScrims` and `Effect.setTarp` one display's, each every time, and each plane diffs it.
 
 What the router cannot supply is "cover before teleport" — that is a fact about the _display_, not about
 emission order, so it is a phase in the core fenced by `Event.coverOnScreen`, and the two never share a batch.
@@ -333,8 +333,8 @@ the rule above with the quantifier written down; on two it is what stops one scr
 the other's truth plane. What it does *not* cover is a window whose pixels reach past its own display: it is
 covered on the screen its workspace lives on, and its far half stays in the neighbouring desktop.
 
-A held display still contributes its share of `World.placedOnScreen` — what the last completed pass decided —
-so the record describes the whole desktop while the writes are only what the gate allows.
+A held display still contributes its share of `World.placedOnScreen` and `World.parkedSlots` — what the last
+completed pass decided — so the record describes the whole desktop while the writes are only what the gate allows.
 
 ### The close gate, and its bound
 
@@ -1375,7 +1375,8 @@ config, and the cover reads the same answer by asking for the backdrop and getti
 opaque desktop is built with no veil layer to carry at zero and place every frame. It is **sticky** once
 taken: an empty set is also what a drag looks like, and a hand putting a window down has to find the backdrop
 standing rather than wait out a capture, so a session that turns the setting off keeps its last photograph —
-never refreshed — until the daemon restarts.
+never refreshed — until the daemon restarts. A display holding a tarp is filmed for the tarp's strip alone and
+keeps no veiled photograph, so this stays true of it (*Tarp*).
 
 **A set describes a desktop, so it does not arrive ahead of one** (`Engine.settleScrims`). The veil is
 appearance, and the rule for when appearance may change is the rule for when a window may move: a display
@@ -1538,6 +1539,58 @@ where the cut around a pin is one path, rewritten twice a transition. It lasts o
 is less of it to carry than the rule once implied: a see-through window behind another is no decline at all,
 so the two planes part company only over the opaque ones. A cascade raises no veil to disagree about, and a
 pin — cut out of the cover — and a hoisted float are never under a stand-in.
+
+### Tarp
+
+**A parked window is drawn over by a patch of the desktop with nothing parked in it** (`State.tarp` →
+`Effect.setTarp` → `Scrims.setTarp`, `TarpWindow`). We cannot hide the nub parking leaves (`PRINCIPLES` §5), so
+the presentation plane paints over it: the desktop photograph, with the shadow of every window that is *not*
+parked drawn back in exactly as a stand-in draws its own (`WindowShadow`), and each of those windows cut out so
+its own pixels stay live. Against the real corner beside a tiled column it is within 3 levels in every channel,
+for the key shadow and the other alike.
+
+**Which windows are parked, and where, is the placement pass's record; where each stands is the window
+server's.** `writeTruthPlane` records the slot it parks every window in (`World.parkedSlots`), as it records
+`placedOnScreen`, and the tarp carries those slots, the lot and the focused window. The shell draws over a
+window only while the window server shows it standing in its slot (`TarpCut.cut`, within `Tolerance.identity`)
+— so a park still landing, or one an app refused, stays in view rather than being painted over wherever it is.
+
+**The patch reaches as far as the nubs' shadows do.** Every nub's on-screen part is padded by the unfocused
+shadow's reach — or the key shadow's where the key window may be parked: the one the core names, or any of
+them when it names none, since a workspace with nothing on it leaves macOS's key window where it was. It is
+whole points, because a window frame is, and the photograph has to sit on the pixels it was filmed from. The
+edges inside the display fade over `TarpWindow.feather`, so a shadow's tail past the padding meets the desktop
+without a step; the display's own edges do not, since the nubs stand against them.
+
+**A neighbour's hole reaches `TarpWindow.rim` past its frame.** macOS draws a window's dark rim just outside
+the frame, and the hole is what leaves it live; cut at the frame, the rim is lost at the corners. A neighbour's
+shadow is cast from its silhouette near the patch alone, since its far edges are past their reach.
+
+**The strip a tarp covers is filmed untouched** (`DesktopFilm.strip`): the scrims' photograph is frosted and
+shaded for its blend, and a tarp has to show the desktop as it is. One film serves both. The strip runs from
+`TarpWindow.band` inside the lot's edge to the display's, the whole height of it, and is copied out of the
+capture rather than cropped, which would keep the whole display's buffer alive behind it.
+
+**It is cut with the veils, from the same reading, and sent on the same terms** — `Engine.settleScrims`' gate
+in the core, and the settle watch, the arrival watch and the stack-change recut in the shell. It is cut
+**first**, because what it is drawing over is out of the veils' walk as a departing window is: a parked window
+is not meant to be on the glass at all, and declining a veil over one leaves a column peeking past it unveiled
+where the nub stands behind. And it is **cut again the moment a cover starts to come down**
+(`ScrimPlane.setCovered`): the one cut it gets under a cover is taken while the parks are still landing, and
+the fade would otherwise open on a nub.
+
+**A cover's base leaves out what the tarp is drawing over** (`BaseRequest.concealed`), so a transition shows
+the corner the desktop around it does. Filmed at 60 fps through nine workspace switches, no frame shows a nub.
+
+**`TarpWindow` holds `alpha 0.999`**, for `Overlay.raisedAlpha`'s reason: at full alpha the parked windows
+under it report themselves occluded, and an occluded window is one its app may stop drawing — the flash on
+revealing it that a nub exists to prevent. It takes no clicks, so a nub is still a grab handle under it, and
+it goes with the daemon, which is when a hand needs one.
+
+**A focus change moves the key shadow, and the tarp moves with it.** macOS switches a window's shadow in one
+step, and the tarp's set follows the same focus report, so the two land within a frame of each other.
+**While a window is in the hand the tarp is lifted**, for the veils' reason: it is cut once per set, and a
+window carried across the corner would pass under a patch cut around where it was picked up.
 
 ---
 
@@ -1915,10 +1968,11 @@ carry the plural:
   liveness test here than it is for the registry above, and a scoped window the read omits is neither filmed
   nor cut, so it stands frozen in the base while the cover travels around it. The short
   `onScreenWindowsOnly` answer is taken while it carries every window the cover was scoped to draw, and the
-  whole list is read when it does not. The hole has two members the film list cannot name. A window management has let go of is on the
+  whole list is read when it does not. The hole has three members the film list cannot name. A window management has let go of is on the
   glass for the length of its fade, and the close that let it go is very often the edit opening the cover — so
   `WindowRegistry` keeps every forgotten number as _departed_ until reconciliation finds it unlisted, and a
-  head batch cuts them all (`BaseRequest.departed`) while filming none. And everything above `Overlay.level`
+  head batch cuts them all (`BaseRequest.departed`) while filming none. The parked windows a tarp is drawing
+  over are cut too (`BaseRequest.concealed`), or a cover would show the nubs the desktop hides. And everything above `Overlay.level`
   is cut whatever it is: the cover cannot hide the menu bar or the Dock, so a copy of either inside it could
   only double with the live one. **And the batches asked for in the same turn**, which grow the cover before
   it is up (`baseCuts`): the boot scan adopts a window per event and the core asks for a batch per window, so
@@ -1955,11 +2009,11 @@ nothing reasoning about z-order. Per-window veils ride in those layers' opacity,
 `alpha 1` and one surface serves any number of windows at any number of strengths.
 
 Levels, top down: `GuidePanel` at `.floating + 2`, `HoistPanel` at `+ 1`, `Overlay` at `.floating`,
-`ScrimWindow` at `− 1`. A hoisted float is over the cover, because a float that stays on top through a
+`ScrimWindow` and `TarpWindow` at `− 1`. A hoisted float is over the cover, because a float that stays on top through a
 scroll is the point, and under the guides, because they answer *where am I* about the desktop the hoist is
 part of. A scrim is under the cover because a cover must hide it outright: the reconstruction carries its
 own transparency (`Reconstruction.veil`), and a scrim left showing would tint it wherever a real window
-stood before it teleported.
+stood before it teleported. A tarp is under it for the same reason: the cover draws the corner itself.
 
 **The menu bar is the exception, because it is one item for a desktop of several.** `StatusModel.title` is a
 single character and goes to the address the user is on; the rest go to the tooltip after it
@@ -2494,7 +2548,7 @@ emira/
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
     │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
-    │   │                Hoists · Scrims (the two standing presentation-plane sets)
+    │   │                Hoists · Scrims · Tarp (the standing presentation-plane sets)
     │   └── Layout/      Layout (the kind) · Workspaces · Strip · Stack · Column · Presets
     │                    Cascade (the quit pile, not a layout) · Park
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
@@ -2525,6 +2579,7 @@ emira/
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)
     │   │                Scrim(s) (the see-through unfocused windows — one surface per display)
+    │   │                TarpWindow (the parking lot drawn over — one strip, on the lot's display)
     │   ├── Guide/       GuideSubject (State → GuideInput) · Guide · GuidePanel · GuideIcons
     │   │                GuideNames
     │   ├── Pointer/     CursorConnection · PointerExecutor · PointerFocus · PointerWake · PointerSamples

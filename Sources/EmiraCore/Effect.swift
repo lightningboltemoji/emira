@@ -42,6 +42,10 @@ public enum Effect: Sendable, Equatable, Codable {
     /// `moving` names what emira has written that the window server may not have caught up with.
     case setScrims(MonitorId, [ScrimBinding], ScrimChange, moving: Set<WindowId>)
 
+    /// The parked windows to draw the desktop back over on one display, or `nil` to take the tarp off it.
+    /// Sent and re-sent on `setScrims`' terms, since it is cut against the same reading. Unacked.
+    case setTarp(MonitorId, Tarp?)
+
     /// The pins one display's cover must not draw over, so they stay live underneath it. **Silhouettes,
     /// not bands**: these are the pin boxes, the rounding is the shell's to measure, and everything
     /// outside the two is the cover's to draw. The whole set every time, which the shell diffs, as

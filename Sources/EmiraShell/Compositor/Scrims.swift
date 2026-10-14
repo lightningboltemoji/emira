@@ -2,7 +2,8 @@ import AppKit
 import EmiraCore
 
 // The scrim plane: one `ScrimWindow` per display, the desktop photograph behind each, and the rule
-// that decides which of the core's bindings the photograph is actually true for.
+// that decides which of the core's bindings the photograph is actually true for. The tarp over the
+// parking lot is cut here too (`TarpWindow`), from the same reading of the window server.
 //
 // **Two authorities, and each is asked only what it owns.** Which windows are see-through, and how far,
 // is the core's (`ScrimBinding`). Where every window stands, and in what order, is the window server's —
@@ -60,6 +61,10 @@ public protocol ScrimPlane: AnyObject {
     func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
                    moving: Set<WindowId>)
 
+    /// Draw the desktop back over the parked windows on `monitor` that stand in their slots, or take the
+    /// tarp off it for `nil`.
+    func setTarp(_ tarp: Tarp?, on monitor: MonitorId)
+
     /// Whether a cover stands over `monitor`, from its raise until its dismissal begins. A covered scrim
     /// is out of sight, and every re-read of the window server waits on that cover's commit each frame.
     func setCovered(_ covered: Bool, on monitor: MonitorId)
@@ -73,6 +78,7 @@ public final class NoScrims: ScrimPlane {
     public init() {}
     public func setScrims(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange,
                           moving: Set<WindowId>) {}
+    public func setTarp(_ tarp: Tarp?, on monitor: MonitorId) {}
     public func setCovered(_ covered: Bool, on monitor: MonitorId) {}
 }
 
@@ -116,10 +122,25 @@ public struct StackedWindow: Equatable, Sendable {
 /// Films one display's desktop — every window taken out of it. A seam for `SurfaceFilmer`'s reason.
 @MainActor
 public protocol DesktopFilmer: AnyObject {
-    /// Photograph `monitor`'s desktop under a Gaussian of `radius` points, or answer `nil` — no grant,
-    /// a departed display, a failed shot. The blur is the film's because the backdrop is.
-    func film(desktopOf monitor: MonitorId, blurredBy radius: Double,
-              then: @escaping @MainActor (CGImage?) -> Void)
+    /// Photograph `monitor`'s desktop once, keeping what is asked for: the scrims' photograph under a
+    /// Gaussian of `radius` points, and the untouched pixels of `strip` (display-local points) that a
+    /// tarp draws. `nil` asks for neither; either answers `nil` where it could not be taken.
+    func film(desktopOf monitor: MonitorId, blurredBy radius: Double?, keeping strip: Rect?,
+              then: @escaping @MainActor (DesktopFilm) -> Void)
+}
+
+/// One film of a display's desktop. The two are kept apart because a scrim's photograph is frosted and
+/// shaded for its blend, and a tarp has to show the desktop exactly as it is.
+public struct DesktopFilm {
+    /// The scrims' photograph, frosted and shaded.
+    public let veiled: CGImage?
+    /// The strip a tarp covers, untouched.
+    public let strip: CGImage?
+
+    public init(veiled: CGImage?, strip: CGImage?) {
+        self.veiled = veiled
+        self.strip = strip
+    }
 }
 
 /// Every display's scrim, and the rule that keeps them matching the core's answer.
@@ -151,6 +172,8 @@ public final class Scrims: ScrimPlane {
     static let fallbackCornerRadius: Double = 12
 
     private let build: @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
+    /// Makes a tarp's surface over a strip of a display, at its backing scale.
+    private let buildTarp: @MainActor (Rect, CGFloat, ScreenGeometry) -> any TarpSurface
     private let filmer: any DesktopFilmer
     /// Window number → the id the core knows it by, or `nil` for a window emira never adopted.
     private let identify: @MainActor (CGWindowID) -> WindowId?
@@ -173,6 +196,7 @@ public final class Scrims: ScrimPlane {
 
     private var surfaces: [MonitorId: any ScrimSurface] = [:]
     private var frames: [MonitorId: Rect] = [:]
+    private var scales: [MonitorId: CGFloat] = [:]
     private var filmedAt: [MonitorId: Date] = [:]
     /// The photograph each display's scrim is drawing, kept for the cover (`backdrop(of:)`).
     private var photographs: [MonitorId: CGImage] = [:]
@@ -196,6 +220,17 @@ public final class Scrims: ScrimPlane {
 
     /// What each display's mask is actually drawing, so a re-read that finds nothing new paints nothing.
     private var painted: [MonitorId: [ScrimVeil]] = [:]
+
+    /// The tarp the core last named per display, its surface, the strip that surface covers, the strip's
+    /// photograph, and the cut it is drawing. Built on the first tarp a display is sent, since the strip
+    /// is the lot's — and rebuilt when the lot moves.
+    private var tarps: [MonitorId: Tarp] = [:]
+    private var tarpSurfaces: [MonitorId: any TarpSurface] = [:]
+    private var strips: [MonitorId: Rect] = [:]
+    private var stripPhotographs: [MonitorId: CGImage] = [:]
+    private var paintedTarps: [MonitorId: TarpCut] = [:]
+    /// The strip each display's film in flight was asked to keep, so a tarp waiting on one asks no twice.
+    private var filmingStrip: [MonitorId: Rect] = [:]
     /// Bumped per display by every set, so a settling re-read from an older one owns nothing.
     private var settleGeneration: [MonitorId: Int] = [:]
 
@@ -217,8 +252,11 @@ public final class Scrims: ScrimPlane {
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
                 scheduler: any DelayScheduler = DispatchScheduler(),
                 build: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
-                    = { ScrimWindow(display: $0, scale: $1, geometry: $2) }) {
+                    = { ScrimWindow(display: $0, scale: $1, geometry: $2) },
+                buildTarp: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any TarpSurface
+                    = { TarpWindow(strip: $0, scale: $1, geometry: $2) }) {
         self.scheduler = scheduler
+        self.buildTarp = buildTarp
         self.filmer = filmer
         self.identify = identify
         self.departed = departed
@@ -237,9 +275,11 @@ public final class Scrims: ScrimPlane {
         for display in displays {
             surfaces[display.monitor] = build(display.frame, display.scale, geometry)
             frames[display.monitor] = display.frame
+            scales[display.monitor] = display.scale
             if wantsPhotograph(display.monitor) { refilm(display.monitor) }
             // A new surface holds no mask, so there is nothing for its set to dissolve from.
             apply(current[display.monitor] ?? [], on: display.monitor, change: .cut)
+            if let tarp = tarps[display.monitor] { setTarp(tarp, on: display.monitor) }
         }
     }
 
@@ -254,11 +294,38 @@ public final class Scrims: ScrimPlane {
         apply(bindings, on: monitor, change: change)
     }
 
+    public func setTarp(_ tarp: Tarp?, on monitor: MonitorId) {
+        tarps[monitor] = tarp
+        guard let tarp, let display = frames[monitor], let scale = scales[monitor] else {
+            paintedTarps[monitor] = nil
+            tarpSurfaces[monitor]?.setCut(nil)
+            return
+        }
+        // The strip runs from just inside the lot's edge to the display's, the whole height of it: a
+        // nub hugs the lot, and its body hangs on past it to the display's edge.
+        let left = max((tarp.lot.maxX - TarpWindow.band).rounded(.down), display.minX)
+        let strip = Rect(x: left, y: display.minY, width: display.maxX - left, height: display.height)
+        if strips[monitor] != strip {
+            tarpSurfaces[monitor]?.retire()
+            tarpSurfaces[monitor] = buildTarp(strip, scale, geometry)
+            strips[monitor] = strip
+            stripPhotographs[monitor] = nil
+            paintedTarps[monitor] = nil
+        }
+        // A strip with no photograph is one known to be missing, not suspected stale: no throttle.
+        if stripPhotographs[monitor] == nil, filmingStrip[monitor] != strip { refilm(monitor) }
+        paint(monitor, change: .cut)
+        if !covered.contains(monitor) { watch(monitor) }
+    }
+
     public func setCovered(_ isCovered: Bool, on monitor: MonitorId) {
         guard isCovered else {
             covered.remove(monitor)
+            // The fade is about to show the live desktop, and a tarp cut under the cover was cut while
+            // the parks were still landing: cut it against the server now, before a frame reveals a nub.
+            if tarps[monitor] != nil { paint(monitor, change: .cut) }
             // What moved under the cover is settled by now, or settling; one watch finds out which.
-            if current[monitor]?.isEmpty == false { watch(monitor) }
+            if isActive(monitor) { watch(monitor) }
             return
         }
         covered.insert(monitor)
@@ -280,8 +347,15 @@ public final class Scrims: ScrimPlane {
             surface.retire()
             filmGeneration[monitor, default: 0] &+= 1
         }
+        for surface in tarpSurfaces.values { surface.retire() }
+        tarpSurfaces.removeAll()
+        strips.removeAll()
+        stripPhotographs.removeAll()
+        paintedTarps.removeAll()
+        filmingStrip.removeAll()
         surfaces.removeAll()
         frames.removeAll()
+        scales.removeAll()
         filmedAt.removeAll()
         photographs.removeAll()
         // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
@@ -295,7 +369,7 @@ public final class Scrims: ScrimPlane {
     /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it
     /// (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
     public func recut() {
-        for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
+        for monitor in surfaces.keys.sorted() where isActive(monitor) {
             paint(monitor, change: .cut)
         }
     }
@@ -304,7 +378,7 @@ public final class Scrims: ScrimPlane {
     /// when (`WorldWatcher.onWindowAnnounced`). Cut every mask against each reading until the stacking
     /// has moved and stood still, so the newcomer is not left under the veil it landed on.
     public func expectArrival() {
-        guard surfaces.keys.contains(where: { current[$0]?.isEmpty == false }) else { return }
+        guard surfaces.keys.contains(where: isActive) else { return }
         arrivalGeneration &+= 1
         let mine = arrivalGeneration
         func again(after previous: [StackedWindow]?, moved: Bool, quiet: Int, left: Int) {
@@ -318,7 +392,7 @@ public final class Scrims: ScrimPlane {
             // Mid-frame the reading is skipped, not waited for: it still spends one of `left`.
             guard !isPainting() else { return again(after: previous, moved: moved, quiet: quiet, left: left) }
             let reading = stack()
-            for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
+            for monitor in surfaces.keys.sorted() where isActive(monitor) {
                 paint(monitor, change: .cut, against: reading)
             }
             // Quiet counts only once something has moved: before that the newcomer is still on its way.
@@ -349,8 +423,24 @@ public final class Scrims: ScrimPlane {
     /// rather than wait out a capture. What that leaves behind is one photograph per display held until
     /// the daemon restarts by somebody who turned the setting off mid-session — never refreshed, since
     /// nothing asks for it again.
-    private func wantsPhotograph(_ monitor: MonitorId) -> Bool {
+    private func wantsVeiled(_ monitor: MonitorId) -> Bool {
         current[monitor]?.isEmpty == false || photographs[monitor] != nil
+    }
+
+    /// Whether any film of `monitor` is wanted: the scrims' photograph, or the strip a tarp draws.
+    private func wantsPhotograph(_ monitor: MonitorId) -> Bool {
+        wantsVeiled(monitor) || tarps[monitor] != nil
+    }
+
+    /// Whether `monitor` is drawing anything the window server's reading decides — the veils or the tarp.
+    private func isActive(_ monitor: MonitorId) -> Bool {
+        current[monitor]?.isEmpty == false || tarps[monitor] != nil
+    }
+
+    /// The parked windows a tarp is drawing over, on every display — what a cover's base leaves out, so
+    /// a transition shows the corner the desktop does.
+    public var concealedNumbers: Set<CGWindowID> {
+        paintedTarps.values.reduce(into: []) { $0.formUnion($1.concealed) }
     }
 
     /// Refilm unless the standing photograph is younger than `desktopMaxAge`. The throttle paces a
@@ -366,19 +456,28 @@ public final class Scrims: ScrimPlane {
     private func refilm(_ monitor: MonitorId) {
         // A display with no surface has no scrim to back, and `setScrims` can name one before the
         // screens it is on have been built.
-        guard surfaces[monitor] != nil else { return }
+        guard surfaces[monitor] != nil, let display = frames[monitor] else { return }
         filmedAt[monitor] = Date()
         filmGeneration[monitor, default: 0] &+= 1
         let mine = filmGeneration[monitor] ?? 0
-        filmer.film(desktopOf: monitor, blurredBy: blur) { [weak self] image in
+        let strip = tarps[monitor] != nil ? strips[monitor] : nil
+        filmingStrip[monitor] = strip
+        filmer.film(desktopOf: monitor, blurredBy: wantsVeiled(monitor) ? blur : nil,
+                    keeping: strip?.offsetBy(dx: -display.minX, dy: -display.minY)) { [weak self] film in
             guard let self, self.filmGeneration[monitor] == mine else { return }
+            self.filmingStrip[monitor] = nil
             // A film that failed leaves the standing photograph alone: an old desktop is a better
             // backdrop than none, and `nil` here would take every scrim on that display down. The
             // attempt still stands against the throttle, or a desktop that declines to be filmed at
             // all — no Screen Recording grant — is asked again at every cover and every set.
-            guard let image else { return }
-            self.photographs[monitor] = image
-            self.surfaces[monitor]?.setDesktop(image)
+            if let image = film.veiled {
+                self.photographs[monitor] = image
+                self.surfaces[monitor]?.setDesktop(image)
+            }
+            if let image = film.strip, let strip, self.strips[monitor] == strip {
+                self.stripPhotographs[monitor] = image
+                self.tarpSurfaces[monitor]?.setDesktop(image)
+            }
         }
     }
 
@@ -395,7 +494,7 @@ public final class Scrims: ScrimPlane {
     private func apply(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
         paint(monitor, change: change)
         // Cut once even under a cover: its stand-ins draw the veils this cut decides (`veil(of:)`).
-        guard !bindings.isEmpty, !covered.contains(monitor) else { return }
+        guard isActive(monitor), !covered.contains(monitor) else { return }
         watch(monitor)
     }
 
@@ -405,9 +504,32 @@ public final class Scrims: ScrimPlane {
     @discardableResult
     private func paint(_ monitor: MonitorId, change: ScrimChange,
                        against reading: [StackedWindow]? = nil) -> Bool {
+        guard surfaces[monitor] != nil, frames[monitor] != nil else { return false }
+        // A display drawing nothing needs no stacking: there is no mask to cut against it.
+        let stacked = isActive(monitor) ? (reading ?? stack()) : []
+        // The tarp first: what it is drawing over is what the veils have to leave out.
+        let tarp = paintTarp(monitor, against: stacked)
+        return paintVeils(monitor, change: change, against: stacked) || tarp
+    }
+
+    /// Cut the tarp against `stacked`. A departing window is a neighbour like any other: what is under
+    /// the patch is what the server shows, and it is showing that window until it is gone.
+    private func paintTarp(_ monitor: MonitorId, against stacked: [StackedWindow]) -> Bool {
+        guard let tarp = tarps[monitor], let display = frames[monitor], let strip = strips[monitor]
+        else { return false }
+        let identified = stacked.map { (window: identify($0.number), pane: $0) }
+        let cut = TarpCut.cut(for: tarp, over: identified, on: display, within: strip,
+                              cornerRadius: cornerRadius)
+        guard cut != paintedTarps[monitor] else { return false }
+        paintedTarps[monitor] = cut
+        tarpSurfaces[monitor]?.setCut(cut)
+        return true
+    }
+
+    private func paintVeils(_ monitor: MonitorId, change: ScrimChange,
+                            against stacked: [StackedWindow]) -> Bool {
         guard let surface = surfaces[monitor], let display = frames[monitor] else { return false }
         let bindings = current[monitor] ?? []
-        // A set that draws nothing needs no stacking: there is no mask to cut against it.
         guard !bindings.isEmpty else {
             applied[monitor] = [:]
             // Nothing is cut, so nothing is waiting on a reading.
@@ -420,8 +542,9 @@ public final class Scrims: ScrimPlane {
         }
         // **A window management has let go of takes nothing out of anything.** Nothing announces the
         // moment its pixels leave the glass, so the mask that ignores it is the one that stays right.
-        let gone = departed()
-        let identified = (reading ?? stack())
+        // Nor does a parked window the tarp is drawing over: it is not meant to be on the glass at all.
+        let gone = departed().union(paintedTarps[monitor]?.concealed ?? [])
+        let identified = stacked
             .filter { !gone.contains($0.number) }
             .map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,

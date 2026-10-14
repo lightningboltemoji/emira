@@ -188,6 +188,9 @@ public struct World: Sendable, Equatable, Codable {
     /// transition's capture head the layout can be restructured with no real window moving. `isOnScreen`
     /// reads it, which is how `[focus] system-events` judges a report against where the windows *are*.
     public private(set) var placedOnScreen: Set<WindowId>
+    /// Every window the last placement pass parked, at the slot it parked it in — `placedOnScreen`'s
+    /// complement, kept with its geometry, for `placedOnScreen`'s reason. What the tarp draws over.
+    public private(set) var parkedSlots: [WindowId: Rect] = [:]
     /// The user's explicit float/tile answer per window, where they have given one — `Command.float`.
     /// A side table rather than a field on `WindowState` for the same reason `corrections` is one:
     /// `insert` rebuilds the whole record (a re-scan overwrites it), and an answer the user gave should
@@ -265,6 +268,7 @@ public struct World: Sendable, Equatable, Codable {
         unverified.remove(id)
         inFlight[id] = nil
         placedOnScreen.remove(id)
+        parkedSlots[id] = nil
         floating[id] = nil
         pins[id] = nil
         focusedAt[id] = nil
@@ -290,7 +294,10 @@ public struct World: Sendable, Equatable, Codable {
     /// is as structural as this can make it: the shell only ever *reads* core state, and every other
     /// mutator here folds an `Event` the shell has to be able to construct. Replaced wholesale, never
     /// merged: a pass places every managed window, so what it does not name it parked.
-    mutating func notePlaced(onScreen ids: Set<WindowId>) { placedOnScreen = ids }
+    mutating func notePlaced(onScreen ids: Set<WindowId>, parked: [WindowId: Rect]) {
+        placedOnScreen = ids
+        parkedSlots = parked
+    }
 
     /// Record a set `Engine.writeTruthPlane` has just written: the target is taken optimistically, and
     /// the move is in flight on every display the old frame or the new one overlaps until it lands.

@@ -363,6 +363,10 @@ import EmiraCore
             let windows = bindings.map { "\($0.window.raw)" }.joined(separator: ",")
             timeline.record("\(change)@\(monitor.raw)(\(windows))")
         }
+        func setTarp(_ tarp: Tarp?, on monitor: MonitorId) {
+            let windows = (tarp?.slots.keys.map(\.raw).sorted() ?? []).map { "\($0)" }
+            timeline.record("tarp@\(monitor.raw)(\(windows.joined(separator: ",")))")
+        }
         func setCovered(_ covered: Bool, on monitor: MonitorId) {
             timeline.record("\(covered ? "covered" : "uncovered")@\(monitor.raw)")
         }

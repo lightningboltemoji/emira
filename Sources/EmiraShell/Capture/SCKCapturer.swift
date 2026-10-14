@@ -28,6 +28,8 @@ import EmiraCore
 // window server has finished fading it out, and the close that let it go is very often the edit opening
 // this cover — so a base photographed in between would carry the window frozen under the layers
 // closing ranks over it. Those numbers arrive as `BaseRequest.departed`: a hole, and nothing to film.
+// So do the parked windows a tarp is drawing over (`BaseRequest.concealed`), or a cover would show the
+// nubs the desktop around it hides.
 //
 // **The batch is taken one capture at a time, and that is the fast path.** The window server serializes
 // screenshot requests, so overlapping them hides nothing — and worse, inflates each one: ~25 ms taken
@@ -193,7 +195,7 @@ private func grab(windows: [CGWindowID],
                               uniquingKeysWith: { first, _ in first })
     let targets = windows.compactMap { byNumber[$0] }
     let mine = ProcessInfo.processInfo.processIdentifier
-    let departed = base?.departed ?? []
+    let departed = (base?.departed ?? []).union(base?.concealed ?? [])
     // The base excludes what we are about to animate, what is still fading out, our own overlay, *and*
     // everything that composites above the cover. See the file header.
     let chrome = Overlay.level.rawValue

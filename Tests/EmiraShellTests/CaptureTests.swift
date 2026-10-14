@@ -182,6 +182,17 @@ import EmiraCore
         #expect(service.surface(for: WindowId(2)) == nil)             // …one of them with no pixels
     }
 
+    /// The parked windows a tarp draws over are cut from the base too, or a transition would show the
+    /// nubs the desktop around it hides.
+    @Test func aHeadBatchCutsWhatTheTarpHidesFromItsBase() {
+        let capturer = ManualCapturer()
+        let service = CaptureService(registry: Self.registry([1, 5]), capturer: capturer,
+                                     scheduler: ManualScheduler(), deadline: 0.25)
+        service.concealed = { [5] }
+        service.capture(windows: [WindowId(1)], feedback: EventLog().sink)
+        #expect(capturer.bases.last == BaseRequest(concealed: [5]))
+    }
+
     /// AX destroys a window's element before the window server has finished fading it out, and the
     /// close that let it go is very often the edit opening the cover — so the base has to cut what the
     /// registry has let go of, or it carries the window frozen under the layers closing ranks over it.

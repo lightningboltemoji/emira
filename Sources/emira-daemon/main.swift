@@ -330,6 +330,9 @@ let scrims = Scrims(filmer: desktopCapturer,
                     departed: { [weak registry] in registry?.departedNumbers ?? [] },
                     cornerRadius: { [surfaceCache] in surfaceCache.cornerRadius(of: $0) })
 
+// A cover's base leaves out what the tarp hides, or a transition would show the nubs it covers.
+capture.concealed = { [weak scrims] in scrims?.concealedNumbers ?? [] }
+
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
                                    truth: truth, pointer: pointer, scrims: scrims, launcher: launcher)
 

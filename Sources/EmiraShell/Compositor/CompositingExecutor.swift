@@ -211,9 +211,14 @@ public final class CompositingExecutor: Executor {
                 // Each names its own display, so two in a run are two screens rather than one decision
                 // superseded — a scrim is one display's, as `setCoverClearing` is.
                 for effect in run.effects {
-                    guard case .setScrims(let monitor, let bindings, let change, let moving) = effect
-                    else { continue }
-                    scrims.setScrims(bindings, on: monitor, change: change, moving: moving)
+                    switch effect {
+                    case .setTarp(let monitor, let tarp):
+                        scrims.setTarp(tarp, on: monitor)
+                    case .setScrims(let monitor, let bindings, let change, let moving):
+                        scrims.setScrims(bindings, on: monitor, change: change, moving: moving)
+                    default:
+                        continue
+                    }
                 }
                 // A cover standing over that desktop follows it. The set a transition changes arrives
                 // at the teleport, so the veil moves *with* the motion rather than waiting behind the
@@ -270,7 +275,7 @@ public final class CompositingExecutor: Executor {
             return .capture
         case .setHoists:
             return .hoist
-        case .setScrims:
+        case .setScrims, .setTarp:
             return .scrim
         case .setFrame, .park, .focus, .restoreFocus, .confirmFocus, .raise, .closeWindow:
             return .truth
@@ -327,7 +332,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .keepStill, .setHoists, .setScrims, .focus, .restoreFocus,
+            case .setFrame, .park, .capture, .keepStill, .setHoists, .setScrims, .setTarp, .focus,
+                 .restoreFocus,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here

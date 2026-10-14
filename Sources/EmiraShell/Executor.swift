@@ -123,11 +123,11 @@ public final class MockExecutor: Executor {
         // the pointer plane for a fourth: what answers a hide is the user moving the mouse, which no
         // system, however fast, can be made to do — and a warp posts no event at all, which is a fact
         // about the window server this mock could only misrepresent.
-        // `setHoists` and `setScrims` join them for a fifth reason: each appears when its photograph
+        // `setHoists`, `setScrims` and `setTarp` join them for a fifth reason: each appears when its photograph
         // lands and the core is never told that it did, so there is no reply for even a perfect system
         // to give — and a scrim the shell declined to draw is not a failure the core could act on.
         case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
-             .setScrims, .setCoverClearing, .keepStill,
+             .setScrims, .setTarp, .setCoverClearing, .keepStill,
              .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec:
             break
         }

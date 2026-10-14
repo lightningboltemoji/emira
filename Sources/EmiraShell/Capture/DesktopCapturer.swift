@@ -28,6 +28,9 @@ import EmiraCore
 // **So is the shade** (`shaded`), for the same reason and one more: the photograph is the only input to
 // the blend that emira owns, so reshaping it is how the veil's blend is chosen at all — and the cover
 // draws the same image, so both planes blend alike.
+//
+// **A tarp's strip is kept untouched beside it** (`DesktopFilm.strip`): a tarp shows the desktop as it is,
+// so one film answers both, and the strip is copied out rather than cropped.
 
 /// Films a display's desktop through ScreenCaptureKit. The `Scrims` plane's source of pixels.
 @MainActor
@@ -46,14 +49,15 @@ public final class DesktopCapturer: DesktopFilmer {
         self.scales = scales
     }
 
-    public func film(desktopOf monitor: MonitorId, blurredBy radius: Double,
-                     then: @escaping @MainActor (CGImage?) -> Void) {
+    public func film(desktopOf monitor: MonitorId, blurredBy radius: Double?, keeping strip: Rect?,
+                     then: @escaping @MainActor (DesktopFilm) -> Void) {
         let display = CGDirectDisplayID(monitor.raw)
         let scale = scales[monitor] ?? 2
         Task {
             // The photograph is taken at native resolution, so the radius crosses into pixels with it.
-            let image = await desktop(of: display, scale: scale, sigma: radius * Double(scale))
-            await then(image)
+            let film = await desktop(of: display, scale: scale, sigma: radius.map { $0 * Double(scale) },
+                                     strip: strip)
+            await then(film)
         }
     }
 }
@@ -61,11 +65,13 @@ public final class DesktopCapturer: DesktopFilmer {
 /// File scope for `SCKCapturer`'s reason: none of ScreenCaptureKit's descriptor types are `Sendable`,
 /// and nested inside a `@MainActor` type these would inherit its isolation.
 private func desktop(of display: CGDirectDisplayID, scale: CGFloat,
-                     sigma: Double) async -> CGImage? {
-    guard let content = try? await SCShareableContent.excludingDesktopWindows(
+                     sigma: Double?, strip: Rect?) async -> DesktopFilm {
+    let none = DesktopFilm(veiled: nil, strip: nil)
+    guard sigma != nil || strip != nil,
+          let content = try? await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true),
           let scDisplay = content.displays.first(where: { $0.displayID == display })
-    else { return nil }
+    else { return none }
 
     // Every window, ours included. See the file header.
     let windows = content.windows.filter { $0.windowLayer >= 0 }
@@ -76,8 +82,25 @@ private func desktop(of display: CGDirectDisplayID, scale: CGFloat,
     configuration.showsCursor = false
     guard let shot = try? await SCScreenshotManager.captureImage(contentFilter: filter,
                                                                  configuration: configuration)
+    else { return none }
+    return DesktopFilm(veiled: sigma.flatMap { frosted(shot, sigma: $0) }.flatMap { shaded($0) },
+                       strip: strip.flatMap { copied(shot, cropping: $0, scale: scale) })
+}
+
+/// The pixels of `rect` (points, top-left origin) **copied out** of `image` — a crop alone would share,
+/// and so keep alive, the whole display's buffer behind a strip a few dozen points wide.
+func copied(_ image: CGImage, cropping rect: Rect, scale: CGFloat) -> CGImage? {
+    let pixels = CGRect(x: rect.minX * scale, y: rect.minY * scale,
+                        width: rect.width * scale, height: rect.height * scale).integral
+    guard let crop = image.cropping(to: pixels),
+          let space = image.colorSpace,
+          let context = CGContext(data: nil, width: crop.width, height: crop.height, bitsPerComponent: 8,
+                                  bytesPerRow: 0, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                      | CGBitmapInfo.byteOrder32Little.rawValue)
     else { return nil }
-    return frosted(shot, sigma: sigma).flatMap { shaded($0) }
+    context.draw(crop, in: CGRect(x: 0, y: 0, width: crop.width, height: crop.height))
+    return context.makeImage()
 }
 
 /// Shared: a context compiles its kernels, so one per film would pay for them again every time. Working

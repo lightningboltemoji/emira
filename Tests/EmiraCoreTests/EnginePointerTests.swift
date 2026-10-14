@@ -401,7 +401,8 @@ import Testing
         let offset = s.viewport.offset.current
 
         let (next, effects) = Engine.reduce(s, .pointerEntered(WindowId(99)))
-        #expect(effects == [.focus(WindowId(99))])
+        // The tarp is re-sent because the key window's shadow moved; nothing is placed or scrolled.
+        #expect(effects.filter { if case .setTarp = $0 { false } else { true } } == [.focus(WindowId(99))])
         #expect(next.viewport.offset.current == offset)
     }
 
