@@ -63,10 +63,15 @@ public struct CapturedSurface: Sendable {
     /// transparent — an enormous corner. That transparency can only *add* to the deficit, so the lesser
     /// corner is the honest one; a column too wide for the viewport hangs off both edges and has neither.
     ///
+    /// **The window's edges, not the image's.** A window filmed while it animates open is drawn inside a
+    /// one-pixel clear border, which would read as corner on both sides at once; it comes off first
+    /// (`withoutBorder`).
+    ///
     /// A square-cornered window answers 0; `nil` means the pixels couldn't say and the caller should
     /// supply its own fallback.
     public static func measuredCornerRadius(of image: CGImage, scale: CGFloat) -> Double? {
         guard scale > 0, image.width > 0, image.height > 0 else { return nil }
+        let image = withoutBorder(image)
         // Comfortably past any plausible window corner, so a wedge filling much of the block is
         // evidence we measured something other than a corner.
         let probe = min(96 * Int(scale.rounded()), min(image.width, image.height))
@@ -114,6 +119,46 @@ public struct CapturedSurface: Sendable {
         let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
         guard radius <= Double(probe) / 2 else { return nil }
         return radius / Double(scale)
+    }
+
+    /// `image` less a clear pixel on both edges of either axis. An unpainted band is on one edge, or is
+    /// wider than a pixel and still reads as corner once one comes off, so the minimum's guarantee holds.
+    private static func withoutBorder(_ image: CGImage) -> CGImage {
+        let (width, height) = (image.width, image.height)
+        guard width > 2, height > 2 else { return image }
+        // A short run at the middle of each edge, clear of every corner. Its cost is its length.
+        let run = min(16, width, height)
+        func isClear(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
+            guard let level = meanAlpha(of: image, in: CGRect(x: x, y: y, width: w, height: h)) else {
+                return false
+            }
+            return level <= 1
+        }
+        let (across, down) = ((width - run) / 2, (height - run) / 2)
+        let sides = isClear(0, down, 1, run) && isClear(width - 1, down, 1, run)
+        let ends = isClear(across, 0, run, 1) && isClear(across, height - 1, run, 1)
+        let (dx, dy) = (sides ? 1 : 0, ends ? 1 : 0)
+        guard dx + dy > 0 else { return image }
+        return image.cropping(to: CGRect(x: dx, y: dy, width: width - 2 * dx, height: height - 2 * dy))
+            ?? image
+    }
+
+    /// The mean alpha level, 0–255, over `rect` of `image` in its own top-left pixel space.
+    private static func meanAlpha(of image: CGImage, in rect: CGRect) -> Double? {
+        guard let strip = image.cropping(to: rect), strip.width > 0, strip.height > 0 else { return nil }
+        let (width, height) = (strip.width, strip.height)
+        guard let context = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue)
+        else { return nil }
+        context.draw(strip, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return nil }
+        let bytes = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        var total = 0
+        for pixel in 0..<(width * height) { total += Int(bytes[pixel * 4]) }
+        return Double(total) / Double(width * height)
     }
 
     /// Whether `image` carries pixels across its whole width. An app that rasterizes what is on screen

@@ -601,6 +601,27 @@ import EmiraCore
         #expect(abs((measured ?? -1) - 12) <= 0.25)
     }
 
+    /// `image` inside a one-pixel clear border on the axes asked for — the buffer the window server draws a
+    /// window into while it animates it open, and so the still an arrival is filmed from.
+    static func bordered(_ image: CGImage, sides: Bool, ends: Bool) -> CGImage {
+        let (dx, dy) = (sides ? 1 : 0, ends ? 1 : 0)
+        let context = CGContext(data: nil, width: image.width + 2 * dx, height: image.height + 2 * dy,
+                                bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.draw(image, in: CGRect(x: dx, y: dy, width: image.width, height: image.height))
+        return context.makeImage()!
+    }
+
+    /// A border on both edges is read as corner by both probes at once, so the minimum cannot carry it.
+    @Test(arguments: [(true, false), (false, true), (true, true)])
+    func aWindowFilmedOpeningMeasuresItsOwnCorner(sides: Bool, ends: Bool) {
+        let whole = Self.window(radius: 17, size: CGSize(width: 400, height: 300), scale: 2)
+        let image = Self.bordered(whole, sides: sides, ends: ends)
+        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 2)
+        #expect(abs((measured ?? -1) - 17) <= 0.25)
+    }
+
     /// The property the minimum rests on, pinned where there is no honest corner left — a column too
     /// wide for the viewport, hanging off both edges. Unasked-for transparency only ever *adds* to the
     /// deficit, so the answer there is free to inflate, or to refuse, but never to shrink.

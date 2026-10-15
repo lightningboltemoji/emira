@@ -483,7 +483,9 @@ frame read before a resize) keeps its children; a sheet inside its window's fram
 **Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
 that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), at the
 scale the still was drawn at, ordered by its own batch, and outlives the pixels under every `CoverMode`, the
-budget and a display change; a still that is not its window's frame measures nothing. The scrim is what reads
+budget and a display change; a still that is not its window's frame measures nothing. It is read against the
+window's edges rather than the still's, because an arrival is filmed while the window server is still animating
+it open, inside a one-pixel clear border on both sides. The scrim is what reads
 it (`SurfaceCache.cornerRadius(of:)`): it rounds a see-through window at rest, when no photograph need be left.
 A window no cover has filmed — one emira never adopted, which nothing films, or a managed one before its first
 film — is measured once by `CornerSurvey` if a veil cut outlines it: by window number, alone, started only
