@@ -519,7 +519,7 @@ import EmiraCore
     @Test(arguments: [0.0, 6.0, 10.0, 12.0, 16.0, 26.0])
     func theRadiusIsReadBackOffTheAlpha(radius: Double) {
         let image = Self.window(radius: CGFloat(radius), size: CGSize(width: 400, height: 300))
-        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        let measured = CapturedSurface.measuredCorner(of: image, scale: 1)?.radius
         // Sub-quarter-pixel at every radius — the accuracy of measuring an area rather than hunting
         // for an edge (a threshold scan down the leftmost column answers 8.6 for radius 12).
         #expect(measured != nil)
@@ -530,8 +530,8 @@ import EmiraCore
     @Test func theRadiusIsScaleIndependent() {
         let oneX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 1)
         let twoX = Self.window(radius: 12, size: CGSize(width: 400, height: 300), scale: 2)
-        #expect(abs((CapturedSurface.measuredCornerRadius(of: oneX, scale: 1) ?? -1) - 12) <= 0.25)
-        #expect(abs((CapturedSurface.measuredCornerRadius(of: twoX, scale: 2) ?? -1) - 12) <= 0.25)
+        #expect(abs((CapturedSurface.measuredCorner(of: oneX, scale: 1)?.radius ?? -1) - 12) <= 0.25)
+        #expect(abs((CapturedSurface.measuredCorner(of: twoX, scale: 2)?.radius ?? -1) - 12) <= 0.25)
     }
 
     /// Rounded at the bottom and square at the top, the honest answer is 0 — the only way to catch a
@@ -549,7 +549,7 @@ import EmiraCore
                                cornerWidth: 20, cornerHeight: 20, transform: nil))
         context.addRect(CGRect(x: 0, y: 100, width: 400, height: 200))
         context.fillPath()
-        #expect(CapturedSurface.measuredCornerRadius(of: context.makeImage()!, scale: 1) == 0)
+        #expect(CapturedSurface.measuredCorner(of: context.makeImage()!, scale: 1)?.radius == 0)
     }
 
     /// A fully opaque surface — a natively full-screen window, or one whose capture carries no alpha —
@@ -558,13 +558,13 @@ import EmiraCore
         let image = Self.window(radius: 0, size: CGSize(width: 400, height: 300))
         // A zero radius is square, answered as 0. `nil` is a capture whose first 64 points down the
         // left edge are all transparent, which no real window produces.
-        #expect(CapturedSurface.measuredCornerRadius(of: image, scale: 1) == 0)
+        #expect(CapturedSurface.measuredCorner(of: image, scale: 1)?.radius == 0)
 
         let blank = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
                               space: CGColorSpaceCreateDeviceRGB(),
                               bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                                   | CGBitmapInfo.byteOrder32Big.rawValue)!
-        #expect(CapturedSurface.measuredCornerRadius(of: blank.makeImage()!, scale: 1) == nil)
+        #expect(CapturedSurface.measuredCorner(of: blank.makeImage()!, scale: 1)?.radius == nil)
     }
 
     /// `image` with `points` of one vertical edge made fully transparent — a still of a window whose
@@ -595,7 +595,7 @@ import EmiraCore
     func anUnpaintedEdgeDoesNotInflateTheRadius(unpainted: Double, onRight: Bool) {
         let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
         let image = Self.unpainting(whole, unpainted, onRight: onRight)
-        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        let measured = CapturedSurface.measuredCorner(of: image, scale: 1)?.radius
         // The corner on the painted side is untouched, so it carries the answer on its own.
         #expect(measured != nil)
         #expect(abs((measured ?? -1) - 12) <= 0.25)
@@ -618,8 +618,114 @@ import EmiraCore
     func aWindowFilmedOpeningMeasuresItsOwnCorner(sides: Bool, ends: Bool) {
         let whole = Self.window(radius: 17, size: CGSize(width: 400, height: 300), scale: 2)
         let image = Self.bordered(whole, sides: sides, ends: ends)
-        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 2)
-        #expect(abs((measured ?? -1) - 17) <= 0.25)
+        let measured = CapturedSurface.measuredCorner(of: image, scale: 2)
+        #expect(abs((measured?.radius ?? -1) - 17) <= 0.25)
+        #expect(measured?.isAtRest == false, "a window drawn inside a border is not at rest")
+    }
+
+    /// A 400×300 pt window at 2×, its rounded rect drawn `inset` pixels in from the top, from both sides
+    /// and from the bottom as asked — a border of any width, a fractional one antialiased to a rim only
+    /// part clear, which is what a window drawn at a fractional position inside its surface looks like.
+    static func inset(_ inset: CGFloat, top: Bool = true, sides: Bool = true, bottom: Bool = true,
+                      radius: CGFloat = 17, alpha: CGFloat = 1) -> CGImage {
+        let (width, height) = (800, 600)
+        let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: alpha))
+        // Core Graphics' origin is bottom-left, so the image's top is the rect's `maxY`.
+        let x = sides ? inset : 0, y = bottom ? inset : 0
+        let rect = CGRect(x: x, y: y, width: CGFloat(width) - 2 * x,
+                          height: CGFloat(height) - y - (top ? inset : 0))
+        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius * 2, cornerHeight: radius * 2,
+                               transform: nil))
+        context.fillPath()
+        return context.makeImage()!
+    }
+
+    /// The border is read as the area it is, so a rim the window server left only part clear comes off as
+    /// the part it is. Read as corner, a rim a quarter of a pixel deep is 20 pt of a 17 pt corner.
+    @Test(arguments: [0.25, 0.5, 1.0, 1.5, 2.0])
+    func aBorderIsReadPastWhateverItsWidth(inset: Double) {
+        for (top, sides, bottom) in [(true, true, true), (true, false, true), (false, true, false)] {
+            let measured = CapturedSurface.measuredCorner(
+                of: Self.inset(CGFloat(inset), top: top, sides: sides, bottom: bottom), scale: 2)
+            #expect(abs((measured?.radius ?? -1) - 17) <= 0.25, "\(inset) px: \(top), \(sides), \(bottom)")
+            #expect(measured?.isAtRest == false)
+        }
+    }
+
+    /// Both corners show what is along the top, so a border there needs no partner at the bottom. Read as
+    /// corner, a pixel of it is 22.7 pt of a 17 pt corner, and two are 27.2.
+    @Test func aBorderAlongTheTopAloneIsReadPast() {
+        let measured = CapturedSurface.measuredCorner(of: Self.inset(1, sides: false, bottom: false),
+                                                      scale: 2)
+        #expect(abs((measured?.radius ?? -1) - 17) <= 0.25)
+        #expect(measured?.isAtRest == false)
+    }
+
+    /// Past what the window server draws, a margin both corners share is unpainted or translucent window,
+    /// and a corner read inside it reads short — so it is not read, rather than read as 34 pt of corner.
+    @Test func aBorderWiderThanTheWindowServerDrawsIsNotReadPast() {
+        #expect(CapturedSurface.measuredCorner(of: Self.inset(3), scale: 2) == nil)
+    }
+
+    /// A fade is clear everywhere at once, which no corner is: a window going away is not one to read.
+    @Test func aFadingWindowIsNotACorner() {
+        #expect(CapturedSurface.measuredCorner(of: Self.inset(0, alpha: 0.98), scale: 2) == nil)
+    }
+
+    /// A window drawn as it rests, inside nothing, is at rest — and a band on one side is the app's, and
+    /// leaves it so.
+    @Test func aWindowDrawnInsideNoBorderIsAtRest() {
+        #expect(CapturedSurface.measuredCorner(of: Self.inset(0), scale: 2)?.isAtRest == true)
+        let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let banded = Self.unpainting(whole, 2, onRight: true)
+        #expect(CapturedSurface.measuredCorner(of: banded, scale: 1)?.isAtRest == true)
+    }
+
+    /// A block reaching the corner below or beside its own reads that corner's clear as border, or as no
+    /// corner at all: in a 96 pt block, 100 pt tall reads nothing and 106 pt reads 15.8, not at rest. Half
+    /// the window holds a 17 pt circle short of its far strips down to 46 pt.
+    @Test(arguments: [(400.0, 48.0), (400.0, 60.0), (400.0, 80.0), (400.0, 100.0), (400.0, 106.0),
+                      (100.0, 400.0), (48.0, 400.0)])
+    func aShortWindowIsReadWithinItsOwnHalf(width: Double, height: Double) {
+        let whole = Self.window(radius: 17, size: CGSize(width: width, height: height), scale: 2)
+        let resting = CapturedSurface.measuredCorner(of: whole, scale: 2)
+        #expect(abs((resting?.radius ?? -1) - 17) <= 0.25)
+        #expect(resting?.isAtRest == true)
+        let opening = CapturedSurface.measuredCorner(of: Self.bordered(whole, sides: true, ends: true),
+                                                     scale: 2)
+        #expect(abs((opening?.radius ?? -1) - 17) <= 0.25)
+        #expect(opening?.isAtRest == false)
+    }
+
+    /// Clear inside both blocks, short of their edges and far strips, is more than any corner leaves there.
+    @Test func aBlockClearPastItsCornerIsNotACorner() {
+        let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let context = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                    | CGBitmapInfo.byteOrder32Big.rawValue)!
+        context.draw(whole, in: CGRect(x: 0, y: 0, width: 400, height: 300))
+        context.clear(CGRect(x: 10, y: 240, width: 50, height: 50))
+        context.clear(CGRect(x: 340, y: 240, width: 50, height: 50))
+        #expect(CapturedSurface.measuredCorner(of: context.makeImage()!, scale: 1) == nil)
+    }
+
+    /// Two readings of one window, one by id and one by number: at rest wins wherever it comes from, and
+    /// the first where both are alike.
+    @Test func theReadingARoundingTakesIsOneAtRest() {
+        let opening = CornerReading(radius: 17.04, isAtRest: false)
+        let resting = CornerReading(radius: 17.15, isAtRest: true)
+        #expect(CornerReading.preferred(opening, resting) == resting)
+        #expect(CornerReading.preferred(resting, opening) == resting)
+        #expect(CornerReading.preferred(resting, CornerReading(radius: 12, isAtRest: true)) == resting)
+        #expect(CornerReading.preferred(opening, CornerReading(radius: 12, isAtRest: false)) == opening)
+        #expect(CornerReading.preferred(nil, opening) == opening)
+        #expect(CornerReading.preferred(opening, nil) == opening)
+        #expect(CornerReading.preferred(nil, nil) == nil)
     }
 
     /// The property the minimum rests on, pinned where there is no honest corner left — a column too
@@ -628,7 +734,7 @@ import EmiraCore
     @Test func unpaintedEdgesNeverUnderReport() {
         let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
         let image = Self.unpainting(Self.unpainting(whole, 4, onRight: false), 4, onRight: true)
-        let measured = CapturedSurface.measuredCornerRadius(of: image, scale: 1)
+        let measured = CapturedSurface.measuredCorner(of: image, scale: 1)?.radius
         #expect(measured == nil || (measured ?? 0) >= 12 - 0.25)
     }
 }
@@ -694,7 +800,19 @@ import EmiraCore
         let (still, asked) = await Self.kept([CGSize(width: 1200, height: 864)])
         #expect(asked == [true])
         #expect(still?.scale == 2)
+        #expect(still?.isExact == true)
         #expect(still?.needsAlone == false)
+    }
+
+    /// An opening window is drawn at its final size while its frame lags: near enough to stand in for it,
+    /// and too far to be the window at rest. Measured: 3744×2346 px against a 1856×1161 pt frame.
+    @Test func aWindowFilmedWhileOpeningIsNotAtRest() async {
+        let (still, asked) = await Self.kept([CGSize(width: 1216, height: 876)])
+        #expect(asked == [true])
+        #expect(still?.scale == 2)
+        #expect(still?.isExact == false)
+        #expect(isExactly(CGSize(width: 2689, height: 2354),
+                          of: CGRect(x: 0, y: 0, width: 1344.36, height: 1177), at: 2))
     }
 
     /// The sizes are the probe's: a parent with a child 150 pt past its edge, with and without it.
@@ -1300,7 +1418,7 @@ import EmiraCore
 
     /// A still 4 points wide would reduce to one, so these are big enough to survive the ratio.
     static func surface(_ id: UInt64, width: Int = 400, height: Int = 300,
-                        radius: Double? = 12, isWhole: Bool = true) -> CapturedSurface {
+                        radius: Double? = 12, isAtRest: Bool = true, isWhole: Bool = true) -> CapturedSurface {
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
                                 bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                 bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
@@ -1309,7 +1427,8 @@ import EmiraCore
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         return CapturedSurface(image: context.makeImage()!,
                                frame: Rect(x: 0, y: 0, width: Double(width), height: Double(height)),
-                               cornerRadius: radius, isWhole: isWhole)
+                               corner: radius.map { CornerReading(radius: $0, isAtRest: isAtRest) },
+                               isWhole: isWhole)
     }
 
     // The reduction lands later
@@ -1459,9 +1578,9 @@ import EmiraCore
         #expect(small.image.height == 75)
         // The frame is in *points* and describes the window, not the raster — so it does not shrink.
         #expect(small.frame == full.frame)
-        // Carried, never re-measured: `measuredCornerRadius` inverts an alpha deficit against the scale
+        // Carried, never re-measured: `measuredCorner` inverts an alpha deficit against the scale
         // the still was filmed at, and this image is no longer at it.
-        #expect(small.cornerRadius == 12)
+        #expect(small.corner == CornerReading(radius: 12, isAtRest: true))
     }
 
     /// Alpha survives, because a window capture is transparent outside its rounded corners and
@@ -1604,7 +1723,7 @@ import EmiraCore
 
         let second = Self.surface(1, radius: 17, isWhole: false)
         #expect(cache.record(second, mintedAt: 2, for: WindowId(1), pinnedBy: nil))
-        #expect(cache.cornerRadius(of: WindowId(1)) == 17, "the newer of two holed films")
+        #expect(cache.corner(of: WindowId(1))?.radius == 17, "the newer of two holed films")
     }
 
     /// Declining the pixels is not declining the entitlement — `anOvertakenFilmStillRecordsItsEntitlement`'s
@@ -1638,8 +1757,8 @@ import EmiraCore
         cache.unpin(MonitorId(1))
 
         #expect(cache.anySurface(for: WindowId(1)) == nil)
-        #expect(cache.cornerRadius(of: WindowId(1)) == 17)
-        #expect(cache.cornerRadius(of: WindowId(2)) == nil)
+        #expect(cache.corner(of: WindowId(1))?.radius == 17)
+        #expect(cache.corner(of: WindowId(2))?.radius == nil)
     }
 
     /// A film whose pixels could not say leaves the last answer standing, and an overtaken one does not
@@ -1649,10 +1768,36 @@ import EmiraCore
         cache.record(Self.surface(1, radius: 17), mintedAt: 9, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(1, radius: nil), mintedAt: 10, for: WindowId(1), pinnedBy: nil)
         cache.record(Self.surface(1, radius: 12), mintedAt: 7, for: WindowId(1), pinnedBy: nil)
-        #expect(cache.cornerRadius(of: WindowId(1)) == 17)
+        #expect(cache.corner(of: WindowId(1))?.radius == 17)
 
         cache.record(Self.surface(1, radius: 0), mintedAt: 11, for: WindowId(1), pinnedBy: nil)
-        #expect(cache.cornerRadius(of: WindowId(1)) == 0)
+        #expect(cache.corner(of: WindowId(1))?.radius == 0)
+    }
+
+    /// A window filmed only while it animates is rounded by that reading, the newest of them winning —
+    /// until one at rest arrives, which nothing filmed animating undoes, whichever batch is newer.
+    @Test func aReadingAtRestOutranksAnyTakenAnimating() {
+        let cache = SurfaceCache(keepsStills: false, reducer: .inline)
+        cache.record(Self.surface(1, radius: 17.04, isAtRest: false), mintedAt: 1, for: WindowId(1),
+                     pinnedBy: nil)
+        #expect(cache.corner(of: WindowId(1)) == CornerReading(radius: 17.04, isAtRest: false))
+        cache.record(Self.surface(1, radius: 17.1, isAtRest: false), mintedAt: 3, for: WindowId(1),
+                     pinnedBy: nil)
+        cache.record(Self.surface(1, radius: 16, isAtRest: false), mintedAt: 2, for: WindowId(1),
+                     pinnedBy: nil)
+        #expect(cache.corner(of: WindowId(1))?.radius == 17.1, "the newer batch, not the later arrival")
+
+        // Slower to land than the opening still after it, and the window's corner all the same.
+        cache.record(Self.surface(1, radius: 17.15), mintedAt: 2, for: WindowId(1), pinnedBy: nil)
+        cache.record(Self.surface(1, radius: 27, isAtRest: false), mintedAt: 4, for: WindowId(1),
+                     pinnedBy: nil)
+        #expect(cache.corner(of: WindowId(1)) == CornerReading(radius: 17.15, isAtRest: true))
+    }
+
+    /// The reduction carries the reading whole, for the radius's own reason.
+    @Test func theReductionCarriesWhetherTheWindowWasAtRest() {
+        #expect(SurfaceCache.reduced(Self.surface(1, isAtRest: false))?.corner?.isAtRest == false)
+        #expect(SurfaceCache.reduced(Self.surface(1))?.corner?.isAtRest == true)
     }
 
     /// A display change drops the photographs, whose freshness was a size on the old geometry. A radius
@@ -1666,7 +1811,7 @@ import EmiraCore
         #expect(cache.count == 1)                                 // the live cover's own stays
         #expect(cache.pinnedSurface(for: WindowId(2)) != nil)
         #expect(cache.byteCount == 0)
-        #expect(cache.cornerRadius(of: WindowId(1)) == 12)        // …and so does every radius
+        #expect(cache.corner(of: WindowId(1))?.radius == 12)        // …and so does every radius
     }
 }
 

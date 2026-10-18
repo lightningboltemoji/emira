@@ -481,16 +481,31 @@ one that is not its frame at the filter's `pointPixelScale` is taken again witho
 frame read before a resize) keeps its children; a sheet inside its window's frame always rides in the stand-in.
 
 **Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
-that.** The radius is measured off every still as it lands (`CapturedSurface.measuredCornerRadius`), at the
-scale the still was drawn at, ordered by its own batch, and outlives the pixels under every `CoverMode`, the
-budget and a display change; a still that is not its window's frame measures nothing. It is read against the
-window's edges rather than the still's, because an arrival is filmed while the window server is still animating
-it open, inside a one-pixel clear border on both sides. The scrim is what reads
-it (`SurfaceCache.cornerRadius(of:)`): it rounds a see-through window at rest, when no photograph need be left.
-A window no cover has filmed — one emira never adopted, which nothing films, or a managed one before its first
-film — is measured once by `CornerSurvey` if a veil cut outlines it: by window number, alone, started only
-while none of emira's captures is out, and again after a pause if it was caught opening. Until that lands it
-takes `Scrims.fallbackCornerRadius`.
+that.** The radius is read off every still as it lands (`CapturedSurface.measuredCorner`), at the scale the
+still was drawn at: the alpha deficit of a block at each top corner, an area antialiasing conserves, inverted
+from a quarter-disc's. A block is no more than half the window, so it holds one corner and never reaches the
+next. A still that is not its window's frame measures nothing.
+
+**What else is clear in a block is in its far strips** — the rows and columns past any corner's reach, where an
+opaque window is opaque out to the edge. What both corners show there is a border, and comes off both as the
+area it is: the window server animates a window open inside a clear pixel, on two edges or on four, and draws it
+part clear at a fractional position. A corner showing more than its partner is unpainted window, from an app
+that paints only what is on the display, and the other carries the answer, clear pixels only ever adding to a
+deficit. A strip clear further in than a border (`borderLimit`) is no corner at all: a column hanging off both
+edges, a translucent window, a fading one.
+
+**A still of the window at rest reads its corner for good; any other reads it near enough to use until one
+does** (`CornerReading.isAtRest`). At rest is its frame to the pixel and inside no border. A reading at rest
+outranks one taken animating whatever their batches, and of two alike the newer batch wins, because nothing
+promises the window is filmed again — an arrival whose opening still already fits its column is not — and an
+opening still must not undo the reading of a window that has since settled. The reading outlives the pixels
+under every `CoverMode`, the budget and a display change. The scrim is what reads it (`SurfaceCache.corner(of:)`):
+it rounds a see-through window at rest, when no photograph need be left, and a cover rounds the pins it is held
+clear of by it. A window with no reading at rest — one emira never adopted, which nothing films, or a managed
+one only ever filmed animating — is measured by `CornerSurvey` if a veil cut outlines it: by window number,
+alone, started only while none of emira's captures is out, and filmed again after a pause until it is read at
+rest. Whichever of the two read the window at rest is what it is rounded by (`CornerReading.preferred`); until
+one has, the reading taken animating, and `Scrims.fallbackCornerRadius` where nothing has read it at all.
 
 Capture resolution is an entitlement rather than a lifetime. A live cover _pins_ every photograph it paints;
 the last release reduces one to quarter scale in place rather than dropping it, and the reduction is both the
@@ -1354,13 +1369,14 @@ display is in the walk at all, so a column hanging off the viewport, its frame r
 in the corner, forfeits a sliver a pixel wide and keeps the screen it is on.
 
 **Every shape is a window's silhouette, rounded by that window's measured radius** (`Scrims.veils`) — by id
-from a cover's film, or by number from `CornerSurvey` for a window no cover films (§5, *The modes*). A
+from a cover's film, or by number from `CornerSurvey`, whichever read it at rest (§5, *The modes*). A
 see-through window stops at its corners because outside them is its own shadow, and what is taken out of it
 stops at *its* corners because outside those is whatever that window stands on — which keeps the veil beneath.
 Subtracted square, an occluder or a decline leaves the window beneath unveiled in a sharp corner, and
 subtracted too sharply, a crescent of one: what an app's dialog over its own veiled window shows until it is
-measured. Every cut names the windows it outlined at that guess (`surveyCorners`): a veiled window or one taken
-out of it, never one no veil touches. A radius arriving cuts again.
+measured. Cut too round, it leaves a crescent of itself unveiled instead. Every cut names the windows it
+outlined with no reading at rest (`surveyCorners`): a veiled window or one taken out of it, never one no veil
+touches. A reading arriving from the survey, or coming to rest there at the radius it had, cuts again.
 
 **A sheet is part of its window, so it is veiled with it** (`Scrims.veils`). A window emira never adopted,
 standing wholly on a see-through one, is left out of the mask rather than painted opaque over it, and takes
@@ -2598,7 +2614,7 @@ emira/
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
     │   │                DesktopCapturer (one display with every window taken out of it)
-    │   │                CornerSurvey (the radius of each window no cover films, measured once)
+    │   │                CornerSurvey (the radius of each window no cover has filmed at rest)
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)

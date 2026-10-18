@@ -78,9 +78,9 @@ public final class SurfaceCache {
     /// can be about: counting a live cover's own would evict every stand-in on the desk to make room for
     /// pixels that are already on screen.
     private var bytes = 0
-    /// Every window's corner radius as last measured, and the batch that measured it. Outside `photos`,
-    /// so nothing that drops a photograph drops the radius with it.
-    private var corners: [WindowId: (radius: Double, mint: Int)] = [:]
+    /// Every window's corner as best read (`corner(of:)`), and the batch that read it. Outside `photos`, so
+    /// nothing that drops a photograph drops the reading with it.
+    private var corners: [WindowId: (corner: CornerReading, mint: Int)] = [:]
 
     /// Where a released photograph is scaled down — off the main actor in the daemon.
     private let reducer: Reducer
@@ -108,9 +108,8 @@ public final class SurfaceCache {
     @discardableResult
     public func record(_ surface: CapturedSurface, mintedAt mint: Int, for id: WindowId,
                        pinnedBy monitor: MonitorId?) -> Bool {
-        // Ordered by its own batch, because the photograph it was measured off may be long gone.
-        if let radius = surface.cornerRadius, mint > corners[id]?.mint ?? .min {
-            corners[id] = (radius, mint)
+        if let corner = surface.corner, Self.outranks(corner, mint, corners[id]) {
+            corners[id] = (corner, mint)
         }
         let held = photos[id]
         guard mint > held?.mint ?? .min else {
@@ -198,9 +197,19 @@ public final class SurfaceCache {
     /// must not pass for the window, and in a minimap the trade reverses — a hole is the visible one.
     public func anySurface(for id: WindowId) -> CapturedSurface? { photos[id]?.surface }
 
-    /// The corner radius `id` was last measured at, in points, whatever became of the photograph it was
-    /// measured off — what the scrim rounds a see-through window by. `nil` for a window never measured.
-    public func cornerRadius(of id: WindowId) -> Double? { corners[id]?.radius }
+    /// `id`'s corner as best read, whatever became of the photograph it was read off: the newest reading at
+    /// rest, else the newest of the window animating. `nil` for a window never read.
+    public func corner(of id: WindowId) -> CornerReading? { corners[id]?.corner }
+
+    /// Whether `corner`, read by batch `mint`, replaces `held`. At rest outranks animating whatever the
+    /// batches, so a later opening still cannot undo it; alike, the newer batch wins — ordered by its own,
+    /// because the photograph it was read off may be long gone.
+    private static func outranks(_ corner: CornerReading, _ mint: Int,
+                                 _ held: (corner: CornerReading, mint: Int)?) -> Bool {
+        guard let held else { return true }
+        guard corner.isAtRest == held.corner.isAtRest else { return corner.isAtRest }
+        return mint > held.mint
+    }
 
     /// Drop every photograph nothing is showing — the Screen Recording grant lapsed, or the display
     /// changed under us, and they describe a desktop that no longer exists. A live cover's own stay:
@@ -270,13 +279,9 @@ public final class SurfaceCache {
         }
     }
 
-    /// One capture at cache resolution, or `nil` if the pixels could not be redrawn — keeping nothing is
-    /// safe, since a miss costs latency and never accuracy. `nonisolated` so the scale-down is callable
-    /// off the main actor.
-    ///
-    /// The corner radius is carried, never re-measured: `measuredCornerRadius` inverts an alpha deficit
-    /// against the scale the still was filmed at. Alpha is preserved, because a window capture is
-    /// transparent outside its corners and `WindowAnimation.stretch` derives its drop shadow from that.
+    /// One capture at cache resolution, or `nil` if the pixels could not be redrawn — a miss costs latency,
+    /// never accuracy. The corner is carried, not re-read off pixels no longer at the scale it was read at,
+    /// and alpha kept: `WindowAnimation.stretch` derives its drop shadow from it. Callable off the main actor.
     public nonisolated static func reduced(_ surface: CapturedSurface,
                                            by ratio: Double = SurfaceCache.ratio) -> CapturedSurface? {
         let image = surface.image
@@ -298,8 +303,8 @@ public final class SurfaceCache {
         guard let reduced = context.makeImage() else { return nil }
         // `isWhole` is carried for the radius's reason: scaling a still down moves no hole into or out
         // of it, and re-measuring a quarter-size copy could only be a worse reading of the same fact.
-        return CapturedSurface(image: reduced, frame: surface.frame,
-                               cornerRadius: surface.cornerRadius, isWhole: surface.isWhole)
+        return CapturedSurface(image: reduced, frame: surface.frame, corner: surface.corner,
+                               isWhole: surface.isWhole)
     }
 
     /// The pixel size `reduced` would produce, or `nil` for an image too small to shrink.

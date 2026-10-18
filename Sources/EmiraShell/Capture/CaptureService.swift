@@ -25,6 +25,27 @@ import EmiraCore
 // window whose kept still fits is ready *now*, its own capture following as a `captureRefreshed`, or
 // only once that capture lands. The gate the core counts down is identical either way.
 
+/// A window's corner radius in points as one still read it, and whether that still showed the window at
+/// rest. A reading off a window the server is animating is near its corner, and stands in for one at rest
+/// until one arrives.
+public struct CornerReading: Sendable, Equatable {
+    /// Read inside whatever border the window was drawn in.
+    public let radius: Double
+    /// Drawn at its frame to the pixel and inside no border, rather than as the server animates a window.
+    public let isAtRest: Bool
+
+    public init(radius: Double, isAtRest: Bool) {
+        self.radius = radius
+        self.isAtRest = isAtRest
+    }
+
+    /// Of two readings of one window, the one to round it by: one at rest over one that is not, and `first`
+    /// where they are alike.
+    public static func preferred(_ first: CornerReading?, _ second: CornerReading?) -> CornerReading? {
+        first?.isAtRest == true || second?.isAtRest != true ? first ?? second : second
+    }
+}
+
 /// One window's captured surface, and the frame it was taken from.
 ///
 /// The frame travels *with* the image because the core only knows where the window was supposed to be,
@@ -34,59 +55,75 @@ public struct CapturedSurface: Sendable {
     public let image: CGImage
     /// Where the window was when it was captured, in core coordinates.
     public let frame: Rect
-    /// The corner radius baked into `image`, in points — `nil` when the pixels couldn't say. Needed only
-    /// by `WindowAnimation.crop`, which paints a window's extent rather than its pixels.
-    public let cornerRadius: Double?
+    /// The corner baked into `image` — `nil` when the pixels couldn't say. Its radius is what this still is
+    /// rounded by when it stands in for its window (`Reconstruction`), at rest or not.
+    public let corner: CornerReading?
     /// Whether the app painted the window's whole width (`measuredWhole`). `SurfaceCache` is what reads
     /// it; `true` is the answer for anything nobody measured, so an unmeasured still is a usable one.
     public let isWhole: Bool
 
-    public init(image: CGImage, frame: Rect, cornerRadius: Double? = nil, isWhole: Bool = true) {
+    public init(image: CGImage, frame: Rect, corner: CornerReading? = nil, isWhole: Bool = true) {
         self.image = image
         self.frame = frame
-        self.cornerRadius = cornerRadius
+        self.corner = corner
         self.isWhole = isWhole
     }
 
-    /// Read a window's corner radius *out of its own capture*, in points. No public API reports another
-    /// window's radius and a constant would be wrong on the next macOS, but a window capture is
-    /// transparent outside its rounded corners, so the shape is already in the pixels.
-    ///
-    /// Measures the corner's *area*, not an edge walk, and that is the whole trick: the arc is tangent to
-    /// the left edge and leaves it quadratically, so scanning a column for the first opaque pixel answers
-    /// about `r − √r` (28% short at r = 12). A quarter-disc leaves `r²(1 − π/4)` of its bounding square
-    /// uncovered and antialiasing conserves coverage — a boundary pixel's alpha *is* its covered fraction
-    /// — so the alpha deficit inverts straight to `r` whatever the rasterizer did.
-    ///
-    /// **Both top corners, and the lesser wins.** Wherever the block is transparent it reads as corner,
-    /// and an app that paints only the part of itself on the display leaves the rest of its still
-    /// transparent — an enormous corner. That transparency can only *add* to the deficit, so the lesser
-    /// corner is the honest one; a column too wide for the viewport hangs off both edges and has neither.
-    ///
-    /// **The window's edges, not the image's.** A window filmed while it animates open is drawn inside a
-    /// one-pixel clear border, which would read as corner on both sides at once; it comes off first
-    /// (`withoutBorder`).
-    ///
-    /// A square-cornered window answers 0; `nil` means the pixels couldn't say and the caller should
-    /// supply its own fallback.
-    public static func measuredCornerRadius(of image: CGImage, scale: CGFloat) -> Double? {
+    /// The widest border, in pixels, the window server draws a window inside. A margin both corners share
+    /// past it is unpainted or translucent window, and a corner read inside that would read short.
+    static let borderLimit = 2
+    /// Pixels of deficit per row or column two strips may differ by and show the same thing. Past every
+    /// corner a window at rest is opaque to the last level, so this absorbs only rounding.
+    static let edgeSlack = 0.1
+
+    /// A window's corner read out of its own capture: the alpha deficit of a block at each top corner, less
+    /// the border both corners share, inverted from a quarter-disc's `r²(1 − π/4)`. At rest as far as the
+    /// pixels can say — inside no border; `nil` is pixels that could not say, and a square corner answers 0.
+    public static func measuredCorner(of image: CGImage, scale: CGFloat) -> CornerReading? {
         guard scale > 0, image.width > 0, image.height > 0 else { return nil }
-        let image = withoutBorder(image)
-        // Comfortably past any plausible window corner, so a wedge filling much of the block is
-        // evidence we measured something other than a corner.
-        let probe = min(96 * Int(scale.rounded()), min(image.width, image.height))
-        guard probe > 0 else { return nil }
-        // Left corner, then right. `compactMap` drops a corner the pixels couldn't answer for, which is
-        // what lets the wholly transparent one be carried by its neighbour.
-        return [0, probe - image.width]
-            .compactMap { radius(ofTopCornerAt: $0, of: image, probe: probe, scale: scale) }
-            .min()
+        // Comfortably past any plausible window corner, and within half the window, so its far strips
+        // never reach the corner below it or beside it.
+        let probe = min(96 * Int(scale.rounded()), min(image.width, image.height) / 2)
+        guard probe >= 8 else { return nil }
+        // Left corner, then right.
+        let blocks = [0, probe - image.width].compactMap { block(ofTopCornerAt: $0, of: image, probe: probe) }
+        guard blocks.count == 2 else { return nil }
+        // A block not read as a corner shows a full border's worth along its edges, so the minimum is the
+        // other's — which is the border a window hanging off one edge was animated inside.
+        let side = min(blocks[0].side, blocks[1].side), top = min(blocks[0].top, blocks[1].top)
+        let read = blocks.filter {
+            $0.isCorner && $0.side - side <= edgeSlack && $0.top - top <= edgeSlack
+        }
+        guard let radius = read.compactMap({ $0.radius(inside: side, top) }).min() else { return nil }
+        return CornerReading(radius: radius / Double(scale), isAtRest: side <= edgeSlack && top <= edgeSlack)
     }
 
-    /// One top corner's radius in points, `x` being where the image's own origin goes so that the wanted
-    /// corner lands in the probe block: `0` for the left corner, `probe − width` for the right.
-    private static func radius(ofTopCornerAt x: Int, of image: CGImage, probe: Int,
-                               scale: CGFloat) -> Double? {
+    /// One top corner's probe block, in pixels of deficit: the whole of it, and what its far strips show.
+    private struct Block {
+        let probe: Int
+        /// Where the far strips begin, rows down and columns in.
+        let far: Int
+        let deficit: Double
+        /// Clear per row, across the outer `borderLimit` columns of the rows past every corner.
+        let side: Double
+        /// Clear per column, down the outer `borderLimit` rows of the columns past every corner.
+        let top: Double
+        /// Whether those strips are opaque inside their outer `borderLimit` pixels.
+        let isCorner: Bool
+
+        /// The corner's radius in pixels, read inside a border of `side` and `top`. `r²(1 − π/4)` inverted;
+        /// one reaching the far strips, which are opaque, is clear somewhere a corner is not.
+        func radius(inside side: Double, _ top: Double) -> Double? {
+            let edge = Double(probe)
+            let corner = max(0, deficit - edge * side - edge * top + side * top)
+            let radius = (corner / (1 - Double.pi / 4)).squareRoot()
+            return radius <= Double(far) ? radius : nil
+        }
+    }
+
+    /// One top corner's block, `x` being where the image's own origin goes so that the wanted corner lands
+    /// in it: `0` for the left corner, `probe − width` for the right, whose side is the block's last column.
+    private static func block(ofTopCornerAt x: Int, of image: CGImage, probe: Int) -> Block? {
         // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0 of
         // each pixel is unambiguously the alpha. `CGBitmapContext` has no legal alpha-only format.
         let stride = probe * 4
@@ -105,60 +142,26 @@ public struct CapturedSurface: Sendable {
         guard let data = context.data else { return nil }
 
         let bytes = data.bindMemory(to: UInt8.self, capacity: probe * stride)
-        var uncovered = 0.0
+        let far = probe - probe / 4, rim = min(borderLimit, probe)
+        var deficit = 0, side = 0, top = 0, inside = 0
         for row in 0..<probe {
             for column in 0..<probe {
-                uncovered += Double(255 - bytes[row * stride + column * 4])
+                let clear = 255 - Int(bytes[row * stride + column * 4])
+                guard clear > 0 else { continue }
+                deficit += clear
+                let fromSide = x == 0 ? column : probe - 1 - column
+                if row >= far {
+                    if fromSide < rim { side += clear } else { inside += clear }
+                }
+                if fromSide >= far {
+                    if row < rim { top += clear } else { inside += clear }
+                }
             }
         }
-        uncovered /= 255
-
-        // `r²(1 − π/4)` inverted. The bound rejects a mostly-transparent block, which is not a rounded
-        // corner: a capture with no alpha information, a probe that wandered off the window, or a
-        // corner sitting in the part of a window its app never painted.
-        let radius = (uncovered / (1 - Double.pi / 4)).squareRoot()
-        guard radius <= Double(probe) / 2 else { return nil }
-        return radius / Double(scale)
-    }
-
-    /// `image` less a clear pixel on both edges of either axis. An unpainted band is on one edge, or is
-    /// wider than a pixel and still reads as corner once one comes off, so the minimum's guarantee holds.
-    private static func withoutBorder(_ image: CGImage) -> CGImage {
-        let (width, height) = (image.width, image.height)
-        guard width > 2, height > 2 else { return image }
-        // A short run at the middle of each edge, clear of every corner. Its cost is its length.
-        let run = min(16, width, height)
-        func isClear(_ x: Int, _ y: Int, _ w: Int, _ h: Int) -> Bool {
-            guard let level = meanAlpha(of: image, in: CGRect(x: x, y: y, width: w, height: h)) else {
-                return false
-            }
-            return level <= 1
-        }
-        let (across, down) = ((width - run) / 2, (height - run) / 2)
-        let sides = isClear(0, down, 1, run) && isClear(width - 1, down, 1, run)
-        let ends = isClear(across, 0, run, 1) && isClear(across, height - 1, run, 1)
-        let (dx, dy) = (sides ? 1 : 0, ends ? 1 : 0)
-        guard dx + dy > 0 else { return image }
-        return image.cropping(to: CGRect(x: dx, y: dy, width: width - 2 * dx, height: height - 2 * dy))
-            ?? image
-    }
-
-    /// The mean alpha level, 0–255, over `rect` of `image` in its own top-left pixel space.
-    private static func meanAlpha(of image: CGImage, in rect: CGRect) -> Double? {
-        guard let strip = image.cropping(to: rect), strip.width > 0, strip.height > 0 else { return nil }
-        let (width, height) = (strip.width, strip.height)
-        guard let context = CGContext(
-            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                | CGBitmapInfo.byteOrder32Big.rawValue)
-        else { return nil }
-        context.draw(strip, in: CGRect(x: 0, y: 0, width: width, height: height))
-        guard let data = context.data else { return nil }
-        let bytes = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
-        var total = 0
-        for pixel in 0..<(width * height) { total += Int(bytes[pixel * 4]) }
-        return Double(total) / Double(width * height)
+        let lines = Double(probe - far) * 255
+        return Block(probe: probe, far: far, deficit: Double(deficit) / 255,
+                     side: Double(side) / lines, top: Double(top) / lines,
+                     isCorner: Double(inside) / lines <= edgeSlack)
     }
 
     /// Whether `image` carries pixels across its whole width. An app that rasterizes what is on screen

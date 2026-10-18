@@ -180,10 +180,9 @@ public final class Scrims: ScrimPlane {
     /// The numbers management has let go of that the glass may still be showing
     /// (`WindowRegistry.departedNumbers`) — a hole to the mask, as they are to a cover's base.
     private let departed: @MainActor () -> Set<CGWindowID>
-    /// A window's corner radius as a capture last measured it — by id where emira manages it, by number
-    /// where it does not — or `nil` for one never measured. A scrim films no window, so it asks the plane
-    /// that does.
-    private let cornerRadius: @MainActor (WindowId?, CGWindowID) -> Double?
+    /// A window's corner as the capture plane best read it — by id where emira manages it, by number where
+    /// it does not — or `nil` for one never read. A scrim films no window, so it asks the plane that does.
+    private let corner: @MainActor (WindowId?, CGWindowID) -> CornerReading?
     /// The window server's own ordering. Injected so the rule can be tested without a desktop.
     private let stack: @MainActor () -> [StackedWindow]
     /// The flip between core and Cocoa coordinates — the shapes are built in each surface's own space.
@@ -195,8 +194,8 @@ public final class Scrims: ScrimPlane {
     /// waits on our own commit, so an arrival watch takes none (`WorldWatcher.isPainting`'s reason).
     public var isPainting: @MainActor () -> Bool = { false }
 
-    /// Told, with every cut, which windows it outlined at a guess and which numbers are on screen at all —
-    /// so they can be measured (`CornerSurvey`), and `cornersMeasured` can cut again once they are.
+    /// Told, with every cut, which windows it outlined with no reading at rest and which numbers are on
+    /// screen at all — so they can be measured (`CornerSurvey`), and `cornersMeasured` can cut again.
     public var surveyCorners: @MainActor (_ guessed: [CGWindowID], _ onScreen: Set<CGWindowID>) -> Void
         = { _, _ in }
 
@@ -254,7 +253,7 @@ public final class Scrims: ScrimPlane {
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
                 departed: @escaping @MainActor () -> Set<CGWindowID> = { [] },
-                cornerRadius: @escaping @MainActor (WindowId?, CGWindowID) -> Double? = { _, _ in nil },
+                corner: @escaping @MainActor (WindowId?, CGWindowID) -> CornerReading? = { _, _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
                 scheduler: any DelayScheduler = DispatchScheduler(),
                 build: @escaping @MainActor (Rect, CGFloat, ScreenGeometry) -> any ScrimSurface
@@ -266,7 +265,7 @@ public final class Scrims: ScrimPlane {
         self.filmer = filmer
         self.identify = identify
         self.departed = departed
-        self.cornerRadius = cornerRadius
+        self.corner = corner
         self.stack = stack
         self.build = build
     }
@@ -532,7 +531,7 @@ public final class Scrims: ScrimPlane {
         else { return false }
         let identified = stacked.map { (window: identify($0.number), pane: $0) }
         let cut = TarpCut.cut(for: tarp, over: identified, on: display, within: strip,
-                              cornerRadius: cornerRadius)
+                              corner: corner)
         guard cut != paintedTarps[monitor] else { return false }
         paintedTarps[monitor] = cut
         tarpSurfaces[monitor]?.setCut(cut)
@@ -561,7 +560,7 @@ public final class Scrims: ScrimPlane {
             .filter { !gone.contains($0.number) }
             .map { (window: identify($0.number), pane: $0) }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
-                             cornerRadius: cornerRadius, stale: staleFrames(monitor, in: identified))
+                             corner: corner, stale: staleFrames(monitor, in: identified))
         // Every number the server reads, departed or concealed too: an answer outlives only its number.
         surveyCorners(cut.guessed, Set(stacked.map(\.number)))
         var drawn: [WindowId: Double] = [:]
@@ -627,7 +626,7 @@ public final class Scrims: ScrimPlane {
                       over stacked: [(window: WindowId?, pane: StackedWindow)],
                       on display: Rect,
                       geometry: ScreenGeometry,
-                      cornerRadius: @MainActor (WindowId?, CGWindowID) -> Double? = { _, _ in nil },
+                      corner: @MainActor (WindowId?, CGWindowID) -> CornerReading? = { _, _ in nil },
                       stale: [WindowId: Rect] = [:])
         -> (veils: [ScrimVeil], drawn: [(WindowId, Double)], guessed: [CGWindowID]) {
         let wanted = Dictionary(bindings.map { ($0.window, $0.veil) }, uniquingKeysWith: { a, _ in a })
@@ -658,8 +657,8 @@ public final class Scrims: ScrimPlane {
             return !isSheet
         }.map { (id: $0.element.window, frame: $0.element.pane.frame, number: $0.element.pane.number) }
 
-        let radii = panes.map { cornerRadius($0.id, $0.number) }
-        let shapes = zip(panes, radii).map { silhouette($0.frame, $1) }
+        let corners = panes.map { corner($0.id, $0.number) }
+        let shapes = zip(panes, corners).map { silhouette($0.frame, $1?.radius) }
 
         /// Whether the pane at `other` comes out of the pane at `index`'s shape. `panes` runs front to
         /// back, so a lower index is in front — and in front always comes out, those pixels not being
@@ -689,6 +688,7 @@ public final class Scrims: ScrimPlane {
         }
         // Bottom→top, the convention every binding array carries. Nothing overlaps, so it decides
         // nothing about the drawing; it decides what a reader of this list expects.
-        return (veils.reversed(), drawn, outlined.filter { radii[$0] == nil }.map { panes[$0].number })
+        return (veils.reversed(), drawn,
+                outlined.filter { corners[$0]?.isAtRest != true }.map { panes[$0].number })
     }
 }

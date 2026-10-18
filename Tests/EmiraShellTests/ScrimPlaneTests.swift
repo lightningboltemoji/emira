@@ -66,6 +66,9 @@ import EmiraCore
     static let display = Rect(x: 0, y: 0, width: 1000, height: 800)
     static let monitor = MonitorId(1)
 
+    /// A corner read off its window at rest.
+    static func atRest(_ radius: Double) -> CornerReading { CornerReading(radius: radius, isAtRest: true) }
+
     static func pane(_ number: CGWindowID, _ frame: Rect) -> StackedWindow {
         StackedWindow(number: number, frame: frame)
     }
@@ -164,7 +167,7 @@ import EmiraCore
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { WindowId(UInt64($0)) },
-                            cornerRadius: { id, _ in id == WindowId(1) ? 17 : nil },
+                            corner: { id, _ in id == WindowId(1) ? Self.atRest(17) : nil },
                             stack: { [Self.pane(1, measured), Self.pane(2, unfilmed)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
@@ -357,7 +360,7 @@ import EmiraCore
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 == 1 ? WindowId(1) : nil },
-                            cornerRadius: { id, number in id == nil && number == 77 ? 17 : nil },
+                            corner: { id, number in id == nil && number == 77 ? Self.atRest(17) : nil },
                             stack: { [Self.pane(77, dialog), Self.pane(1, veiled)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
@@ -381,7 +384,7 @@ import EmiraCore
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 <= 2 ? WindowId(UInt64($0)) : nil },
                             departed: { [66] },
-                            cornerRadius: { id, _ in id == WindowId(1) ? 17 : nil },
+                            corner: { id, _ in id == WindowId(1) ? Self.atRest(17) : nil },
                             stack: { [Self.pane(77, dialog), Self.pane(1, veiled), Self.pane(2, beside),
                                       Self.pane(99, alone), Self.pane(66, dialog),
                                       Self.pane(88, elsewhere)] },
@@ -395,6 +398,29 @@ import EmiraCore
         #expect(asked.last?.onScreen == [77, 1, 2, 99, 66, 88])
     }
 
+    /// A window read only while it animated is cut at that reading rather than the fallback, and named as
+    /// guessed all the same, so the survey films it until it is read at rest.
+    @Test func aWindowReadOnlyAnimatingIsCutAtItsReadingAndStillSurveyed() {
+        let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
+        let dialog = Rect(x: 100, y: 100, width: 300, height: 200)
+        var asked: [CGWindowID] = []
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: InstantFilmer(),
+                            identify: { $0 <= 2 ? WindowId(UInt64($0)) : nil },
+                            corner: { id, _ in
+                                id == WindowId(1) ? Self.atRest(17) : CornerReading(radius: 17, isAtRest: false)
+                            },
+                            stack: { [Self.pane(2, dialog), Self.pane(1, veiled)] },
+                            build: { _, _, _ in surface })
+        scrims.surveyCorners = { guessed, _ in asked = guessed }
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        Self.show(scrims, [Self.binding(1)])
+
+        // 4 pt in from the dialog's corner: outside its 17 pt rounding, inside the 12 pt fallback's.
+        #expect(Self.shows(surface, 1, 104, 104))
+        #expect(asked == [2])
+    }
+
     /// A radius arriving is a mask cut without it: the plane cuts again, and the dialog comes out at it.
     @Test func aMeasuredRadiusCutsTheMaskAgain() {
         let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
@@ -403,7 +429,7 @@ import EmiraCore
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 == 1 ? WindowId(1) : nil },
-                            cornerRadius: { id, _ in id == nil ? measured : nil },
+                            corner: { id, _ in id == nil ? measured.map(Self.atRest) : nil },
                             stack: { [Self.pane(77, dialog), Self.pane(1, veiled)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))

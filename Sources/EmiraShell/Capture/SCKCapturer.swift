@@ -123,15 +123,12 @@ public final class SCKCapturer: SurfaceCapturer {
                 case .base(let image):
                     await piece(.base(image))
                 case .window(let window):
-                    if window.needsAlone { await self.filmAlone(window.number) }
+                    let still = window.still
+                    if still.needsAlone { await self.filmAlone(window.number) }
                     guard let id = numbers[window.number] else { return }
-                    // Measured here, once per still, where the scale it was taken at is known for certain.
                     await piece(.window(id, CapturedSurface(
-                        image: window.image, frame: window.frame,
-                        cornerRadius: window.scale.flatMap {
-                            CapturedSurface.measuredCornerRadius(of: window.image, scale: CGFloat($0))
-                        },
-                        isWhole: CapturedSurface.measuredWhole(of: window.image))))
+                        image: still.image, frame: window.frame, corner: still.corner,
+                        isWhole: CapturedSurface.measuredWhole(of: still.image))))
                 }
             }
             order.done()
@@ -162,12 +159,8 @@ func baseCuts(_ batches: [(numbers: [CGWindowID], opensCover: Bool)]) -> [Set<CG
 /// space, the same space `EmiraCore` uses, so no conversion. The Y-flip happens later, at the overlay.
 private struct Shot: Sendable {
     let number: CGWindowID
-    let image: CGImage
+    let still: SurfaceStill
     let frame: Rect
-    /// Pixels per point in `image`, or `nil` for a surface that is not the window's frame (`surfaceShot`).
-    let scale: Double?
-    /// `SurfaceStill.needsAlone`.
-    let needsAlone: Bool
 }
 
 /// One thing the batch produced, handed to `deliver` the moment it lands rather than with the rest.
@@ -250,8 +243,7 @@ private func grab(windows: [CGWindowID],
         }
         let rect = Rect(x: Double(frame.minX), y: Double(frame.minY),
                         width: Double(frame.width), height: Double(frame.height))
-        await deliver(.window(Shot(number: window.windowID, image: still.image, frame: rect,
-                                   scale: still.scale, needsAlone: still.needsAlone)))
+        await deliver(.window(Shot(number: window.windowID, still: still, frame: rect)))
     }
 }
 
@@ -276,6 +268,12 @@ struct SurfaceStill: Sendable {
     let image: CGImage
     /// Pixels per point in `image`, or `nil` for a still that is not its window's frame at that scale.
     let scale: Double?
+    /// Whether `image` is the frame to the pixel (`isExactly`) — the size a window at rest is drawn at.
+    let isExact: Bool
+    /// This still's reading of its window's corner, at rest only at its frame to the pixel as well as inside
+    /// no border. A window the server animates open is drawn larger than its lagging frame, inside a clear
+    /// pixel, or both.
+    let corner: CornerReading?
     /// Filmed with its children the window held more than its frame, and alone it did not.
     let needsAlone: Bool
 }
@@ -285,13 +283,20 @@ struct SurfaceStill: Sendable {
 /// wrong with it (a frame read before a resize, a window still opening) is no reason to drop its sheets.
 func keptStill(of frame: CGRect, at scale: Double, carryingChildren: Bool,
                take: (_ withChildren: Bool) async -> CGImage?) async -> SurfaceStill? {
-    func fits(_ image: CGImage) -> Bool {
-        isSurface(CGSize(width: image.width, height: image.height), of: frame, at: scale)
+    func still(_ image: CGImage, needsAlone: Bool) -> SurfaceStill {
+        let pixels = CGSize(width: image.width, height: image.height)
+        let fits = isSurface(pixels, of: frame, at: scale), isExact = isExactly(pixels, of: frame, at: scale)
+        // Measured here, once per still, where the scale it was taken at is known for certain.
+        let read = fits ? CapturedSurface.measuredCorner(of: image, scale: CGFloat(scale)) : nil
+        let corner = read.map { CornerReading(radius: $0.radius, isAtRest: isExact && $0.isAtRest) }
+        return SurfaceStill(image: image, scale: fits ? scale : nil, isExact: isExact, corner: corner,
+                            needsAlone: needsAlone)
     }
     guard let first = await take(carryingChildren) else { return nil }
-    let kept = SurfaceStill(image: first, scale: fits(first) ? scale : nil, needsAlone: false)
-    guard carryingChildren, kept.scale == nil, let alone = await take(false), fits(alone) else { return kept }
-    return SurfaceStill(image: alone, scale: scale, needsAlone: true)
+    let kept = still(first, needsAlone: false)
+    guard carryingChildren, kept.scale == nil, let alone = await take(false) else { return kept }
+    let retake = still(alone, needsAlone: true)
+    return retake.scale != nil ? retake : kept
 }
 
 /// Whether `pixels` draw `frame` at `scale`, each axis within `surfaceSlack` — which an opening window's
@@ -305,6 +310,11 @@ func isSurface(_ pixels: CGSize, of frame: CGRect, at scale: Double) -> Bool {
 
 /// How far a still may stand from its window's frame and still be that window, per axis.
 let surfaceSlack = 0.02
+
+/// Whether `pixels` draw `frame` at `scale` to the pixel on each axis, a fractional frame rounding either way.
+func isExactly(_ pixels: CGSize, of frame: CGRect, at scale: Double) -> Bool {
+    abs(pixels.width - frame.width * scale) <= 1 && abs(pixels.height - frame.height * scale) <= 1
+}
 
 /// One `SCScreenshotManager` still at an explicit pixel size. `showsCursor = false` — a captured cursor
 /// would freeze mid-transition and put two pointers on screen for the length of the scroll.

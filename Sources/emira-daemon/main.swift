@@ -325,16 +325,21 @@ let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
 /// plane, and for a sharper version of its reason: a scrim *is* one display's photograph, so the
 /// surfaces are per display and the rule that drives them is not. `syncDisplays` builds them.
 let desktopCapturer = DesktopCapturer()
-/// The radii of the windows no cover films — a dialog emira never adopted, a managed window before its first
-/// film — each measured once, while the capture plane is idle.
+/// The radii of the windows no cover has filmed at rest — a dialog emira never adopted, a managed window only
+/// ever filmed opening — each measured until it is read so, while the capture plane is idle.
 let cornerSurvey = CornerSurvey()
 cornerSurvey.isIdle = { [capture, desktopCapturer] in capture.isIdle && !desktopCapturer.isFilming }
+
+/// A window's corner as every plane rounds it: read at rest by a cover or by the survey, else as either last
+/// caught it animating.
+@MainActor func corner(of id: WindowId?, number: CGWindowID?) -> CornerReading? {
+    CornerReading.preferred(id.flatMap(surfaceCache.corner(of:)), number.flatMap(cornerSurvey.corner(of:)))
+}
+
 let scrims = Scrims(filmer: desktopCapturer,
                     identify: { [weak registry] in registry?.id(forNumber: $0) },
                     departed: { [weak registry] in registry?.departedNumbers ?? [] },
-                    cornerRadius: { [surfaceCache, cornerSurvey] id, number in
-                        id.flatMap(surfaceCache.cornerRadius(of:)) ?? cornerSurvey.radius(of: number)
-                    })
+                    corner: { corner(of: $0, number: $1) })
 scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
     cornerSurvey.retain(onScreen)
     cornerSurvey.survey(guessed)
@@ -619,7 +624,7 @@ applyShellConfig(config)
     let reconstruction = Reconstruction(overlay: overlay, monitor: info.id, store: capture)
     // Set here rather than in `applyShellConfig`: a corner radius is a measurement off a window's own
     // pixels, and no setting moves it.
-    reconstruction.cornerRadius = { [surfaceCache] in surfaceCache.cornerRadius(of: $0) }
+    reconstruction.cornerRadius = { [registry] in corner(of: $0, number: registry.record($0)?.number)?.radius }
     return DisplayParts(
         info: info,
         overlay: overlay,

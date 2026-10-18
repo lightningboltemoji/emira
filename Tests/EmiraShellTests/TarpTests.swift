@@ -33,7 +33,7 @@ import EmiraGuide
     static func cut(_ tarp: Tarp, _ panes: [(UInt64, Rect)], within strip: Rect = strip,
                     radius: Double? = nil) -> TarpCut? {
         TarpCut.cut(for: tarp, over: Self.stack(panes), on: display, within: strip,
-                    cornerRadius: { _, _ in radius })
+                    corner: { _, _ in radius.map { CornerReading(radius: $0, isAtRest: true) } })
     }
 
     // What is drawn over.

@@ -71,9 +71,9 @@ public final class Reconstruction: CoverSurface {
     /// carry at zero and place every frame.
     public var backdrop: @MainActor (MonitorId) -> CGImage? = { _ in nil }
 
-    /// A window's corner rounding as a capture last measured it (`SurfaceCache.cornerRadius(of:)`), or
-    /// `nil` for one nothing has filmed. Asked for the pins the cover is held clear of, which have no
-    /// still to read it off: a pin standing still is in the base, not in the transition.
+    /// A window's corner rounding as the capture plane best read it, or `nil` for one nothing has read.
+    /// Asked for the pins the cover is held clear of, which have no still to read it off: a pin standing
+    /// still is in the base, not in the transition.
     public var cornerRadius: @MainActor (WindowId) -> Double? = { _ in nil }
 
     public init(overlay: Overlay, monitor: MonitorId, store: any CaptureStore,
@@ -207,7 +207,7 @@ public final class Reconstruction: CoverSurface {
         // key window's shadow and the rest carry the other, exactly as the desktop underneath does.
         WindowShadow.of(focused: binding.isFocused).apply(to: root)
         // Measured off the capture, not a constant: a guessed radius goes stale with the next macOS.
-        let radius = CGFloat(surface.cornerRadius ?? Self.fallbackCornerRadius)
+        let radius = CGFloat(surface.corner?.radius ?? Self.fallbackCornerRadius)
         let veiling = backdrop(monitor).map { makeVeil(from: $0, for: window) }
 
         let cover: CoverLayer
@@ -312,9 +312,9 @@ public final class Reconstruction: CoverSurface {
         NSColor.windowBackgroundColor.withAlphaComponent(0.35).cgColor
     }
 
-    /// Used where nothing has measured a radius: an opaque or square-cornered surface, where
-    /// `CapturedSurface.measuredCornerRadius` returns `nil`, and a pin no cover has ever filmed. A
-    /// floor rather than a guess — cutting a silhouette short is the error the base can cover.
+    /// Used where nothing has read a radius: a surface whose pixels could not say
+    /// (`CapturedSurface.measuredCorner`), and a pin nothing has read. A floor rather than a guess —
+    /// cutting a silhouette short is the error the base can cover.
     private static let fallbackCornerRadius: Double = 12
 
     /// How long a stand-in takes to become the window's own pixels (`CoverMode.immediate`). Well under
