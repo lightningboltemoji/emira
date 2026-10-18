@@ -211,22 +211,23 @@ and the executors themselves, acking their own effects.
 
 **Effect execution splits by plane.** `CompositingExecutor` splits a batch into **maximal contiguous
 same-plane runs** — never partitioned, because emission order is the reducer's to decide — and routes each to
-its executor. There are seven planes:
+its executor. There are eight planes:
 
 | Plane        | Executor                              | Machinery                                            |
 | ------------ | ------------------------------------- | ---------------------------------------------------- |
 | presentation | `Reconstruction` (via `CoverSurface`) | Core Animation, main thread, instant                 |
 | capture      | `CaptureService`                      | ScreenCaptureKit, own queue, deadline-bounded        |
 | hoist        | `HoistPanels` (via `HoistPlane`)      | one `NSWindow` per hoisted float, outside every cover |
+| peek         | `PeekPanels` (via `PeekPlane`)        | one `NSWindow` per peek, at the back of its level    |
 | scrim        | `Scrims` (via `ScrimPlane`)           | one `NSWindow` per display + the tarp, under covers  |
 | truth        | `AXExecutor`                          | AX Mach IPC, serial per-app queues, slow, may refuse |
 | pointer      | `PointerExecutor`                     | CoreGraphics on the cursor itself                    |
 | system       | `ShellLauncher`                       | `/bin/sh -c`, fire and forget                        |
 
-**The hoist and scrim planes are the presentation plane outside a transition**, and each is its own
+**The hoist, peek and scrim planes are the presentation plane outside a transition**, and each is its own
 plane because nothing it does is a cover's: no base, no session, no ack the reducer counts down, and
-windows that outlive every transition. `Effect.setHoists` carries the whole desktop's set and
-`Effect.setScrims` and `Effect.setTarp` one display's, each every time, and each plane diffs it.
+windows that outlive every transition. `Effect.setHoists` and `Effect.setPeeks` carry the whole desktop's
+set and `Effect.setScrims` and `Effect.setTarp` one display's, each every time, and each plane diffs it.
 
 What the router cannot supply is "cover before teleport" — that is a fact about the _display_, not about
 emission order, so it is a phase in the core fenced by `Event.coverOnScreen`, and the two never share a batch.
@@ -333,8 +334,9 @@ the rule above with the quantifier written down; on two it is what stops one scr
 the other's truth plane. What it does *not* cover is a window whose pixels reach past its own display: it is
 covered on the screen its workspace lives on, and its far half stays in the neighbouring desktop.
 
-A held display still contributes its share of `World.placedOnScreen` and `World.parkedSlots` — what the last
-completed pass decided — so the record describes the whole desktop while the writes are only what the gate allows.
+A held display still contributes its share of `World.placedOnScreen`, `World.parkedSlots` and `World.peeks` —
+what the last completed pass decided — so the record describes the whole desktop while the writes are only what
+the gate allows.
 
 ### The close gate, and its bound
 
@@ -537,10 +539,11 @@ State = World         // truth: displays (frame + struts), apps, windows, focus,
       + TrackpadScroll // three fingers are down, and whose viewport they are driving
 ```
 
-Two decisions are **kept** beside those containers rather than re-derived, for the reason
-`World.placedOnScreen` is kept: `hoists` (the floats the shell is drawing) and `coverClearing` (how far each
-cover is held off its own edges), each re-derived by a post-pass that emits only the difference. `owedFocus`
-is a third and is not a projection at all — it is a debt, and it is on `State` because every exit owes it.
+Three decisions are **kept** beside those containers rather than re-derived, for the reason
+`World.placedOnScreen` is kept: `hoists` (the floats the shell is drawing), `peeks` (the peeking columns it
+is standing in for) and `coverClearing` (how far each cover is held off its own edges), each
+re-derived by a post-pass that emits only the difference. `owedFocus` is a fourth and is not a projection at
+all — it is a debt, and it is on `State` because every exit owes it.
 
 **A kept decision keyed by display is dropped in `setMonitors` when that display leaves**, as the shell drops
 its own copy. What a post-pass emits is the difference, so a record outliving its surface diffs equal against
@@ -652,7 +655,10 @@ displays is read as **each screen's own** in the before-geometry, which is invar
 hand-over is two independent workspace switches, and the destination's is a slide *in* from one screen away,
 which it can only be if the geometry it is leaving already places it there — at the scroll the address is
 travelling with, since a strip a display does not yet show is placed at its remembered offset and a memory
-written after the snapshot puts a sideways term into a slide that is vertical.
+written after the snapshot puts a sideways term into a slide that is vertical. A display the edit leaves
+framing nothing — the one a window was sent away from, focus having gone with it — **comes to rest inside its
+strip** (`restingOffset`), since a strip that lost a column can leave its viewport past the end, and the reals
+are placed where it rests; the acting display keeps its own rule, which clamps once the motion is over.
 
 ### Layout
 
@@ -739,9 +745,9 @@ the working area up to each pin's own edge. With nothing pinned the second is th
   A pin does not enter it, which is the whole of *pinning re-proportions nothing*.
 - **Logical** (`contentArea`) is where the strip lives: column 0 starts at its left edge, every scroll target
   frames against it, and `fullscreen` and the width ceilings resolve against it (`contentExtent`).
-- **Physical** (`screenArea`) is what is on screen for the strip: `visibleWindowIds` (the reducer's
-  `setFrame`-vs-`park` switch), the capture scope, and the sweep. The park lot still hugs `workingArea`'s
-  corner — a lot inset by the outer gap would poke a nub a margin's width in.
+- **Physical** (`screenArea`) is what is on screen for the strip: `visibleWindowIds` (less the peeks, the
+  reducer's `setFrame`-vs-`park` switch, `placedWindowIds`), the capture scope, and the sweep. The park lot
+  still hugs `workingArea`'s corner — a lot inset by the outer gap would poke a nub a margin's width in.
 
 Asking `visibleWindowIds` of the _logical_ viewport parks any column whose leading edge sits in the margin —
 enforcing the margin by teleporting windows out of it, which is the clipping this design exists to avoid, and it
@@ -847,6 +853,13 @@ display's metrics carry the same one and no call site can form a second opinion 
 the ordinal run's single cursor unconditional. A learned park floor is measured from the lot's own bottom edge
 rather than from the window's display, or a window parked on the far screen states a floor that is nonsense.
 
+**A window is drawn on one display: the one holding the largest share of it** (`Neighbourhood`), and the
+rest of it is drawn nowhere. It rides in `LayoutMetrics` beside the lot, for the lot's reason. So a column
+hanging off a screen's edge is drawn there, cut at the edge, while more of it is on that screen than beyond;
+past that point, with another display beyond, it would be drawn whole on the neighbour. `Layout.peekingFrames`
+names those columns, `targetFrames` parks them, and the placement pass records them as peeks (*Peeks*).
+Strictly more of the window here, since a tie is macOS's to break; a mirror is not a neighbour.
+
 **A window resized by its own handle keeps that size, and `Drag` is the whole of what makes that safe.** AX
 reports a resize identically whoever asked for it and our own placements provoke one every time, so a frame
 change is evidence only while the **button is down** — and only for the **first** window to move in that
@@ -889,8 +902,19 @@ consequences:
 `max`, a stackmate that will not be that short is the water-fill's floor, and both learn through the same
 `SizeCorrection` round trip an explicit `grow` uses. `Engine.minimumWindowHeight` is the backstop beside
 `minimumColumnWidth` — not the real bound, just what keeps a drag from subscribing a column past its own height
-before any app has been asked. A drag that only _moved_ the window is still reverted: reading one as _insert
-here_ is a different feature, and until it exists taking the window back is the honest answer.
+before any app has been asked. A drag that only _moved_ the window on its own display is still reverted:
+reading one as _insert here_ is a different feature, and until it exists taking the window back is the honest
+answer.
+
+**A drop on another display is answered, because it names a screen and that is enough** (`dropAcrossDisplays`).
+It is `move-to-monitor-and-focus` to the display the window is drawn on when it is put down — what that screen
+is showing, beside what it last focused — and the move travels from where the hand left it, the snapshot taking
+the window at its dropped frame exactly as an arrival is taken at the one it opened at. **A carried window drew
+no size** (`carried`): a resize holds an edge, or two at a corner, and moves nothing else, so an axis that moved
+without resizing, or resized with neither edge held, is a window carried — against where it stood when the hand
+took it (`Drag.subject`'s `from`), not where the strip wants it, since an app that refused its position would
+otherwise read as carried under every resize. It matters because macOS fits a window dropped on a smaller
+display to that display, and that size would otherwise be adopted as one the user drew.
 
 **Ids are never reused.** `WindowId`, `ColumnId`, `LayerId` are minted once and retired; a dead window's cache
 entry is unreachable rather than wrong, and a `Fullscreen` record naming a vanished `ColumnId` is simply not
@@ -1312,6 +1336,44 @@ alternatives is a screenshot on a timer for a window nobody is looking at, or an
 screen-recording indicator lit for as long as the window floats. A hoisted float's content is therefore
 frozen, and a float that comes forward and goes back is filmed again.
 
+### Peeks
+
+**A column another display would draw is parked, and drawn on its own display out of its own pixels**
+(`Layout.peekingFrames` → `World.peeks` → `State.peekBindings` → `Effect.setPeeks`). macOS draws a window
+on the display holding the largest share of it and leaves the rest undrawn (*Layout*), so a column hanging
+toward another screen is drawn whole there once most of it is past the edge — over that screen's own
+windows, with a hole where it belongs. Nothing emira may call clips a foreign window, so the column cannot
+be placed truthfully at all; it is parked, and a peek stands over its own display's share of it.
+
+**The record is the placement pass's**, written with `placedOnScreen` and `parkedSlots` — a peek is in the
+second and never the first — and held with them on a display whose cover is not up, so a peek changes in the
+batch that teleports that display's reals. `World.isOnScreen` admits one, since the user sees the column,
+and `World.window(at:)` finds it on its display's share rather than at its nub. `settlePeeks` emits the
+difference, and **holds a dropped peek while the write putting its window on the glass is out**: the
+picture is behind every window, so the one arriving hides it, and taken down first it leaves a hole for the
+length of the write. A column scrolled away altogether has nothing landing over it, and its peek goes at once.
+
+**It stands where the column would, not over everything** (`PeekPanel`): a borderless window at the back of
+the normal level, so a float or a dialog stacks over it as it would over the column, and no tiled window
+can, the strip never overlapping. It is cut to its display, because a window of ours at the column's whole
+frame is drawn by the same rule: the panel is the slice, and the photograph is laid at the whole frame
+inside it.
+
+**The scrim reads a peek as the column** (`PeekPanels.standIn` → `Scrims`): the panel's number is
+identified as the window it stands for, at the column's whole frame, so it is veiled as the column would be,
+the display's edge cuts the shape square, and a cover's stand-in for that window reads the same answer from
+`Scrims.veil(of:)` — which is what makes a transition ending on a peek a non-event.
+
+**The photograph is borrowed, then its own, then frozen** (`PeekPanels`). A column becomes a peek at the end
+of the transition that scrolled it there, whose cover filmed it moments before, so a kept still of its size
+shows at once; the peek's own film replaces it, and a later cover moving it lends it a newer one. It is
+filmed again only when its size changes. None is live, which is a peek's standing cost, and a peek is a
+column the user is not working in.
+
+**A click is a click on the column** (`Event.peekClicked`): focus, and the reveal a focus macOS moved gets
+(`revealAcrossWorkspaces`), across displays when the peek is on the other one. The focus is emira's to
+emit, since nothing moved it.
+
 ### Scrims
 
 **An unfocused window is drawn see-through, from the other side** (`State.scrimBindings` →
@@ -1364,9 +1426,11 @@ takes the patch it covers and no more. Standing in for the rest needs a photogra
 whenever anything behind anything redraws. **The occluder and the decline are two subtractions, told apart by
 z-order** (`Scrims.veils`, `cuts`): `panes` runs front to back, so a lower index is in front and always comes
 out, those pixels not being on the screen at all; behind, only an opaque pane comes out, a see-through one
-standing on the photograph as well. The scope follows from the surface: only what is on this
-display is in the walk at all, so a column hanging off the viewport, its frame running through the parking lot
-in the corner, forfeits a sliver a pixel wide and keeps the screen it is on.
+standing on the photograph as well. The scope follows from the surface: only what this display
+**draws** is in the walk at all — a window is drawn on the display holding the largest share of it, so one
+hanging past an edge is in one display's walk and takes nothing out of its neighbour's — and a column hanging
+off the viewport, its frame running through the parking lot in the corner, forfeits a sliver a pixel wide and
+keeps the screen it is on. A peek is walked as the column it stands for (*Peeks*).
 
 **Every shape is a window's silhouette, rounded by that window's measured radius** (`Scrims.veils`) — by id
 from a cover's film, or by number from `CornerSurvey`, whichever read it at rest (§5, *The modes*). A
@@ -1401,7 +1465,9 @@ the window server serializes screenshots, and a focus change is also a cover, wh
 anybody can feel. A desktop widget therefore ticks late behind a window you are looking through. A new
 `unfocused-blur` is the one refilm the throttle does not pace, because a radius change does not leave the
 standing photograph stale — it leaves it wrong. A film that *failed* is still an attempt and still paces the
-next one, or a desktop that declines to be filmed at all is asked again at every cover and every set.
+next one, or a desktop that declines to be filmed at all is asked again at every cover and every set. A film
+that never *asked* for the photograph is not one (`veiledAsked`): a boot with something parked sends the tarp
+ahead of the first set, and its film of the lot's strip alone would otherwise pace the veils off the glass.
 
 **No display nobody is veiling is ever filmed** (`Scrims.wantsPhotograph`), which is the whole of what the
 setting being off costs: no capture at boot, none every `desktopMaxAge` after, and no photograph held. The
@@ -1670,6 +1736,11 @@ can quietly break:
   pending Core Animation commit, so no thread makes it cheap and the caller yields instead (§ reconciliation).
 - **Expect clamping.** Apps clamp to their own min/max, so landing exactly can take size → position → size. What
   an app answered is then a fact the geometry consults (`World.corrections`, §6) rather than something re-asked.
+- **An app clamps to the display it last knew.** A write onto another display is clamped against the one the
+  window left until the app notices the move, a run-loop turn or more later (~20 ms for an AppKit window), and
+  re-asserting at once is clamped the same way. So a tiled write that crosses displays waits that out before
+  its corrective pass (`AXWindow.place(at:crossing:)`, judged in `AXExecutor` from the registry's last frame);
+  a park does not, since what it lands at describes the slot.
 - **Write whole points.** AX stores integers — a position floors, a size rounds half down — so the truth plane
   rounds every frame it writes (`Layout.targetFrames`, the pins) and a landing is exact or is the app's answer.
   The reducer's diff and the executor's landing report read one threshold, `Tolerance.placement`; a window
@@ -2587,9 +2658,10 @@ emira/
     │   ├── Guide/       GuideInput · GuideModel · NamesModel · GuideFace (what measures a word)
     │   │                GuideStyle · GuideDrawing — which guides there are, and one frame of one
     │   ├── State/       World · Monitors · Motion · RectAnimator · Pointer · Drag · TrackpadScroll
-    │   │                Hoists · Scrims · Tarp (the standing presentation-plane sets)
+    │   │                Hoists · Peeks · Scrims · Tarp (the standing presentation-plane sets)
     │   └── Layout/      Layout (the kind) · Workspaces · Strip · Stack · Column · Presets
     │                    Cascade (the quit pile, not a layout) · Park
+    │                    Neighbourhood (which display draws a window — the largest share of it)
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
     │                    ConfigDocument · ConfigPath
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
@@ -2618,6 +2690,7 @@ emira/
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
     │   │                Compositor (the plane: one frame, and the layer route) · CompositingExecutor
     │   │                HoistPanel(s) · StackProbe (what is over this window — hoists and pins)
+    │   │                PeekPanel(s) (a column another display would draw, drawn on its own)
     │   │                Scrim(s) (the see-through unfocused windows — one surface per display)
     │   │                TarpWindow (the parking lot drawn over — one strip, on the lot's display)
     │   ├── Guide/       GuideSubject (State → GuideInput) · Guide · GuidePanel · GuideIcons
@@ -2660,12 +2733,14 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   total geometry queries over **both kinds**, which is what says the type answers for every window and for
   an empty workspace whichever arrangement it is in.
 
-  `MonitorTests`, `MonitorCommandTests`, `DesktopParkingTests` and the reducer's `MonitorSessionTests` earn
-  their place the way `WorkspaceTests` does: everything they assert — an address orphaned by a departure, the
-  assignments a lid close and a replug have to survive, a cover that stays on its own screen, a window held
-  back while *its* display is mid-capture, a `MonitorRef` with more than one answer, a `next` that steps over
-  another screen's addresses, a parked body landing on the screen next door — is a **silent** failure while
-  there is one display, so this is the only place any of it can be proved at all.
+  `MonitorTests`, `MonitorCommandTests`, `DesktopParkingTests`, `PeekTests` and the reducer's
+  `MonitorSessionTests` earn their place the way `WorkspaceTests` does: everything they assert — an address
+  orphaned by a departure, the assignments a lid close and a replug have to survive, a cover that stays on its
+  own screen, a window held back while *its* display is mid-capture, a `MonitorRef` with more than one answer,
+  a `next` that steps over another screen's addresses, a parked body landing on the screen next door, a column
+  the neighbour would draw, a window dropped on another display — is a **silent** failure while there is one
+  display, so this is the only place any of it can be proved at all. `MultiDisplayTests` is the shell's half:
+  the scrim's walk, a peek read as its column, and a write that crosses displays.
 - **`EmiraCoreTests` / the reducer** — `EngineArrivalTests`, `EngineFocusTests`, `EngineWindowOpTests`,
   `EngineTransitionTests`, `EngineResizeTests`, `EngineHandResizeTests`, `EngineFullscreenTests`,
   `EngineRefusalTests`,

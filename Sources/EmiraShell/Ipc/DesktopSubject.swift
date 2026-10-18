@@ -66,13 +66,13 @@ extension DesktopStatus {
     }
 
     /// Where the focused window is: the workspace holding it and the display holding that, or the
-    /// display a pin is held at, or — for a window on neither — the display under its middle.
+    /// display a pin is held at, or — for a window on neither — the display it is drawn on.
     private static func focus(of window: WindowState, in state: State,
                               name: (String) -> String) -> Focus {
         let workspace = state.workspaces.workspace(of: window.id)
         let monitor = workspace.flatMap { state.monitors.monitor(of: $0) }
             ?? state.world.pins[window.id]?.monitor
-            ?? state.world.monitor(at: window.frame.center)
+            ?? state.world.monitor(drawing: window.frame)
         return Focus(display: monitor.map(key), workspace: workspace, window: window.id,
                      app: name(window.bundleId), bundle: window.bundleId)
     }

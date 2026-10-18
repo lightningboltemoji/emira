@@ -191,6 +191,10 @@ public struct World: Sendable, Equatable, Codable {
     /// Every window the last placement pass parked, at the slot it parked it in — `placedOnScreen`'s
     /// complement, kept with its geometry, for `placedOnScreen`'s reason. What the tarp draws over.
     public private(set) var parkedSlots: [WindowId: Rect] = [:]
+    /// The windows the last placement pass parked because another display would have drawn them, each
+    /// with the peek standing in for it — on the screen to the user, though not on the glass. Recorded
+    /// for `placedOnScreen`'s reason, and a subset of `parkedSlots`.
+    public private(set) var peeks: [WindowId: PeekBinding] = [:]
     /// The user's explicit float/tile answer per window, where they have given one — `Command.float`.
     /// A side table rather than a field on `WindowState` for the same reason `corrections` is one:
     /// `insert` rebuilds the whole record (a re-scan overwrites it), and an answer the user gave should
@@ -269,6 +273,7 @@ public struct World: Sendable, Equatable, Codable {
         inFlight[id] = nil
         placedOnScreen.remove(id)
         parkedSlots[id] = nil
+        peeks[id] = nil
         floating[id] = nil
         pins[id] = nil
         focusedAt[id] = nil
@@ -294,9 +299,11 @@ public struct World: Sendable, Equatable, Codable {
     /// is as structural as this can make it: the shell only ever *reads* core state, and every other
     /// mutator here folds an `Event` the shell has to be able to construct. Replaced wholesale, never
     /// merged: a pass places every managed window, so what it does not name it parked.
-    mutating func notePlaced(onScreen ids: Set<WindowId>, parked: [WindowId: Rect]) {
+    mutating func notePlaced(onScreen ids: Set<WindowId>, parked: [WindowId: Rect],
+                             peeking: [WindowId: PeekBinding] = [:]) {
         placedOnScreen = ids
         parkedSlots = parked
+        peeks = peeking
     }
 
     /// Record a set `Engine.writeTruthPlane` has just written: the target is taken optimistically, and
@@ -383,10 +390,8 @@ public struct World: Sendable, Equatable, Codable {
         guard let monitor else { return nil }
         return focusedAt
             .filter { id, _ in
-                guard isOnScreen(id), let frame = windows[id]?.frame else { return false }
-                // The centre, as hoisting asks it: a window half off an edge is still on the screen
-                // holding the rest of it.
-                return self.monitor(at: frame.center) == monitor
+                guard isOnScreen(id), let frame = shownFrame(of: id) else { return false }
+                return self.monitor(drawing: frame) == monitor
             }
             // `focusClock` is monotonic and written once per move, so there are no ties to break.
             .max { $0.value < $1.value }?.key
@@ -469,6 +474,13 @@ public struct World: Sendable, Equatable, Codable {
         monitors.first { $0.frame.contains(point) }?.id
     }
 
+    /// The display the window server draws a window standing at `frame` on: the one holding the largest
+    /// share of it (`Neighbourhood`), the first in enumeration order on a tie, `nil` where it is on none.
+    /// Not the display under its centre, which can be in the gap between two screens or on the smaller.
+    public func monitor(drawing frame: Rect) -> MonitorId? {
+        frame.largestShare(among: monitors.map(\.frame)).map { monitors[$0].id }
+    }
+
     // Derived views (deterministically ordered; consumed by the layout engine and CLI dumps)
 
     /// Whether a window is currently tiled — on some workspace's layout: it exists, its own state
@@ -514,7 +526,8 @@ public struct World: Sendable, Equatable, Codable {
     /// re-deriving it is what keeps the question "where is this window" from being answered with where
     /// it is *going* — the viewport describes the destination for the whole of a reveal — or with where
     /// it would be under a layout that has been restructured since it was last placed. Membership
-    /// subsumes the workspace test too: a pass parks everything off the focused workspace.
+    /// subsumes the workspace test too: a pass parks everything off the focused workspace. A peek is
+    /// parked and still on the screen, since what the user sees there is the column, drawn by a picture.
     public func isOnScreen(_ id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
         // Nowhere on the screen for a reason that has nothing to do with the layout.
@@ -522,7 +535,13 @@ public struct World: Sendable, Equatable, Codable {
         // A window emira does not place is wherever its app put it, which is in view — unless the app
         // has stopped drawing it without closing it, which only the window server can say.
         guard participatesInTiling(id) else { return !unshown.contains(id) }
-        return placedOnScreen.contains(id)
+        return placedOnScreen.contains(id) || peeks[id] != nil
+    }
+
+    /// Where the user sees `id`: the part of a peek its display shows, or else the window's own frame.
+    public func shownFrame(of id: WindowId) -> Rect? {
+        guard let peek = peeks[id] else { return windows[id]?.frame }
+        return monitor(peek.monitor).flatMap { peek.frame.intersection($0.frame) }
     }
 
     /// The window under `point`, in top-left global coordinates — the hit test behind
@@ -554,8 +573,11 @@ public struct World: Sendable, Equatable, Codable {
 
         var float: WindowId?
         var tiled: WindowId?
-        for window in windows.values where window.frame.contains(point) && isOnScreen(window.id) {
+        for window in windows.values where isOnScreen(window.id) {
             let id = window.id
+            // A peek's window is parked: what the pointer can be over is the part its picture shows.
+            guard (peeks[id] == nil ? window.frame : shownFrame(of: id))?.contains(point) == true
+            else { continue }
             if isFloating(id) {
                 if isInFront(id, of: float) { float = id }
             } else if isInFront(id, of: tiled) {

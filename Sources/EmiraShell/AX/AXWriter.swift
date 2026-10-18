@@ -21,11 +21,16 @@ public struct WindowMove: Sendable {
     /// scrolled back into view, so an app's answer at a park slot describes the *slot* and must never
     /// become a `SizeCorrection` (see `AXExecutor.report`).
     public let isPark: Bool
+    /// Whether the write takes the window onto another display — which the app clamps it to for a moment
+    /// after it has arrived (`AXWindow.place(at:crossing:)`).
+    public let crossesDisplays: Bool
 
-    public init(record: WindowRegistry.Record, target: Rect, isPark: Bool = false) {
+    public init(record: WindowRegistry.Record, target: Rect, isPark: Bool = false,
+                crossesDisplays: Bool = false) {
         self.record = record
         self.target = target
         self.isPark = isPark
+        self.crossesDisplays = crossesDisplays
     }
 }
 
@@ -114,7 +119,8 @@ public final class AXWindowWriter: WindowWriter {
             // lane, so the sets cannot interleave with another batch.
             application.withEnhancedUserInterfaceSuspended {
                 moves.map { move in
-                    let outcome = move.record.element.place(at: move.target)
+                    let outcome = move.record.element.place(at: move.target,
+                                                            crossing: move.crossesDisplays)
                     return WindowLanding(id: move.record.id,
                                          accepted: outcome.accepted, frame: outcome.actual)
                 }

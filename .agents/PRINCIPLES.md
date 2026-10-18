@@ -106,21 +106,22 @@ Four consequences, and they are the whole design:
   removes that floor. All we choose is what to show while they are missing — a stretched still or a cropped
   one — and both are honest about the same absence; they differ over which lie they refuse to tell.
 
-**The plane's standing work is drawing what we are not allowed to change.** A float macOS has buried and an
-unfocused window we are not permitted to make transparent are the same problem, answered the same way: put the
-pixels in a window of our own. Transparency is the sharper case, because it is not a stand-in at all. Compositing
-what is _behind_ a window over the top of it is the identical blend to that window being transparent — the same
-arithmetic, arrived at from the other side — so the blend is never approximated and the presentation plane's usual
-trade, a frozen still for smooth motion, is not being made. What such a thing can get wrong is never the blend; it
-is only ever the backdrop, and **the desktop is the true backdrop where the desktop is what lies behind — or
-where what lies behind is another window the desktop is standing behind too.** That is a second thing the strip's
-promise buys: windows that never overlap are windows one photograph of the desktop can stand behind, every one of
-them. The second clause is for the one overlap tiling does produce, a column scrolled under a pin, and it is the
-only place a backdrop is approximate rather than exact — a see-through window's own content is lost from behind
-the one in front of it, which is the quieter of the two errors on offer, the other being to stop the veil dead at
-the overlap's edge. A cascade is backed by itself and takes no veil at all: its tiles are one size, so the
-overlaps are the whole of what says which is on top. What does decline declines _where_ it must, because the
-claim is about a region and so is the answer to it.
+**The plane's standing work is drawing what we are not allowed to change.** A float macOS has buried, an
+unfocused window we are not permitted to make transparent and a column macOS would draw on the wrong screen are
+the same problem, answered the same way: put the pixels in a window of our own. Transparency is the sharper
+case, because it is not a stand-in at all. Compositing what is _behind_ a window over the top of it is the
+identical blend to that window being transparent — the same arithmetic, arrived at from the other side — so the
+blend is never approximated and the presentation plane's usual trade, a frozen still for smooth motion, is not
+being made. What such a thing can get wrong is never the blend; it is only ever the backdrop, and **the desktop
+is the true backdrop where the desktop is what lies behind — or where what lies behind is another window the
+desktop is standing behind too.** That is a second thing the strip's promise buys: windows that never overlap
+are windows one photograph of the desktop can stand behind, every one of them. The second clause is for the one
+overlap tiling does produce, a column scrolled under a pin, and it is the only place a backdrop is approximate
+rather than exact — a see-through window's own content is lost from behind the one in front of it, which is the
+quieter of the two errors on offer, the other being to stop the veil dead at the overlap's edge. A cascade is
+backed by itself and takes no veil at all: its tiles are one size, so the overlaps are the whole of what says
+which is on top. What does decline declines _where_ it must, because the claim is about a region and so is the
+answer to it.
 
 **The photograph departs from a pane of glass twice, and both are choices rather than slips.** `[focus]
 unfocused-blur` blurs it before anything is drawn through it, which is the material macOS builds its own chrome
@@ -256,6 +257,14 @@ happen on.
   window that visibly goes behind before its picture catches up has not floated at all. And it is only ever the floats the **user** chose, never the dialogs and
   tool palettes the taxonomy floats on macOS's say-so — a background app's palettes pinned over the window
   you are typing in is not a promise kept, it is a window manager in the way.
+- **A strip stays on its own screen.** A column hanging off one display's edge toward another is drawn on its
+  own display, cut at the edge, however far it hangs — never on the neighbour, over that screen's work. macOS
+  draws it on its own display for exactly as long as most of it is there, and past that point it would draw
+  it whole on the other one, so from there the column is parked and its own display shows a **peek**: the
+  part of it that screen holds, drawn out of its own pixels, veiled as the column would be. It is a picture,
+  frozen while it stands, which is the right trade for a column the user is not working in and the wrong one
+  for any other — so a click on it is a click on the column, which reveals it and puts the window back. On
+  one display, or toward an edge with nothing beyond, there is no neighbour to take it and no peek at all.
 - **A window's own resize handle still works.** A tiling window manager owns where a window goes, and the
   temptation is to read a hand on the frame as a mistake to correct. It isn't: the handle is the most direct
   thing the user can say about a size, and it says exactly what `grow` says by another route — so the size a
@@ -265,8 +274,11 @@ happen on.
   cannot be honoured is honoured as far as it goes, on the same terms every other resize gets: a column is as
   wide as its windows will actually be. The asymmetry with a _move_ drag is deliberate and not an oversight —
   a size is a number the strip already holds, while dragging a window somewhere would have to mean _insert
-  here_, and emira does not yet have an answer to where. **An app resizing its own window is the opposite
-  case and gets the opposite answer**: nobody drew that rectangle, so it teaches the layout nothing and the
+  here_, and emira does not yet have an answer to where. **Across displays it has one**: a drop on another
+  screen names the screen, which is all `move-to-monitor` ever needed, so the window goes there and travels
+  from where the hand left it. And a size the window took on the way — macOS fits a window put down on a
+  smaller display to that display — was carried, not drawn, so it is not kept. **An app resizing its own
+  window is the opposite case and gets the opposite answer**: nobody drew that rectangle, so it teaches the layout nothing and the
   window goes back where the strip puts it — once it has stopped moving, because an app mid-animation is not
   yet saying anything.
 - **A layout owes placement, and an inert verb is written down rather than discovered.** Eight verbs and
@@ -325,6 +337,13 @@ happen on.
   windows stay warm and revealing one does not flash. While emira runs the nub is not on show: the
   presentation plane draws the corner back over it as the desktop would look with nothing parked in it —
   and a hair short of opaque, since a window it occluded could be throttled after all.
+- **A window is drawn on one display only: the one holding the largest share of it.** The rest of it is not
+  drawn anywhere — not clipped onto the screen next door, but left out — so a window cannot straddle two
+  displays, and what decides where it shows is area, not where it was put. Nothing emira may call clips a
+  foreign window to a screen, so a column the neighbour would take is one emira cannot place truthfully and
+  draws instead (§4). The same rule binds every window of ours, which is why each is cut to its own display.
+  And an app learns which display its window is on only some time after the move, clamping it meanwhile to
+  the one it left — a size written across displays is asked again once the app has caught up.
 - **Only the owning app can produce resized pixels, and AX latency is its main thread's, not ours.** A busy
   Chrome or JVM window services us when it gets around to it. We can mask that; we cannot fix it.
 - **The pointer composites above everything, including our cover**, and the public API will not let a

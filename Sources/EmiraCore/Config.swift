@@ -520,9 +520,9 @@ public struct Config: Sendable, Equatable, Codable {
 // The `Config → LayoutMetrics` mapping, here rather than beside `LayoutMetrics`: layout is geometry and
 // takes numbers, so `Layout.swift` naming `Config` would point the dependency the wrong way.
 //
-// Five of the nine inputs are the file's, as the named display sees it; the other four are the running
-// desktop's, and default to empty. That is not a stub — a caller with no world has no correction to
-// apply and nothing parked, so the empty is the honest answer rather than a placeholder for one.
+// The gaps and presets are the file's, as the named display sees it; the rest is the running desktop's,
+// and defaults to what one display with nothing on it says — the honest answer for a caller with no world,
+// which has no correction to apply, nothing parked and no neighbour, rather than a placeholder for one.
 
 extension LayoutMetrics {
     /// The metrics `config` asks for on the display called `display` (`nil`: `[layout]` as written). The
@@ -536,7 +536,8 @@ extension LayoutMetrics {
                 corrections: [WindowId: SizeCorrection] = [:],
                 parkFloors: [WindowId: Double] = [:],
                 parkingLot: ParkingLot? = nil,
-                pins: [PinSide: PinBand] = [:]) {
+                pins: [PinSide: PinBand] = [:],
+                neighbourhood: Neighbourhood? = nil) {
         let config = display.map(config.on(display:)) ?? config
         self.init(workingArea: workingArea,
                   widthPresets: config.widthPresets,
@@ -549,6 +550,7 @@ extension LayoutMetrics {
                   corrections: corrections,
                   parkFloors: parkFloors,
                   parkingLot: parkingLot,
-                  pins: pins)
+                  pins: pins,
+                  neighbourhood: neighbourhood)
     }
 }

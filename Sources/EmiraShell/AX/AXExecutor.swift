@@ -23,18 +23,22 @@ public final class AXExecutor: Executor {
     private let fence: PinFence?
     /// The writes out on the lanes, which `WorldWatcher` reads to drop their echoes.
     private let writes: FrameWrites
+    /// Every attached display's frame, in core coordinates — what says a write crosses displays.
+    private let displays: @MainActor () -> [Rect]
 
     /// - Parameter scheduler: for the one turn `appActivated` waits (see `execute`). Defaulted because
     ///   it is the only asynchrony in this type and every other test of it is about geometry; a test
     ///   that cares injects a manual one rather than every test that doesn't naming a real one.
     public init(registry: WindowRegistry, writer: any WindowWriter,
                 scheduler: any DelayScheduler = DispatchScheduler(), fence: PinFence? = nil,
-                writes: FrameWrites = FrameWrites()) {
+                writes: FrameWrites = FrameWrites(),
+                displays: @escaping @MainActor () -> [Rect] = { [] }) {
         self.registry = registry
         self.writer = writer
         self.scheduler = scheduler
         self.fence = fence
         self.writes = writes
+        self.displays = displays
     }
 
     public func execute(_ effects: [Effect], feedback: EventSink) {
@@ -42,6 +46,7 @@ public final class AXExecutor: Executor {
         // Lane dispatch order, first-touched-first: a dictionary's order is not an order, and a hash
         // seed shouldn't be able to change which app's group goes out first.
         var lanes: [pid_t] = []
+        let screens = displays()
 
         for effect in effects {
             switch effect {
@@ -53,9 +58,12 @@ public final class AXExecutor: Executor {
                     continue
                 }
                 let isPark = if case .park = effect { true } else { false }
+                // A park is left out: what it lands at describes the slot, never the window's size.
+                let crossing = !isPark
+                    && record.frame.largestShare(among: screens) != rect.largestShare(among: screens)
                 if groups[record.pid] == nil { lanes.append(record.pid) }
                 groups[record.pid, default: []].append(
-                    WindowMove(record: record, target: rect, isPark: isPark))
+                    WindowMove(record: record, target: rect, isPark: isPark, crossesDisplays: crossing))
 
             // Focus and stacking: issued as encountered. They commute with placement — keyboard and
             // z-order versus geometry — so sending the geometry afterwards reorders nothing observable.
@@ -111,7 +119,7 @@ public final class AXExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .keepStill, .setHoists, .setScrims, .setTarp, .setCoverClearing,
+            case .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp, .setCoverClearing,
                  .beginTransition, .extendCover, .elevateLayer, .setLayerFrame,
                  .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec:
                 break

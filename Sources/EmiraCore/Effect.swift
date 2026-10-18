@@ -36,6 +36,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// nothing, so a machine that cannot film a still simply never sees one appear.
     case setHoists([HoistBinding])
 
+    /// The peeking columns to stand in for — each parked because another display would have drawn it,
+    /// and drawn on its own display out of its own pixels — and take down every one not named. The
+    /// whole set every time, which the shell diffs, as `setHoists` is. Unacked and gating nothing.
+    case setPeeks([PeekBinding])
+
     /// The windows to draw the desktop back over on one display, bottom→top — that display's whole set
     /// every time, and again unchanged once the desktop settles under it. Unacked; the shell may decline
     /// a binding it cannot back honestly. `ScrimChange` is how the mask gets there, and the core's to say.

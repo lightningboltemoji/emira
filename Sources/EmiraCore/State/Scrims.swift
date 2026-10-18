@@ -68,7 +68,7 @@ extension State {
     ///
     /// `placedOnScreen` and not "every window", for `hoistBindings`' reason: it is the placement pass's
     /// own record of what it put on the glass, so a parked column at its sliver is out without anybody
-    /// deriving a viewport.
+    /// deriving a viewport. Its peeks are in: parked, but on the screen as a picture the plane veils.
     ///
     /// **Empty while a window is in the user's hand**: a mask is cut once per set, so a moving window's
     /// hole would stay where it was picked up. By display, because a scrim is one display's, and each
@@ -81,7 +81,7 @@ extension State {
         // arrival path already takes from the same routine `nil`, which read literally draws the whole
         // strip see-through for as long as no managed window holds the keyboard.
         let focused = world.focusedWindow ?? world.lastFocus
-        let candidates = world.placedOnScreen.filter { $0 != focused }.sorted()
+        let candidates = world.placedOnScreen.union(world.peeks.keys).filter { $0 != focused }.sorted()
         guard !candidates.isEmpty else { return [:] }
 
         let showing = stackingOrder(of: candidates)
@@ -97,7 +97,7 @@ extension State {
     /// a layout takes the display showing that layout's workspace — and declines there if the layout is
     /// a cascade — and only what is on neither is asked where it happens to be.
     ///
-    /// **Not the window's centre**, which is what a hoist's display is asked of. A float sits inside
+    /// **Not where the window is**, which is what a float's display is asked of. A float sits inside
     /// the screen it is on; a column need not — the strip is infinite and the viewport is a slice of
     /// it, so a column at the edge hangs half off with its centre in the parked region beyond.
     private func veiling(_ id: WindowId, at frame: Rect) -> MonitorId? {
@@ -106,6 +106,6 @@ extension State {
             guard workspaces[name].kind == .strip else { return nil }
             return monitors.monitor(of: name)
         }
-        return world.monitor(at: frame.center)
+        return world.monitor(drawing: frame)
     }
 }

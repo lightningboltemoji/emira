@@ -168,9 +168,8 @@ extension State {
             .compactMap { id -> HoistBinding? in
                 guard let frame = frames[id],
                       // A float off every attached screen has no display to be filmed for. Asked of the
-                      // centre rather than the origin: a window half off the left edge is still on the
-                      // screen holding the rest of it.
-                      let monitor = world.monitor(at: frame.center) else { return nil }
+                      // screen the window server draws it on, which is where its picture is drawn too.
+                      let monitor = world.monitor(drawing: frame) else { return nil }
                 return HoistBinding(window: id, monitor: monitor, frame: frame,
                                     state: hoisted.contains(id) ? .covered : .standby)
             }

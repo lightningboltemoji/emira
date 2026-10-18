@@ -112,6 +112,23 @@ public struct Rect: Sendable, Equatable, Codable, CustomStringConvertible {
         return Rect(x: x1, y: y1, width: x2 - x1, height: y2 - y1)
     }
 
+    /// How much of this rect lies inside `other`, in square points — zero where they do not overlap.
+    public func overlapArea(with other: Rect) -> Double {
+        intersection(other)?.area ?? 0
+    }
+
+    /// The index of the rect in `frames` holding the largest share of this one — the display the window
+    /// server draws a window on (`Neighbourhood`). The first wins a tie; `nil` where none overlaps it.
+    public func largestShare(among frames: [Rect]) -> Int? {
+        var best: (index: Int, area: Double)?
+        for (index, frame) in frames.enumerated() {
+            let area = overlapArea(with: frame)
+            guard area > 0, area > best?.area ?? 0 else { continue }
+            best = (index, area)
+        }
+        return best?.index
+    }
+
     /// The smallest rect enclosing both. An empty operand is ignored rather than dragging the union to
     /// the origin, so this accumulates a bounding box cleanly.
     public func union(_ other: Rect) -> Rect {

@@ -181,6 +181,9 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// geometry query must see the same one or they place columns at different left edges. This
     /// display's alone, unlike the corrections and the lot — a pin belongs to a screen.
     public var pins: [PinSide: PinBand]
+    /// This display among the others — which of them the window server draws a window on. Rides here for
+    /// the lot's reason. Defaults to the working area alone, where every window placed is drawn here.
+    public var neighbourhood: Neighbourhood
 
     public init(
         workingArea: Rect,
@@ -194,7 +197,8 @@ public struct LayoutMetrics: Sendable, Equatable {
         corrections: [WindowId: SizeCorrection] = [:],
         parkFloors: [WindowId: Double] = [:],
         parkingLot: ParkingLot? = nil,
-        pins: [PinSide: PinBand] = [:]
+        pins: [PinSide: PinBand] = [:],
+        neighbourhood: Neighbourhood? = nil
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
@@ -208,6 +212,7 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.parkFloors = parkFloors
         self.parkingLot = parkingLot ?? ParkingLot(frame: workingArea)
         self.pins = pins
+        self.neighbourhood = neighbourhood ?? Neighbourhood(frame: workingArea)
     }
 
     //
@@ -768,7 +773,8 @@ public struct Layout: Sendable, Equatable, Codable {
     ///
     /// Composed from `naturalFrames` and `visibleWindowIds` rather than resolving the geometry a third
     /// time, which is what makes it total over both kinds: **nothing parks on a shown `stack`
-    /// workspace**, because everything on a cascade is on screen and that set answers so.
+    /// workspace**, because everything on a cascade is on screen and that set answers so. A peeking
+    /// column another display would draw (`peekingFrames`) parks too: placed, it would be over there.
     ///
     /// **The ordinal run is an input *and* an output, because uniqueness is a property of the whole
     /// workspace set.** Every window on every unfocused workspace is parked too, so a range local to one
@@ -778,7 +784,7 @@ public struct Layout: Sendable, Equatable, Codable {
     public func targetFrames(scrollOffset: Double, metrics: LayoutMetrics,
                              parkingFrom cursor: inout Int) -> [WindowId: Rect] {
         let natural = naturalFrames(scrollOffset: scrollOffset, metrics: metrics)
-        let visible = Set(visibleWindowIds(scrollOffset: scrollOffset, metrics: metrics))
+        let placed = Set(placedWindowIds(scrollOffset: scrollOffset, metrics: metrics))
         let lot = metrics.parkingLot
 
         var frames: [WindowId: Rect] = [:]
@@ -786,8 +792,29 @@ public struct Layout: Sendable, Equatable, Codable {
         // Whole points, because AX stores nothing finer and a fractional target lands where AX rounds it.
         for id in allWindowIds {
             guard let frame = natural[id] else { continue }
-            frames[id] = (visible.contains(id) ? frame
+            frames[id] = (placed.contains(id) ? frame
                 : Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)).rounded()
+        }
+        return frames
+    }
+
+    /// The windows the truth plane puts **on the glass** at `scrollOffset`: what the viewport shows, less
+    /// what another display would draw. The `setFrame`-vs-`park` switch itself, in layout order.
+    public func placedWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
+        let peeking = peekingFrames(scrollOffset: scrollOffset, metrics: metrics)
+        return visibleWindowIds(scrollOffset: scrollOffset, metrics: metrics).filter { peeking[$0] == nil }
+    }
+
+    /// The windows the viewport shows that the window server would draw **on another display**, at the
+    /// frame each would stand at (`Neighbourhood.draws`) — parked, and drawn here by a peek. Whole points,
+    /// as `targetFrames` writes; empty under `stack`, whose tiles stay inside the content area.
+    public func peekingFrames(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId: Rect] {
+        guard kind == .strip, !metrics.neighbourhood.others.isEmpty else { return [:] }
+        let natural = naturalFrames(scrollOffset: scrollOffset, metrics: metrics)
+        var frames: [WindowId: Rect] = [:]
+        for id in visibleWindowIds(scrollOffset: scrollOffset, metrics: metrics) {
+            guard let frame = natural[id]?.rounded(), !metrics.neighbourhood.draws(frame) else { continue }
+            frames[id] = frame
         }
         return frames
     }
@@ -877,7 +904,7 @@ public struct Layout: Sendable, Equatable, Codable {
     }
 
     /// The windows the viewport is showing at `scrollOffset`, in layout order — the reducer's
-    /// `.setFrame` vs `.park` switch.
+    /// `.setFrame` vs `.park` switch, less the peeks another display would draw (`placedWindowIds`).
     ///
     /// Under `strip`, the windows whose columns overlap the **physical** viewport, so a column bleeding
     /// into the outer-gap margin counts as on screen. Under `stack`, **everything**: a cascade lays

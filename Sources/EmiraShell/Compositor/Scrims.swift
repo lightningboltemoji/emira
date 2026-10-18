@@ -177,6 +177,9 @@ public final class Scrims: ScrimPlane {
     private let filmer: any DesktopFilmer
     /// Window number → the id the core knows it by, or `nil` for a window emira never adopted.
     private let identify: @MainActor (CGWindowID) -> WindowId?
+    /// Window number → the column a peek of ours stands in for and the frame it would stand at, or `nil`
+    /// for anything that is not a peek (`PeekPanels.standIn`).
+    private let standIn: @MainActor (CGWindowID) -> (window: WindowId, frame: Rect)?
     /// The numbers management has let go of that the glass may still be showing
     /// (`WindowRegistry.departedNumbers`) — a hole to the mask, as they are to a cover's base.
     private let departed: @MainActor () -> Set<CGWindowID>
@@ -205,6 +208,9 @@ public final class Scrims: ScrimPlane {
     private var filmedAt: [MonitorId: Date] = [:]
     /// The photograph each display's scrim is drawing, kept for the cover (`backdrop(of:)`).
     private var photographs: [MonitorId: CGImage] = [:]
+    /// The displays a film has asked for that photograph, answered or not. One never asked for is missing
+    /// rather than stale — a tarp's film can be the first — so it is not paced like one that failed.
+    private var veiledAsked: Set<MonitorId> = []
     /// Bumped per display by every film, so one answering after its surface was rebuilt owns nothing.
     private var filmGeneration: [MonitorId: Int] = [:]
 
@@ -252,6 +258,8 @@ public final class Scrims: ScrimPlane {
 
     public init(filmer: any DesktopFilmer,
                 identify: @escaping @MainActor (CGWindowID) -> WindowId?,
+                standIn: @escaping @MainActor (CGWindowID) -> (window: WindowId, frame: Rect)?
+                    = { _ in nil },
                 departed: @escaping @MainActor () -> Set<CGWindowID> = { [] },
                 corner: @escaping @MainActor (WindowId?, CGWindowID) -> CornerReading? = { _, _ in nil },
                 stack: @escaping @MainActor () -> [StackedWindow] = StackedWindow.current,
@@ -264,6 +272,7 @@ public final class Scrims: ScrimPlane {
         self.buildTarp = buildTarp
         self.filmer = filmer
         self.identify = identify
+        self.standIn = standIn
         self.departed = departed
         self.corner = corner
         self.stack = stack
@@ -295,7 +304,9 @@ public final class Scrims: ScrimPlane {
         // The first set on a display is what makes its photograph worth taking, and it is applied
         // against one that is still coming: a surface with no desktop cuts its shapes and stays off the
         // glass until `setDesktop` gives it one, so the film lands behind a mask already in place.
-        if photographs[monitor] == nil, !bindings.isEmpty { refilmIfStale(monitor) }
+        if photographs[monitor] == nil, !bindings.isEmpty {
+            veiledAsked.contains(monitor) ? refilmIfStale(monitor) : refilm(monitor)
+        }
         apply(bindings, on: monitor, change: change)
     }
 
@@ -363,6 +374,7 @@ public final class Scrims: ScrimPlane {
         scales.removeAll()
         filmedAt.removeAll()
         photographs.removeAll()
+        veiledAsked.removeAll()
         // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
         applied.removeAll()
         painted.removeAll()
@@ -376,6 +388,14 @@ public final class Scrims: ScrimPlane {
     public func recut() {
         for monitor in surfaces.keys.sorted() where isActive(monitor) {
             paint(monitor, change: .cut)
+        }
+    }
+
+    /// A peek of ours has appeared, moved or gone. Our own window reaches the window server's list in its
+    /// own time too, so each display drawing anything is watched until the reading stands still.
+    public func peeksChanged() {
+        for monitor in surfaces.keys.sorted() where isActive(monitor) && !covered.contains(monitor) {
+            watch(monitor)
         }
     }
 
@@ -474,7 +494,9 @@ public final class Scrims: ScrimPlane {
         let mine = filmGeneration[monitor] ?? 0
         let strip = tarps[monitor] != nil ? strips[monitor] : nil
         filmingStrip[monitor] = strip
-        filmer.film(desktopOf: monitor, blurredBy: wantsVeiled(monitor) ? blur : nil,
+        let veiled = wantsVeiled(monitor)
+        if veiled { veiledAsked.insert(monitor) }
+        filmer.film(desktopOf: monitor, blurredBy: veiled ? blur : nil,
                     keeping: strip?.offsetBy(dx: -display.minX, dy: -display.minY)) { [weak self] film in
             guard let self, self.filmGeneration[monitor] == mine else { return }
             self.filmingStrip[monitor] = nil
@@ -519,9 +541,20 @@ public final class Scrims: ScrimPlane {
         guard surfaces[monitor] != nil, frames[monitor] != nil else { return false }
         // A display drawing nothing needs no stacking: there is no mask to cut against it.
         let stacked = isActive(monitor) ? (reading ?? stack()) : []
+        let here = drawn(on: monitor, in: stacked)
         // The tarp first: what it is drawing over is what the veils have to leave out.
-        let tarp = paintTarp(monitor, against: stacked)
-        return paintVeils(monitor, change: change, against: stacked) || tarp
+        let tarp = paintTarp(monitor, against: here)
+        return paintVeils(monitor, change: change, against: here, of: stacked) || tarp
+    }
+
+    /// The panes the window server draws on `monitor`. A window is drawn on the display holding the
+    /// largest share of it and on no other (`Neighbourhood`), so one hanging past an edge is in one
+    /// display's walk — where it is on the glass — and nowhere else it merely overlaps.
+    private func drawn(on monitor: MonitorId, in stacked: [StackedWindow]) -> [StackedWindow] {
+        let order = frames.keys.sorted()
+        guard let index = order.firstIndex(of: monitor) else { return [] }
+        let screens = order.compactMap { frames[$0] }
+        return stacked.filter { $0.frame.largestShare(among: screens) == index }
     }
 
     /// Cut the tarp against `stacked`. A departing window is a neighbour like any other: what is under
@@ -538,8 +571,9 @@ public final class Scrims: ScrimPlane {
         return true
     }
 
+    /// `stacked` is this display's panes, `desktop` the whole reading they were taken from.
     private func paintVeils(_ monitor: MonitorId, change: ScrimChange,
-                            against stacked: [StackedWindow]) -> Bool {
+                            against stacked: [StackedWindow], of desktop: [StackedWindow]) -> Bool {
         guard let surface = surfaces[monitor], let display = frames[monitor] else { return false }
         let bindings = current[monitor] ?? []
         guard !bindings.isEmpty else {
@@ -558,11 +592,17 @@ public final class Scrims: ScrimPlane {
         let gone = departed().union(paintedTarps[monitor]?.concealed ?? [])
         let identified = stacked
             .filter { !gone.contains($0.number) }
-            .map { (window: identify($0.number), pane: $0) }
+            .map { pane -> (window: WindowId?, pane: StackedWindow) in
+                // A peek is the column it stands for, at the column's whole frame: the display's edge
+                // cuts the shape where it cuts the picture, rather than rounding a corner there.
+                guard let peek = standIn(pane.number) else { return (identify(pane.number), pane) }
+                return (peek.window, StackedWindow(number: pane.number, frame: peek.frame))
+            }
         let cut = Self.veils(for: bindings, over: identified, on: display, geometry: geometry,
-                             corner: corner, stale: staleFrames(monitor, in: identified))
+                             corner: corner, stale: staleFrames(monitor, in: identified),
+                             front: desktop.first?.number)
         // Every number the server reads, departed or concealed too: an answer outlives only its number.
-        surveyCorners(cut.guessed, Set(stacked.map(\.number)))
+        surveyCorners(cut.guessed, Set(desktop.map(\.number)))
         var drawn: [WindowId: Double] = [:]
         for (window, veil) in cut.drawn where veil > 0 { drawn[window] = veil }
         applied[monitor] = drawn
@@ -621,13 +661,14 @@ public final class Scrims: ScrimPlane {
 
     /// Each see-through window's shape on `display`, bottom→top, its veil, and what was outlined at a guess.
     /// The only place the rule lives: **a window is see-through where the desktop is behind it, or another
-    /// this set draws see-through**. `stale` is where a moving pane was last read.
+    /// this set draws see-through**. `stale` is where a moving pane was last read, `front` the desktop's.
     static func veils(for bindings: [ScrimBinding],
                       over stacked: [(window: WindowId?, pane: StackedWindow)],
                       on display: Rect,
                       geometry: ScreenGeometry,
                       corner: @MainActor (WindowId?, CGWindowID) -> CornerReading? = { _, _ in nil },
-                      stale: [WindowId: Rect] = [:])
+                      stale: [WindowId: Rect] = [:],
+                      front: CGWindowID? = nil)
         -> (veils: [ScrimVeil], drawn: [(WindowId, Double)], guessed: [CGWindowID]) {
         let wanted = Dictionary(bindings.map { ($0.window, $0.veil) }, uniquingKeysWith: { a, _ in a })
         let surface = geometry.cocoa(display)
@@ -641,7 +682,8 @@ public final class Scrims: ScrimPlane {
         }
 
         // The frontmost window is never a sheet: a veiled window's sheet stands behind whatever took focus.
-        let front = stacked.first?.pane.number
+        // The desktop's front where the caller knows it, since focus may have gone to another screen.
+        let front = front ?? stacked.first?.pane.number
         // Front to back, which is the order the sheet rule is decided in: "is anything behind me" is a
         // question about the tail. A sheet is left out rather than subtracted, so its window's veil
         // carries it — the photograph standing in for the window behind the sheet is the same one.

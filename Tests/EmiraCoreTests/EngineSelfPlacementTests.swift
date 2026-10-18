@@ -161,7 +161,7 @@ import EmiraMotion
         let drawn = Rect(x: belongs.minX, y: belongs.minY, width: 620, height: belongs.height)
 
         (s, _) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(WindowId(2), drawn)])
-        #expect(s.drag == .subject(WindowId(2)))
+        #expect(s.drag.subject == WindowId(2))
 
         // The release does not disturb the latch, and the frames still draining reach `World` first.
         (s, _) = EngineFix.run(s, [.dragReleased,

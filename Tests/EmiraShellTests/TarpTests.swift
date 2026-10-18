@@ -193,6 +193,30 @@ import EmiraGuide
         #expect(scrims.backdrop(of: Self.monitor) == nil)
     }
 
+    /// A boot with something parked sends the tarp ahead of the first set, and the tarp's film asks for
+    /// no veiled photograph. That photograph is then missing rather than stale, so the set asks for it at
+    /// once instead of waiting out the pace a failed film would set — or the veils stay off the glass.
+    @Test func aSetAfterATarpsFilmStillGetsItsPhotograph() throws {
+        let filmer = Fix.InstantFilmer()
+        let (scrims, scrim, _) = Self.plane(Fix.Stack([Fix.pane(1, Self.slot),
+                                                       Fix.pane(2, Rect(x: 0, y: 0, width: 400, height: 400))]),
+                                            filmer: filmer)
+        scrims.setTarp(Self.tarp(), on: Self.monitor)
+        scrims.setScrims([Fix.binding(2)], on: Self.monitor, change: .cut, moving: [])
+        #expect(filmer.films.count == 2)
+        #expect(filmer.films.last?.radius != nil, "the second film asks for the veiled photograph")
+        #expect(scrim.desktop != nil)
+
+        // One asked for and not delivered is paced, as ever: no grant means no film every set.
+        filmer.answers = false
+        scrims.retireAll()
+        scrims.setDisplays([(Self.monitor, Fix.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        let before = filmer.films.count
+        scrims.setScrims([Fix.binding(2)], on: Self.monitor, change: .cut, moving: [])
+        scrims.setScrims([Fix.binding(2, veil: 0.4)], on: Self.monitor, change: .cut, moving: [])
+        #expect(filmer.films.count - before <= 2, "the rebuild and the first set, and no more")
+    }
+
     @Test func whatTheTarpHidesIsWhatTheCoversBaseLeavesOut() {
         let (scrims, _, built) = Self.plane(Fix.Stack([Fix.pane(1, Self.slot)]))
         scrims.setTarp(Self.tarp(), on: Self.monitor)

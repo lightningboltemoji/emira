@@ -74,7 +74,7 @@ import EmiraMotion
             .windowFrameChanged(WindowId(1), Rect(x: 0, y: 0, width: 620, height: 800)),
             .windowFrameChanged(WindowId(2), Rect(x: 620, y: 0, width: 300, height: 800)),
         ])
-        #expect(s.drag == .subject(WindowId(1)))
+        #expect(s.drag.subject == WindowId(1))
         (s, _) = Engine.reduce(s, .dragEnded)
 
         #expect(s.layout.columns[0].widthOverride == Self.widthShare(620))
@@ -91,7 +91,7 @@ import EmiraMotion
         (s, _) = EngineFix.run(s, [.dragBegan,
                                    .windowFrameChanged(WindowId(9), Rect(x: 10, y: 10,
                                                                           width: 300, height: 300))])
-        #expect(s.drag == .subject(WindowId(9)))
+        #expect(s.drag.subject == WindowId(9))
 
         (s, fx) = Engine.reduce(s, .dragEnded)
         #expect(s.drag == .idle)
@@ -107,7 +107,7 @@ import EmiraMotion
         (s, _) = EngineFix.run(s, [.dragBegan, .windowFrameChanged(WindowId(2), Rect(x: 500, y: 0,
                                                                                       width: 620,
                                                                                       height: 800))])
-        #expect(s.drag == .subject(WindowId(2)))
+        #expect(s.drag.subject == WindowId(2))
         (s, _) = Engine.reduce(s, .dragEnded)
         #expect(s.layout.columns[1].widthOverride == nil)
     }

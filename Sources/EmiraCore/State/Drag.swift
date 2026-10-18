@@ -25,13 +25,20 @@ public enum Drag: Sendable, Equatable, Codable {
     case armed
 
     /// A button is down and this window has moved under it, tiled or not — the one window a release may
-    /// read an intent from, and the one every veil is lifted for (`State.scrimBindings`).
-    case subject(WindowId)
+    /// read an intent from, and the one every veil is lifted for (`State.scrimBindings`). `from` is where
+    /// it stood when the hand took it, which is what says whether the hand resized it or carried it.
+    case subject(WindowId, from: Rect)
 
     /// The window in the user's hand, or `nil`.
     public var subject: WindowId? {
-        guard case .subject(let id) = self else { return nil }
+        guard case .subject(let id, _) = self else { return nil }
         return id
+    }
+
+    /// Where the window in the user's hand stood when the hand took it, or `nil`.
+    public var grabbedAt: Rect? {
+        guard case .subject(_, let frame) = self else { return nil }
+        return frame
     }
 
     /// Whether a frame change arriving now may latch the subject. False once a subject is

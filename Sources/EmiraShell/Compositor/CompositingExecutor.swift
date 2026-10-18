@@ -119,6 +119,9 @@ public final class CompositingExecutor: Executor {
         /// not inside a transition's frame, owes no ack, and is drawn in windows of its own that
         /// outlive every cover.
         case hoist
+        /// The peeking columns another display would draw. Its own plane for the hoist plane's reasons:
+        /// windows of ours that outlive every cover, owing no ack.
+        case peek
         /// The see-through unfocused windows. Its own plane for the hoist plane's reasons, and one
         /// more: a scrim is *standing*, so it belongs to no transition at all — it is what the desktop
         /// looks like between them.
@@ -159,6 +162,7 @@ public final class CompositingExecutor: Executor {
 
     private let surface: any CoverPlane
     private let hoists: any HoistPlane
+    private let peeks: any PeekPlane
     private let scrims: any ScrimPlane
     private let store: any CaptureStore
     private let truth: any Executor
@@ -175,9 +179,11 @@ public final class CompositingExecutor: Executor {
     public init(surface: any CoverPlane, hoists: any HoistPlane, store: any CaptureStore,
                 truth: any Executor, pointer: any Executor,
                 scrims: any ScrimPlane = NoScrims(),
+                peeks: any PeekPlane = NoPeeks(),
                 launcher: any ProcessLauncher = ShellLauncher()) {
         self.surface = surface
         self.hoists = hoists
+        self.peeks = peeks
         self.scrims = scrims
         self.store = store
         self.truth = truth
@@ -206,6 +212,12 @@ public final class CompositingExecutor: Executor {
                 for effect in run.effects {
                     guard case .setHoists(let bindings) = effect else { continue }
                     hoists.setHoists(bindings, feedback: feedback)
+                }
+            case .peek:
+                // Last wins, for the hoists' reason.
+                for effect in run.effects {
+                    guard case .setPeeks(let bindings) = effect else { continue }
+                    peeks.setPeeks(bindings, feedback: feedback)
                 }
             case .scrim:
                 // Each names its own display, so two in a run are two screens rather than one decision
@@ -275,6 +287,8 @@ public final class CompositingExecutor: Executor {
             return .capture
         case .setHoists:
             return .hoist
+        case .setPeeks:
+            return .peek
         case .setScrims, .setTarp:
             return .scrim
         case .setFrame, .park, .focus, .restoreFocus, .confirmFocus, .raise, .closeWindow:
@@ -332,7 +346,7 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .keepStill, .setHoists, .setScrims, .setTarp, .focus,
+            case .setFrame, .park, .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
                  .restoreFocus,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:

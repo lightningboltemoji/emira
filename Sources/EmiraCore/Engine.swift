@@ -36,6 +36,9 @@ public struct State: Sendable, Equatable, Codable {
     /// The floats the shell is drawing over the desktop, bottom→top — the decision *kept*, for the
     /// reason `World.placedOnScreen` is kept. `settleHoists` re-derives it and emits the difference.
     public var hoists: [HoistBinding]
+    /// The peeks the shell is drawing, by window id — kept for `hoists`' reason, and re-derived by
+    /// `settlePeeks` on the same terms.
+    public var peeks: [PeekBinding] = []
     /// The windows the shell is drawing the desktop back over, per display and bottom→top — kept for
     /// `hoists`' reason, and re-derived by `settleScrims` on the same terms. A display holding its set
     /// keeps its own entry while its neighbour's moves on.
@@ -129,7 +132,9 @@ public struct State: Sendable, Equatable, Codable {
             corrections: world.corrections,
             parkFloors: world.parkFloors,
             parkingLot: ParkingLot(among: world.monitors),
-            pins: world.pinBands(on: id))
+            pins: world.pinBands(on: id),
+            neighbourhood: Neighbourhood(frame: monitor.frame,
+                                         others: world.monitors.filter { $0.id != id }.map(\.frame)))
     }
 
     /// The **acting** monitor's metrics — the display the user is on, which is what a verb naming no
@@ -463,6 +468,7 @@ public enum Engine {
         hidePointer(on: event, into: &next, effects: &effects)
         warpPointer(on: event, from: state, into: &next, effects: &effects)
         settleHoists(into: &next, effects: &effects)
+        settlePeeks(into: &next, effects: &effects)
         settleScrims(on: event, from: state, into: &next, effects: &effects)
         return (next, effects)
     }
@@ -529,6 +535,16 @@ public enum Engine {
         effects.append(.setHoists(next))
     }
 
+    /// Bring the peeks into line with the placement pass this batch ran — a post-pass for
+    /// `settleHoists`' reason, emitted on a change. Its timing is the pass's: a covered display records
+    /// its peeks in the batch that teleports its reals, so they change under the cover with them.
+    private static func settlePeeks(into s: inout State, effects: inout [Effect]) {
+        let next = s.peekBindings()
+        guard next != s.peeks else { return }
+        s.peeks = next
+        effects.append(.setPeeks(next))
+    }
+
     /// Bring the see-through windows and the tarp into line with the desktop this batch produced — a
     /// post-pass for `settleHoists`' reason, emitted on a change. **A set waits for the desktop it
     /// describes**, and goes again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6).
@@ -587,7 +603,7 @@ public enum Engine {
               old.world.isOnScreen(id) != s.world.isOnScreen(id),
               let frame = (s.world.windows[id] ?? old.world.windows[id])?.frame
         else { return nil }
-        return s.world.monitor(at: frame.center)
+        return s.world.monitor(drawing: frame)
     }
 
     /// The windows on `monitor` whose place the window server may not have caught up with: a write
@@ -836,8 +852,9 @@ public enum Engine {
             // or adopts the size the drag left behind. A drift no hand drew is answered once the window
             // stops, which arrives as `windowSelfPlaced`.
             let drifted = driftedUnderHand(s, id, frame)
+            let grabbed = s.world.windows[id]?.frame
             s.world.updateFrame(id, to: frame)
-            if drifted { s.drag = .subject(id) }
+            if drifted, let grabbed { s.drag = .subject(id, from: grabbed) }
             return (s, [])
 
         case .windowSelfPlaced(let id):
@@ -856,6 +873,8 @@ public enum Engine {
             return (s, [])
 
         case .dragEnded:
+            // A window put down on another display goes there; the drop names the screen.
+            if let effects = dropAcrossDisplays(&s) { return (s, effects) }
             // The adoption writes the layout's own intent, so the re-place that follows lands the
             // window where the user drew it instead of taking it back.
             adoptDraggedSize(&s)
@@ -869,6 +888,10 @@ public enum Engine {
 
         case .hoistClicked(let id):
             return (s, handleHoistClicked(&s, id))
+
+        case .peekClicked(let id):
+            let effects = handlePeekClicked(&s, id)
+            return (s, effects)
 
         case .trackpadScrollBegan:
             let effects = beginTrackpadScroll(&s)   // local first — the `.command` trap above
@@ -1775,7 +1798,8 @@ public enum Engine {
 
     /// Where one display's viewport comes to rest after an edit: the offset revealing `focused` on the
     /// strip that display is showing, or — for a display whose strip does not hold it — where it
-    /// already is. No `end == start ⇒ snap` guard: a swap in full view moves the viewport not at all.
+    /// already is, and on a display the user is not on, inside its strip. No `end == start ⇒ snap`
+    /// guard: a swap in full view moves the viewport not at all.
     ///
     /// `framedAt` is the acting monitor's alone: it restores a viewport this verb remembered, and only
     /// one display can be the subject of that.
@@ -1797,7 +1821,12 @@ public enum Engine {
                 ? strip.scrollOffsetToCenter(window: $0, metrics: metrics)
                 : strip.scrollOffsetToReveal(window: $0, from: start, metrics: metrics)
         }
-        return (monitor == s.monitors.focused ? framedAt : nil) ?? revealed ?? start
+        guard monitor != s.monitors.focused else { return framedAt ?? revealed ?? start }
+        // Framing nothing, a display the user is not on stays where it is — inside its strip, which the
+        // edit may have shrunk: the screen a window was sent away from would otherwise come to rest
+        // scrolled past its last column, and with the reals placed there.
+        return revealed ?? (s.config.centerFocusedColumn
+            ? start : strip.clampScrollOffset(start, metrics: metrics))
     }
 
     /// `Effect.elevateLayer` for the window `monitor`'s transition draws on top, or nothing — no
@@ -1857,7 +1886,7 @@ public enum Engine {
     /// address nobody is showing takes the window straight to a parking lot, where there is nothing to
     /// animate and that display lands its share at once.
     private static func moveToWorkspace(_ s: inout State, _ destination: WorkspaceName,
-                                        follow: Bool) -> [Effect] {
+                                        follow: Bool, droppedAt dropped: Rect? = nil) -> [Effect] {
         guard destination != s.monitors.shown,
               let moved = s.world.focusedWindow,
               let index = s.layout.columnIndex(ofWindow: moved) else { return [] }
@@ -1866,7 +1895,11 @@ public enum Engine {
         // afterwards whether the departure emptied it), and its index, where focus falls back to if so.
         // The destination's owner is read before `State.move`, which is what *gives* an unassigned
         // address an owner — after it, every move would look like a same-display one.
-        let old = snapshots(s, of: [s.monitors.focused, s.monitors.monitor(of: destination)])
+        let old = snapshots(s, of: [s.monitors.focused, s.monitors.monitor(of: destination)]).map {
+            // A window a hand put down travels from there, which is also where the cover films it.
+            guard let dropped, $0.frames[moved] != nil else { return $0 }
+            return $0.including(moved, at: dropped)
+        }
         let column = s.layout.columns[index].id
         let edit = s.move(window: moved, to: destination,
                           insertingAfter: s.workspaces[lastFocusOf: destination])
@@ -2220,6 +2253,14 @@ public enum Engine {
     private static func handleHoistClicked(_ s: inout State, _ id: WindowId) -> [Effect] {
         guard s.world.isFloatedByChoice(id), s.world.isOnScreen(id) else { return [] }
         return [.focus(id), .raise(id)]
+    }
+
+    /// A click on a peek: focus its window and reveal its column, which is what a click on the window
+    /// itself would have done — on whichever display the peek is, as a Dock click would. The reveal is
+    /// the one a focus macOS moved gets, so the focus is ours to emit; nothing moved it for us.
+    private static func handlePeekClicked(_ s: inout State, _ id: WindowId) -> [Effect] {
+        guard s.peeks.contains(where: { $0.window == id }) else { return [] }
+        return revealAcrossWorkspaces(&s, id) + [.focus(id)]
     }
 
     // Placement (the instant-correct core)
@@ -3240,9 +3281,9 @@ public enum Engine {
     /// Adopt the size a drag left the subject at as the layout's own intent — the column's width, the
     /// window's height, or both.
     ///
-    /// **Silent for a drag that only moved the window.** Dragging a tiled window somewhere else is a
-    /// different feature (it would have to mean *insert here*, with a drop target and an ordering), and
-    /// until it exists, taking the window back is the honest answer.
+    /// **Silent for a drag that only moved the window.** Dragging a tiled window somewhere else on its
+    /// own display is a different feature (it would have to mean *insert here*, with a drop target and an
+    /// ordering), and until it exists, taking the window back is the honest answer.
     ///
     /// The observed size is taken as the intent directly rather than as a delta on the target: the user
     /// drew a rectangle, and asking the layout for that rectangle is exactly what they asked. It also
@@ -3266,7 +3307,8 @@ public enum Engine {
 
         let grewWide = !approximatelyEqualScalar(observed.width, target.width)
         let grewTall = !approximatelyEqualScalar(observed.height, target.height)
-        guard grewWide || grewTall else { return }
+        guard grewWide || grewTall,
+              !carried(observed, from: s.drag.grabbedAt ?? target) else { return }
 
         let from = s.workspaces[name].resolvedWidth(of: column, metrics: metrics)
         if grewWide { adoptWidth(&s, observed.width, of: column, on: name, metrics) }
@@ -3285,6 +3327,38 @@ public enum Engine {
               let to = s.workspaces[name].resolvedWidth(ofColumn: column.id, metrics: corrected)
         else { return }
         s.motion.snapViewport(to: s.motion.offset(of: monitor).current + (to - from), on: monitor)
+    }
+
+    /// Whether the hand carried the window rather than resizing it: a resize holds an edge, or a corner,
+    /// and moves nothing else. A size that came with the window moving is the system's — macOS fits a
+    /// window put down on a smaller display to that display — and no rectangle anybody drew.
+    private static func carried(_ observed: Rect, from grabbed: Rect) -> Bool {
+        func moved(_ low: Double, _ high: Double, from grabbedLow: Double, _ grabbedHigh: Double) -> Bool {
+            let lowHeld = approximatelyEqualScalar(low, grabbedLow)
+            let highHeld = approximatelyEqualScalar(high, grabbedHigh)
+            let resized = !approximatelyEqualScalar(high - low, grabbedHigh - grabbedLow)
+            return resized ? !lowHeld && !highHeld : !lowHeld
+        }
+        return moved(observed.minX, observed.maxX, from: grabbed.minX, grabbed.maxX)
+            || moved(observed.minY, observed.maxY, from: grabbed.minY, grabbed.maxY)
+    }
+
+    /// A tiled window put down on another display goes to it, as `move-to-monitor-and-focus` sends it,
+    /// travelling from where the hand left it: the drop names a display, which is all that verb needs.
+    /// `nil` for every other drop, which the layout answers as it always has.
+    private static func dropAcrossDisplays(_ s: inout State) -> [Effect]? {
+        guard let id = s.drag.subject, s.world.participatesInTiling(id),
+              let dropped = s.world.windows[id]?.frame,
+              let home = s.workspaces.workspace(of: id), let from = s.monitors.monitor(of: home),
+              let to = s.world.monitor(drawing: dropped), to != from,
+              let destination = s.monitors.shown(on: to) else { return nil }
+        s.drag = .idle
+        // The window in the hand is the one being moved, whatever focus last reported.
+        s.monitors.focus(from)
+        s.world.setFocus(id)
+        let effects = moveToWorkspace(&s, destination, follow: true, droppedAt: dropped)
+        // A move the verb declines is a drop like any other, which the next pass takes back.
+        return effects.isEmpty ? nil : effects
     }
 
     /// Pin the dragged column to the width its window was left at. A `widthOverride` exactly as
@@ -3603,6 +3677,7 @@ public enum Engine {
         var moved: [WindowId] = []
         var visible: Set<WindowId> = []
         var parked: [WindowId: Rect] = [:]
+        var peeking: [WindowId: PeekBinding] = [:]
         for placement in placements {
             let strip = s.workspaces[placement.name]
             let owner = s.monitors.monitor(of: placement.name)
@@ -3610,13 +3685,21 @@ public enum Engine {
                 // Nothing has moved on this display and nothing may — its cover is not on the glass, or
                 // it is and a pin has yet to come to the top of the band that cover is leaving clear.
                 // Either way its share of the record is the one the last completed pass made.
-                visible.formUnion(strip.allWindowIds.filter(s.world.isOnScreen))
-                for id in strip.allWindowIds { parked[id] = s.world.parkedSlots[id] }
+                visible.formUnion(strip.allWindowIds.filter(s.world.placedOnScreen.contains))
+                for id in strip.allWindowIds {
+                    parked[id] = s.world.parkedSlots[id]
+                    peeking[id] = s.world.peeks[id]
+                }
                 continue
             }
             if let offset = placement.scrollOffset {
-                visible.formUnion(strip.visibleWindowIds(scrollOffset: offset,
-                                                         metrics: placement.metrics))
+                visible.formUnion(strip.placedWindowIds(scrollOffset: offset, metrics: placement.metrics))
+                // `placements()` lays an orphan out on the acting display, so that is whose edge it peeks at.
+                if let monitor = owner ?? s.monitors.focused {
+                    for (id, frame) in strip.peekingFrames(scrollOffset: offset, metrics: placement.metrics) {
+                        peeking[id] = PeekBinding(window: id, monitor: monitor, frame: frame)
+                    }
+                }
             }
             for id in strip.allWindowIds {
                 guard let target = frames[id] else { continue }
@@ -3646,7 +3729,7 @@ public enum Engine {
         }
         // Every managed window was just answered for, including the ones already standing correctly, so
         // this describes the whole desktop rather than the subset that needed a set.
-        s.world.notePlaced(onScreen: visible, parked: parked)
+        s.world.notePlaced(onScreen: visible, parked: parked, peeking: peeking)
         return (effects, moved)
     }
 

@@ -84,6 +84,10 @@ public enum Event: Sendable, Equatable, Codable {
     /// extent, so where inside it the click landed says nothing.
     case hoistClicked(WindowId)
 
+    /// A click landed on a peek (`Effect.setPeeks`) — the column it stands for, asked for the way a click
+    /// on the window itself would ask for it.
+    case peekClicked(WindowId)
+
     /// The user moved the mouse far enough to end a hide (`Effect.setCursorHidden`). One event,
     /// edge-triggered, never a stream: the shell holds the anchor and the distance threshold, because a
     /// mouse on a desk jitters and a resting trackpad finger jitters more — so *which* motion counts is

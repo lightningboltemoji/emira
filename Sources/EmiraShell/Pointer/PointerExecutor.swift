@@ -82,7 +82,7 @@ public final class PointerExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .setFrame, .park, .capture, .keepStill, .setHoists, .setScrims, .setTarp,
+            case .setFrame, .park, .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp,
                  .setCoverClearing, .confirmFocus, .beginTransition,
                  .extendCover,
                  .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .endTransition, .focus,

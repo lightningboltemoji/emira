@@ -242,20 +242,34 @@ public struct AXWindow: @unchecked Sendable {
     /// `accepted` is the app's verdict on the *write* (`Event.axFailed`); `actual` is where it ended up,
     /// which may differ — a terminal snapping to character cells accepts every write and lands
     /// elsewhere. `actual` is `nil` whenever the window stopped answering, on either read.
-    func place(at rect: Rect) -> (accepted: Bool, actual: Rect?) {
+    ///
+    /// `crossing` is a write onto another display: its app clamps to the display it left until it notices
+    /// the move, turns of its run loop later, so the corrective pass waits that out (`crossingSettle`).
+    func place(at rect: Rect, crossing: Bool = false) -> (accepted: Bool, actual: Rect?) {
         var accepted = setSize(rect.size)
         accepted = setPosition(rect.origin) && accepted
         guard let landed = frame else { return (accepted, nil) }
         guard !landed.isClose(to: rect, within: Tolerance.landing) else { return (accepted, landed) }
-        // One corrective pass, same order: the size write may have been clamped against the *old*
-        // position and can succeed now. Bounded at one — an app that refuses twice is asserting a
-        // constraint we are not entitled to override.
-        accepted = setSize(rect.size) && accepted
-        accepted = setPosition(rect.origin) && accepted
-        // `landed` cannot stand in for a read that fails here: it predates two writes whose whole
-        // purpose is to move the window, so a corrective pass that worked would report as drift.
-        return (accepted, frame)
+        // A corrective pass, same order: the size write may have been clamped against the *old* position.
+        // One — an app that refuses twice asserts a constraint we may not override — but across displays
+        // a pass the app was not ready for is no refusal, so a crossing gets three, each waiting longer.
+        var actual: Rect?
+        for pass in 0..<(crossing ? Self.crossingPasses : 1) {
+            if crossing { usleep(Self.crossingSettle * useconds_t(pass + 1)) }
+            accepted = setSize(rect.size) && accepted
+            accepted = setPosition(rect.origin) && accepted
+            // `landed` cannot stand in for a read that fails here: it predates two writes whose whole
+            // purpose is to move the window, so a corrective pass that worked would report as drift.
+            actual = frame
+            guard let now = actual, !now.isClose(to: rect, within: Tolerance.landing) else { break }
+        }
+        return (accepted, actual)
     }
+
+    /// How long a crossing's first corrective pass waits for its app to notice the new display, in
+    /// microseconds — an AppKit window needs ~20 ms — and how many passes it gets, each waiting longer.
+    static let crossingSettle: useconds_t = 25_000
+    static let crossingPasses = 3
 
     /// Main + focused + front of its own stack. All three, because apps honor different subsets.
     /// Bringing the *app* forward is the caller's job and must happen after this: activation surfaces

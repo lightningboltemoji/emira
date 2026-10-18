@@ -307,7 +307,8 @@ let stackProbe = CGStackProbe(registry: registry)
 let pinFence = PinFence(probe: stackProbe)
 let truth = AXExecutor(registry: registry,
                        writer: AXWindowWriter(client: axClient, intent: focusIntent),
-                       fence: pinFence, writes: frameWrites)
+                       fence: pinFence, writes: frameWrites,
+                       displays: { currentDisplays.monitors.map(\.frame) })
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this
@@ -320,6 +321,11 @@ launcher.onOutcome = { log("exec: \($0)") }
 /// surface. `syncDisplays` hands it those.
 let hoistPanels = HoistPanels(filmer: capture, probe: stackProbe,
                               scheduler: DispatchScheduler())
+
+/// The peek plane — the peeking columns another display would draw. One object for the desktop for the
+/// hoist plane's reason; a peek shows a kept still at once where the cover that scrolled it there left one.
+let peekPanels = PeekPanels(filmer: capture,
+                            still: { [surfaceCache] in surfaceCache.surface(for: $0, at: $1) })
 
 /// The scrim plane — the see-through unfocused windows. One object for the desktop like the hoist
 /// plane, and for a sharper version of its reason: a scrim *is* one display's photograph, so the
@@ -338,6 +344,7 @@ cornerSurvey.isIdle = { [capture, desktopCapturer] in capture.isIdle && !desktop
 
 let scrims = Scrims(filmer: desktopCapturer,
                     identify: { [weak registry] in registry?.id(forNumber: $0) },
+                    standIn: { [weak peekPanels] in peekPanels?.standIn(for: $0) },
                     departed: { [weak registry] in registry?.departedNumbers ?? [] },
                     corner: { corner(of: $0, number: $1) })
 scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
@@ -345,12 +352,15 @@ scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
     cornerSurvey.survey(guessed)
 }
 cornerSurvey.onMeasured = { [weak scrims] in scrims?.cornersMeasured() }
+// A peek appearing, moving or going is the stacking changing under the veils, with no set to say so.
+peekPanels.onChange = { [weak scrims] in scrims?.peeksChanged() }
 
 // A cover's base leaves out what the tarp hides, or a transition would show the nubs it covers.
 capture.concealed = { [weak scrims] in scrims?.concealedNumbers ?? [] }
 
 let executor = CompositingExecutor(surface: compositor, hoists: hoistPanels, store: capture,
-                                   truth: truth, pointer: pointer, scrims: scrims, launcher: launcher)
+                                   truth: truth, pointer: pointer, scrims: scrims, peeks: peekPanels,
+                                   launcher: launcher)
 
 // A transition's latency has two halves and neither subsystem sees the other: frames are counted from
 // the raise, but the capture batch before it is time the user waits through. Stitched together below,
@@ -668,6 +678,8 @@ applyShellConfig(config)
     let scales = Dictionary(uniqueKeysWithValues: zip(displays.monitors, displays.screens)
         .map { ($0.id, $1.backingScaleFactor) })
     hoistPanels.setDisplays(geometry: displays.geometry, scales: scales)
+    peekPanels.setDisplays(geometry: displays.geometry, displays: zip(displays.monitors, displays.screens)
+        .map { ($0.id, $0.frame, $1.backingScaleFactor) })
     // The scrims go the same way and for the same reason — a surface is fixed to one screen at
     // construction — and each new one films its own display's desktop as it is built.
     desktopCapturer.setScales(scales)
@@ -811,6 +823,7 @@ var isShuttingDown = false
     // The same reasoning one line down: the cascade is the desktop being handed back, and a photograph
     // of a window standing over it is exactly what must not be the last thing on the screen.
     hoistPanels.retireAll()
+    peekPanels.retireAll()
     hotkeys.stop()
     gestures.stop()         // a live tap outliving the daemon is a leak nothing else surfaces
     loader.stop()
