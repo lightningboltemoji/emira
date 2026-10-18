@@ -1,21 +1,8 @@
 <p align="center">
-  <img width="472" height="192" alt="logo" src="https://github.com/user-attachments/assets/ebca86ed-b91e-4b7e-83ad-fabeecc47b56" />
+  <img width="472" height="136" alt="emira" src=".github/logo/logo.webp" />
 </p>
 <p align="center">
   A tiling-scrolling window manager for macOS, inspired by <a href="https://github.com/niri-wm/niri">niri</a> and <a href="https://github.com/nikitabobko/AeroSpace">AeroSpace</a>
-</p>
-
-<p align="center">
-  <b>Tiling:</b> windows are arranged in a non-overlapping grid
-</p>
-<p align="center">
-  <img width="141" height="86" alt="tiling" src="https://github.com/user-attachments/assets/dd6f54a4-9ece-4ebf-9bb1-d762fb0b6805" />
-</p>
-<p align="center">
-  <b>Scrolling:</b> your desktop is an infinite plane
-</p>
-<p align="center">
-  <img width="141" height="86" alt="scrolling" src="https://github.com/user-attachments/assets/85d7605c-17de-4f0f-a87f-08b01c17d355" />
 </p>
 
 ## About
@@ -41,9 +28,9 @@ Windows are arranged for you along an infinitely-wide strip. A slice of the stri
 
 ## Config
 
-Read from `~/.config/emira/config.toml`. Schema in [`config.example.toml`](config.example.toml). 
+Read from `~/.config/emira/config.toml`. Schema in [`config.example.toml`](config.example.toml).
 
-GUI is partially implemented under the menu bar > `Settings`.
+There's also a relatively rough settings GUI under the menu bar item's `Settings`.
 
 ## Install
 
@@ -59,12 +46,6 @@ or manually from the [releases page](https://github.com/lightningboltemoji/emira
 
 macOS window managers usually rely on the Accessibility (AX) APIs to manipulate windows. These APIs are notoriously inconsistent: one action takes 10ms, the next 300ms. This can sabotage the _**feel**_ of window managers, because we expect window actions to be smooth and predictable.
 
-I built emira to experiment with a novel approach: **a compositor overlay**. emira reconstructs your desktop during animations -- _screenshots_ of windows shuffle across the screen, while the _real_ windows snap into place underneath. This makes animations reliable, buttery-smooth, _and_ hides the latency of the AX API.
+I built emira to experiment with a novel approach: **a compositor overlay**. emira reconstructs your desktop during animations -- _screenshots_ of windows shuffle across the screen, while the _real_ windows snap into place underneath. This makes animations reliable and buttery-smooth, while also masking any behind-the-scenes delay in the AX APIs.
 
-This approach is not without downsides, such as non-negligible latency capturing screenshots and video freezing during motion, but I do think it shows promise.
-
-## AI use
-
-emira's code was written almost entirely by Claude with architectural guidance.
-
-Some prose is AI-generated, such as code comments, but anything that presents as human-authored or is expected to be read by humans (like this) was written by me.
+This approach is not without downsides, such as non-negligible latency capturing screenshots and video freezing during motion, but in my own usage, I find these to be very much worthwhile tradeoffs.

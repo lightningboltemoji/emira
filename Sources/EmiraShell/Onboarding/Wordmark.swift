@@ -1,42 +1,51 @@
 import AppKit
 import ImageIO
 
-// The window's heading: the README's wordmark, animated — a pen writes "emira", the word lights, and it
-// rests before writing again. An animated WebP that ImageIO decodes with its alpha, so one file carries
-// both appearances.
+// The window's heading: the README's wordmark, animated — each letter of "emira" is a window, emira's
+// commands play on them, and the word rests whole before they start again. Drawn by `.github/logo`. An
+// animated WebP that ImageIO decodes with its alpha, so one file carries both appearances.
 //
-// **One frame is decoded at a time.** All 101 of them held at the size this draws is ~35 MB for a
+// **One frame is decoded at a time.** All of them held at the size this draws is hundreds of MB for a
 // decoration, which is exactly what a `CAKeyframeAnimation` over `contents` requires; a single frame costs
-// ~1 ms. So the animation is a chain rather than an animation object — which the asset's own delays force
-// anyway, being 40 ms per stroke and two and a half seconds of stillness at the end.
+// ~1 ms. So the view keeps the clock itself: every display refresh asks which frame is due and decodes it
+// if it changed. A refresh-driven clock is never late by its own decode, and a 60 Hz display shows every
+// other frame of a 120 fps asset rather than playing it at half speed.
 
 /// The animated wordmark, as a view that draws itself from the asset's frames.
 @MainActor
 final class Wordmark: NSView {
 
-    /// The size it draws at, in points — the asset's aspect exactly, at half the README's scale.
-    static let size = NSSize(width: 236, height: 96)
+    /// The size it draws at, in points — the asset's aspect. `.github/logo` exports the app's copy at
+    /// exactly twice this, so a frame decodes without resampling.
+    static let size = NSSize(width: 295, height: 85)
 
     /// Frames are decoded to twice the drawn size, which is the backing scale of every display that has
     /// one. Asking for fewer pixels is what makes the per-frame decode cheap.
     private static let pixelWidth = size.width * 2
 
-    /// What a frame that declares no delay gets: the rate the asset was written at.
-    private static let defaultDelay: TimeInterval = 0.05
+    /// What a frame that declares no delay gets: the rate the asset is written at.
+    private static let defaultDelay: TimeInterval = 1.0 / 120
 
     private let source: CGImageSource
-    private let delays: [TimeInterval]
-    private let scheduler: any DelayScheduler
+    /// When each frame comes due, in seconds into the loop.
+    private let starts: [TimeInterval]
+    private let loop: TimeInterval
+
+    private var link: CADisplayLink?
+    /// The refresh the loop started on — the first one after the view reached a window.
+    private var origin: CFTimeInterval?
+    private var shown = -1
 
     /// `nil` when the asset is missing or unreadable, and the window opens without a heading — a
     /// decoration may not be the reason onboarding can't be shown.
-    init?(scheduler: any DelayScheduler = DispatchScheduler()) {
-        guard let url = Self.logoURL(),
+    init?(searching roots: [URL] = Wordmark.resourceRoots) {
+        guard let url = Self.logoURL(searching: roots),
               let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               CGImageSourceGetCount(source) > 0 else { return nil }
+        let delays = Self.delays(of: source)
         self.source = source
-        self.delays = Self.delays(of: source)
-        self.scheduler = scheduler
+        self.starts = delays.indices.map { delays[..<$0].reduce(0, +) }
+        self.loop = delays.reduce(0, +)
         super.init(frame: NSRect(origin: .zero, size: Self.size))
 
         wantsLayer = true
@@ -72,7 +81,7 @@ final class Wordmark: NSView {
     }
 
     /// Each frame's delay in file order, from the WebP's own metadata — no decoding, so the whole list is
-    /// cheap to take up front.
+    /// cheap to take up front. Unclamped, because the clamped delay reads a 120 fps frame as 100 ms.
     private static func delays(of source: CGImageSource) -> [TimeInterval] {
         (0..<CGImageSourceGetCount(source)).map { index in
             let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [String: Any]
@@ -85,18 +94,44 @@ final class Wordmark: NSView {
         }
     }
 
-    /// Draw one frame and queue the next. ImageIO composites animated WebP frames whole, so a frame is the
-    /// picture and not a patch to blend. The chain ends with the view, nothing else holding its closure.
+    /// The clock runs while the view is in a window. The link holds the view, so it has to be let go of
+    /// here — nothing else ends it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        link?.invalidate()
+        link = nil
+        origin = nil
+        guard window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(tick))
+        link.add(to: .main, forMode: .common)       // `.common` covers onboarding's modal session
+        self.link = link
+    }
+
+    /// Show the frame due when this refresh reaches the glass.
+    @objc private func tick(_ link: CADisplayLink) {
+        let now = link.targetTimestamp
+        let origin = self.origin ?? now
+        self.origin = origin
+        let t = (now - origin).truncatingRemainder(dividingBy: loop)
+        // The last frame starting at or before `t`; `starts[0]` is 0, so there always is one.
+        var lo = 0, hi = starts.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if starts[mid] <= t { lo = mid + 1 } else { hi = mid }
+        }
+        show(lo - 1)
+    }
+
+    /// Draw one frame, unless it's the one already up. ImageIO composites animated WebP frames whole, so
+    /// a frame is the picture and not a patch to blend.
     private func show(_ index: Int) {
+        guard index != shown else { return }
+        shown = index
         if let frame = CGImageSourceCreateThumbnailAtIndex(source, index, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: Self.pixelWidth,
         ] as CFDictionary) {
             layer?.contents = frame
-        }
-        scheduler.schedule(after: delays[index]) { [weak self] in
-            guard let self else { return }
-            show((index + 1) % delays.count)
         }
     }
 }

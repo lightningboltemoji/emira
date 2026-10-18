@@ -1,0 +1,17 @@
+{
+  "name": "emira-logo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preview": "bun index.html",
+    "render": "bun render.ts",
+    "sheet": "bun render.ts --sheet",
+    "ship": "bun render.ts --scale 1.25 --out ../../Sources/EmiraShell/Resources/logo.webp && bun render.ts --fps 60 --out logo.webp"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3"
+  }
+}

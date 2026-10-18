@@ -40,6 +40,10 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
     /// The text column's width. The window is not resizable, so this is also what the labels wrap at.
     private static let columnWidth: CGFloat = 420
 
+    /// Clear space above and below the wordmark. The asset is cropped to its windows, so the room around
+    /// it is the window's to give.
+    private static let wordmarkPadding: CGFloat = 24
+
     private let window: NSWindow
     private let screen: NSScreen?
     private let heartbeat: any Heartbeat = DispatchHeartbeat()
@@ -191,7 +195,8 @@ public final class OnboardingWindow: NSObject, NSWindowDelegate {
 
         if let wordmark = Wordmark() {
             content.addArrangedSubview(wordmark)
-            content.setCustomSpacing(18, after: wordmark)
+            content.setCustomSpacing(18 + Self.wordmarkPadding, after: wordmark)
+            content.edgeInsets.top += Self.wordmarkPadding
         }
 
         for paragraph in model.paragraphs {
