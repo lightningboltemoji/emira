@@ -13,13 +13,11 @@ Windows are arranged for you along an infinitely-wide strip. A slice of the stri
 
 <br />
 <p align="center">
-  <img width="800" height="450" alt="emira-demo" src="https://github.com/user-attachments/assets/013154c7-331e-4d62-a016-93dcda3cb739" />
+  <img width="800" height="450" alt="emira-demo" src="https://github.com/user-attachments/assets/d291c6a0-e721-4bf1-8469-6c5ba4794a77" />
 </p>
 <p align="center">
   Shown with <a href="https://github.com/lightningboltemoji/bario">↗ Bario</a>
 </p>
-
-
 
 ## Features
 
