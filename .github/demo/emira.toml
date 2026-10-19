@@ -1,0 +1,51 @@
+# The config the demo's daemon runs with (EMIRA_CONFIG), so a take looks the same on any Mac. The
+# tapes press these chords. The take display matches no [[display]] block, so [layout] is what it
+# films: the author's Studio Display's look.
+
+[layout]
+column-gap = 20
+window-gap = 20
+outer-gap = 20
+outer-gap-top = 16
+width-presets = [0.5, 0.666]
+height-presets = [0.5, 0.666]
+
+[focus]
+unfocused-opacity = 0.5
+unfocused-blur = 8
+
+[animation]
+transition = "smooth"
+window = "crop"
+cover = "immediate"
+
+[keys]
+fn-q = "focus-workspace 1"
+fn-w = "focus-workspace 2"
+fn-e = "focus-workspace 3"
+
+fn-shift-q = "move-to-workspace-and-focus 1"
+fn-shift-w = "move-to-workspace-and-focus 2"
+fn-shift-e = "move-to-workspace-and-focus 3"
+
+fn-h = "focus left"
+fn-j = "focus down"
+fn-k = "focus up"
+fn-l = "focus right"
+fn-f = "fullscreen"
+
+fn-shift-h = "move-window left"
+fn-shift-j = "move-window down"
+fn-shift-k = "move-window up"
+fn-shift-l = "move-window right"
+
+fn-shift-leftbracket = "consume-or-expel left"
+fn-shift-rightbracket = "consume-or-expel right"
+fn-equal = "grow 10%"
+fn-minus = "shrink 10%"
+
+# A stand-in emira finds before it hears the window open counts as already open, and would keep its
+# own width, which is the display's. This starts every one half wide however it's found.
+[[window-rules]]
+app-id-regex = 'standin'
+width = 0.5

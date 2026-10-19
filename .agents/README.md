@@ -4,6 +4,7 @@
 | ------------------- | ------------------------------------------------------- | ---------- |
 | `PRINCIPLES.md`     | the charter, the two-plane model, the graphics thesis   | present    |
 | `IMPLEMENTATION.md` | module layout, the pure core, shell subsystems, roadmap | present    |
+| `DEMO.md`           | how the README's video is recorded and cut              | present    |
 | `changes/<id>.md`   | what one change did and why                             | past       |
 | `DOCS.md`           | how the rest are written; the pass that ends a change   | imperative |
 

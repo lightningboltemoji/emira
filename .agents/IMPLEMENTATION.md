@@ -2647,8 +2647,8 @@ global it reaches compiles clean and reads zeroed memory if called early.
 emira/
 ├── Package.swift · Makefile · config.example.toml (generated, golden)
 ├── .github/workflows/{ci,release}.yml   ci: build+test on macos-26 · release: tip + v* + cask bump
-├── .github/demo/                        the README's film: demo.sh + caption.swift + screencapture
-├── .agents/{README,PRINCIPLES,IMPLEMENTATION}.md + changes/<epoch>.md
+├── .github/demo/                        the README's video: tapes, director (Swift), studio (Remotion) — DEMO.md
+├── .agents/{README,PRINCIPLES,IMPLEMENTATION,DEMO}.md + changes/<epoch>.md
 ├── Resources/Info.plist                 LSUIElement=YES + a stable CFBundleIdentifier (TCC keys on it)
 ├── Resources/emira.icon/                layered icon; `make icon` compiles it to Assets.car
 └── Sources/

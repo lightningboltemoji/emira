@@ -35,7 +35,8 @@ SHELL   := /bin/bash
 LD_NOISE = ld: warning: search path '$(DEVDIR)/Developer/.*' not found
 QUIET    = 2> >(grep -vE "$(LD_NOISE)" >&2)
 
-.PHONY: build test example clean app icon zip dist install uninstall print-version
+.PHONY: build test example clean app icon zip dist install uninstall print-version \
+        demo demo-take demo-render demo-studio
 build:
 	swift build $(QUIET)
 
@@ -188,3 +189,35 @@ install: app
 
 uninstall:
 	rm -rf /Applications/$(APP_NAME).app
+
+# --- The demo video ------------------------------------------------------------------------------
+# The director plays $(DEMO)/tapes/$(TAPE).tape on a virtual display under this checkout's release daemon
+# and records the take into $(DEMO)/takes/$(TAPE); the studio cuts it into $(DEMO)/studio/out/$(CUT).webp.
+# A take borrows the desktop and the keyboard for about a minute. See .agents/DEMO.md.
+DEMO     := .github/demo
+TAPE     ?= readme
+CUT      ?= $(TAPE)
+DIRECTOR := $(DEMO)/director/.build/release/director
+
+demo: demo-take demo-render
+
+demo-take:
+	swift build -c release $(QUIET)
+	swift build -c release --package-path $(DEMO)/director $(QUIET)
+	$(DIRECTOR) $(DEMO)/tapes/$(TAPE).tape
+
+# `npm ci` only when the lockfile changes: it empties node_modules, and the browser Remotion
+# downloads to render with lives there.
+STUDIO_MODULES := $(DEMO)/studio/node_modules/.package-lock.json
+
+$(STUDIO_MODULES): $(DEMO)/studio/package-lock.json
+	cd $(DEMO)/studio && npm ci --silent
+
+# Renders near lossless, then encodes that as a lossless animated WebP within GitHub's upload limit.
+demo-render: $(STUDIO_MODULES)
+	cd $(DEMO)/studio && npx remotion render src/index.ts $(CUT) out/$(CUT)-master.mp4 && \
+		./encode.sh out/$(CUT)-master.mp4 out/$(CUT).webp
+
+# Previews and scrubs the cuts in a browser, to tune the camera.
+demo-studio: $(STUDIO_MODULES)
+	cd $(DEMO)/studio && npx remotion studio src/index.ts
