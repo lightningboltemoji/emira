@@ -123,6 +123,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// window that can still hold focus, where a command is owed whatever the app is busy doing.
     case restoreFocus(WindowId)
 
+    /// Take keyboard focus off every window and hold it on nothing, on this display. macOS moves the
+    /// keyboard only onto a window, so a verb that leaves focus on nothing would otherwise leave it on a
+    /// window the user can no longer see. Acks with `Event.appActivated`, as `focus` does.
+    case focusNothing(MonitorId)
+
     /// `focus`, reporting back once the window server stacks the window above each of `over` — wherever
     /// they stand, since they are mostly still on their way to it — and above anything foreign in `rect`,
     /// a pin's **band**. The one focus anything in emira waits on.

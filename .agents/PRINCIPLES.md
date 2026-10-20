@@ -168,10 +168,13 @@ happen on.
   glides for the other reads as two window managers. **A reconfiguration is the sharpest case**, because the
   strip can go off screen without anything on it moving: a display that leaves hands its workspaces to a
   survivor, which holds them without showing them, so the promise is what stops a lid close ending on a
-  desktop whose owner is focused on a nub in the corner. Two qualifications keep it honest: an app
-  backfilling focus after a window closes is macOS guessing, not the user asking, and emira has already
-  decided where focus goes; and _how much_ of macOS's own focus you still want is a dial, with focus onto
-  windows emira doesn't place always admitted, or a modal dialog stops working.
+  desktop whose owner is focused on a nub in the corner. **The keyboard is held to the same promise**: macOS
+  moves it only onto a window, so a verb that leaves emira focusing nothing — an empty workspace — hands it to
+  a window of emira's own that swallows every key, rather than leaving it in the window just navigated away
+  from. Two qualifications keep it honest: an app backfilling focus after a window closes is macOS guessing,
+  not the user asking, and emira has already decided where focus goes; and _how much_ of macOS's own focus
+  you still want is a dial, with focus onto windows emira doesn't place always admitted, or a modal dialog
+  stops working.
 - **The main display is macOS's to name, and emira follows it.** Which screen holds the menu bar is a
   setting the user already has, in Displays settings, and a second opinion about which screen is theirs is
   the same mistake as a second opinion about where a window is. So the role moving carries the workspace

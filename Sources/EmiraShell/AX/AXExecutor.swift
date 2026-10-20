@@ -23,8 +23,9 @@ public final class AXExecutor: Executor {
     private let fence: PinFence?
     /// The writes out on the lanes, which `WorldWatcher` reads to drop their echoes.
     private let writes: FrameWrites
-    /// Every attached display's frame, in core coordinates — what says a write crosses displays.
-    private let displays: @MainActor () -> [Rect]
+    /// Every attached display, in core coordinates — what says a write crosses displays, and where
+    /// `focusNothing` stands the sink.
+    private let displays: @MainActor () -> [MonitorInfo]
 
     /// - Parameter scheduler: for the one turn `appActivated` waits (see `execute`). Defaulted because
     ///   it is the only asynchrony in this type and every other test of it is about geometry; a test
@@ -32,7 +33,7 @@ public final class AXExecutor: Executor {
     public init(registry: WindowRegistry, writer: any WindowWriter,
                 scheduler: any DelayScheduler = DispatchScheduler(), fence: PinFence? = nil,
                 writes: FrameWrites = FrameWrites(),
-                displays: @escaping @MainActor () -> [Rect] = { [] }) {
+                displays: @escaping @MainActor () -> [MonitorInfo] = { [] }) {
         self.registry = registry
         self.writer = writer
         self.scheduler = scheduler
@@ -46,7 +47,8 @@ public final class AXExecutor: Executor {
         // Lane dispatch order, first-touched-first: a dictionary's order is not an order, and a hash
         // seed shouldn't be able to change which app's group goes out first.
         var lanes: [pid_t] = []
-        let screens = displays()
+        let attached = displays()
+        let screens = attached.map(\.frame)
 
         for effect in effects {
             switch effect {
@@ -90,6 +92,13 @@ public final class AXExecutor: Executor {
             case .restoreFocus(let id):
                 guard let record = registry.record(id) else { continue }
                 writer.restoreFocus(record) { [scheduler] in
+                    scheduler.schedule(after: 0) { feedback(.appActivated) }
+                }
+
+            // The same ack as `focus`, for the same reason: the sink coming forward is an activation.
+            case .focusNothing(let monitor):
+                guard let display = attached.first(where: { $0.id == monitor }) else { continue }
+                writer.focusNothing(on: display.frame) { [scheduler] in
                     scheduler.schedule(after: 0) { feedback(.appActivated) }
                 }
 

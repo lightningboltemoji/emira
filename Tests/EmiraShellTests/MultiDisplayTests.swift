@@ -179,7 +179,8 @@ import EmiraCore
         let parking = adopt(3, at: Rect(x: 100, y: 400, width: 400, height: 400))
         let writer = ScriptedWriter()
         AXExecutor(registry: registry, writer: writer,
-                   displays: { [Self.leftFrame, Self.rightFrame] })
+                   displays: { [MonitorInfo(id: Self.left, frame: Self.leftFrame),
+                                MonitorInfo(id: Self.right, frame: Self.rightFrame)] })
             .execute([.setFrame(leaving, Rect(x: 1200, y: 0, width: 400, height: 400)),
                       .setFrame(staying, Rect(x: 300, y: 0, width: 400, height: 400)),
                       .park(parking, Rect(x: 2199, y: 860, width: 400, height: 400))],

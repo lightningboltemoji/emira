@@ -1061,8 +1061,9 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
 ### Focus policy
 
 - `[focus] system-events` — `respect` / `on-screen` / `ignore`: which focus changes emira did not cause it
-  honours. A refusal is one `.restoreFocus` effect restoring the focus the core already believed in and **no
-  state change at all** — no reveal, no switch, no cover. Two things are always admitted: our own echo (marked
+  honours. A refusal is one `.restoreFocus` effect restoring the focus the core already believed in — or
+  `.focusNothing`, where that belief is nothing, as on an empty workspace — and **no state change at all** —
+  no reveal, no switch, no cover. Two things are always admitted: our own echo (marked
   `.ours` by `FocusIntent`), and a `nil` report. **The correction is the one focus that asks permission.**
   The report it answers may be an app *surrendering* focus rather than another app taking it, and forcing a
   surrendering app forward undoes the quit or the ⌘H that caused it — so `AXWindowWriter.restoreFocus` goes
@@ -1070,6 +1071,15 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   never of AX (`PRINCIPLES.md` §5). It asks **around its own write, twice**: before `makeKey`, which alone
   brings a hidden app back, and again in that write's completion, because the answer arrives a few
   milliseconds after the report and the lane round trip is what carries the question past it.
+- **Focus on nothing is held on nothing** (`Effect.focusNothing`). macOS moves the keyboard only onto a
+  window, so a verb that leaves focus on nothing — a switch to an empty workspace, the last window sent away,
+  a move onto a display showing one — would otherwise leave it on the window just left, parked or on another
+  screen: keys typed into a window nobody can see, and an `open` or Dock click on its app that changes nothing
+  because that app is already active. `settleFocusOnNothing` emits it when a **command** takes focus from a
+  window to nothing, and only then. A departure is macOS's to answer: a close hands the keyboard to the app's
+  next window, and a quit or ⌘H — which reach the core as the same departures — to another app whose report
+  is already on its way, which a sink landing after it would leave the core arguing with. A `nil` report is
+  focus already on something emira does not manage. It waits behind a pin's gate like any focus (*Pinning*).
 - `[focus] follows-mouse` — the only focus source that can chase itself, because **here focus scrolls**. Two
   rules stop the runaway and neither is an optimisation: it fires on **pointer motion only, never window
   motion** (that is the termination argument), and it is **suspended while a cover is up** while still
@@ -1276,7 +1286,7 @@ gate proportionate:
 - **The focus the command asked for is paid last**, because focusing the target is what puts its app back
   above the pin. `State.owedFocus` holds it rather than the session, since **every exit owes it** — a debt
   whose session has gone falls due at once, which is how that holds without being repeated at four teardown
-  sites. A gate speaks for **its own display alone**, and what holds a focus back and what releases it are
+  sites. Focus on nothing is a debt like any other, paid only while the core still focuses nothing. A gate speaks for **its own display alone**, and what holds a focus back and what releases it are
   one predicate (`Motion.isGatingFocus`): a pin yet to come forward, or a window still crossing the pin.
 - **The fence's write is a stacking operation and not a focus.** Folded as one it would put the user on the
   pin for the length of the gate, and every verb that branches on `focusedWindow` would read them there.
@@ -1812,6 +1822,20 @@ which is the thing being withheld. It goes out **only** on a refusal, so the com
 the cross-app ordering `FocusIntent`'s ticket buys. A focus neither route lands reports nothing, so no
 `appActivated` is claimed for an activation that never happened.
 
+**The keyboard rests on nothing in a window of a second process** (`FocusSink`). Taking focus off a window
+means handing it to another, so the sink is one: a point of a window, transparent, below the normal level —
+which also keeps it outside `WindowRegistry.windowLevels`, and so out of the desktop emira reads — that
+swallows every key. It is this executable run again with `--focus-sink`, because bringing a process forward
+raises every window that process owns, and the daemon's peeks sit at the back of the normal level, where being
+raised would put them over other apps' windows; a process of its own also takes keys while the daemon's main
+thread waits on AX. `AXWindowWriter.focusNothing` tells it which display to stand on, with a line on its stdin,
+and brings it forward by writing `AXFrontmost` on its pid — straight to the route `focus` falls back to, since
+AppKit activation is what macOS withholds from a background process. It starts with the daemon, because a
+process takes the keyboard only once it has checked in with the window server; it orders its window in only
+once brought forward, since a window put up at launch is taken as the launch asking for the front; and its
+stdin closing is the daemon going away. Its activation reaches `WorldWatcher` as any app's does, which is what
+stops a parked app's own reports passing for keyboard focus while the sink holds it.
+
 **A focus report that went out as a read is judged against the request order it left under, not the window
 it names.** `NSWorkspace` names an activated app and not its window, so the window is a read on that app's
 lane (`ObservationSource.focusedWindow(of:)`), and the liveness probe a displacing report costs is another. A
@@ -1833,9 +1857,11 @@ app never came forward. A read overtaken by a new request is dropped, since that
 again.
 
 **Except an answer naming the focus the core last wrote**, which is no news: the desktop agrees with the core's
-own request, and whatever the core has done since is its own decision. That includes leaving it — a switch to
-an empty workspace focuses nothing and asks for nothing, so the app it left stays key, and hearing that as
-`.system` takes the user back. So the record keeps which of its requests were focus (`FocusIntent.Purpose`):
+own request, and whatever the core has done since is its own decision. A record whose newest request was for
+**nothing** is not asked again at all: what the desktop names then is the window the sink took the keyboard
+from, and hearing that as `.system` would undo the verb that asked for nothing. The request also makes every
+window asked for before it stale, so a focus still out on its lane neither activates nor reveals on its echo.
+So the record keeps which of its requests were focus (`FocusIntent.Purpose`):
 the pin fence's activation goes on it through `WindowWriter.bringForward` as `.stacking`, since the core never
 holds the pin it raises, and a pin that keeps the keyboard is still passed on.
 
@@ -2681,6 +2707,7 @@ emira/
     │                    SettingsStyle · Environment
     ├── EmiraShell/      Runtime · Executor · WindowRegistry · WorldWatcher · Teardown
     │                    ProcessLauncher · Scheduler · Permissions · Logging
+    │                    FocusSink (where the keyboard rests while emira focuses nothing)
     │   ├── AX/          AXAccess · AXClient · AXEnumerator · AXWriter · AXExecutor
     │   │                Observation · AXObservers · FocusIntent · FrameWrites · EnhancedUI
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
@@ -2836,7 +2863,8 @@ interruption.
 
 `make build` · `make test` · `make app` (assembles `dist/emira.app`) · `make dist` · `make install`.
 
-- **The app _is_ the daemon** — one process, one bundle identity, no launchd job. The daemon has been an
+- **The app _is_ the daemon** — one executable, one bundle identity, no launchd job. The focus sink is a
+  second copy of that executable rather than a second one in the bundle (`FocusSink.flag`). The daemon has been an
   accessory `NSApplication` since the overlay existed (it needs a window server connection and a running app for
   `CADisplayLink`), so anything put under launchd would be this same GUI process. Launch-at-login is
   `SMAppService.mainApp`, and "Quit stops the daemon" comes free. The one thing given up is crash-respawn.

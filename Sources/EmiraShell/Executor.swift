@@ -102,6 +102,10 @@ public final class MockExecutor: Executor {
         case .focus(let id), .restoreFocus(let id):
             feedback(.focusChanged(id, origin: .ours))
 
+        // The sink coming forward is an activation, and names no window: that is the whole reply.
+        case .focusNothing:
+            feedback(.appActivated)
+
         // The same echo, plus the answer a window server with nothing to re-stack would give at once.
         case .confirmFocus(let id, _, _):
             feedback(.focusChanged(id, origin: .ours))

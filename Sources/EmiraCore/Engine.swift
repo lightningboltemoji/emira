@@ -10,6 +10,13 @@ import EmiraMotion
 // a covered transition: capture the scoped windows, raise a layered cover, teleport the reals behind it,
 // animate the layers, drop the cover when everything settles.
 
+/// What a display's pin gate is holding back until the pin is on top: a window's focus, or focus on
+/// nothing (`Effect.focusNothing`).
+public enum OwedFocus: Sendable, Equatable, Codable {
+    case window(WindowId)
+    case nothing
+}
+
 /// The complete core state — a value type throughout, so it dumps to JSON and replays deterministically.
 public struct State: Sendable, Equatable, Codable {
     /// Truth: what actually exists on the system (windows, apps, monitors, focus).
@@ -49,7 +56,7 @@ public struct State: Sendable, Equatable, Codable {
     /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
     /// leaving the user typing into the pin.
-    public var owedFocus: [MonitorId: WindowId] = [:]
+    public var owedFocus: [MonitorId: OwedFocus] = [:]
     /// The pins each display's cover is staying off, so they stay live — kept for `hoists`' reason, and
     /// re-derived by `settleCoverClearing` on the same terms. Absent means flush with the display,
     /// which is every cover on a desktop that pins nothing.
@@ -463,6 +470,7 @@ public enum Engine {
         // shell applies it in the same `CATransaction` the raise rides in. A cover that reached the
         // glass a frame before it was cut back would be a frame drawn over the pin.
         settleCoverClearing(into: &next, effects: &effects)
+        settleFocusOnNothing(on: event, from: state, in: next, effects: &effects)
         settleGatedFocus(into: &next, effects: &effects)
         trackFocusRing(from: state, into: &next)
         hidePointer(on: event, into: &next, effects: &effects)
@@ -473,6 +481,16 @@ public enum Engine {
         return (next, effects)
     }
 
+    /// Take the keyboard off the window a verb has just left focusing nothing — a switch to an empty
+    /// workspace, the last window sent away — since macOS still has it focused wherever it now is. A
+    /// verb's only: a departure is macOS's to answer, and another app's report may already be on its way.
+    private static func settleFocusOnNothing(on event: Event, from before: State, in after: State,
+                                             effects: inout [Effect]) {
+        guard case .command = event, before.world.focusedWindow != nil,
+              after.world.focusedWindow == nil, let monitor = after.monitors.focused else { return }
+        effects.append(.focusNothing(monitor))
+    }
+
     /// Hold back the focus a command asked for while a pin is coming to the top, and pay it once the
     /// windows that could be drawn over that pin have landed. **Focusing the target is what puts its app
     /// back above the pin**, so it goes last. A debt whose session has gone falls due at once, which is
@@ -481,27 +499,37 @@ public enum Engine {
         // **A gate speaks only for its own display.** The focus it holds is the one landing on the
         // screen whose band is at risk; another screen's is nothing this cover can be drawn over.
         for monitor in s.monitors.ids where s.motion.isGatingFocus(on: monitor) {
-            let held = effects.compactMap { effect -> WindowId? in
-                if case .focus(let id) = effect, host(s, holding: id) == monitor { return id }
-                return nil
-            }
+            let held = effects.compactMap { gatedFocus($0, on: monitor, in: s) }
             guard let owed = held.last else { continue }
-            effects.removeAll {
-                if case .focus(let id) = $0 { return host(s, holding: id) == monitor }
-                return false
-            }
+            effects.removeAll { gatedFocus($0, on: monitor, in: s) != nil }
             s.owedFocus[monitor] = owed
         }
         for (monitor, owed) in s.owedFocus.sorted(by: { $0.key < $1.key }) {
             guard !s.motion.isGatingFocus(on: monitor) else { continue }
             s.owedFocus[monitor] = nil
-            // Dropped rather than retried where the window has gone: a debt is owed to a window, and
-            // there is nothing to pay a window that closed while the pin was coming forward.
-            guard s.world.windows[owed] != nil else { continue }
-            // The write reasserts a focus the core already holds, so the echo raises nothing and the
-            // stacking record has to be written here — this activation is the whole point of the debt.
-            s.world.noteActivation(owed)
-            effects.append(.focus(owed))
+            switch owed {
+            case .window(let id):
+                // Dropped rather than retried where the window has gone: a debt is owed to a window, and
+                // there is nothing to pay a window that closed while the pin was coming forward.
+                guard s.world.windows[id] != nil else { continue }
+                // The write reasserts a focus the core already holds, so the echo raises nothing and the
+                // stacking record has to be written here — this activation is the whole point of the debt.
+                s.world.noteActivation(id)
+                effects.append(.focus(id))
+            case .nothing:
+                // A report that has since put focus on a window is newer than the debt.
+                guard s.world.focusedWindow == nil else { continue }
+                effects.append(.focusNothing(monitor))
+            }
+        }
+    }
+
+    /// The focus `effect` asks for if it is one `monitor`'s gate holds back.
+    private static func gatedFocus(_ effect: Effect, on monitor: MonitorId, in s: State) -> OwedFocus? {
+        switch effect {
+        case .focus(let id) where host(s, holding: id) == monitor: return .window(id)
+        case .focusNothing(let display) where display == monitor:  return .nothing
+        default:                                                   return nil
         }
     }
 
@@ -2062,23 +2090,19 @@ public enum Engine {
     /// Whether `[focus] system-events` refuses this focus report — and if so, the whole of the response.
     ///
     /// `nil` admits, and the caller carries on as if the policy did not exist. A refusal is one
-    /// `.restoreFocus` effect and **no state change at all** — which the signature says, taking `State`
-    /// by value: the core's belief about focus never moved, so re-asserting it is the entire undo.
-    /// Nothing reveals, no workspace switches, no cover goes up — which is the point, since the
-    /// transition is exactly what the user did not want to watch.
+    /// `.restoreFocus` (or `.focusNothing`) and **no state change at all** — which the signature says,
+    /// taking `State` by value: the core's belief about focus never moved, so re-asserting it is the
+    /// entire undo. Nothing reveals, no workspace switches, no cover goes up — which is the point, since
+    /// the transition is exactly what the user did not want to watch.
     ///
     /// **Our own echo** is always admitted, in every mode, because the reducer wrote that focus
     /// optimistically when it emitted the effect, so refusing it would leave the core arguing with itself.
     /// Before the first `screensChanged` there is no geometry to judge against either, and no grounds to
     /// refuse is not a refusal.
     ///
-    /// **Having nothing to restore to is not consent.** A refusal is at most one `.restoreFocus`, so
-    /// with no anchor it is simply silent — emira declines to move and macOS's own focus stands, which
-    /// cannot leave the desktop keyless because nothing here can unfocus a window. Admitting instead was the
-    /// rule this replaces, and it is reachable in two ordinary ways that both end with the desktop
-    /// switching to a workspace nobody asked for: a `focusChanged` naming no window (routine, legitimate,
-    /// and handled above this guard, so it clears focus without ever consulting the policy), and sitting
-    /// on an **empty** workspace, where there is no anchor to be had.
+    /// **Having nothing to restore to is not consent.** With no anchor — an empty workspace — the belief
+    /// restored is focus on nothing, so the refusal is `.focusNothing`; admitting would switch the desktop
+    /// to a workspace nobody asked for.
     ///
     /// The anchor is `tiledAnchor`'s and not `World.focusedWindow` alone, because this asks *where the
     /// user would be if this report had not arrived* and focus is only a proxy for that.
@@ -2093,7 +2117,9 @@ public enum Engine {
         guard !admitsSystemFocusEvent(s, id) else { return nil }
         // Focus first when there is one — a float holds focus and has no column, so `tiledAnchor`
         // declines it, and it is still plainly what the user was looking at.
-        guard let restore = s.world.focusedWindow ?? tiledAnchor(s) else { return [] }
+        guard let restore = s.world.focusedWindow ?? tiledAnchor(s) else {
+            return s.monitors.focused.map { [.focusNothing($0)] } ?? []
+        }
         // Already ours: nothing to undo, and the reveal is the promise that a focused window is one the
         // user can see. Never reached from another workspace, where focus is `nil` rather than stale.
         guard restore != id else { return nil }

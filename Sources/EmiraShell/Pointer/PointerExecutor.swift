@@ -86,7 +86,7 @@ public final class PointerExecutor: Executor {
                  .setCoverClearing, .confirmFocus, .beginTransition,
                  .extendCover,
                  .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .endTransition, .focus,
-                 .restoreFocus, .raise, .closeWindow, .exec:
+                 .restoreFocus, .focusNothing, .raise, .closeWindow, .exec:
                 break
             }
         }

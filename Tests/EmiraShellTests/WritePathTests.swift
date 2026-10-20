@@ -449,6 +449,42 @@ import EmiraCore
         #expect(events.events.isEmpty)
     }
 
+    // Focus on nothing (`Effect.focusNothing`)
+
+    @Test("focus on nothing stands the sink on the display it names, and acks its activation a turn later")
+    func focusOnNothingStandsTheSinkOnItsDisplay() {
+        let left = Rect(x: 0, y: 0, width: 1000, height: 800)
+        let right = Rect(x: 1000, y: 0, width: 1200, height: 900)
+        let writer = ScriptedWriter()
+        let scheduler = ManualScheduler()
+        let events = Recorder()
+
+        AXExecutor(registry: WindowRegistry(), writer: writer, scheduler: scheduler,
+                   displays: { [MonitorInfo(id: MonitorId(1), frame: left),
+                                MonitorInfo(id: MonitorId(2), frame: right)] })
+            .execute([.focusNothing(MonitorId(2))], feedback: events.sink)
+
+        #expect(writer.nothingFocused == [right])
+        #expect(events.events.isEmpty)
+        scheduler.drain()
+        #expect(events.events == [.appActivated])
+    }
+
+    /// A display that left between the reducer and here has nowhere to stand the sink, and the next
+    /// verb decides again; guessing a screen would put the keyboard somewhere nobody asked for.
+    @Test("focus on nothing for a display that is not attached is dropped")
+    func focusOnNothingForADetachedDisplayIsDropped() {
+        let writer = ScriptedWriter()
+        let events = Recorder()
+
+        AXExecutor(registry: WindowRegistry(), writer: writer,
+                   displays: { [MonitorInfo(id: MonitorId(1), frame: Self.display)] })
+            .execute([.focusNothing(MonitorId(2))], feedback: events.sink)
+
+        #expect(writer.nothingFocused.isEmpty)
+        #expect(events.events.isEmpty)
+    }
+
     @Test("close is routed to the writer and answers nothing")
     func closeIsRoutedAndUnacked() {
         let registry = WindowRegistry()
@@ -725,6 +761,8 @@ final class ScriptedWriter: WindowWriter {
     private(set) var broughtForward: [WindowId] = []
     private(set) var raised: [WindowId] = []
     private(set) var closed: [WindowId] = []
+    /// The displays `focusNothing` stood the sink on, in order.
+    private(set) var nothingFocused: [Rect] = []
 
     /// How each move answers. Default: accepted, landed exactly where it was asked to.
     var landing: ((WindowMove) -> WindowLanding)?
@@ -764,6 +802,11 @@ final class ScriptedWriter: WindowWriter {
         completion()
     }
 
+    func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void) {
+        nothingFocused.append(display)
+        completion()
+    }
+
     func raise(_ window: WindowRegistry.Record) { raised.append(window.id) }
 
     func close(_ window: WindowRegistry.Record) { closed.append(window.id) }
@@ -788,6 +831,7 @@ private final class SilentFocusWriter: WindowWriter {
                       then completion: @escaping @MainActor () -> Void) {}
     func restoreFocus(_ window: WindowRegistry.Record,
                       then completion: @escaping @MainActor () -> Void) {}
+    func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void) {}
     func raise(_ window: WindowRegistry.Record) {}
     func close(_ window: WindowRegistry.Record) {}
 }

@@ -204,13 +204,9 @@ import Testing
         #expect(focused(in: fx) == [WindowId(2)])
     }
 
-    /// An empty workspace focuses **nothing**, and says so. Leaving `World.focusedWindow` on the window
-    /// of the strip being left reads as the more honest answer — emira asked AX for nothing, so macOS
-    /// really does still have that window focused — but the field is not a mirror of the system, it is
-    /// what every verb takes as its subject. Stranded, `close-window` asks an app to close a window on
-    /// another workspace that the user cannot see, and a refused system focus report restores focus over
-    /// there, switching the desktop back. `nil` is an already-supported state and the next
-    /// `focus left|right` recovers from it, which is what makes it safe to say.
+    /// An empty workspace focuses **nothing**, in the core and — by `.focusNothing` — in macOS. Focus is
+    /// every verb's subject, so stranded on the window left behind `close-window` would close one the user
+    /// cannot see; `nil` is supported, and the next `focus left|right` recovers from it.
     @Test func anEmptyWorkspaceFocusesNothingAndTheNextFocusRecovers() {
         var s = world(2)
         let (switched, fx) = run(s, [focusWorkspace(other)])

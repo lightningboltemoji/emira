@@ -553,18 +553,44 @@ import Testing
         let start = Self.overlapping()
         let (s, command) = EngineFix.run(start, [.command(.focus(.left))])
         #expect(Self.focuses(command).isEmpty, "focus must not go out while the pin is coming forward")
-        #expect(s.owedFocus[MonitorId(1)] == WindowId(1))
+        #expect(s.owedFocus[MonitorId(1)] == .window(WindowId(1)))
         #expect(s.world.focusedWindow == WindowId(1), "the core already believes the focus moved")
 
         let settled = EngineFix.settle(s, command)
         #expect(settled.owedFocus.isEmpty)
     }
 
+    /// Focus on nothing waits for the pin like any focus: the fence's activation landing after the sink
+    /// would leave the keyboard on the pin while the core believes it is on nothing.
+    @Test func focusOnNothingIsHeldBackAndThenPaid() {
+        let (s, command) = EngineFix.run(Self.overlapping(),
+                                         [.command(.focusWorkspace(.name(WorkspaceName("2")!)))])
+        #expect(s.world.focusedWindow == nil)
+        #expect(!command.contains(.focusNothing(MonitorId(1))), "nothing went out ahead of the pin")
+        #expect(s.owedFocus[MonitorId(1)] == .nothing)
+
+        let (after, paid) = Engine.reduce(s, .holdTimeout(MonitorId(1)))
+        #expect(after.owedFocus.isEmpty)
+        #expect(paid.contains(.focusNothing(MonitorId(1))))
+    }
+
+    /// A debt of nothing is older than any focus since, so it is dropped rather than paid over it.
+    @Test func aDebtOfNothingIsDroppedOnceAWindowHasFocus() {
+        var (s, _) = EngineFix.run(Self.overlapping(),
+                                   [.command(.focusWorkspace(.name(WorkspaceName("2")!)))])
+        #expect(s.owedFocus[MonitorId(1)] == .nothing)
+        s.world.setFocus(WindowId(3))
+
+        let (after, paid) = Engine.reduce(s, .holdTimeout(MonitorId(1)))
+        #expect(after.owedFocus.isEmpty)
+        #expect(!paid.contains(.focusNothing(MonitorId(1))))
+    }
+
     /// Every exit owes it, including the one where nothing ever answered.
     @Test func aTimedOutCoverStillPaysTheFocusItOwes() {
         let start = Self.overlapping()
         let (s, command) = EngineFix.run(start, [.command(.focus(.left))])
-        #expect(s.owedFocus[MonitorId(1)] == WindowId(1))
+        #expect(s.owedFocus[MonitorId(1)] == .window(WindowId(1)))
         let (after, fx) = Engine.reduce(s, .holdTimeout(MonitorId(1)))
         #expect(after.owedFocus.isEmpty)
         #expect(Self.focuses(fx) == [WindowId(1)])
@@ -621,7 +647,7 @@ extension EnginePinGateTests {
         // The fence fires on the destination, and the focus the command asked for waits behind it.
         #expect(Self.requests(fx) == [WindowId(3)])
         #expect(Self.focuses(fx).isEmpty)
-        #expect(moved.owedFocus[MonitorId(1)] == WindowId(2))
+        #expect(moved.owedFocus[MonitorId(1)] == .window(WindowId(2)))
 
         let settled = EngineFix.settle(moved, fx)
         let over = try! #require(settled.world.windows[WindowId(1)]?.frame)
@@ -713,7 +739,7 @@ extension EnginePinGateTests {
         let (echoed, out) = Engine.reduce(gated, .focusChanged(WindowId(3), origin: .ours))
         #expect(out.isEmpty)
         #expect(echoed.world.focusedWindow == WindowId(2), "the user is where the command put them")
-        #expect(echoed.owedFocus[MonitorId(1)] == WindowId(2))
+        #expect(echoed.owedFocus[MonitorId(1)] == .window(WindowId(2)))
         // The activation is still recorded — a float behind the pin is buried by it either way.
         #expect(StackOrder(echoed.world).isInFront(WindowId(3), of: WindowId(1)))
     }
@@ -790,7 +816,7 @@ extension EnginePinGateTests {
         // `focus-pinned` opens no transition, so nothing re-arms the gate on its behalf.
         let (asked, out) = Engine.reduce(s, .command(.focusPinned))
         #expect(Self.focuses(out).isEmpty)
-        #expect(asked.owedFocus[MonitorId(1)] == WindowId(3), "the newer intent is what is owed")
+        #expect(asked.owedFocus[MonitorId(1)] == .window(WindowId(3)), "the newer intent is what is owed")
     }
 
     /// A display's cover goes with it and never reports its cross-fade, so the shape it was holding has

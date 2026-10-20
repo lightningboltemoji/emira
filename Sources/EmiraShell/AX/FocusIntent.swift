@@ -38,7 +38,7 @@ public final class FocusIntent {
     /// Why a window is being asked for. Both go on the record, since either provokes an echo that has
     /// to be told from the user's own Cmd-Tab; only one is a focus the core then holds.
     public enum Purpose: Equatable, Sendable {
-        /// `Effect.focus` or `.restoreFocus`: the core wrote this focus when it asked.
+        /// `Effect.focus`, `.restoreFocus` or `.focusNothing`: the core wrote this focus when it asked.
         case focus
         /// The pin fence's `Effect.confirmFocus`: an activation for the stacking it buys, onto a window
         /// the core does not consider focused.
@@ -62,18 +62,18 @@ public final class FocusIntent {
     /// been wanted since" and must stay answerable long after the request itself is off the record.
     private var issued: UInt64 = 0
 
-    /// The windows we have asked for inside the current grace, newest last. Append-only: a request
-    /// produces up to *two* reports (the app's notification and the activation read), so consuming an
-    /// entry when its first echo lands would let the second one back through as external.
-    private var requested: [WindowId] = []
+    /// The windows asked for inside the current grace, newest last, `nil` for nothing. Append-only: a
+    /// request produces up to *two* reports (the app's notification and the activation read), so consuming
+    /// an entry when its first echo lands would let the second one back through as external.
+    private var requested: [WindowId?] = []
 
     /// The newest request on the record made for `.focus` — the focus the core wrote when it asked. `nil`
-    /// when the record holds only `.stacking` requests.
+    /// when that was nothing, or when the record holds only `.stacking` requests.
     private var held: WindowId?
 
-    /// Called as the record clears, with `held`. A report swallowed while the record stood has nothing
-    /// coming to repeat it, so this is when the desktop is asked again (`WorldWatcher.settleFocus`), and
-    /// an answer naming `held` is the core's own write, still standing.
+    /// Called as the record clears, with `held`, unless the newest request was for nothing. A report
+    /// swallowed while the record stood has nothing coming to repeat it, so this is when the desktop is
+    /// asked again (`WorldWatcher.settleFocus`), and an answer naming `held` is the core's own write.
     public var onCleared: (@MainActor (WindowId?) -> Void)?
 
     public init(scheduler: any DelayScheduler, grace: TimeInterval = FocusIntent.defaultGrace) {
@@ -81,8 +81,9 @@ public final class FocusIntent {
         self.grace = grace
     }
 
-    /// Record that we are about to ask for `id`, superseding whatever we asked for before it.
-    public func request(_ id: WindowId, for purpose: Purpose = .focus) -> Ticket {
+    /// Record that we are about to ask for `id` — or for nothing, when `nil` — superseding whatever we
+    /// asked for before it.
+    public func request(_ id: WindowId?, for purpose: Purpose = .focus) -> Ticket {
         issued += 1
         requested.append(id)
         if purpose == .focus { held = id }
@@ -91,10 +92,13 @@ public final class FocusIntent {
         // arrival is what keeps a superseded deadline from clearing a record still being written to.
         scheduler.schedule(after: grace) { [weak self] in
             guard let self, issued == ticket.number else { return }
+            // After a request for nothing the desktop can only name the window the sink took the
+            // keyboard from, and reporting it would undo the verb that asked for nothing.
+            let askedForNothing = requested.last.map { $0 == nil } ?? false
             requested.removeAll()
             let ours = held
             held = nil
-            onCleared?(ours)
+            if !askedForNothing { onCleared?(ours) }
         }
         return ticket
     }

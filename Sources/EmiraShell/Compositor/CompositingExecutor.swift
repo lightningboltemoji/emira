@@ -291,7 +291,7 @@ public final class CompositingExecutor: Executor {
             return .peek
         case .setScrims, .setTarp:
             return .scrim
-        case .setFrame, .park, .focus, .restoreFocus, .confirmFocus, .raise, .closeWindow:
+        case .setFrame, .park, .focus, .restoreFocus, .focusNothing, .confirmFocus, .raise, .closeWindow:
             return .truth
         case .setCursorHidden, .warpPointer:
             return .pointer
@@ -347,7 +347,7 @@ public final class CompositingExecutor: Executor {
             case .endTransition(let monitor):
                 dismissing.append(monitor)
             case .setFrame, .park, .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
-                 .restoreFocus,
+                 .restoreFocus, .focusNothing,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:
                 break                       // routed to another plane; unreachable here

@@ -29,7 +29,8 @@ func summary(of reply: Reply) -> String {
 // Answered before anything else exists, because it is the whole of this process: `--probe-capture` is how
 // a *running* daemon finds out whether Screen Recording has been granted since it started, which its own
 // preflight can no longer tell it (`Permissions.probeScreenRecording`). One read, one exit code, no
-// `NSApplication`.
+// `NSApplication`. `--focus-sink` is the copy of this daemon that holds the keyboard while emira focuses
+// nothing (`FocusSink`).
 //
 // Anything else *fails* rather than falling through, because the fall-through is a window manager that
 // adopts the whole desktop — a lot to get from a typo.
@@ -39,10 +40,12 @@ case []:
     break
 case [Permissions.captureProbeFlag]:
     exit(Permissions.screenRecording.isGranted ? 0 : 1)
+case [FocusSink.flag]:
+    FocusSink.run()
 case let unexpected:
     FileHandle.standardError.write(Data(
-        ("emira-daemon: unexpected \(unexpected.joined(separator: " ")) — the only argument is "
-            + "\(Permissions.captureProbeFlag)\n").utf8))
+        ("emira-daemon: unexpected \(unexpected.joined(separator: " ")) — the arguments are "
+            + "\(Permissions.captureProbeFlag) and \(FocusSink.flag)\n").utf8))
     exit(2)
 }
 
@@ -305,10 +308,17 @@ menuBar.onError = { log($0) }
 let stackProbe = CGStackProbe(registry: registry)
 
 let pinFence = PinFence(probe: stackProbe)
+
+/// Where the keyboard rests while emira focuses nothing: this executable again, as its own process.
+let focusSink = FocusSink(executable: Bundle.main.executableURL
+                          ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+focusSink.onExit = { log("focus sink exited (\($0))") }
+focusSink.start()
+
 let truth = AXExecutor(registry: registry,
-                       writer: AXWindowWriter(client: axClient, intent: focusIntent),
+                       writer: AXWindowWriter(client: axClient, intent: focusIntent, sink: focusSink),
                        fence: pinFence, writes: frameWrites,
-                       displays: { currentDisplays.monitors.map(\.frame) })
+                       displays: { currentDisplays.monitors })
 
 // The system plane. Only failures are reported: both surfaces already log the request, so what a log
 // line adds is whether it worked — and a keybind that silently does nothing is the failure this

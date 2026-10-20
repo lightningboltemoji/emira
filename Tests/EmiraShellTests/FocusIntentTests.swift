@@ -187,6 +187,49 @@ import EmiraCore
         #expect(intent.resolve(Self.w2) == .external)
     }
 
+    // A request for nothing: the focus sink taking the keyboard off every window
+
+    /// What `onCleared` was called with, in order.
+    final class Settlements {
+        var calls: [WindowId?] = []
+    }
+
+    @Test func aRequestForNothingMakesTheFocusAskedForBeforeItStale() {
+        // The keyboard is on nothing now, so the earlier window's echo is news about the past: read as
+        // ours, it would reveal the window the verb has just left.
+        let intent = Self.intent(ManualScheduler())
+        let first = intent.request(Self.w1)
+        let nothing = intent.request(nil)
+        #expect(intent.resolve(Self.w1) == .stale)
+        #expect(!intent.isCurrent(first), "the window's activation is dropped")
+        #expect(intent.isCurrent(nothing))
+    }
+
+    @Test func aRecordEndingInNothingClearsWithoutAskingTheDesktopAgain() {
+        // The desktop could only name the window the sink took the keyboard from, and reporting it
+        // would undo the verb that asked for nothing.
+        let clock = ManualScheduler()
+        let intent = Self.intent(clock)
+        let settled = Settlements()
+        intent.onCleared = { settled.calls.append($0) }
+        _ = intent.request(Self.w1)
+        _ = intent.request(nil)
+        clock.fire()
+        #expect(settled.calls.isEmpty)
+        #expect(intent.resolve(Self.w1) == .external, "the record still clears")
+    }
+
+    @Test func aRecordEndingInAWindowSettlesOnItEvenAfterNothing() {
+        let clock = ManualScheduler()
+        let intent = Self.intent(clock)
+        let settled = Settlements()
+        intent.onCleared = { settled.calls.append($0) }
+        _ = intent.request(nil)
+        _ = intent.request(Self.w2)
+        clock.fire()
+        #expect(settled.calls == [Self.w2])
+    }
+
     @Test func eachRequestArmsExactlyOneDeadline() {
         let clock = ManualScheduler()
         let intent = Self.intent(clock)

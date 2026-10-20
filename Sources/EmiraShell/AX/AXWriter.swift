@@ -88,6 +88,10 @@ public protocol WindowWriter {
     /// silent where the answer is no: a window that cannot take focus is not one to report about.
     func restoreFocus(_ window: WindowRegistry.Record, then completion: @escaping @MainActor () -> Void)
 
+    /// Take the keyboard off every window, onto the focus sink standing on `display` (core coordinates).
+    /// `focus`'s record and completion contract, and silent where there is no sink to hand it to.
+    func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void)
+
     /// Ask the window to close itself, as clicking its close button would. Reports nothing: the window
     /// actually going away arrives as a destroy observation, and an app is entitled to refuse (or to
     /// put up a save sheet and close later, or never).
@@ -101,15 +105,18 @@ public final class AXWindowWriter: WindowWriter {
 
     private let client: AXClient
     private let intent: FocusIntent
+    private let sink: FocusSink?
 
     /// - Parameters:
     ///   - client: the *same* `AXClient` the enumerator and observers use. The lanes are only serial —
     ///     and the size → position → size dance only atomic — if every AX caller shares them.
     ///   - intent: the *same* `FocusIntent` `WorldWatcher` reads. One record of the focus we asked for,
     ///     written here where the asking happens.
-    public init(client: AXClient, intent: FocusIntent) {
+    ///   - sink: where `focusNothing` puts the keyboard; without one, macOS's focus stands.
+    public init(client: AXClient, intent: FocusIntent, sink: FocusSink? = nil) {
         self.client = client
         self.intent = intent
+        self.sink = sink
     }
 
     public func place(_ moves: [WindowMove], of app: pid_t,
@@ -171,6 +178,18 @@ public final class AXWindowWriter: WindowWriter {
                              then completion: @escaping @MainActor () -> Void) {
         guard Self.canHoldFocus(pid: window.pid, window: window.number) else { return }
         focus(window, correcting: true, then: completion)
+    }
+
+    /// Straight to `AXFrontmost`, which needs only emira's own grant: AppKit activation is the route
+    /// macOS withholds from a background process, and the sink's lane is never busy.
+    public func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void) {
+        guard let sink, let pid = sink.readyPid() else { return }
+        let ticket = intent.request(nil)
+        sink.stand(on: display)
+        client.perform(app: pid) { $0.makeFrontmost() } then: { [intent] raised in
+            guard raised, intent.isCurrent(ticket) else { return }
+            completion()
+        }
     }
 
     private func focus(_ window: WindowRegistry.Record, correcting: Bool,

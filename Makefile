@@ -72,7 +72,8 @@ print-version:
 	@echo $(VERSION)
 
 # --- emira.app ---------------------------------------------------------------------------------
-# The app *is* the daemon — one process, one bundle identity (see Resources/Info.plist). Assembled by
+# The app *is* the daemon — one executable, one bundle identity (see Resources/Info.plist); the focus sink
+# is that executable run again (`FocusSink`), not a second one to bundle. Assembled by
 # hand rather than by Xcode because there is no GUI to build: SwiftPM produces the two executables and
 # this copies them next to an Info.plist.
 #

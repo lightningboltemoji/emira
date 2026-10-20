@@ -292,17 +292,16 @@ import Testing
         #expect(after == s, "a refusal changed the state")
     }
 
-    /// **Sitting on an empty workspace, a refusal is silent** — and it is still a refusal. There is no
-    /// anchor to restore to, which used to be read as no grounds to refuse, admitting the report and
-    /// taking the desktop to a workspace the user had just navigated away from. Nothing here can leave
-    /// the desktop keyless: emitting no `.focus` is emira declining to move, and macOS's own focus stands.
+    /// **Sitting on an empty workspace, a refusal restores focus on nothing** — and it is still a
+    /// refusal. With no anchor the belief being restored is that nothing is focused, and admitting would
+    /// take the desktop to a workspace the user has just navigated away from.
     ///
     /// This also proves the anchor's **focused-strip gate**. `lastTiledFocus` outlives its window being
     /// moved to another workspace, so here it names one two strips away. Ungated it would answer, and the
     /// `.focus` a refusal emits comes back as our own echo — which reveals, and reveals *across
     /// workspaces*. Restoring focus to a stale anchor is the desktop-switch this guard exists to prevent,
     /// arriving through the guard itself.
-    @Test func aRefusalOnAnEmptyWorkspaceIsSilentButStillARefusal() {
+    @Test func aRefusalOnAnEmptyWorkspaceRestoresFocusOnNothing() {
         var s = world(2, .ignore, Self.oneColumn)
         s = run(s, [moveToWorkspace("3"), moveToWorkspace("3")]).0   // both leave; this strip is empty
         let home = s.monitors.shown
@@ -312,7 +311,7 @@ import Testing
 
         // A report naming the *other* window over there, so the stale anchor is not simply the subject.
         let (after, fx) = Engine.reduce(s, systemEvent(WindowId(2)))
-        #expect(fx.isEmpty, "nothing to restore to is not consent")
+        #expect(fx == [.focusNothing(MonitorId(1))], "nothing to restore to is not consent")
         #expect(after.monitors.shown == home)
         #expect(after == s)
     }
@@ -330,7 +329,7 @@ import Testing
 
         for clicked in [WindowId(1), WindowId(2)] {
             let (after, fx) = Engine.reduce(s, systemEvent(clicked))
-            #expect(fx.isEmpty, "clicking \(clicked) emitted \(fx)")
+            #expect(fx == [.focusNothing(MonitorId(1))], "clicking \(clicked) emitted \(fx)")
             #expect(after.monitors.shown == home, "clicking \(clicked) moved the desktop")
             #expect(after == s)
         }
