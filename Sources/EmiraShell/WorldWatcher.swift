@@ -382,6 +382,13 @@ public final class WorldWatcher {
             // report carries no answer of its own — see `readFocus`.
             readFocus(of: pid)
 
+        // News only where no `focusMoved` already named the window, as apps that post both do first.
+        // Then a question rather than an answer: main is not key while a panel holds the keyboard.
+        case .windowBecameMain(let id):
+            guard let pid = registry.record(id)?.pid, isActive(pid) else { return checkShownAfterFade() }
+            guard id != focus else { return }
+            readFocus(of: pid)
+
         case .mouseDown:
             // A press arriving mid-settle closes it first: the bracket the core reads is a latch, and
             // two `dragBegan`s either side of no `dragEnded` would arm it twice over one release.

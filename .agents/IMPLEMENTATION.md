@@ -1891,6 +1891,14 @@ it opens is reported before the scan binds it, and reads as focus on nothing emi
 after it. A tiled arrival hides that, the core focusing it on adoption; a floated one — a rule's, a dialog's —
 would hold the keyboard while the core believed nothing did, and `close-window` would close nothing.
 
+**A main window moving is a focus report where no other came.** AppKit posts `AXFocusedWindowChanged` and then
+`AXMainWindowChanged` as a window becomes key, but an app can post the second alone — Ghostty does, for a click
+between two of its own windows — and the keyboard then moves with nothing else to say so. A managed window
+becoming main (`WorldObservation.windowBecameMain`) is therefore news when it comes from the active app and names
+a window other than the last report's, and even then it is a question, the same read a sheet costs: main is not
+key while a panel holds the keyboard. An app that posts both is asked nothing, its focus report having already
+named the window.
+
 **A batch is grouped into one lane job per app**, not one per window: the reducer emits placements in layout
 order, which interleaves apps, and grouping collapses N lane hops and N enhanced-UI toggles into one. The
 enhanced-UI flag is **read before it is written** and restored after — never introduced to an app that didn't

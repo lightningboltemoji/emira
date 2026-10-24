@@ -25,7 +25,7 @@ private enum AXNotification {
     static let application = [
         "AXWindowCreated",              // a window was born — which one, only a re-scan can say
         "AXFocusedWindowChanged",       // focus moved between this app's own windows
-        "AXMainWindowChanged",          // …or the app's window *set* changed under us (native tabs)
+        "AXMainWindowChanged",          // …from an app that posts only this, or a native tab came forward
     ]
 
     /// Registered on each *window* element.
@@ -315,11 +315,14 @@ public final class AXObservationSource: ObservationSource {
             // switch does not post at all. So this is the sole notice that the window standing for a
             // group has changed, and it arrives naming a window AX may never have listed before.
             //
-            // An element we already manage is an ordinary raise between an app's own windows and costs
-            // one dictionary lookup to dismiss. Anything else means the app's window set may have moved
-            // under us, and only a re-scan can say how.
-            guard registry.id(for: element) == nil else { return }
-            deliver?(.windowAppeared(element.ownerPid))
+            // An element we already manage is a raise between an app's own windows, which the watcher
+            // may need as a focus report. Anything else means the app's window set may have moved under
+            // us, and only a re-scan can say how.
+            guard let id = registry.id(for: element) else {
+                deliver?(.windowAppeared(element.ownerPid))
+                return
+            }
+            deliver?(.windowBecameMain(id))
 
         case AXNotification.focusedWindowChanged:
             // An element the registry does not know may still be focus in a window it does — a sheet —

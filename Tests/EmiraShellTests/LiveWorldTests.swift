@@ -1882,6 +1882,99 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(Array(world.recorder.events.dropFirst(before)) == [.appActivated])
     }
 
+    // Focus reported only as a main window
+    //
+    // Ghostty posts `AXMainWindowChanged` and no `AXFocusedWindowChanged` when a click moves focus between
+    // two of its windows, so the main window is all there is to hear. Read as a question for the app,
+    // since a panel can hold the keyboard while main stays put.
+
+    @Test func aMainWindowMovingWithNoFocusReportIsAskedAbout() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        world.source.focused[200] = .window(two)      // the click
+        let reads = world.source.focusReads.count
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowBecameMain(two))
+
+        #expect(world.source.focusReads.count == reads + 1)
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two, origin: .system)])
+    }
+
+    @Test func aMainWindowMovingAfterItsFocusReportAsksNothing() {
+        // AppKit's own order: the focus report first, then the main window, naming the same window.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.focusMoved(two))
+        let reads = world.source.focusReads.count
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowBecameMain(two))
+
+        #expect(world.source.focusReads.count == reads, "the report already said so")
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func aBackgroundAppsMainWindowMovingIsNotFocus() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        world.source.focused[100] = .window(term)
+        world.watcher.handle(.appActivated(100))
+        let reads = world.source.focusReads.count
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowBecameMain(two))
+
+        #expect(world.source.focusReads.count == reads, "the background app was not asked")
+        #expect(world.recorder.events.count == before)
+    }
+
+    @Test func ourOwnFocusEchoedOnlyAsAMainWindowIsOurs() {
+        // `focus right` between two windows of such an app: the read is the echo.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        _ = world.intent.request(two)
+        world.source.focused[200] = .window(two)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowBecameMain(two))
+
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(two, origin: .ours)])
+    }
+
+    @Test func aMainWindowBackfillingADeadWindowIsDropped() {
+        // ⌘W, and the app makes its next window main before the destroy lands. Still the app filling a
+        // hole, so the core's own successor stands.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.source.focused[200] = .window(one)
+        world.watcher.handle(.appActivated(200))
+        world.source.dead = [one]
+        world.source.focused[200] = .window(two)
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.windowBecameMain(two))
+
+        #expect(world.source.aliveProbes == [one])
+        #expect(world.recorder.events.count == before, "no focusChanged reached the core")
+    }
+
     // What the record swallowed, asked again as it clears
     //
     // The pin fence activates the pin's app, which puts the pin on the record, and a burst of closes

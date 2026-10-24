@@ -58,6 +58,10 @@ public enum WorldObservation: Sendable, Equatable {
     /// bind, or a sheet attached to one it does. Which, the watcher asks (`focusedWindow(of:)`).
     case focusMovedUnmanaged(pid_t)
 
+    /// A managed window became its app's main window, which a window that can be main does as it becomes
+    /// key — so a possible focus change, and the only report of one from an app that posts no `focusMoved`.
+    case windowBecameMain(WindowId)
+
     /// A mouse button went down somewhere on the system — the start of a possible drag, and the only
     /// thing that distinguishes a window the *user* is resizing from one an app resized itself, or from
     /// our own placement echoing back. Carries no window: the system does not say what is under the
