@@ -71,6 +71,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         return entries
     }
 
+    /// Each display's frame and visible frame, for the full-screen check.
+    var screens: [Rect] = []
+    func screenAreas() -> [Rect] { screens }
+
     /// Answer the oldest parked scan.
     func answerScan() {
         guard !pending.isEmpty else { return }
@@ -95,6 +99,12 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var pendingReads: [(WindowId, @MainActor (Rect?) -> Void)] = []
     /// What a frame read answers when it isn't held.
     var frames: [WindowId: Rect] = [:]
+    /// The windows a full-screen read answers `true` for.
+    var fullScreen: Set<WindowId> = []
+
+    func isFullScreen(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void) {
+        then(fullScreen.contains(window))
+    }
 
     func start(_ deliver: @escaping @MainActor (WorldObservation) -> Void) { started = true }
 
@@ -519,12 +529,12 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     @Test func aBootWindowThatNeededTheRetryIsStillAWindowWeFoundAlreadyOpen() {
         // The `wasAlreadyOpen` flag has to ride the retry chain; losing it there would tile that one
-        // window differently from the rest of the desktop.
+        // window differently from the rest of the desktop. Listed at boot, so it was open before emira.
         let world = LiveWorld()
-        world.windows.entries.removeAll { $0.number == 3 }   // "two" is not listed yet
+        let two = world.windows.windowsByPid[200]!.removeLast()   // AX does not describe "two" yet
 
         world.watcher.start()
-        world.windows.entries.append(WindowListEntry(number: 3, pid: 200, frame: rect(1400)))
+        world.windows.windowsByPid[200]!.append(two)
         world.scheduler.fire()
 
         #expect(world.created.map(\.title) == ["one", "term", "two"])
@@ -1391,8 +1401,30 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.recorder.events.last == .focusChanged(three, origin: .system))
     }
 
-    /// An arrival announced while a reconciliation scan is out is folded into it, and bound as one met
-    /// already open. It is no less the window that took focus, so it is asked about all the same.
+    /// A window that takes focus as it opens is reported before any scan has bound it, and the read that
+    /// asks again can time out against a JVM. The report named the element, so the window it binds to is
+    /// the answer, read or no read.
+    @Test func focusOnAnElementNotYetBoundLandsOnTheWindowItBindsTo() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.watcher.handle(.appActivated(200))
+        world.source.focused[200] = .unreadable
+        let prompt = element(4)
+        world.watcher.handle(.focusMovedUnmanaged(200, element: prompt))
+
+        world.windows.windowsByPid[200]?.append(ScannedWindow(
+            observed: ObservedWindow(pid: 200, bundleId: "com.apple.TextEdit", title: "prompt",
+                                     role: .standard, frame: rect(2100), isMinimized: false),
+            element: prompt))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.watcher.handle(.windowAppeared(200))
+
+        let id = try #require(world.id(titled: "prompt"))
+        #expect(world.recorder.events.last == .focusChanged(id, origin: .system))
+    }
+
+    /// An arrival announced while a reconciliation scan is out is folded into it, and bound as the
+    /// arrival it is — the window was opened since boot. It took focus, so it is asked about too.
     @Test func anArrivalBoundByAScanAlreadyOutIsAskedAboutToo() throws {
         let world = LiveWorld()
         world.watcher.start()
@@ -1411,7 +1443,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.windows.answerScan()
         let three = try #require(world.id(titled: "three"))
-        #expect(world.created.last?.wasAlreadyOpen == true)
+        #expect(world.created.last?.wasAlreadyOpen == false)
         #expect(world.source.focusReads.count == reads + 1, "asked once the window is bound")
         world.source.answerFocusRead(.window(three))
 
@@ -2098,14 +2130,98 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     @Test func aWindowFoundByReconciliationIsOneWeMetAlreadyOpen() {
-        // It is the boot case by definition — emira did not watch it open — so the core keeps its
-        // existing width instead of snapping it onto the first preset.
+        // A window open before emira, off the glass at boot — another Space — and adopted when it comes
+        // back. It is the boot case by definition, so the core keeps its existing width.
+        let world = LiveWorld()
+        world.windows.entries.append(
+            WindowListEntry(number: 4, pid: 200, frame: rect(2100), isOnScreen: false))
+        world.watcher.start()
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
+        world.windows.entries.removeAll { $0.number == 4 }
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+
+        world.heartbeat.beat()
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == true)
+    }
+
+    @Test func aWindowOpenedSinceBootIsAnArrivalWhicheverScanFindsItFirst() {
+        // An app slow to list a new window loses the race to the heartbeat's stray scan. The window
+        // server issued its number after boot, so it was opened now — and keeps the rules an arrival
+        // gets, a prompt that should float included.
         let world = LiveWorld()
         world.watcher.start()
         world.windows.windowsByPid[200]?.append(
             scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
         world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
 
+        world.heartbeat.beat()
+
+        #expect(world.created.last?.title == "three")
+        #expect(world.created.last?.wasAlreadyOpen == false)
+    }
+
+    @Test func aWindowFillingADisplayIsAskedWhetherItIsInFullScreen() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let two = try #require(world.id(titled: "two"))
+        let display = Rect(x: 0, y: 0, width: 2000, height: 1000)
+        world.windows.screens = [display]
+        world.source.fullScreen = [two]
+        world.source.frames[two] = display
+        world.watcher.handle(.windowMoved(two))
+        #expect(world.recorder.events.contains(.windowFullScreen(two, true)))
+
+        world.source.fullScreen = []
+        world.source.frames[two] = rect(1400)
+        world.watcher.handle(.windowMoved(two))
+        #expect(world.recorder.events.last == .windowFullScreen(two, false))
+    }
+
+    @Test func anAppWithAWindowInFullScreenKeepsTheWindowsItsScanCannotSee() throws {
+        // AX describes only the windows on the Space in front, so while one of an app's windows has a
+        // Space of its own, the rest are missing from its answer without having gone anywhere.
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try #require(world.id(titled: "one"))
+        let two = try #require(world.id(titled: "two"))
+        let display = Rect(x: 0, y: 0, width: 2000, height: 1000)
+        world.windows.screens = [display]
+        world.source.fullScreen = [two]
+        world.source.frames[two] = display
+        world.watcher.handle(.windowMoved(two))
+
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "one" }
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 2 ? WindowListEntry(number: 2, pid: 200, frame: rect(700), isOnScreen: false) : $0
+        }
+        world.watcher.handle(.windowAppeared(200))
+        #expect(!world.recorder.events.contains(.windowDestroyed(one)))
+    }
+
+    @Test func withNothingInFullScreenTheSameAbsenceIsADeparture() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try #require(world.id(titled: "one"))
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "one" }
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 2 ? WindowListEntry(number: 2, pid: 200, frame: rect(700), isOnScreen: false) : $0
+        }
+        world.watcher.handle(.windowAppeared(200))
+        #expect(world.recorder.events.contains(.windowDestroyed(one)))
+    }
+
+    @Test func aWindowThatStoodUnmanagedForARoundIsMetAlreadyOpen() {
+        // Opened since boot, but standing on the glass unmanaged for a whole round before anything
+        // could describe it: somebody may be using it, and it is not snapped or sent anywhere.
+        let world = LiveWorld()
+        world.watcher.start()
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
+        world.heartbeat.beat()                                    // a stray AX cannot describe yet
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "three", frame: rect(2100)))
         world.heartbeat.beat()
 
         #expect(world.created.last?.title == "three")
@@ -2135,14 +2251,14 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // forty-odd accessory processes to the one that has a window, several of them a browser's
         // renderers — so the window server naming its pid is the only thing that gets it managed.
         let world = LiveWorld()
-        world.watcher.start()
-
+        // Open since before emira, so the window is one it meets rather than one it watched open.
         world.windows.unswept.append(ScanTarget(pid: 400, bundleId: "zip.tanner.ping"))
         world.windows.windowsByPid[400] = [
             scanned(pid: 400, seed: 6, bundle: "zip.tanner.ping", title: "General", frame: rect(2100))]
+        world.windows.entries.insert(WindowListEntry(number: 6, pid: 400, frame: rect(2100)), at: 0)
+        world.watcher.start()
         #expect(world.windows.scanCounts[400] == nil, "the boot sweep did not go near it")
 
-        world.windows.entries.append(WindowListEntry(number: 6, pid: 400, frame: rect(2100)))
         world.heartbeat.beat()
 
         #expect(world.created.last?.title == "General")
@@ -2338,12 +2454,11 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     // `alreadyOpen` — the flag that says whether emira watched a window open, and the one thing a scan
     // provoked by reconciliation carries that a scan provoked by a notification does not.
 
-    @Test func aWindowFoundBesideAnUnheardCloseIsOneWeMetAlreadyOpen() {
+    @Test func aWindowFoundBesideAnUnheardCloseIsAskedTheSameQuestionByBothHalves() {
         // The deaf app's whole profile: it missed a destroy *and* a creation, so the same tick has a
         // window to remove and a window to find. Which half adopts the newcomer depends on whether the
-        // removal's scan has answered, so both ask the same question — announcing it as a window born
-        // now snaps one the user has already sized onto the first preset, and under a workspace rule
-        // switches the desktop out from under them to follow it.
+        // removal's scan has answered, so both ask the same question — and the answer is the window's
+        // own: opened since boot and found on its first round, it is the arrival it is.
         let world = LiveWorld()
         world.watcher.start()
 
@@ -2357,7 +2472,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.heartbeat.beat()
 
         #expect(world.created.last?.title == "three")
-        #expect(world.created.last?.wasAlreadyOpen == true, "met mid-life, not watched open")
+        #expect(world.created.last?.wasAlreadyOpen == false, "opened since boot")
     }
 
     @Test func aCoalescedStandingCheckIsReplayedAsTheRequestItWas() {
@@ -2365,11 +2480,15 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // is already out, so it is coalesced — and the replay must ask the question reconciliation
         // asked, not the one the scan in flight was answering.
         let world = LiveWorld()
+        world.windows.entries.append(
+            WindowListEntry(number: 4, pid: 200, frame: rect(2100), isOnScreen: false))
         world.watcher.start()
         world.windows.holdsAnswers = true
 
         world.watcher.handle(.windowAppeared(200))                  // scan #1, parked on the lane
-        // The window server sees the newcomer; AX does not describe it yet, so scan #1 cannot bind it.
+        // A window open since before boot comes on screen; AX does not describe it yet, so scan #1
+        // cannot bind it.
+        world.windows.entries.removeAll { $0.number == 4 }
         world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
         world.heartbeat.beat()                                      // coalesced into scan #1
         #expect(world.windows.pending.count == 1, "no second scan went onto the lane")
@@ -2388,10 +2507,14 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // coalesces behind it. The replay is the notification's request, but what it is left to
         // announce is whatever reconciliation's scan missed — which is the stray it went looking for.
         let world = LiveWorld()
+        world.windows.entries.append(
+            WindowListEntry(number: 4, pid: 200, frame: rect(2100), isOnScreen: false))
         world.watcher.start()
         world.windows.holdsAnswers = true
 
-        // A window emira never heard open: the window server lists it, AX cannot describe it yet.
+        // A window emira never heard open, open since before boot: the window server lists it on the
+        // glass now, AX cannot describe it yet.
+        world.windows.entries.removeAll { $0.number == 4 }
         world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: rect(2100)))
         world.heartbeat.beat()                                      // scan #1, parked on the lane
         #expect(world.windows.pending.count == 1)

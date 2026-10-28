@@ -2,8 +2,8 @@ import AppKit
 import QuartzCore
 import EmiraCore
 
-// One float's substrate: a borderless `NSWindow` standing exactly where the real window stands, holding
-// a photograph of it, one level above the cover. A sibling of `Overlay` and `GuidePanel`, and it keeps
+// One float's substrate: a borderless, non-activating panel standing exactly where the real window stands,
+// holding a photograph of it, one level above the cover. A sibling of `Overlay` and `GuidePanel`, and it keeps
 // their two proven idioms — `animationBehavior = .none` with the window ordered in at `alpha 0` from
 // birth, so appearing is a pure alpha flip rather than a system show animation, and
 // `isReleasedWhenClosed = false`.
@@ -65,7 +65,7 @@ public final class HoistPanel: HoistSurface {
         self.onClick = onClick
 
         let cocoa = geometry.cocoa(frame)
-        panel = NSWindow(contentRect: cocoa, styleMask: .borderless, backing: .buffered, defer: false)
+        panel = clickablePanel(cocoa)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // macOS's own, cast from the photograph's alpha — a window capture is transparent outside its
@@ -77,8 +77,6 @@ public final class HoistPanel: HoistSurface {
         panel.animationBehavior = .none
         panel.alphaValue = 0
         panel.isReleasedWhenClosed = false
-        // Nothing here types, and a borderless window declines key anyway — which is what keeps a click
-        // on a hoist from activating the daemon instead of the window the user is asking for.
         panel.ignoresMouseEvents = true
 
         let view = ClickView(frame: CGRect(origin: .zero, size: cocoa.size))
@@ -215,6 +213,17 @@ public final class HoistPanel: HoistSurface {
             panel.animator().alphaValue = alpha
         }
     }
+}
+
+/// A borderless window of ours that takes a click without activating the daemon. A window that is not a
+/// non-activating panel activates its app on a click, whether or not it can become key — and the daemon
+/// coming forward lands after, or instead of, the activation the click was asking for.
+func clickablePanel(_ rect: CGRect) -> NSPanel {
+    let panel = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+    // A panel hides when its app deactivates, and the daemon is never meant to be the active app.
+    panel.hidesOnDeactivate = false
+    return panel
 }
 
 /// The panel's content view: pixels and one gesture. `mouseDown` rather than `mouseUp` — this is a

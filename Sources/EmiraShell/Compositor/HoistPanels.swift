@@ -20,13 +20,18 @@ import EmiraCore
 // fence is a delay, not a veto, and a shell that kept a picture the core had dropped would be a second
 // opinion about what is on the screen.
 //
+// **The core's answer is checked against the window server's.** It is derived from an order reconstructed
+// from focus reports, which an app can contradict (a JVM holds its dialog over its frame) or never send
+// (a click that raises a frame over a dialog keeping the keyboard). So the plane reads what is over each
+// float now and then, and tells the core where the reading disagrees (`audit`, `Event.stackRead`).
+//
 // **Two photographs, and the second is the honest one.** A standby still is filmed while the float is in
 // the open, so it carries the window's focused styling and whatever it looked like before the user's
 // last interaction; the burial film that follows is what the desktop actually just showed. The reveal
 // paints the first and cross-fades to the second, which is `CoverMode.immediate`'s trade in another
-// place — a stand-in buys the instant, and its own capture overtakes it. Neither is live: a hoisted
-// float's content is frozen, because the alternatives are a screenshot on a timer for a window nobody
-// is looking at, or an `SCStream` holding the screen-recording indicator lit for as long as it floats.
+// place — a stand-in buys the instant, and its own capture overtakes it. Neither is live: a picture
+// showing is filmed again when a cover comes down, paced, rather than on a timer for a window nobody is
+// looking at, or through an `SCStream` holding the screen-recording indicator lit while it floats.
 
 /// Where `Effect.setHoists` goes. A protocol for `CoverPlane`'s reason: the daemon owns the AppKit
 /// half, and `CompositingExecutor` routes to a seam a test can stand in for.
@@ -95,15 +100,38 @@ public final class HoistPanels: HoistPlane {
     /// Where a click goes. Held rather than passed per call: a panel outlives the effect that built it.
     private var sink: EventSink?
 
+    /// Whether nothing of emira's is filming. A second look waits for it: a burial is usually also a
+    /// cover, and that cover's head batch is the latency anyone feels.
+    public var isIdle: @MainActor () -> Bool = { true }
+    /// The windows with a second look scheduled, so a burst of sets asks for one.
+    private var lookingAgain: Set<WindowId> = []
+    /// When each window's photograph was last asked for.
+    private var filmedAt: [WindowId: Date] = [:]
+
+    /// Whether a transition is painting. A reading of the window server then waits on our own frames.
+    public var isPainting: @MainActor () -> Bool = { false }
+    /// Whether a focus emira asked for may still be on its way to the glass — while it is, a reading of
+    /// the window server is behind the core's record, and would correct it backwards.
+    public var isFocusSettling: @MainActor () -> Bool = { false }
+    /// Bumped by every `setHoists`, so a reading the core has moved past since owns nothing.
+    private var setGeneration = 0
+    /// When the next audit is due, and the ticket that owns it — `DelayScheduler` cancels nothing.
+    private var auditDue: Date?
+    private var auditTicket = 0
+    /// What each float's last reported reading said, so one the core could not act on is said once.
+    private var reported: [WindowId: [WindowId]] = [:]
+
     public init(filmer: any SurfaceFilmer, probe: any StackProbe, scheduler: any DelayScheduler,
                 geometry: ScreenGeometry = ScreenGeometry(flipHeight: 0),
                 grace: TimeInterval = HoistPanels.releaseGrace,
+                refresh: TimeInterval = HoistPanels.refreshInterval,
                 build: @escaping HoistSurfaceFactory = HoistPanel.init) {
         self.filmer = filmer
         self.probe = probe
         self.scheduler = scheduler
         self.geometry = geometry
         self.grace = grace
+        self.refresh = refresh
         self.build = build
     }
 
@@ -133,7 +161,10 @@ public final class HoistPanels: HoistPlane {
     public func setHoists(_ bindings: [HoistBinding], feedback: EventSink) {
         sink = feedback
         current = bindings
+        setGeneration &+= 1
+        reported.removeAll()
         apply(bindings)
+        if !bindings.isEmpty { scheduleAudit(after: Self.auditInterval) }
     }
 
     /// Take every panel off the screen — the daemon is quitting, and a picture of a window is the last
@@ -168,6 +199,7 @@ public final class HoistPanels: HoistPlane {
                 panel.retire()
                 self?.retiring[id] = nil
                 self?.pictured[id] = nil
+                self?.filmedAt[id] = nil
             }
         }
 
@@ -183,8 +215,12 @@ public final class HoistPanels: HoistPlane {
             switch binding.state {
             case .covered:
                 // Instant where a standby still is already loaded, which is the point of standby. The
-                // burial's own film overtakes it when it lands (`film`).
+                // burial's own film overtakes it when it lands.
                 fenceGeneration[binding.window, default: 0] &+= 1
+                if !panel.isRevealed {
+                    lookAgain(at: binding.window, after: Self.burialSettle)
+                    scheduleAudit(after: Self.burialSettle)
+                }
                 panel.reveal()
             case .standby:
                 guard panel.isRevealed else { continue }
@@ -212,7 +248,108 @@ public final class HoistPanels: HoistPlane {
             self?.sink?(.hoistClicked(id))
         }
         panels[binding.window] = made
+        lookAgain(at: binding.window, after: Self.openingSettle)
         return made
+    }
+
+    /// How long after a burial its own film is taken: long enough for the float's app to have drawn it
+    /// without focus, which is how the window it stands for now looks.
+    static let burialSettle: TimeInterval = 0.3
+    /// How long after a panel is built it takes a second look. A window is filmed the moment it is on
+    /// screen, and an app can put one up before it has drawn anything into it.
+    static let openingSettle: TimeInterval = 1.0
+    /// How long a second look that found the capture plane busy waits before asking again.
+    static let idleRetry: TimeInterval = 0.25
+    /// The least time between two films of one picture that is showing, on `desktopSettled`.
+    public static let refreshInterval: TimeInterval = 2.0
+    private let refresh: TimeInterval
+
+    /// The window's id now names another window: whatever this panel shows is of the one it named
+    /// before, so it is filmed again.
+    public func forgetPicture(of id: WindowId) {
+        pictured[id] = nil
+        if panels[id] != nil { lookAgain(at: id, after: 0) }
+    }
+
+    /// A cover has come down: every picture showing is of a window that may have drawn since, and the
+    /// capture plane is idle. Each is filmed again — paced, since covers come down in bursts.
+    public func desktopSettled() {
+        if !current.isEmpty { scheduleAudit(after: 0) }
+        let now = Date()
+        for (id, panel) in panels where panel.isRevealed
+            && now.timeIntervalSince(filmedAt[id] ?? .distantPast) >= refresh {
+            lookAgain(at: id, after: 0)
+        }
+    }
+
+    /// How often the window server is asked what is over the floats while any is on screen — the
+    /// backstop for an order the focus reports got wrong with nothing coming to say so.
+    static let auditInterval: TimeInterval = 1.5
+    /// How long an audit that found a transition painting or a focus of ours in flight waits.
+    static let auditRetry: TimeInterval = 0.25
+
+    /// A click or an activation may have restacked the desktop with no focus report to say so — an
+    /// app is entitled to raise a window and keep the keyboard where it was.
+    public func mayHaveRestacked() {
+        if !current.isEmpty { scheduleAudit(after: Self.restackSettle) }
+    }
+
+    /// How long after a click or an activation the stacking is read. A click restacks on the press, so
+    /// this is margin; a reading taken too early agrees with the set and reports nothing.
+    static let restackSettle: TimeInterval = 0.1
+
+    /// Run an audit after `delay`, unless one is already due sooner.
+    private func scheduleAudit(after delay: TimeInterval) {
+        let due = Date().addingTimeInterval(delay)
+        if let auditDue, auditDue <= due { return }
+        auditDue = due
+        auditTicket &+= 1
+        let mine = auditTicket
+        scheduler.schedule(after: delay) { [weak self] in
+            guard let self, auditTicket == mine else { return }
+            auditDue = nil
+            audit()
+            if !current.isEmpty { scheduleAudit(after: Self.auditInterval) }
+        }
+    }
+
+    /// Ask the window server what is over each float, and tell the core where its answer disagrees with
+    /// the set — covered with nothing over it, or standing by under something. The core's order is
+    /// reconstructed from focus reports, which an app can contradict or never send.
+    private func audit() {
+        guard !current.isEmpty else { return }
+        guard !isPainting(), !isFocusSettling() else { return scheduleAudit(after: Self.auditRetry) }
+        let asked = setGeneration
+        let states = Dictionary(current.map { ($0.window, $0.state) }, uniquingKeysWith: { first, _ in first })
+        probe.windowsOver(Set(states.keys)) { [weak self] reading in
+            guard let self, let reading, setGeneration == asked, !isFocusSettling() else { return }
+            for (id, over) in reading.sorted(by: { $0.key < $1.key }) {
+                guard let state = states[id], (state == .covered) == over.isEmpty,
+                      reported[id] != over else { continue }
+                reported[id] = over
+                sink?(.stackRead(id, over: over))
+            }
+        }
+    }
+
+    /// Film `id` again once `delay` has passed and nothing of emira's is filming — a burial's own film, or
+    /// a second look at a window its app had not drawn when it was first filmed.
+    private func lookAgain(at id: WindowId, after delay: TimeInterval) {
+        guard lookingAgain.insert(id).inserted else { return }
+        scheduler.schedule(after: delay) { [weak self] in self?.filmWhenIdle(id) }
+    }
+
+    private func filmWhenIdle(_ id: WindowId) {
+        guard panels[id] != nil, let binding = current.first(where: { $0.window == id }) else {
+            lookingAgain.remove(id)
+            return
+        }
+        guard isIdle() else {
+            scheduler.schedule(after: Self.idleRetry) { [weak self] in self?.filmWhenIdle(id) }
+            return
+        }
+        lookingAgain.remove(id)
+        film(binding)
     }
 
     /// Run `then` once the window server stops showing anything over the float. Re-asked rather than
@@ -240,6 +377,7 @@ public final class HoistPanels: HoistPlane {
     private func film(_ binding: HoistBinding) {
         let id = binding.window
         pictured[id] = binding.frame.size
+        filmedAt[id] = Date()
         filmGeneration[id, default: 0] &+= 1
         let mine = filmGeneration[id] ?? 0
         filmer.film(id, on: binding.monitor) { [weak self] surface in

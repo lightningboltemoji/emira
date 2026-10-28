@@ -262,6 +262,14 @@ smaller-than-focused = 0.2
 from-focused-app = true
 float = true
 
+# Or on what macOS says a window is: standard, dialog, sheet, panel, popover or other. Floating a kind
+# the taxonomy already floats is choosing it, and a float you chose is drawn back over your work when
+# something buries it — a background app's dialog included.
+[[window-rules]]
+
+role = "dialog"
+float = true
+
 # A display laid out differently from the rest. One block per display, each setting only what it
 # disagrees with [layout] about — column-gap, window-gap and outer-gap, spelled as [layout] spells
 # them. Where two blocks name the same display, the later one wins key by key.

@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import ScreenCaptureKit
@@ -40,6 +41,10 @@ import EmiraCore
 // CPU load. Two in flight pays that in full, so there is no concurrency width to tune, only overlap to
 // avoid. **The scope size is most of the latency** — ~50 ms a window on a 5K display, for a 2500×2750 px
 // still, less for a smaller one — so the order a batch is filmed in decides what the gate waits behind.
+//
+// **A window kept out of capture is not filmed**: ScreenCaptureKit answers for it with a clear image, and a
+// clear stand-in is a window gone. The window server says which these are, once per batch, and each is
+// drawn as a card instead (`WindowCard`) — on the main actor, where its app's icon and appearance are.
 //
 // Pieces are handed back as they land rather than as a batch, and in request order — which is the
 // caller's policy, not ScreenCaptureKit's enumeration order: a cover gated on the base alone
@@ -129,6 +134,10 @@ public final class SCKCapturer: SurfaceCapturer {
                     await piece(.window(id, CapturedSurface(
                         image: still.image, frame: window.frame, corner: still.corner,
                         isWhole: CapturedSurface.measuredWhole(of: still.image))))
+                case .refused(let refusal):
+                    guard let id = numbers[refusal.number],
+                          let card = await self.card(for: refusal) else { return }
+                    await piece(.window(id, card))
                 }
             }
             order.done()
@@ -136,6 +145,13 @@ public final class SCKCapturer: SurfaceCapturer {
     }
 
     private func filmAlone(_ number: CGWindowID) { alone.insert(number) }
+
+    /// The card a window kept out of capture stands in as. No corner reading: none was taken.
+    private func card(for refusal: Refusal) -> CapturedSurface? {
+        let app = refusal.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        return WindowCard.image(size: refusal.frame.size, scale: refusal.scale, title: refusal.title, app: app)
+            .map { CapturedSurface(image: $0, frame: refusal.frame) }
+    }
 }
 
 /// What each base asked for in one turn must cut. A batch opening a cover is grown by every batch after
@@ -163,9 +179,19 @@ private struct Shot: Sendable {
     let frame: Rect
 }
 
+/// A window the window server keeps out of capture, and what its card needs: where, how dense, and whose.
+private struct Refusal: Sendable {
+    let number: CGWindowID
+    let frame: Rect
+    let scale: Double
+    let title: String
+    let pid: pid_t?
+}
+
 /// One thing the batch produced, handed to `deliver` the moment it lands rather than with the rest.
 private enum Piece: Sendable {
     case window(Shot)
+    case refused(Refusal)
     case base(CGImage)
 }
 
@@ -233,9 +259,19 @@ private func grab(windows: [CGWindowID],
     }
 
     // One at a time, in the order asked. See the file header: overlapping these is measurably slower.
+    let refusing = refusingCapture(targets.map(\.windowID))
     for window in targets {
         let frame = window.frame
         guard frame.width >= 1, frame.height >= 1 else { continue }
+        if refusing.contains(window.windowID) {
+            let scale = Double(SCContentFilter(desktopIndependentWindow: window).pointPixelScale)
+            await deliver(.refused(Refusal(
+                number: window.windowID,
+                frame: Rect(x: Double(frame.minX), y: Double(frame.minY),
+                            width: Double(frame.width), height: Double(frame.height)),
+                scale: scale, title: window.title ?? "", pid: window.owningApplication?.processID)))
+            continue
+        }
         // A capture that failed is simply not delivered; the batch carries on without it.
         guard let still = await surfaceShot(of: window,
                                             carryingChildren: !alone.contains(window.windowID)) else {

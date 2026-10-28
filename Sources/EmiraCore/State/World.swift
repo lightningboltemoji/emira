@@ -226,6 +226,9 @@ public struct World: Sendable, Equatable, Codable {
     /// still alive. The app's to do and nobody's to announce, so it is a reading (`Event.windowShown`)
     /// rather than a notification; `isOnScreen` is its reader.
     public private(set) var unshown: Set<WindowId> = []
+    /// The windows in native full screen — each on a Space of its own, off the strip until it comes back.
+    /// A reading (`Event.windowFullScreen`), since macOS announces neither edge of it.
+    public private(set) var fullScreen: Set<WindowId> = []
     /// The counter behind `focusedAt`. Monotonic and never reset — it orders the session rather than the
     /// windows in it, so two windows can never share a rank.
     private var focusClock = 0
@@ -278,6 +281,7 @@ public struct World: Sendable, Equatable, Codable {
         pins[id] = nil
         focusedAt[id] = nil
         unshown.remove(id)
+        fullScreen.remove(id)
         pruneTiledFocus()
         if lastFocus == id { lastFocus = nil }
         if !windows.values.contains(where: { $0.bundleId == window.bundleId }) {
@@ -428,6 +432,13 @@ public struct World: Sendable, Equatable, Codable {
         if shown { unshown.remove(id) } else { unshown.insert(id) }
     }
 
+    /// Fold `Event.windowFullScreen`.
+    public mutating func setFullScreen(_ id: WindowId, _ on: Bool) {
+        guard windows[id] != nil else { return }
+        if on { fullScreen.insert(id) } else { fullScreen.remove(id) }
+        pruneTiledFocus()
+    }
+
     /// Fold `Event.windowMinimized` / `Event.windowDeminimized`.
     public mutating func setMinimized(_ id: WindowId, _ minimized: Bool) {
         windows[id]?.isMinimized = minimized
@@ -488,7 +499,7 @@ public struct World: Sendable, Equatable, Codable {
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
     public func participatesInTiling(_ id: WindowId) -> Bool {
         guard let window = windows[id], !window.isMinimized, !isFloating(id),
-              !isPinned(id) else { return false }
+              !isPinned(id), !fullScreen.contains(id) else { return false }
         return !isAppHidden(of: id)
     }
 
@@ -531,7 +542,7 @@ public struct World: Sendable, Equatable, Codable {
     public func isOnScreen(_ id: WindowId) -> Bool {
         guard let window = windows[id] else { return false }
         // Nowhere on the screen for a reason that has nothing to do with the layout.
-        guard !window.isMinimized, !isAppHidden(of: id) else { return false }
+        guard !window.isMinimized, !isAppHidden(of: id), !fullScreen.contains(id) else { return false }
         // A window emira does not place is wherever its app put it, which is in view — unless the app
         // has stopped drawing it without closing it, which only the window server can say.
         guard participatesInTiling(id) else { return !unshown.contains(id) }

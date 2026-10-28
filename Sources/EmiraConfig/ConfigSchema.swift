@@ -560,6 +560,14 @@ public enum ConfigSchema {
     # …and opened by the app that already had focus, so background apps don't count.
     from-focused-app = true
     float = true
+
+    # Or on what macOS says a window is: standard, dialog, sheet, panel, popover or other. Floating a kind
+    # the taxonomy already floats is choosing it, and a float you chose is drawn back over your work when
+    # something buries it — a background app's dialog included.
+    [[window-rules]]
+
+    role = "dialog"
+    float = true
     """
 
     /// The other repeating table — a partial `[layout]` per display.

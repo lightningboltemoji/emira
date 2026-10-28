@@ -47,6 +47,10 @@ public enum Event: Sendable, Equatable, Codable {
     /// A minimized window was restored — re-inserted at its remembered strip position.
     case windowDeminimized(WindowId)
 
+    /// A window entered or left native full screen: a Space of its own, off the strip while it is there.
+    /// A reading — macOS posts nothing for either edge — taken when the window's frame changes.
+    case windowFullScreen(WindowId, Bool)
+
     /// The window server started or stopped drawing a live window — ordered out, or faded to nothing,
     /// which no notification reports. Read only for a window emira does not place (`World.isOnScreen`).
     case windowShown(WindowId, Bool)
@@ -83,6 +87,11 @@ public enum Event: Sendable, Equatable, Codable {
     /// window behind it back. Carries the window rather than a point: a hoist is one window's whole
     /// extent, so where inside it the click landed says nothing.
     case hoistClicked(WindowId)
+
+    /// What the window server draws over a float emira may stand in for: the managed windows in front of
+    /// it where they overlap it, front first. A reading of the order `World.focusedAt` reconstructs from
+    /// focus reports, taken because an app can hold a window above its others whatever focus says.
+    case stackRead(WindowId, over: [WindowId])
 
     /// A click landed on a peek (`Effect.setPeeks`) — the column it stands for, asked for the way a click
     /// on the window itself would ask for it.

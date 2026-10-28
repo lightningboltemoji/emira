@@ -50,6 +50,8 @@ private enum AXKey {
     static let closeButton = "AXCloseButton"
     static let minimizeButton = "AXMinimizeButton"
     static let zoomButton = "AXZoomButton"
+    /// Present only on a window that can be the main window of a full-screen Space.
+    static let fullScreenButton = "AXFullScreenButton"
     /// The title bar's text. Present exactly when a title bar shows its title — which is what answers
     /// for a titled window with no buttons, since AX lists only the buttons the style mask asked for.
     static let titleUIElement = "AXTitleUIElement"
@@ -162,7 +164,9 @@ public struct AXWindow: @unchecked Sendable {
     public var isMinimized: Bool { copyAttribute(element, AXKey.minimized) as? Bool ?? false }
 
     /// On a native full-screen Space, and therefore excluded from tiling entirely.
-    public var isFullScreen: Bool { copyAttribute(element, AXKey.fullScreen) as? Bool ?? false }
+    public var isFullScreen: Bool { fullScreen ?? false }
+    /// `isFullScreen` with a read that failed told apart from a window that is not.
+    public var fullScreen: Bool? { copyAttribute(element, AXKey.fullScreen) as? Bool }
 
     /// Whether this window can ever be its application's *main* one — `AXMain`'s **settability**, not its
     /// value. AppKit exposes the attribute as writable only where `NSWindow.canBecomeMain` is true, so
@@ -181,6 +185,10 @@ public struct AXWindow: @unchecked Sendable {
             copyElement(element, $0) != nil
         }
     }
+
+    /// Whether the window has a full-screen button: it can be a full-screen Space's main window, which is
+    /// a document window's trait and never a dialog's. One round trip.
+    public var canFullScreen: Bool { copyElement(element, AXKey.fullScreenButton) != nil }
 
     /// A destroyed element answers `kAXErrorInvalidUIElement` to everything, so any attribute would do;
     /// `role` is the cheapest. **A busy app answers `false` too**, when the read times out — treat this
@@ -207,7 +215,7 @@ public struct AXWindow: @unchecked Sendable {
     public func snapshot(bundleId: String) -> ObservedWindow? {
         guard let role = WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen,
                                     canBecomeMain: canBecomeMain, isResizable: isResizable,
-                                    hasTitleBar: hasTitleBar),
+                                    hasTitleBar: hasTitleBar, canFullScreen: canFullScreen),
               let frame
         else { return nil }
         return ObservedWindow(
@@ -337,12 +345,13 @@ extension WindowRole {
     /// a window at all.
     ///
     /// `nil` for an unrecognized *role*, and for app chrome carrying an `NSWindow`: no title bar *and* not
-    /// resizable, whatever the subrole claims, or `AXUnknown` *and* never main. Either half alone has
-    /// real windows behind it. The last three arguments are round trips, read only where they decide.
+    /// resizable unless it is an `AXUnknown` that can be main, or `AXUnknown` *and* never main. The last
+    /// three arguments are round trips, read only where they decide.
     public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool,
                  canBecomeMain: @autoclosure () -> Bool,
                  isResizable: @autoclosure () -> Bool,
-                 hasTitleBar: @autoclosure () -> Bool) {
+                 hasTitleBar: @autoclosure () -> Bool,
+                 canFullScreen: @autoclosure () -> Bool = false) {
         switch axRole {
         case "AXWindow":  break                       // an ordinary window; shape, then subrole, decide
         case "AXSheet":   self = isFullScreen ? .other : .sheet;   return
@@ -353,14 +362,19 @@ extension WindowRole {
             self = .other
             return
         }
-        if !isResizable() && !hasTitleBar() { return nil }   // app chrome, whatever it calls itself
+        // A toolkit with its own AX tree answers `AXUnknown` for an ordinary window, and its settable
+        // `AXMain` is the half to believe whatever the shape: a JVM draws its dialogs undecorated and fixed.
+        let unknownButMain = axSubrole == "AXUnknown" && canBecomeMain()
+        if !unknownButMain && !isResizable() && !hasTitleBar() { return nil }   // app chrome
         switch axSubrole {
         case "AXStandardWindow":       self = .standard
-        case "AXDialog":               self = .dialog
+        // A main window a modal is blocking answers `AXDialog` (AppKit derives it from `canBecomeMain`),
+        // and only its full-screen button gives it away.
+        case "AXDialog":               self = canFullScreen() ? .standard : .dialog
         case "AXSystemDialog":         self = .dialog
         case "AXFloatingWindow":       self = .panel
         case "AXSystemFloatingWindow": self = .panel
-        case "AXUnknown" where !canBecomeMain(): return nil   // app chrome, not a window
+        case "AXUnknown" where !unknownButMain: return nil   // app chrome, not a window
         default:                       self = .other
         }
     }

@@ -55,8 +55,9 @@ public enum WorldObservation: Sendable, Equatable {
     case focusMoved(WindowId)
 
     /// Keyboard focus landed on something of `app`'s that emira does not manage: a window it declined to
-    /// bind, or a sheet attached to one it does. Which, the watcher asks (`focusedWindow(of:)`).
-    case focusMovedUnmanaged(pid_t)
+    /// bind, one not bound *yet*, or a sheet attached to one it does. Which, the watcher asks
+    /// (`focusedWindow(of:)`) — and keeps the element, which names the window once a scan binds it.
+    case focusMovedUnmanaged(pid_t, element: AXWindow? = nil)
 
     /// A managed window became its app's main window, which a window that can be main does as it becomes
     /// key — so a possible focus change, and the only report of one from an app that posts no `focusMoved`.
@@ -140,4 +141,13 @@ public protocol ObservationSource: AnyObject {
     /// Which of an app's windows has focus, off the main actor, answering on it — the read an
     /// activation costs, since `NSWorkspace` names only the app. Answers exactly once.
     func focusedWindow(of app: pid_t, then: @escaping @MainActor (FocusedWindowRead) -> Void)
+
+    /// Whether a managed window is in native full screen, off the main actor, answering on it; `nil`
+    /// when it did not answer.
+    func isFullScreen(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void)
+}
+
+public extension ObservationSource {
+    /// A source that cannot tell says so; nothing is decided on an unanswered read.
+    func isFullScreen(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void) { then(nil) }
 }

@@ -74,24 +74,40 @@ private func desktop(of display: CGDirectDisplayID, scale: CGFloat,
                      sigma: Double?, strip: Rect?) async -> DesktopFilm {
     let none = DesktopFilm(veiled: nil, strip: nil)
     guard sigma != nil || strip != nil,
-          let content = try? await SCShareableContent.excludingDesktopWindows(
-            false, onScreenWindowsOnly: true),
-          let scDisplay = content.displays.first(where: { $0.displayID == display })
+          var content = try? await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: true)
     else { return none }
 
-    // Every window, ours included. See the file header.
-    let windows = content.windows.filter { $0.windowLayer >= 0 }
-    nonisolated(unsafe) let filter = SCContentFilter(display: scDisplay, excludingWindows: windows)
-    let configuration = SCStreamConfiguration()
-    configuration.width = Int(Double(scDisplay.width) * scale)
-    configuration.height = Int(Double(scDisplay.height) * scale)
-    configuration.showsCursor = false
-    guard let shot = try? await SCScreenshotManager.captureImage(contentFilter: filter,
-                                                                 configuration: configuration)
-    else { return none }
-    return DesktopFilm(veiled: sigma.flatMap { frosted(shot, sigma: $0) }.flatMap { shaded($0) },
-                       strip: strip.flatMap { copied(shot, cropping: $0, scale: scale) })
+    for _ in 0..<desktopAttempts {
+        guard let scDisplay = content.displays.first(where: { $0.displayID == display }) else { return none }
+        // Every window, ours included. See the file header.
+        let windows = content.windows.filter { $0.windowLayer >= 0 }
+        nonisolated(unsafe) let filter = SCContentFilter(display: scDisplay, excludingWindows: windows)
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(Double(scDisplay.width) * scale)
+        configuration.height = Int(Double(scDisplay.height) * scale)
+        configuration.showsCursor = false
+        guard let shot = try? await SCScreenshotManager.captureImage(contentFilter: filter,
+                                                                     configuration: configuration),
+              let after = try? await SCShareableContent.excludingDesktopWindows(
+                false, onScreenWindowsOnly: true)
+        else { return none }
+        // A window that came on screen between the read and the shot was not taken out, and a scrim
+        // would carry it behind every veil until the next film. Only the read after can say so.
+        let excluded = Set(windows.map(\.windowID))
+        guard after.windows.contains(where: { $0.windowLayer >= 0 && !excluded.contains($0.windowID) })
+        else {
+            return DesktopFilm(veiled: sigma.flatMap { frosted(shot, sigma: $0) }.flatMap { shaded($0) },
+                               strip: strip.flatMap { copied(shot, cropping: $0, scale: scale) })
+        }
+        content = after
+    }
+    return none
 }
+
+/// How many times a desktop film is retaken for a window that arrived during it, before the film is
+/// given up and the photograph already held stands.
+private let desktopAttempts = 3
 
 /// The pixels of `rect` (points, top-left origin) **copied out** of `image` — a crop alone would share,
 /// and so keep alive, the whole display's buffer behind a strip a few dozen points wide.

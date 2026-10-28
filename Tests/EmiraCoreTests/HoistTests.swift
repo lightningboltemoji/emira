@@ -57,10 +57,13 @@ import Testing
         #expect(!s.hoists.isEmpty)
 
         let (after, fx) = Engine.reduce(s, .hoistClicked(WindowId(2)))
-        #expect(fx == [.focus(WindowId(2)), .raise(WindowId(2))])
-        // The click alone does not take it down — the real window is not in front yet.
-        #expect(Self.shown(after) == [WindowId(2)])
+        #expect(fx.prefix(2) == [.focus(WindowId(2)), .raise(WindowId(2))])
+        // The click is a focus verb: written ahead of its echo, since an app need not post one. The
+        // picture is held by the shell until the window server shows the real window in front.
+        #expect(after.world.focusedWindow == WindowId(2))
+        #expect(Self.shown(after).isEmpty)
 
+        // The echo then confirms what the core already holds, and changes nothing.
         s = EngineFix.run(after, [.focusChanged(WindowId(2), origin: .ours)]).0
         #expect(Self.shown(s).isEmpty)
     }
@@ -74,6 +77,21 @@ import Testing
         s = EngineFix.run(s, [.focusChanged(WindowId(1), origin: .system)]).0
         #expect(s.world.isFloating(WindowId(2)))            // it floats…
         #expect(s.hoists.isEmpty)                           // …and is still nobody's to stand in for
+    }
+
+    /// …or a rule says so: floating a kind the taxonomy already floats is choosing it, so a background
+    /// app's dialog buried under the work is drawn back over it.
+    @Test func aDialogARoleRuleFloatsIsHoisted() {
+        var config = EngineFix.fullWidth
+        config.windowRules = [WindowRule(role: .dialog, float: true)]
+        var s = EngineFix.booted(config: config)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1)),
+                              .windowCreated(EngineFix.snapshot(2, bundle: "com.example.vpn", role: .dialog,
+                                                                frame: Self.float))]).0
+        s = EngineFix.run(s, [.focusChanged(WindowId(2), origin: .system),
+                              .focusChanged(WindowId(1), origin: .system)]).0
+        #expect(s.world.isFloatedByChoice(WindowId(2)))
+        #expect(Self.shown(s) == [WindowId(2)])
     }
 
     /// …until the user says so. `float on` over a window that already floats moves nothing, and
@@ -230,5 +248,75 @@ import Testing
         s.world.insert(EngineFix.snapshot(2, frame: Self.float))
         s.world.setFloating(WindowId(2), true)
         #expect(s.hoistBindings().map(\.state) == [.standby])
+    }
+
+    /// A float can be buried while it holds the keyboard — an app may raise its main window over a
+    /// dialog it keeps focused — and the server's reading is then the only news. A click on the picture
+    /// is a raise all the same, though focus does not move.
+    @Test func clickingAFloatBuriedWhileFocusedRaisesIt() {
+        var s = EngineFix.booted(config: EngineFix.fullWidth)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1)),
+                              .windowCreated(EngineFix.snapshot(2))]).0
+        s = EngineFix.run(s, [.command(.float(.on)), .windowFrameChanged(WindowId(2), Self.float),
+                              .stackRead(WindowId(2), over: [WindowId(1)])]).0
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(Self.shown(s) == [WindowId(2)])
+
+        s = EngineFix.run(s, [.hoistClicked(WindowId(2))]).0
+        #expect(Self.shown(s).isEmpty)
+    }
+
+    // The window server's reading (`Event.stackRead`)
+
+    /// The order is reconstructed from focus reports, and an app can hold a window over its own others
+    /// whatever they say — a JVM lifts an owned dialog above the frame it belongs to. The server drawing
+    /// nothing over the float is the answer, and the picture comes down.
+    @Test func aFloatTheServerShowsInFrontIsNotHoisted() {
+        var s = Self.floatOverATile()
+        #expect(Self.shown(s) == [WindowId(2)])
+        s = EngineFix.run(s, [.stackRead(WindowId(2), over: [])]).0
+        #expect(Self.shown(s).isEmpty)
+        #expect(s.hoists.map(\.state) == [.standby])
+        // Only the stacking half: nobody's focus moved.
+        #expect(s.world.focusedWindow == WindowId(1))
+    }
+
+    /// The other way round: a focus report that never arrived leaves the float ranked in front of a
+    /// window the server draws over it. The window drawn over it is the one ranked wrong.
+    @Test func aFloatTheServerShowsBuriedIsHoisted() {
+        var s = EngineFix.booted(config: EngineFix.fullWidth)
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(1)),
+                              .windowCreated(EngineFix.snapshot(2))]).0
+        s = EngineFix.run(s, [.command(.float(.on)), .windowFrameChanged(WindowId(2), Self.float)]).0
+        #expect(Self.shown(s).isEmpty)
+
+        s = EngineFix.run(s, [.stackRead(WindowId(2), over: [WindowId(1)])]).0
+        #expect(Self.shown(s) == [WindowId(2)])
+        #expect(s.world.focusedWindow == WindowId(2))
+    }
+
+    /// A reading that agrees with the record changes nothing, and nor does one about a window nothing
+    /// hoists — a dialog the taxonomy floated is still nobody's to stand in for.
+    @Test func aReadingThatAgreesOrDoesNotApplyChangesNothing() {
+        let s = Self.floatOverATile()
+        let (agreed, _) = Engine.reduce(s, .stackRead(WindowId(2), over: [WindowId(1)]))
+        #expect(agreed == s)
+
+        var t = EngineFix.booted(config: EngineFix.fullWidth)
+        t = EngineFix.run(t, [.windowCreated(EngineFix.snapshot(1)),
+                              .windowCreated(EngineFix.snapshot(2, role: .dialog, frame: Self.float))]).0
+        let (declined, fx) = Engine.reduce(t, .stackRead(WindowId(2), over: [WindowId(1)]))
+        #expect(declined == t)
+        #expect(fx.isEmpty)
+    }
+
+    /// Rule 3 holds against the reading too: a window emira never placed over the float is not one that
+    /// buried it, and a float drawn under only that is not hoisted.
+    @Test func aReadingNamesOnlyWindowsEmiraPlacedAsBuryingOne() {
+        var s = Self.floatOverATile()
+        s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(3, role: .dialog,
+                                                                frame: Rect(x: 250, y: 250, width: 100, height: 100)))]).0
+        s = EngineFix.run(s, [.stackRead(WindowId(2), over: [WindowId(3)])]).0
+        #expect(Self.shown(s).isEmpty)
     }
 }

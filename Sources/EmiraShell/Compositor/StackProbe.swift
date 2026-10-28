@@ -22,6 +22,11 @@ public protocol StackProbe: AnyObject {
     /// knows, and for a read that failed.
     func isCovered(_ window: WindowId, within frame: Rect, orBy others: Set<WindowId>,
                    then: @escaping @MainActor (Bool) -> Void)
+
+    /// The managed windows drawn over each of `windows` where they overlap it, front first — one reading
+    /// for all of them. A window the reading does not show is left out; `nil` for a read that failed.
+    func windowsOver(_ windows: Set<WindowId>,
+                     then: @escaping @MainActor ([WindowId: [WindowId]]?) -> Void)
 }
 
 /// The real one: `CGWindowListCopyWindowInfo`, off the main thread.
@@ -47,6 +52,61 @@ public final class CGStackProbe: StackProbe {
             let covered = Self.isCovered(number, within: frame, orBy: named, ignoring: mine)
             Task { @MainActor in then(covered) }
         }
+    }
+
+    public func windowsOver(_ windows: Set<WindowId>,
+                            then: @escaping @MainActor ([WindowId: [WindowId]]?) -> Void) {
+        let numbers = Dictionary(windows.compactMap { id in registry.record(id).map { ($0.number, id) } },
+                                 uniquingKeysWith: { first, _ in first })
+        guard !numbers.isEmpty else { return then([:]) }
+        let targets = Set(numbers.keys)
+        let mine = ProcessInfo.processInfo.processIdentifier
+        let registry = registry
+        inspector.async {
+            let read = Self.onScreen(ignoring: mine).map { Self.over(targets, in: $0) }
+            Task { @MainActor in
+                guard let read else { return then(nil) }
+                // Named on the main actor, where the registry is: a window it does not manage is nothing
+                // the core can rank, so it drops out here.
+                then(Dictionary(uniqueKeysWithValues: read.compactMap { number, over in
+                    numbers[number].map { ($0, over.compactMap { registry.id(forNumber: $0) }) }
+                }))
+            }
+        }
+    }
+
+    /// Every window on the glass but ours, front first — the order `optionAll` does not keep.
+    nonisolated static func onScreen(ignoring mine: pid_t) -> [WindowListEntry]? {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        return raw.compactMap { info in
+            guard let number = info[kCGWindowNumber as String] as? CGWindowID,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != mine,
+                  let bounds = info[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+            else { return nil }
+            return WindowListEntry(number: number, pid: pid,
+                                   frame: Rect(x: Double(rect.minX), y: Double(rect.minY),
+                                               width: Double(rect.width), height: Double(rect.height)),
+                                   alpha: info[kCGWindowAlpha as String] as? Double ?? 1)
+        }
+    }
+
+    /// For each of `targets` on the glass, the drawn windows in front of it that overlap it, front first.
+    /// `list` is front first, which is what makes "in front" an index comparison.
+    nonisolated static func over(_ targets: Set<CGWindowID>,
+                                 in list: [WindowListEntry]) -> [CGWindowID: [CGWindowID]] {
+        var over: [CGWindowID: [CGWindowID]] = [:]
+        var above: [WindowListEntry] = []
+        for entry in list where entry.isDrawn {
+            if targets.contains(entry.number) {
+                over[entry.number] = above.filter { $0.frame.intersects(entry.frame) }.map(\.number)
+            }
+            above.append(entry)
+        }
+        return over
     }
 
     /// The pure read. `optionOnScreenAboveWindow` is the whole question — everything the window server

@@ -18,6 +18,11 @@ import EmiraCore
             pending.append(then)
         }
 
+        func windowsOver(_ windows: Set<WindowId>,
+                         then: @escaping @MainActor ([WindowId: [WindowId]]?) -> Void) {
+            then([:])
+        }
+
         func answer(_ covered: Bool) {
             let due = pending
             pending = []

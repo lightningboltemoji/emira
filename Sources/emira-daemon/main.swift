@@ -345,6 +345,7 @@ let desktopCapturer = DesktopCapturer()
 /// ever filmed opening — each measured until it is read so, while the capture plane is idle.
 let cornerSurvey = CornerSurvey()
 cornerSurvey.isIdle = { [capture, desktopCapturer] in capture.isIdle && !desktopCapturer.isFilming }
+hoistPanels.isIdle = { [capture, desktopCapturer] in capture.isIdle && !desktopCapturer.isFilming }
 
 /// A window's corner as every plane rounds it: read at rest by a cover or by the survey, else as either last
 /// caught it animating.
@@ -364,6 +365,13 @@ scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
 cornerSurvey.onMeasured = { [weak scrims] in scrims?.cornersMeasured() }
 // A peek appearing, moving or going is the stacking changing under the veils, with no set to say so.
 peekPanels.onChange = { [weak scrims] in scrims?.peeksChanged() }
+
+// A succession re-points an id at another window: every picture held by that id is of the one before.
+registry.onRebound = { [weak capture, weak hoistPanels, weak peekPanels] id in
+    capture?.forgetStill(of: id)
+    hoistPanels?.forgetPicture(of: id)
+    peekPanels?.forgetPicture(of: id)
+}
 
 // A cover's base leaves out what the tarp hides, or a transition would show the nubs it covers.
 capture.concealed = { [weak scrims] in scrims?.concealedNumbers ?? [] }
@@ -406,6 +414,7 @@ executor.onCoverDismissed = { monitor, frames, seconds in
     // it would queue behind the cover's own batch (`Scrims`).
     scrims.desktopMayHaveChanged()
     cornerSurvey.resume()
+    hoistPanels.desktopSettled()
     let head = captureHeadMs[monitor] ?? 0
     log(String(format: "transition:%@ %d frames in %.0f ms (%.0f fps); %.0f ms capture head → %.0f ms",
                on(monitor), frames, seconds * 1000, Double(frames) / max(seconds, 0.001),
@@ -524,10 +533,16 @@ watcher.onStackChanged = { [weak scrims] in scrims?.recut() }
 // An announced window reaches the glass milliseconds later, under whatever veil it lands on.
 watcher.onWindowAnnounced = { [weak scrims] in scrims?.expectArrival() }
 
+// A click or an activation can restack the desktop with no focus report behind it; the hoists read the
+// stacking again rather than wait for their next round.
+watcher.onRestacked = { [weak hoistPanels] in hoistPanels?.mayHaveRestacked() }
+
 // The one thing reconciliation and an arrival watch need from the core, through a reader for
 // `PointerFocus`'s reason: neither holds core state, and what each is asking is not about the world it
 // watches but about whether *we* are mid-frame. See `WorldWatcher.reconcile`.
 watcher.isPainting = { runtime.state.motion.needsFrames }
+hoistPanels.isPainting = { runtime.state.motion.needsFrames }
+hoistPanels.isFocusSettling = { [focusIntent] in !focusIntent.isQuiet }
 scrims.isPainting = { runtime.state.motion.needsFrames }
 
 // `EMIRA_TRACE=1` prints every reduce — the event, the effects, and the wall clock between them.

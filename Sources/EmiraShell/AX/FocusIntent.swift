@@ -103,6 +103,10 @@ public final class FocusIntent {
         return ticket
     }
 
+    /// Whether nothing asked for is still on the record — no focus of ours that the desktop may not yet
+    /// show. A reading of the window server taken inside the grace can be behind the record.
+    public var isQuiet: Bool { requested.isEmpty }
+
     /// Whether `ticket` is still the newest request. False the moment a later one is issued, which is
     /// how a superseded activation is dropped rather than left to race the one the user actually asked
     /// for. Deliberately not cleared when the report arrives: the write's completion and its echo cross

@@ -2,7 +2,7 @@ import AppKit
 import QuartzCore
 import EmiraCore
 
-// One peek's substrate: a borderless `NSWindow` over the part of a peeking column its display shows,
+// One peek's substrate: a borderless, non-activating panel over the part of a peeking column its display shows,
 // holding that part of the window's photograph. `HoistPanel`'s sibling, keeping its idioms —
 // `animationBehavior = .none`, ordered in at birth and shown by an alpha flip, `isReleasedWhenClosed =
 // false`, and a window per peek because only a window's frame routes clicks.
@@ -49,7 +49,7 @@ public final class PeekPanel: PeekSurface {
         self.geometry = geometry
         self.onClick = onClick
 
-        panel = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        panel = clickablePanel(.zero)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         // macOS's own, cast from the photograph's alpha: the window's rounded corners are in the pixels.

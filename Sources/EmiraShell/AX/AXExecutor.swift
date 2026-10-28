@@ -173,13 +173,18 @@ public final class AXExecutor: Executor {
         let requested = Dictionary(moves.map { ($0.record.id, $0) },
                                    uniquingKeysWith: { _, last in last })
         for landing in landings {
-            if let actual = landing.frame, let move = requested[landing.id],
-               !actual.isClose(to: move.target, within: Tolerance.placement) {
+            let move = requested[landing.id]
+            let arrived = landing.frame.flatMap { actual in
+                move.map { actual.isClose(to: $0.target, within: Tolerance.placement) }
+            } ?? false
+            if let actual = landing.frame, let move, !arrived {
                 feedback(move.isPark
                     ? .parkCorrected(landing.id, requested: move.target, actual: actual)
                     : .placementCorrected(landing.id, requested: move.target, actual: actual))
             }
-            let confirmed = landing.accepted && landing.frame != nil
+            // A window standing where it was sent has answered, whatever a setter said: one whose size
+            // is not settable refuses even the size it already has, and every pass would write it again.
+            let confirmed = landing.frame != nil && (landing.accepted || arrived)
             feedback(confirmed ? .axLanded(landing.id) : .axFailed(landing.id))
         }
     }

@@ -329,6 +329,7 @@ extension TOMLTable {
                 rule.appIdRegex = try body.pattern("app-id-regex")
                 rule.title = try body.string("title")
                 rule.titleRegex = try body.pattern("title-regex")
+                rule.role = try body.windowRole("role")
                 rule.smallerThanFocused = try body.number("smaller-than-focused", greaterThan: 0)
                 rule.fromFocusedApp = try body.bool("from-focused-app")
                 rule.workspace = try body.workspaceName("workspace")
@@ -344,7 +345,7 @@ extension TOMLTable {
                 throw ConfigSyntaxError.badValue(
                     line: element.line, key: prefix,
                     message: "must match something — set app-id, app-id-regex, title, title-regex, "
-                           + "smaller-than-focused or from-focused-app")
+                           + "role, smaller-than-focused or from-focused-app")
             }
             guard rule.hasAction else {
                 throw ConfigSyntaxError.badValue(
@@ -463,6 +464,16 @@ extension TOMLTable {
     /// A workspace address, spelled as the single character that names it. Always quoted, never a bare
     /// number: the domain runs `1`–`9`, `0`, `a`–`z`, so half of it isn't numeric and the tenth address
     /// is spelled `0` — a TOML integer could carry neither fact.
+    /// What macOS says a window is, spelled as `WindowRole` spells it.
+    fileprivate mutating func windowRole(_ key: String) throws -> WindowRole? {
+        guard let value = take(key) else { return nil }
+        guard case .string(let text) = value.payload, let role = WindowRole(rawValue: text) else {
+            let names = WindowRole.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")
+            throw ConfigSyntaxError.badValue(line: value.line, key: key, message: "must be one of \(names)")
+        }
+        return role
+    }
+
     fileprivate mutating func workspaceName(_ key: String) throws -> WorkspaceName? {
         guard let value = take(key) else { return nil }
         guard case .string(let text) = value.payload, let name = WorkspaceName(text) else {

@@ -428,9 +428,17 @@ public final class WindowRegistry {
         // The entry left behind is a closed tab still fading on the successor's own rectangle, or a
         // background tab off screen — departed either way, and pruned once the list lets go of it.
         departed.remove(number)
-        if old.number != number { departed.insert(old.number) }
+        if old.number != number {
+            departed.insert(old.number)
+            onRebound?(id)
+        }
         return true
     }
+
+    /// An id now names a different window than it did. Whatever holds a picture by id is holding one of
+    /// the window it named before — a tab that has gone to the background, or whatever an app put on
+    /// the same rectangle — and is told so here, the one place a binding is re-pointed.
+    public var onRebound: (@MainActor (WindowId) -> Void)?
 
     /// The record behind an id, or `nil` if it is unknown or has been forgotten.
     public func record(_ id: WindowId) -> Record? { records[id] }

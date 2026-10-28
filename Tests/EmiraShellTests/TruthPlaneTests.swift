@@ -189,6 +189,29 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         }
     }
 
+    @Test func anUnknownWindowThatCanBeMainIsKeptWhateverItsShape() {
+        // IntelliJ's Confirm Exit and Trust Project: `AXUnknown`, a settable `AXMain`, no title bar, fixed
+        // size. Declined by shape, they were unmanaged dialogs — buried with nothing to bring them back.
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXUnknown",
+                           isFullScreen: false, canBecomeMain: true,
+                           isResizable: false, hasTitleBar: false) == .other)
+        // Its popups (Find Action, Search Everywhere) cannot be main, and stay chrome.
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXUnknown",
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: false, hasTitleBar: false) == nil)
+    }
+
+    @Test func aMainWindowBlockedByAModalIsStillAStandardWindow() {
+        // A JVM frame behind a modal answers `AXDialog` with `AXMain` unsettable, like a real dialog. Its
+        // full-screen button is what a dialog never has — a titled `NSPanel` and an `NSAlert` both lack it.
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXDialog",
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: true, hasTitleBar: true, canFullScreen: true) == .standard)
+        #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXDialog",
+                           isFullScreen: false, canBecomeMain: false,
+                           isResizable: true, hasTitleBar: true, canFullScreen: false) == .dialog)
+    }
+
     @Test func eitherHalfOfTheChromeShapeAloneIsARealWindow() {
         // A decorationless terminal has no title bar but resizes, and must stay tileable.
         #expect(WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow",
@@ -473,6 +496,19 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         // Selected again, it is a window once more.
         registry.rebind(tab.id, to: 1, observed: observed(frame: rect(0)), element: element(1))
         #expect(registry.departedNumbers == [2])
+    }
+
+    @Test func rebindingToAnotherWindowSaysSoAndRefreshingDoesNot() {
+        // Whatever holds a picture by id holds one of the window the id named before.
+        let registry = WindowRegistry()
+        var told: [WindowId] = []
+        registry.onRebound = { told.append($0) }
+        let tab = registry.adopt(observed(frame: rect(0)), element: element(1), number: 1)!
+
+        registry.rebind(tab.id, to: 1, observed: observed(frame: rect(0)), element: element(1))
+        #expect(told.isEmpty, "the same window: nothing to say")
+        registry.rebind(tab.id, to: 2, observed: observed(frame: rect(0)), element: element(2))
+        #expect(told == [tab.id])
     }
 
     @Test func quittingAnAppForgetsExactlyItsOwnWindows() {

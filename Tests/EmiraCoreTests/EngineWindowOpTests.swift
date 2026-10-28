@@ -264,6 +264,50 @@ import EmiraMotion
         #expect(fx.contains(.focus(WindowId(2))))
     }
 
+    // Native full screen: a Space of the window's own, off the strip until it comes back.
+
+    /// The window leaves the strip and keeps the keyboard — it is the one in front, and handing focus on
+    /// would take the user straight back out of full screen.
+    @Test func fullScreenLeavesTheStripAndKeepsFocus() {
+        var (s, _) = EngineFix.run(EngineFix.booted(), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),   // focus w2
+        ])
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), true))
+        #expect(s.world.tiledWindowIds == [WindowId(1)])
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(!fx.contains(.focus(WindowId(1))))
+        #expect(!s.world.isOnScreen(WindowId(2)))
+    }
+
+    /// A window in full screen is not one emira places: its frame changing — macOS animating it to the
+    /// display — writes nothing back, where a tiled window would be re-placed on every report.
+    @Test func aWindowInFullScreenIsNotPlaced() {
+        var (s, _) = EngineFix.run(EngineFix.booted(), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),
+        ])
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(2), true)).0)
+        let display = Rect(x: 0, y: 0, width: 1000, height: 800)
+        let (_, fx) = EngineFix.run(s, [.windowFrameChanged(WindowId(2), display),
+                                        .windowSelfPlaced(WindowId(2))])
+        #expect(!fx.contains { if case .setFrame(WindowId(2), _) = $0 { true } else { false } })
+    }
+
+    @Test func leavingFullScreenRejoinsTheStripAndFocuses() {
+        var (s, _) = EngineFix.run(EngineFix.booted(), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),
+        ])
+        (s, _) = Engine.reduce(s, .windowFullScreen(WindowId(2), true))
+        let fx: [Effect]
+        (s, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), false))
+        #expect(s.world.tiledWindowIds.contains(WindowId(2)))
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(fx.contains(.focus(WindowId(2))))
+    }
+
     // Where focus goes when a window with no *place* on the strip leaves it. The strip's own answer is
     // positional — a stackmate, then whatever stands at the departed column's index — and a float has
     // neither, so these pin the third clause: the last place focus held on this strip.

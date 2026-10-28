@@ -150,6 +150,15 @@ import Testing
         #expect(!rule.matches(opening(400, 120, from: third)))
     }
 
+    /// What macOS says a window is: matched exactly, and against the taxonomy's answer, which is what a
+    /// rule's `float` then overrides.
+    @Test func roleMatchesWhatMacOSSaysTheWindowIs() {
+        let rule = WindowRule(role: .dialog, float: true)
+        #expect(rule.matches(WindowArrival(bundleId: "com.example.vpn", title: "Sign in", role: .dialog)))
+        #expect(!rule.matches(WindowArrival(bundleId: "com.example.vpn", title: "Sign in", role: .panel)))
+        #expect(!rule.matches(WindowArrival(bundleId: "com.example.vpn", title: "Sign in")))
+    }
+
     /// A float is not placed and a foreign window is never re-levelled, so a surprise window from a
     /// background app is exactly the one emira must leave on the strip.
     @Test func fromFocusedAppSeparatesTheAppsOwnWindowFromASurprise() {

@@ -304,6 +304,22 @@ import EmiraCore
         #expect(events.events == [.axFailed(id)])
     }
 
+    @Test("a refused setter that left the window where it was sent is a landing")
+    func aRefusalThatArrivedIsALanding() {
+        // A window whose size is not settable (Zoom's home window) refuses even the size it already
+        // has. Read as a failure, it is unverified after every pass and written again on every event.
+        let registry = WindowRegistry()
+        let id = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.landing = { WindowLanding(id: $0.record.id, accepted: false, frame: Self.rect(0)) }
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.setFrame(id, Self.rect(0))], feedback: events.sink)
+
+        #expect(events.events == [.axLanded(id)])
+    }
+
     @Test("a window that both refused the write and drifted reports both facts")
     func aRefusedWriteThatAlsoDriftedReportsBoth() {
         let registry = WindowRegistry()

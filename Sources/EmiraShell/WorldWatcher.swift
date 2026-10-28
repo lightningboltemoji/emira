@@ -115,6 +115,10 @@ public final class WorldWatcher {
     /// when it does — so a plane masked against it watches for the arrival (`Scrims.expectArrival`).
     public var onWindowAnnounced: (@MainActor () -> Void)?
 
+    /// Something that restacks the desktop happened — a click, an app coming forward — whether or not
+    /// any app reports a focus for it. A plane that reads the stacking (`HoistPanels`) reads it again.
+    public var onRestacked: (@MainActor () -> Void)?
+
     /// Whether the shell is committing a Core Animation transaction every frame. Read by `reconcile`,
     /// which is the one thing here that must not run while it is true; `false` where nothing paints,
     /// which is every test that is not about the interaction.
@@ -173,6 +177,19 @@ public final class WorldWatcher {
     /// reconciliations have asked about each. Cleared per number as soon as it binds or goes away, so a
     /// window that reappears at a recycled number starts with a full budget.
     private var unaccounted: [CGWindowID: Int] = [:]
+
+    /// The element the active app last reported focus on that no managed window was — the newest such
+    /// report, cleared by any later one. A window that takes focus as it opens is that element.
+    private var unboundFocus: AXWindow?
+
+    /// Windows in native full screen, each on a Space of its own. While an app has one, AX lists only the
+    /// windows on the Space in front, so its others missing from a scan have not left (`isElsewhere`).
+    private var fullScreen: Set<WindowId> = []
+
+    /// The highest window number the window server had issued when the boot scan read the desktop.
+    /// Numbers are issued in order, so one above it is a window opened while emira was running — an
+    /// arrival, whichever scan happened to find it first. `nil` until boot has read a list.
+    private var bootWatermark: CGWindowID?
 
     /// AX windows each app has described that have never bound, and the reconciliation round each was
     /// first refused in. Dropped per element the first time a scan of its app does not refuse it.
@@ -257,6 +274,7 @@ public final class WorldWatcher {
         source.start { [weak self] observation in self?.handle(observation) }
         intent.onCleared = { [weak self] ours in self?.settleFocus(after: ours) }
         heartbeat?.start(every: Self.reconcileInterval) { [weak self] in self?.reconcile() }
+        bootWatermark = enumerator.windowList().map(\.number).max()
         enumerator.enumerate { [weak self] report in
             self?.absorb(report, attempt: 0, alreadyOpen: true)
             completion(report)
@@ -374,10 +392,12 @@ public final class WorldWatcher {
         // activation. The fade check still runs, since a report is when a window may have gone.
         case .focusMoved(let id):
             guard isActive(registry.record(id)?.pid) else { return checkShownAfterFade() }
+            unboundFocus = nil
             resolveFocus(id)
 
-        case .focusMovedUnmanaged(let pid):
+        case .focusMovedUnmanaged(let pid, let element):
             guard isActive(pid) else { return checkShownAfterFade() }
+            unboundFocus = element
             // The app is the only thing that can say which window that element belongs to, so the
             // report carries no answer of its own — see `readFocus`.
             readFocus(of: pid)
@@ -395,6 +415,7 @@ public final class WorldWatcher {
             endSettle()
             isButtonDown = true
             emit(.dragBegan)
+            onRestacked?()
 
         case .mouseUp:
             isButtonDown = false
@@ -408,9 +429,41 @@ public final class WorldWatcher {
 
         case .appActivated(let pid):
             active = pid
+            unboundFocus = nil
             emit(.appActivated)
             readFocus(of: pid)
+            onRestacked?()
         }
+    }
+
+    /// Whether a window a *met*-kind scan found is an arrival all the same: numbered after boot, and not
+    /// yet a round old on the glass unmanaged — an app slow to list a new window loses the race to the
+    /// heartbeat's stray scan. One that has stood a round may be in use, and stays met.
+    private func isNewborn(_ id: WindowId) -> Bool {
+        guard let bootWatermark, let number = registry.record(id)?.number else { return false }
+        return number > bootWatermark && (unaccounted[number] ?? 0) <= 1
+    }
+
+    /// Ask whether a window that moved went into native full screen or came out of it. Only a frame filling
+    /// a display or its visible part can be the first, and only a window already in it the second; AX is
+    /// the one that says which, since a window filled to the screen by hand has the same frame.
+    private func checkFullScreen(_ id: WindowId, _ frame: Rect) {
+        let was = fullScreen.contains(id)
+        guard was || enumerator.screenAreas().contains(where: {
+            $0.isClose(to: frame, within: Tolerance.identity)
+        }) else { return }
+        source.isFullScreen(id) { [weak self] now in
+            guard let self, let now, now != fullScreen.contains(id), isLive(id) else { return }
+            if now { fullScreen.insert(id) } else { fullScreen.remove(id) }
+            emit(.windowFullScreen(id, now))
+        }
+    }
+
+    /// Whether an absence from a scan says nothing about `id`: its app has a window in native full screen,
+    /// so AX describes only one Space's windows — this one's, or the rest.
+    private func isElsewhere(_ id: WindowId) -> Bool {
+        guard let pid = registry.record(id)?.pid else { return false }
+        return fullScreen.contains { registry.record($0)?.pid == pid }
     }
 
     /// Whether `pid` is the app holding the keyboard, as far as the activations seen so far say.
@@ -529,6 +582,7 @@ public final class WorldWatcher {
         moved.remove(id)
         stillness[id] = nil
         minimized.remove(id)
+        fullScreen.remove(id)
         offGlass[id] = nil
         unshown.remove(id)
         hidden[record.pid]?.remove(id)
@@ -752,7 +806,7 @@ public final class WorldWatcher {
 
         // Retired before anything is announced: these windows are leaving the strip, and letting a new
         // column arrive first would tile against a layout still holding the ones it replaces.
-        for id in report.departed { retire(id) }
+        for id in report.departed where !isElsewhere(id) { retire(id) }
 
         // The deferred destroys (`vanish`) this scan can settle, on the same principle and so before the
         // same arrivals. A succession gave the id somewhere to go; a departure has already retired it
@@ -775,12 +829,16 @@ public final class WorldWatcher {
         }
 
         for snapshot in report.snapshots {
-            emit(.windowCreated(alreadyOpen ? snapshot.metAlreadyOpen() : snapshot))
+            let met = alreadyOpen && !isNewborn(snapshot.id)
+            emit(.windowCreated(met ? snapshot.metAlreadyOpen() : snapshot))
         }
         // A window that takes focus as it opens is reported before it is bound — as focus on nothing
-        // emira manages — and no later report corrects that. So the active app is asked again once one
-        // of its arrivals is bound while focus stands on nothing.
-        if focus == nil, let active,
+        // emira manages — and no later report corrects that. The report named the element, so the
+        // window it binds to is the answer; failing that, the active app is asked again.
+        if let pending = unboundFocus, let id = registry.id(for: pending) {
+            unboundFocus = nil
+            resolveFocus(id)
+        } else if focus == nil, let active,
            report.snapshots.contains(where: { registry.record($0.id)?.pid == active }) {
             readFocus(of: active)
         }
@@ -924,6 +982,7 @@ public final class WorldWatcher {
     private func noteFocus(_ id: WindowId?) {
         focus = id
         focusApp = id.flatMap { registry.record($0)?.pid }
+        if id != nil { unboundFocus = nil }       // answered: a managed window holds it
     }
 
     // Drawn (the fact no notification carries)
@@ -1038,6 +1097,7 @@ public final class WorldWatcher {
                 // scans, a drag is the one thing that moves a window without our asking.
                 registry.noteFrame(id, frame)
                 emit(.windowFrameChanged(id, frame))
+                checkFullScreen(id, frame)
             }
             // Whether or not it carried a frame, an answer is evidence the window was still moving —
             // and a read that came back empty still has to stop holding the settle open. With no hand

@@ -275,6 +275,14 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
+    public func isFullScreen(_ id: WindowId, then completion: @escaping @MainActor (Bool?) -> Void) {
+        guard let record = registry.record(id) else { return completion(nil) }
+        let element = record.element
+        client.perform(app: record.pid) { _ in
+            element.fullScreen
+        } then: { completion($0) }
+    }
+
     public func isAlive(_ id: WindowId, then completion: @escaping @MainActor (Bool) -> Void) {
         // A window the registry has forgotten is one we were already told about — a free answer.
         guard let record = registry.record(id) else {
@@ -328,7 +336,7 @@ public final class AXObservationSource: ObservationSource {
             // An element the registry does not know may still be focus in a window it does — a sheet —
             // and only a read of the app can say which, so that is the watcher's to ask.
             guard let id = registry.id(for: element) else {
-                deliver?(.focusMovedUnmanaged(element.ownerPid))
+                deliver?(.focusMovedUnmanaged(element.ownerPid, element: element))
                 return
             }
             deliver?(.focusMoved(id))

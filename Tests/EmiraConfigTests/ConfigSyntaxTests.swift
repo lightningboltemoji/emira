@@ -745,7 +745,7 @@ import EmiraCore
     @Test func aRuleMustBothMatchSomethingAndDoSomething() {
         #expect(Self.diagnostic("[[window-rules]]\nworkspace = \"3\"\n")?.description
                 == "line 1: 'window-rules' must match something — "
-                 + "set app-id, app-id-regex, title, title-regex, smaller-than-focused "
+                 + "set app-id, app-id-regex, title, title-regex, role, smaller-than-focused "
                  + "or from-focused-app")
         #expect(Self.diagnostic("[[window-rules]]\napp-id = \"com.apple.Safari\"\n")?.description
                 == "line 1: 'window-rules' must do something — set workspace, float or width")
@@ -806,6 +806,15 @@ import EmiraCore
                                                     float: true))
         #expect(config.windowRules[1] == WindowRule(appId: "com.jetbrains.intellij",
                                                     smallerThanFocused: 0.25, float: true))
+    }
+
+    /// What macOS says a window is, spelled as the taxonomy spells it — enough on its own to make a rule.
+    @Test func aRoleMatcherParsesAndNamesItsSpellings() throws {
+        let config = try Self.parse("[[window-rules]]\nrole = \"dialog\"\nfloat = true\n")
+        #expect(config.windowRules == [WindowRule(role: .dialog, float: true)])
+        #expect(Self.diagnostic("[[window-rules]]\nrole = \"modal\"\nfloat = true\n")?.description
+                == "line 2: 'window-rules.role' must be one of \"standard\", \"dialog\", \"sheet\", "
+                 + "\"panel\", \"popover\", \"other\"")
     }
 
     @Test func aFractionIsANumberOverZero() {

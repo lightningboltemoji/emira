@@ -549,6 +549,11 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         film(target.id, on: monitor) { _ in }
     }
 
+    /// Forget the photograph kept of `window`: its id now names another window.
+    public func forgetStill(of window: WindowId) {
+        cache.drop(window)
+    }
+
     public func film(_ window: WindowId, on monitor: MonitorId,
                      then: @escaping @MainActor (CapturedSurface?) -> Void) {
         guard let number = registry.record(window)?.number,

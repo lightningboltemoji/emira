@@ -4,8 +4,8 @@ import Foundation
 // meets it* — which workspace it arrives on, whether it tiles at all, and how wide its column starts.
 // Each is a field on the rule and a field on the outcome; a fourth would be too.
 //
-// **The matchers come in two kinds.** Four are predicates over the window's own metadata — its app and
-// its title, and nothing else in the world can change their answer. Two are predicates over its
+// **The matchers come in two kinds.** Five are predicates over the window's own metadata — its app, its
+// title and what macOS says it is, and nothing else in the world can change their answer. Two are predicates over its
 // *relation to the desktop it arrived on*: how small it opened against the window it opened out of, and
 // whether the app that opened it is the app that was already there. Those two are what let a rule name
 // the small window an app puts beside the one you were working in — a go-to-line prompt, a find sheet —
@@ -50,6 +50,8 @@ public struct WindowArrival: Sendable, Equatable {
     public var bundleId: String
     /// Its title at first sight.
     public var title: String
+    /// What macOS says it is — the taxonomy's answer before any rule overrides it.
+    public var role: WindowRole
     /// The frame its app opened it at, before anything tiled it.
     public var frame: Rect
     /// The window it opened out of, or `nil` where there is nothing to compare against: the first window
@@ -57,16 +59,18 @@ public struct WindowArrival: Sendable, Equatable {
     /// hidden or left behind. Both relational matchers fail without one rather than guessing.
     public var anchor: Anchor?
 
-    public init(bundleId: String, title: String, frame: Rect = .zero, from anchor: Anchor? = nil) {
+    public init(bundleId: String, title: String, role: WindowRole = .standard, frame: Rect = .zero,
+                from anchor: Anchor? = nil) {
         self.bundleId = bundleId
         self.title = title
+        self.role = role
         self.frame = frame
         self.anchor = anchor
     }
 
     /// The arrival a snapshot describes, opening out of `anchor`.
     public init(_ snapshot: WindowSnapshot, from anchor: Anchor?) {
-        self.init(bundleId: snapshot.bundleId, title: snapshot.title,
+        self.init(bundleId: snapshot.bundleId, title: snapshot.title, role: snapshot.role,
                   frame: snapshot.frame, from: anchor)
     }
 }
@@ -89,6 +93,10 @@ public struct WindowRule: Sendable, Equatable, Codable {
     public var title: String?
     /// The window's title at first sight, matched against a regular expression.
     public var titleRegex: String?
+    /// What macOS says the window is (`WindowRole`), matched exactly. With `float = true` it is how a
+    /// kind the taxonomy floats becomes one the user chose — and a float the user chose is one emira
+    /// draws back over the work when it is buried.
+    public var role: WindowRole?
 
     /// A fraction. Matches when **both** dimensions of the arriving window's frame are under that
     /// fraction of its anchor's. Both and not area: a window short but full-width, or narrow but
@@ -111,13 +119,14 @@ public struct WindowRule: Sendable, Equatable, Codable {
     public var width: PresetSize?
 
     public init(appId: String? = nil, appIdRegex: String? = nil,
-                title: String? = nil, titleRegex: String? = nil,
+                title: String? = nil, titleRegex: String? = nil, role: WindowRole? = nil,
                 smallerThanFocused: Double? = nil, fromFocusedApp: Bool? = nil,
                 workspace: WorkspaceName? = nil, float: Bool? = nil, width: PresetSize? = nil) {
         self.appId = appId
         self.appIdRegex = appIdRegex
         self.title = title
         self.titleRegex = titleRegex
+        self.role = role
         self.smallerThanFocused = smallerThanFocused
         self.fromFocusedApp = fromFocusedApp
         self.workspace = workspace
@@ -129,7 +138,7 @@ public struct WindowRule: Sendable, Equatable, Codable {
     /// match-everything wildcard — nobody writes one on purpose, and the failure is silent and total.
     /// The relational two count: a rule carrying only those matches a narrow slice of the desktop.
     public var hasMatcher: Bool {
-        appId != nil || appIdRegex != nil || title != nil || titleRegex != nil
+        appId != nil || appIdRegex != nil || title != nil || titleRegex != nil || role != nil
             || smallerThanFocused != nil || fromFocusedApp != nil
     }
 
@@ -150,6 +159,7 @@ public struct WindowRule: Sendable, Equatable, Codable {
         if let title, title != arrival.title { return false }
         if let appIdRegex, !Self.matches(pattern: appIdRegex, arrival.bundleId) { return false }
         if let titleRegex, !Self.matches(pattern: titleRegex, arrival.title) { return false }
+        if let role, role != arrival.role { return false }
         if let fromFocusedApp {
             guard let anchor = arrival.anchor,
                   (anchor.bundleId == arrival.bundleId) == fromFocusedApp else { return false }

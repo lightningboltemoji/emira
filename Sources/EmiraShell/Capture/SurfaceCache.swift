@@ -67,6 +67,9 @@ public final class SurfaceCache {
         /// Released at capture resolution, its reduction in flight. Outside the budget until it lands, or
         /// stand-ins would be evicted to make room for pixels about to shrink sixteenfold.
         var isReducing = false
+        /// When it was taken. A film has no time of its own, and the hole rule asks how old the whole
+        /// one it would hold is.
+        var takenAt: Date
     }
 
     private let budget: Int
@@ -91,11 +94,19 @@ public final class SurfaceCache {
     public var keepsStills: Bool
 
     public init(budget: Int = SurfaceCache.defaultBudget, keepsStills: Bool = false,
-                reducer: Reducer = .detached) {
+                reducer: Reducer = .detached, now: @escaping @MainActor () -> Date = Date.init) {
         self.budget = budget
         self.keepsStills = keepsStills
         self.reducer = reducer
+        self.now = now
     }
+
+    /// How long a whole film outranks a newer one with a hole in it. Long enough to bounce focus between
+    /// two columns, which films each whole as it leaves and holed as it returns; short enough that a
+    /// window not seen whole again stops standing in with pixels from before.
+    public static let wholeShelfLife: TimeInterval = 5
+
+    private let now: @MainActor () -> Date
 
     // The four operations
 
@@ -119,23 +130,26 @@ public final class SurfaceCache {
             return false
         }
         if !surface.isWhole, let held, held.surface.isWhole,
+           now().timeIntervalSince(held.takenAt) < Self.wholeShelfLife,
            Self.sameSize(held.surface.frame.size, surface.frame.size) {
             // Newer, and worse: a hole where the window hung off the display. The entitlement is news
             // for the reason above — what is held is the better photograph, and this cover may paint it.
+            // While it is recent: past that it is content the window has stopped showing — a call's
+            // video, minutes old — standing in on every transition until the window is seen whole.
             if let monitor { pin(id, to: monitor) }
             return false
         }
         var pins = held?.pins ?? []
         if let monitor { pins.insert(monitor) }
         if !pins.isEmpty {
-            store(Photo(surface: surface, mint: mint, pins: pins), for: id)
+            store(Photo(surface: surface, mint: mint, pins: pins, takenAt: now()), for: id)
             return true
         }
         // Nothing may paint it at capture resolution, so nothing holds it there (rule 1) — and one
         // too small to reduce is not stored at all: a copy that is neither affordable nor honest is
         // worth less than the miss it becomes.
         guard keepsStills, Self.reducedSize(of: surface.image) != nil else { return false }
-        store(Photo(surface: surface, mint: mint, isReducing: true), for: id)
+        store(Photo(surface: surface, mint: mint, isReducing: true, takenAt: now()), for: id)
         reduce(id)
         return true
     }
@@ -183,6 +197,10 @@ public final class SurfaceCache {
     private static func sameSize(_ a: Size, _ b: Size) -> Bool {
         a.isClose(to: b, within: Tolerance.still)
     }
+
+    /// Drop `id`'s photograph: it is of a window the id no longer names (`WindowRegistry.onRebound`).
+    /// The corner reading stays — it is a fact about the window's chrome, and is read again anyway.
+    public func drop(_ id: WindowId) { forget(id) }
 
     /// The photograph a live cover is entitled to paint — what `CaptureStore.surface(for:)` answers
     /// from. Gated, because `Reconstruction.addLayers` builds a layer for every window the store answers

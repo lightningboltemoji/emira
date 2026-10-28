@@ -112,6 +112,14 @@ public final class PeekPanels: PeekPlane {
         return (id, binding.frame)
     }
 
+    /// The window's id now names another window: whatever this peek shows is of the one it named
+    /// before, so it is filmed again.
+    public func forgetPicture(of id: WindowId) {
+        pictured[id] = nil
+        guard let binding = standing[id], let panel = panels[id] else { return }
+        picture(binding, on: panel)
+    }
+
     private func retireEvery() {
         for (id, panel) in panels {
             panel.retire()

@@ -248,18 +248,22 @@ happen on.
   focus the user actually asked for is paid out after — which is the one place in emira where a
   keystroke's focus is deliberately late, and it is late only while something could be drawn over the
   window it is protecting.
-- **A float that floats.** Taking a window off the strip is only half an answer: macOS stacks by what was
-  focused last, so clicking a tiled window buries the float behind it, and nothing emira may call raises a
-  foreign window across apps. A float that can be lost behind the work is not floating, it is being ignored.
-  So a buried float is drawn back over the desktop out of its own pixels and a click on that picture brings
-  the real window forward — the same trade §3 makes everywhere else, a reconstruction standing where the
-  thing we may not move should be. It is confined to where the truth is already hidden: a float nothing
-  covers shows no picture, because a picture cannot be dragged, resized or scrolled and a float you can see is
-  a window you should be able to use. What it does have is one **ready**, built and filmed while the window is
-  still in the open, because a stand-in minted at the moment of burial arrives a screenshot late and a
-  window that visibly goes behind before its picture catches up has not floated at all. And it is only ever the floats the **user** chose, never the dialogs and
-  tool palettes the taxonomy floats on macOS's say-so — a background app's palettes pinned over the window
-  you are typing in is not a promise kept, it is a window manager in the way.
+- **A float that floats.** Taking a window off the strip is only half an answer: macOS stacks by what was focused
+  last, so clicking a tiled window buries the float behind it, and nothing emira may call raises a foreign window
+  across apps. A float that can be lost behind the work is not floating, it is being ignored. So a buried float is
+  drawn back over the desktop out of its own pixels — or, for a window its app keeps out of capture, as a card
+  saying where it is and whose — and a click on that picture brings the real window forward — the same trade §3
+  makes everywhere else, a reconstruction standing where the thing we may not move should be. It is confined to
+  where the truth is already hidden: a float nothing covers shows no picture, because a picture cannot be dragged,
+  resized or scrolled and a float you can see is a window you should be able to use. Whether something covers it
+  is the window server's to say: the focus reports the order is reconstructed from are fast and can be wrong, so
+  they are checked against it. What it does have is one **ready**, built and filmed while the window is still in
+  the open, because a stand-in minted at the moment of burial arrives a screenshot late and a window that visibly
+  goes behind before its picture catches up has not floated at all. And it is only ever the floats the **user**
+  chose, never the dialogs and tool palettes the taxonomy floats on macOS's say-so — a background app's palettes
+  pinned over the window you are typing in is not a promise kept, it is a window manager in the way. Choosing can
+  be done for a whole kind at once: a rule floating `role = "dialog"` says every dialog is one you want kept in
+  reach, and from then on each one is.
 - **A strip stays on its own screen.** A column hanging off one display's edge toward another is drawn on its
   own display, cut at the edge, however far it hangs — never on the neighbour, over that screen's work. macOS
   draws it on its own display for exactly as long as most of it is there, and past that point it would draw
@@ -371,7 +375,8 @@ happen on.
   on demand cannot stand in, since a focus report lands ahead of the answer it would need — so a departure
   is an observation like any other, and the app's death is the backstop rather than the signal.
 - **A layout may _read_ the stacking order; it may never assert one.** The order is macOS's, reconstructed
-  from the focus reports emira already folds (`State.stackingOrder`), and it is what a cover's layers and a
+  from the focus reports emira already folds (`State.stackingOrder`) and corrected from the window server's
+  own reading where those reports were wrong about a float, and it is what a cover's layers and a
   cascade's guide tiles are drawn in — because a cover stacking a cascade in slot order while macOS stacks
   it in focus order is a visible cut at both ends of every transition. Asserting one is the thing a pin
   pays a focus round trip for, and nothing about a layout is worth that. What it costs is that **which band

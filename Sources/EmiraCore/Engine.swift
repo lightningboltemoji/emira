@@ -915,7 +915,13 @@ public enum Engine {
             return (s, effects)
 
         case .hoistClicked(let id):
-            return (s, handleHoistClicked(&s, id))
+            let effects = handleHoistClicked(&s, id)   // local first — the `.command` trap above
+            return (s, effects)
+
+        case .stackRead(let id, let over):
+            // Nothing moves: the record is corrected, and `settleHoists` brings the pictures into line.
+            foldStackRead(&s, id, over: over)
+            return (s, [])
 
         case .peekClicked(let id):
             let effects = handlePeekClicked(&s, id)
@@ -970,6 +976,28 @@ public enum Engine {
                 s.world.setMinimized(id, true)
                 if wasFocused { s.world.setFocus(nil) }
             }
+            return (s, effects)
+
+        case .windowFullScreen(let id, true):
+            // A departure like a minimize's, except the keyboard stays where it is: the window in full
+            // screen is the one in front, and handing focus on would take the user back out of it.
+            guard s.world.windows[id] != nil, !s.world.fullScreen.contains(id) else { return (s, []) }
+            let effects = departFromLayout(&s, id) { $0.world.setFullScreen(id, true) }
+            return (s, effects)
+
+        case .windowFullScreen(let id, false):
+            // Back on the desktop: an arrival beside the place it left, as a restored window is.
+            guard s.world.fullScreen.contains(id) else { return (s, []) }
+            let before = strandedGeometry(&s)
+            let beside = tiledAnchor(s)
+            s.world.setFullScreen(id, false)
+            guard s.world.participatesInTiling(id) else {
+                let effects = reassertTruthPlane(&s)
+                return (s, effects)
+            }
+            s.world.setFocus(id)
+            guard !before.isEmpty else { return (s, []) }
+            let effects = arriveOnLayout(&s, id, beside: beside, old: before)
             return (s, effects)
 
         case .windowShown(let id, let shown):
@@ -2271,14 +2299,36 @@ public enum Engine {
         return departFromLayout(&s, focused) { $0.world.setFloating(focused, true) }
     }
 
-    /// A click on a hoisted float's picture: bring the real window forward. `focus` lifts the app above
-    /// every other app's windows and `raise` orders this one above its own siblings; neither alone is
-    /// enough. Nothing here takes the hoist down — `settleHoists` does, once the focus report says the
-    /// real window is in front. Refused for a window that has stopped floating or stopped existing
-    /// while the click was in the air.
+    /// A click on a hoisted float's picture: `focus` and `raise` the real window, written ahead of the
+    /// echo as every focus verb is, since an app need not post one. The shell holds the picture until
+    /// the window server shows the window in front. Refused for a window no longer floating or there.
     private static func handleHoistClicked(_ s: inout State, _ id: WindowId) -> [Effect] {
         guard s.world.isFloatedByChoice(id), s.world.isOnScreen(id) else { return [] }
+        let moved = s.world.focusedWindow != id
+        s.world.setFocus(id)
+        // A raise whether or not focus moves: an app can lift another window over the one holding its
+        // keyboard, which is how a float can be buried while it is the focused window.
+        if !moved { s.world.noteActivation(id) }
         return [.focus(id), .raise(id)]
+    }
+
+    /// The window server's answer to "what is over this float", where it disagrees with the order
+    /// reconstructed from focus reports. Only the stacking half is written, and only on the side that is
+    /// wrong: the float, when nothing emira placed is drawn over it; or the placed window that is.
+    private static func foldStackRead(_ s: inout State, _ id: WindowId, over: [WindowId]) {
+        guard s.world.isFloatedByChoice(id), s.world.isOnScreen(id),
+              let frame = s.world.windows[id]?.frame else { return }
+        let order = StackOrder(s.world)
+        let drawnOver = over.filter { s.world.placedOnScreen.contains($0) }
+        let rankedOver = s.world.placedOnScreen.contains { placed in
+            guard let other = s.world.windows[placed]?.frame, other.intersects(frame) else { return false }
+            return order.isInFront(placed, of: id)
+        }
+        if drawnOver.isEmpty, rankedOver {
+            s.world.noteActivation(id)
+        } else if let missed = drawnOver.first(where: { !order.isInFront($0, of: id) }) {
+            s.world.noteActivation(missed)
+        }
     }
 
     /// A click on a peek: focus its window and reveal its column, which is what a click on the window

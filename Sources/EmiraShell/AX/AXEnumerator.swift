@@ -229,6 +229,9 @@ public final class AXEnumerator {
     /// The window list on its own, for reconciliation.
     public func windowList() -> [WindowListEntry] { source.windowList() }
 
+    /// Every display's frame and visible frame — the rectangles a window in native full screen fills.
+    public func screenAreas() -> [Rect] { source.screenAreas() }
+
     /// One app by pid, for a window reconciliation found and nothing accounts for. Not `applications()`
     /// filtered: that sweep answers a narrower question. See `WindowSource.target(for:)`.
     public func target(for pid: pid_t) -> ScanTarget? { source.target(for: pid) }

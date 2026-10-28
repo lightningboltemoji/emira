@@ -58,15 +58,34 @@ import EmiraCore
         }
     }
 
-    /// Answers the stack question with whatever the test last said, and counts the asking.
+    /// Answers the stack question with whatever the test last said, and counts the asking. A reading of
+    /// what is over each float answers from `over` — at once, or when the test says, under `holding`.
     final class FakeProbe: StackProbe {
         var covered = false
         private(set) var asks = 0
+        var over: [WindowId: [WindowId]] = [:]
+        var holding = false
+        private(set) var readings = 0
+        private var held: [@MainActor () -> Void] = []
 
         func isCovered(_ window: WindowId, within frame: Rect, orBy others: Set<WindowId>,
                        then: @escaping @MainActor (Bool) -> Void) {
             asks += 1
             then(covered)
+        }
+
+        func windowsOver(_ windows: Set<WindowId>,
+                         then: @escaping @MainActor ([WindowId: [WindowId]]?) -> Void) {
+            readings += 1
+            guard holding else { return then(over.filter { windows.contains($0.key) }) }
+            held.append { [self] in then(over.filter { windows.contains($0.key) }) }
+        }
+
+        /// Every held reading lands, describing the desktop as `over` says it is now.
+        func release() {
+            let due = held
+            held = []
+            for answer in due { answer() }
         }
     }
 
@@ -117,8 +136,8 @@ import EmiraCore
     static let monitor = MonitorId(1)
     static let frame = Rect(x: 100, y: 100, width: 300, height: 200)
 
-    static func harness() -> (HoistPanels, HeldFilmer, FakeProbe, ManualScheduler,
-                              () -> [WindowId: RecordingSurface]) {
+    static func harness(refresh: TimeInterval = HoistPanels.refreshInterval)
+        -> (HoistPanels, HeldFilmer, FakeProbe, ManualScheduler, () -> [WindowId: RecordingSurface]) {
         let filmer = HeldFilmer()
         let probe = FakeProbe()
         let scheduler = ManualScheduler()
@@ -127,7 +146,7 @@ import EmiraCore
         // A grace measured in milliseconds: the fence reads a clock, and a test should not spend half a
         // second proving it eventually stops looking at it.
         let panels = HoistPanels(filmer: filmer, probe: probe, scheduler: scheduler,
-                                 grace: 0.01) { window, frame, _, _, _ in
+                                 grace: 0.01, refresh: refresh) { window, frame, _, _, _ in
             let surface = RecordingSurface(window: window, frame: frame)
             box.made[window] = surface
             return surface
@@ -316,5 +335,141 @@ import EmiraCore
                          feedback: Self.nowhere)
 
         #expect(filmer.films == [WindowId(1), WindowId(1)])
+    }
+
+    // A picture kept honest
+
+    /// The burial's own film: the standby still buys the instant, and the window as it looks behind
+    /// overtakes it — a still filmed the moment a window appeared can be one its app had not drawn yet.
+    @Test func aBurialIsFilmedAgainOnceTheCapturePlaneIsIdle() {
+        let (panels, filmer, _, scheduler, made) = Self.harness()
+        panels.setHoists([Self.binding(1, .standby)], feedback: Self.nowhere)
+        filmer.deliver()
+        scheduler.fire()                                  // the opening's second look
+        filmer.deliver()
+        #expect(filmer.films == [WindowId(1), WindowId(1)])
+
+        var idle = false
+        panels.isIdle = { idle }
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        #expect(made()[WindowId(1)]!.isRevealed)          // revealed from the standby still at once
+        scheduler.fire()                                  // the settle passes; a cover is still filming
+        #expect(filmer.films.count == 2)
+        idle = true
+        scheduler.fire()
+        filmer.deliver()
+        #expect(filmer.films.count == 3)
+        #expect(made()[WindowId(1)]!.log.last == "refresh")
+    }
+
+    /// A picture that stays up is filmed again when a cover comes down — paced, since covers come down
+    /// in bursts, and only while it is showing.
+    @Test func aShowingPictureIsRefreshedWhenTheDesktopSettles() {
+        let (panels, filmer, _, scheduler, _) = Self.harness(refresh: 0)
+        panels.setHoists([Self.binding(1, .covered), Self.binding(2, .standby)], feedback: Self.nowhere)
+        filmer.deliver()
+        scheduler.fire()                                  // the openings' second looks
+        filmer.deliver()
+        let before = filmer.films
+        panels.desktopSettled()
+        scheduler.fire()
+        #expect(filmer.films == before + [WindowId(1)])   // the one showing, not the one standing by
+
+        let (paced, pacedFilmer, _, pacedScheduler, _) = Self.harness()
+        paced.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        pacedFilmer.deliver()
+        let filmed = pacedFilmer.films.count
+        paced.desktopSettled()
+        pacedScheduler.fire()
+        #expect(pacedFilmer.films.count == filmed + 1)    // the opening's look, and no refresh on top
+    }
+
+    /// The id now names another window, so the picture is of the wrong one: filmed again at once,
+    /// whatever its size says.
+    @Test func aPictureOfAWindowItsIdNoLongerNamesIsFilmedAgain() {
+        let (panels, filmer, _, scheduler, _) = Self.harness()
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        filmer.deliver()
+        scheduler.fire()
+        filmer.deliver()
+        let before = filmer.films.count
+
+        panels.forgetPicture(of: WindowId(1))
+        scheduler.fire()
+        #expect(filmer.films.count == before + 1)
+    }
+
+    // The audit
+
+    static func recording() -> (EventSink, () -> [Event]) {
+        final class Box { var events: [Event] = [] }
+        let box = Box()
+        return (EventSink { box.events.append($0) }, { box.events })
+    }
+
+    /// A picture up over a float the window server draws nothing over is a picture over a window in
+    /// front — the core is told, and it decides.
+    @Test func aCoveredFloatWithNothingOverItIsReported() {
+        let (panels, _, probe, scheduler, _) = Self.harness()
+        let (sink, events) = Self.recording()
+        probe.over = [WindowId(1): []]
+        panels.setHoists([Self.binding(1, .covered)], feedback: sink)
+        scheduler.fire()
+        #expect(events() == [.stackRead(WindowId(1), over: [])])
+    }
+
+    /// …and a float standing by under something is the other half: a focus report that went missing.
+    @Test func aStandbyFloatWithSomethingOverItIsReportedOnce() {
+        let (panels, _, probe, scheduler, _) = Self.harness()
+        let (sink, events) = Self.recording()
+        probe.over = [WindowId(1): [WindowId(7)]]
+        panels.setHoists([Self.binding(1, .standby)], feedback: sink)
+        scheduler.fire()
+        scheduler.fire()                                  // the next round reads the same desktop
+        #expect(events() == [.stackRead(WindowId(1), over: [WindowId(7)])])
+    }
+
+    /// A reading that agrees with the set says nothing.
+    @Test func anAgreeingReadingIsNotReported() {
+        let (panels, _, probe, scheduler, _) = Self.harness()
+        let (sink, events) = Self.recording()
+        probe.over = [WindowId(1): [WindowId(7)], WindowId(2): []]
+        panels.setHoists([Self.binding(1, .covered), Self.binding(2, .standby)], feedback: sink)
+        scheduler.fire()
+        #expect(probe.readings > 0)
+        #expect(events().isEmpty)
+    }
+
+    /// The reading is behind the core while a focus of ours is still on its way, and while a new set
+    /// arrived during the read — either would correct the record backwards.
+    @Test func aReadingTheCoreHasMovedPastIsDropped() {
+        let (panels, _, probe, scheduler, _) = Self.harness()
+        let (sink, events) = Self.recording()
+        probe.over = [WindowId(1): []]
+
+        var settling = true
+        panels.isFocusSettling = { settling }
+        panels.setHoists([Self.binding(1, .covered)], feedback: sink)
+        scheduler.fire()
+        #expect(probe.readings == 0)
+
+        settling = false
+        probe.holding = true
+        scheduler.fire()
+        #expect(probe.readings == 1)
+        panels.setHoists([Self.binding(1, .covered, Rect(x: 120, y: 100, width: 300, height: 200))],
+                         feedback: sink)
+        probe.release()
+        #expect(events().isEmpty)
+    }
+
+    /// Nothing is read while a transition paints: the reading waits on our own frames.
+    @Test func noReadingWhileATransitionPaints() {
+        let (panels, _, probe, scheduler, _) = Self.harness()
+        panels.isPainting = { true }
+        panels.setHoists([Self.binding(1, .covered)], feedback: Self.nowhere)
+        scheduler.fire()
+        scheduler.fire()
+        #expect(probe.readings == 0)
     }
 }

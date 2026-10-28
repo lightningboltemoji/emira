@@ -1696,6 +1696,31 @@ import EmiraCore
         #expect(cache.anySurface(for: WindowId(1))?.isWhole == true, "the whole film is still the one held")
     }
 
+    /// …while it is recent. A window nothing is going to film whole again — a column left hanging off
+    /// the edge — would otherwise stand in with its last whole film for good: a call's video, minutes
+    /// old, on every transition that brings it back.
+    @Test func aWholeFilmPastItsShelfLifeLosesToANewerHoledOne() {
+        var clock = Date(timeIntervalSince1970: 0)
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline, now: { clock })
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: nil)
+
+        clock += SurfaceCache.wholeShelfLife - 1
+        #expect(!cache.record(Self.surface(1, isWhole: false), mintedAt: 2, for: WindowId(1), pinnedBy: nil))
+
+        clock += 2
+        #expect(cache.record(Self.surface(1, isWhole: false), mintedAt: 3, for: WindowId(1), pinnedBy: nil))
+        #expect(cache.anySurface(for: WindowId(1))?.isWhole == false)
+    }
+
+    /// A photograph of a window its id no longer names is dropped, and nothing fits in its place.
+    @Test func aDroppedPhotographIsGone() {
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline)
+        cache.record(Self.surface(1), mintedAt: 1, for: WindowId(1), pinnedBy: MonitorId(1))
+        cache.drop(WindowId(1))
+        #expect(cache.anySurface(for: WindowId(1)) == nil)
+        #expect(cache.surface(for: WindowId(1), at: Self.surface(1).frame.size) == nil)
+    }
+
     /// Size governs which photograph may stand in at all (rule 2), so a whole film of the wrong size
     /// could stand in for nothing — and holding it over a holed film of the *right* size would leave the
     /// cover with neither. The resize is the case: an app re-laid out while it hung off the display.
@@ -2047,4 +2072,51 @@ extension CaptureService {
     }
 
     func closeCover() -> CoverToken { closeCover(on: MonitorId(1)) }
+}
+
+/// A window its app keeps out of capture films entirely clear, so it is drawn as a card instead — the
+/// window's own size and shape, opaque, never carrying a corner reading it did not take.
+@Suite @MainActor struct WindowCardTests {
+
+    /// The window server's own word, read from a description: `0` is `kCGWindowSharingNone`.
+    @Test func aWindowKeptOutOfCaptureIsReadAsOne() {
+        let key = kCGWindowSharingState as String
+        #expect(refusesCapture([key: 0]))
+        #expect(!refusesCapture([key: 1]))
+        // A description that does not say allows it, as every window but these does.
+        #expect(!refusesCapture([:]))
+    }
+
+    @Test func aCardIsTheWindowsFrameOpaqueInsideItsCorners() throws {
+        let card = try #require(WindowCard.image(size: Size(width: 460, height: 260), scale: 2,
+                                                 title: "Sign In Required", app: nil))
+        #expect(card.width == 920 && card.height == 520)
+        #expect(Self.alpha(of: card, x: 460, y: 260) == 255)
+        #expect(Self.alpha(of: card, x: 0, y: 0) == 0)
+        #expect(CapturedSurface.measuredWhole(of: card))
+        // Cut at the radius every plane uses for a corner nothing has read, so a stand-in of it fits.
+        let corner = try #require(CapturedSurface.measuredCorner(of: card, scale: 2))
+        #expect(abs(corner.radius - Double(WindowCard.radius)) < 1.5)
+    }
+
+    @Test func aWindowWithNoAreaHasNoCard() {
+        #expect(WindowCard.image(size: Size(width: 0, height: 200), scale: 2, title: "x", app: nil) == nil)
+        #expect(WindowCard.image(size: Size(width: 200, height: 200), scale: 0, title: "x", app: nil) == nil)
+    }
+
+    /// Too short for its icon, a card is still a card — the lines it can hold, on its own fill.
+    @Test func aCardTooShortForItsIconStillStandsIn() throws {
+        let strip = try #require(WindowCard.image(size: Size(width: 300, height: 30), scale: 2,
+                                                  title: "Sign In Required", app: .current))
+        #expect(Self.alpha(of: strip, x: 300, y: 30) == 255)
+    }
+
+    private static func alpha(of image: CGImage, x: Int, y: Int) -> UInt8 {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: -x, y: y - image.height + 1, width: image.width, height: image.height))
+        return pixel[3]
+    }
 }

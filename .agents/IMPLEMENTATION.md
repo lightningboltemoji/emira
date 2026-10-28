@@ -424,7 +424,9 @@ arrives redundantly, and closing a cover mid-raise there would write the truth p
 the glass to hide it.
 
 `axFailed` records that _we don't know where the window is_ — which is a refused write **and** an accepted one
-whose read-back did not answer, since a landing that carries no frame is evidence of nothing. Placement writes
+whose read-back did not answer, since a landing that carries no frame is evidence of nothing. A refusal whose
+read-back is where the write sent it is a landing: a window whose size is not settable refuses even the size it
+already has, and every pass would write it again. Placement writes
 its target into `World` optimistically, which is what keeps a repeated idle event from re-emitting forever, so
 the guess would otherwise stand as truth and the placement diff would skip the window forever: a column laid
 out around a width its window refused, with no `SizeCorrection` on file to say so. The observers do not repair
@@ -468,7 +470,9 @@ capture plane is idle at that moment, and a film for no cover takes no base and 
 The best one is the newest, except where the newest has a hole in it. An app that rasterizes what is on
 screen leaves a still transparent where the window hung off the display, and a stand-in built from one
 carries that band of nothing back across the glass; so a film measured holed (`CapturedSurface.measuredWhole`)
-loses to a held whole film at the same size, and to nothing else. The cover is then built from a photograph
+loses to a held whole film at the same size, and to nothing else — and only while that whole film is younger
+than `SurfaceCache.wholeShelfLife`. Past it the whole film is content the window has stopped showing, a call's
+video minutes old, and the fresh film with a hole in it is the lesser lie. The cover is then built from a photograph
 that has been through `reduced` — soft, and whole, which is the better of the two wrong answers. A batch
 whose pixels the store declined asks for no `captureRefreshed`: the layer is already painting what the store
 holds.
@@ -481,6 +485,15 @@ one that is not its frame at the filter's `pointPixelScale` is taken again witho
 (`surfaceShot`). The retake is kept only if it fits, and only then is the window filmed alone from then on
 (`SCKCapturer.alone`), so the second capture is paid once and not in every cover. A still that fits neither (a
 frame read before a resize) keeps its children; a sheet inside its window's frame always rides in the stand-in.
+
+**A window its app keeps out of capture is drawn, not filmed.** `NSWindow.sharingType = .none` — a password
+manager, an SSO or MFA prompt — and ScreenCaptureKit still answers for the window, with an image its size and
+entirely clear: a stand-in that is a window gone from every cover, and a hoist that shows nothing and passes
+its click through. The window server says which windows these are (`kCGWindowSharingState`, one
+`CGWindowListCreateDescriptionFromArray` per batch), and `SCKCapturer` hands each back as a card instead
+(`WindowCard`): its frame, rounded at the corner floor, its app's icon and title, "Hidden from screen
+capture". Drawn on the main actor, where the app's icon and the appearance are. It carries no corner reading,
+since none was taken, so every plane cuts it at the floor it is drawn at.
 
 **Beside the photographs it keeps each window's corner radius, and nothing that drops a photograph drops
 that.** The radius is read off every still as it lands (`CapturedSurface.measuredCorner`), at the scale the
@@ -1144,7 +1157,8 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   stacks by what was focused last — an app's activation lifts all of its windows above every other app's,
   and within an app the newest focus is on top — so a counter written on every focus change reconstructs
   the order without asking the window server, whose own answer costs a `CGWindowListCopyWindowInfo` that
-  blocks for as long as another app's animation runs. Written only when focus actually *moves*: re-asserting
+  blocks for as long as another app's animation runs. Where the reconstruction is wrong about a float the
+  window server's own reading corrects it, off the main thread (`Event.stackRead`, *Hoisting*). Written only when focus actually *moves*: re-asserting
   it onto the window that already has it raises nothing, and our own echo is exactly that.
 
   **An arrival off the strip writes it without a focus** (`World.noteActivation`, from `windowCreated`).
@@ -1162,12 +1176,15 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
 
 ### Window rules
 
-Pure predicates over an arriving window at **first sight** (`Rules.swift`): `WindowRule` — six AND'd matchers
-→ `RuleOutcome` (workspace / float / width). Matching rules apply top to bottom, later overriding earlier,
-field by field.
+Pure predicates over an arriving window at **first sight** (`Rules.swift`): `WindowRule` — seven AND'd
+matchers → `RuleOutcome` (workspace / float / width). Matching rules apply top to bottom, later overriding
+earlier, field by field.
 
-The matchers come in two kinds. Four read the window's **own metadata** — app id and title, each exact or
-regex — and nothing else on the desktop can change their answer. Two read its **relation to the desktop it
+The matchers come in two kinds. Five read the window's **own metadata** — app id and title, each exact or
+regex, and `role`, the taxonomy's `WindowRole` before any rule overrides it — and nothing else on the desktop
+can change their answer. `role` is how a user chooses a whole kind: hoisting is for floats by choice, and the
+taxonomy's floats are macOS's, so a background app's dialog — a VPN's sign-in, an SSO prompt — is buried under
+the work for good unless `role = "dialog"` with `float = true` makes it chosen. Two read its **relation to the desktop it
 arrived on**, against the window it opened out of (`WindowArrival.Anchor`): `smaller-than-focused` matches when
 both dimensions of the arriving frame are under that fraction of the anchor's, and `from-focused-app` when the
 arriving app is the anchor's. That relation is the only signal for the small window an app opens beside the one
@@ -1191,9 +1208,11 @@ All three actions are **seeds into somewhere the user can already reach**: `work
 it, so a standing rule would be a second authority over it.
 
 Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/panels/popovers float;
-native-fullscreen windows are excluded; app chrome that merely happens to carry an `NSWindow` is declined
-outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the strip,
-animated out like a close, position remembered.
+native-fullscreen windows are excluded, and a window that goes full screen later leaves the strip until it
+comes back (`Event.windowFullScreen`, read when a frame filling a display is reported, since macOS announces
+neither edge — a strip that went on placing it would rewrite it at the rate it reports); app chrome that
+merely happens to carry an `NSWindow` is declined outright at the AX boundary and never reaches a rule at all;
+minimized and Cmd-H-hidden windows leave the strip, animated out like a close, position remembered.
 
 ### Pinning
 
@@ -1299,8 +1318,12 @@ gate proportionate:
 **A float macOS has buried is drawn back over the desktop** (`State.hoistBindings` → `Effect.setHoists`).
 emira cannot re-level a foreign window — `AXRaise` orders only within an app — so the answer is the
 presentation plane's: the float's own pixels in a window of ours, standing where it stands, and a click on
-that picture is `Event.hoistClicked`, which is `focus` + `raise` on the real one. Three rules decide the set,
-and each removes a way for the picture to be a lie:
+that picture is `Event.hoistClicked`, which is `focus` + `raise` on the real one — a focus verb like any other,
+written ahead of its echo, with the stacking half written even where focus does not move, since an app can
+lift its main window over a dialog that keeps the keyboard. The panel is a **non-activating** panel: an
+ordinary window of an inactive app activates that app on a click, and the daemon coming forward lands after,
+or instead of, the activation the click asked for. Three rules decide the set, and each removes a way for the
+picture to be a lie:
 
 - **Only while something covers it.** A hoist cannot be dragged, resized, scrolled or hovered and its pixels
   stop at the moment they were taken, so the stand-in is confined to a window the user cannot see anyway. A
@@ -1310,7 +1333,8 @@ and each removes a way for the picture to be a lie:
   picture nobody saw, where on screen is stable and costs one still per float.
 - **Only what the user chose** (`World.isFloatedByChoice`) — an explicit `true` in the tri-state, never a
   role. The taxonomy floats every dialog, sheet and tool palette, and pinning a background app's palettes
-  over the window you are typing in is not floating them.
+  over the window you are typing in is not floating them. A rule matching on `role` writes that `true` for
+  a whole kind, which is the user choosing it.
 - **Only a window emira placed can bury one** (`World.placedOnScreen`). A float behind something emira never
   placed was not buried by emira, and hoisting it would be an opinion about somebody else's desktop.
 
@@ -1323,10 +1347,23 @@ further than the rule: a float above a hoisted one, overlapping it, is hoisted t
 drawn over a window genuinely in front of it. `settleHoists` re-derives the whole set as a post-pass and emits
 only the difference, so a tick costs nothing.
 
-**A hoist is decided on an AX report and comes down on the window server's answer.** `Event.focusChanged`
-says the app told us its focus moved, not that the raise has reached the glass, and the two are far enough
-apart to see — so a released panel stops taking clicks, keeps its pixels, and asks `StackProbe` until nothing
-foreign sits over the float. Only then does it conceal, over `HoistPanel.concealDuration`, which is not a cut
+**A hoist is decided on an AX report, checked against the window server, and comes down on the window
+server's answer.** The order the set is derived from is reconstructed from focus reports, and two things make
+it wrong with nothing coming to say so: an app holding a window over its own others whatever focus says (a
+JVM lifts an owned dialog to the floating level over its frame), and a report that never arrives (a click
+that raises a frame over a dialog keeping the keyboard posts none). So `HoistPanels` reads the stacking
+(`StackProbe.windowsOver`, one `optionOnScreenOnly` list off the main thread) a moment after each burial, after
+each click and activation (`WorldWatcher.onRestacked`), when a cover comes down, and every
+`HoistPanels.auditInterval` while a float is on screen, and reports a disagreement — covered with nothing over
+it, or standing by under something — as `Event.stackRead`. The core folds it with `World.noteActivation` on
+the side that is wrong, and the set follows; rule 3 holds against the reading as against the record. Never
+while a transition paints, never while a focus of ours is in flight (`FocusIntent.isQuiet`), and not at all
+for a reading a newer set overtook: each of those is a reading behind the record, which would correct it
+backwards.
+
+`Event.focusChanged` says the app told us its focus moved, not that the raise has reached the glass, and the
+two are far enough apart to see — so a released panel stops taking clicks, keeps its pixels, and asks
+`StackProbe` until nothing foreign sits over the float. Only then does it conceal, over `HoistPanel.concealDuration`, which is not a cut
 because the still was filmed while the window was behind and unfocused. **The fence is a delay, not a veto**:
 `HoistPanels.releaseGrace` bounds it and expiry conceals anyway, since a shell keeping a picture the core had
 dropped would be a second opinion about what is on the screen. `StackProbe` is asked off the main thread for
@@ -1338,13 +1375,16 @@ interaction; the burial's own film is what the desktop just showed. The reveal p
 cross-fades to the second — `CoverMode.immediate`'s trade in another place, a stand-in buying the instant and
 its own capture overtaking it. Neither is live, and the frozen content is the standing cost of hoisting.
 
-**Nothing is gated on the pixels.** No raise waits for a hoist and no window is held behind one, so a panel
-with no photograph yet shows nothing and takes no clicks — which is also the whole degradation on a machine
-with no Screen Recording grant, the cover ladder's answer ending in the same geometry. The photograph is taken
-when the float is buried and not again: that instant is the freshest one available, and the cost of the two
-alternatives is a screenshot on a timer for a window nobody is looking at, or an `SCStream` holding the
-screen-recording indicator lit for as long as the window floats. A hoisted float's content is therefore
-frozen, and a float that comes forward and goes back is filmed again.
+**Nothing is gated on the pixels.** No raise waits for a hoist and no window is held behind one, so a panel with
+no photograph yet shows nothing and takes no clicks — which is also the whole degradation on a machine with no
+Screen Recording grant, the cover ladder's answer ending in the same geometry. A window kept out of capture is not
+that case: it has its card. **A panel films three times where it once filmed per size**, each waiting for the
+capture plane to be idle so none queues ahead of a cover's head batch: a second look `HoistPanels.openingSettle`
+after it is built, since an app can put a window up before it has drawn into it; the burial's own film
+`burialSettle` after a float goes behind; and a refresh of every picture showing when a cover comes down, paced by
+`refreshInterval`, so a buried float follows its content at the rate the desktop is used. Not on a timer — a
+screenshot for a window nobody is looking at — and not an `SCStream`, which holds the screen-recording indicator
+lit for as long as the window floats.
 
 ### Peeks
 
@@ -1363,7 +1403,7 @@ difference, and **holds a dropped peek while the write putting its window on the
 picture is behind every window, so the one arriving hides it, and taken down first it leaves a hole for the
 length of the write. A column scrolled away altogether has nothing landing over it, and its peek goes at once.
 
-**It stands where the column would, not over everything** (`PeekPanel`): a borderless window at the back of
+**It stands where the column would, not over everything** (`PeekPanel`): a borderless, non-activating panel at the back of
 the normal level, so a float or a dialog stacks over it as it would over the column, and no tiled window
 can, the strip never overlapping. It is cut to its display, because a window of ours at the column's whole
 frame is drawn by the same rule: the panel is the slice, and the photograph is laid at the whole frame
@@ -1468,6 +1508,12 @@ windows (`veiling`), and a cascade therefore costs no window-server read and no 
 physical stacking, which includes the windows emira never placed, declines in the shell, off one
 `CGWindowListCopyWindowInfo` in z-order per rebuild, the only public list that carries one. A pin is on no
 layout, so it keeps its veil beside a cascade.
+
+**Which windows to take out is read just before the shot, so it is read again just after.** A window ordered
+in between the two was not excluded and is in the photograph — behind every veil until the next film, which no
+focus change brings. So a film whose second reading shows a window at layer ≥ 0 the first did not name is taken
+again against the newer list (`DesktopCapturer`, three attempts), and otherwise given up, leaving the
+photograph already held.
 
 **The photograph is refilmed only when the desktop is quiet** — on the first set that names a display, on a
 display change, and after a cover comes down, throttled by `Scrims.desktopMaxAge`. Never on a focus change:
@@ -1765,17 +1811,22 @@ can quietly break:
   "not a window", which is what filters both. The other two are app chrome that happens to be an `NSWindow`,
   each a conjunction because either half alone has real windows behind it, and both are dropped at the AX
   boundary:
-  - **No title bar and not resizable**, whatever the subrole says. Zoom's toolbar popups answer
-    `AXStandardWindow`, can be main and take focus; only their shape gives them away. A decorationless
+  - **No title bar and not resizable**, whatever the subrole says — except `AXUnknown`. Zoom's toolbar popups
+    answer `AXStandardWindow`, can be main and take focus; only their shape gives them away. A decorationless
     terminal has no title bar but resizes, and a settings window is fixed-size but titled. "Title bar" is any
     stoplight button *or* `AXTitleUIElement`: a unified toolbar hides the title, and a titled window with
     none of closable, miniaturizable or resizable lists no buttons.
   - The literal subrole `AXUnknown` **and** an `AXMain` that is not *settable* — Chrome's Cmd-F find bar, a
-    full entry in the list, frame and title and all. An unrecognized subrole that can still be main means "a
-    real window we leave alone".
+    full entry in the list, frame and title and all; a JVM's Find Action popup. An unrecognized subrole that
+    can still be main means "a real window we leave alone", **whatever its shape**: a JVM draws its dialogs
+    undecorated and fixed-size (IntelliJ's Confirm Exit, Trust Project), so the shape test would decline every
+    one of them, and an unmanaged dialog is one nothing brings back once it is buried.
 
   Sheets and popovers are classified by role before either test, and a full-screen window by `AXFullScreen`,
-  so neither is ever judged by its shape.
+  so neither is ever judged by its shape. **An `AXDialog` with a full-screen button is a main window a modal
+  is blocking** — AppKit derives the subrole from `canBecomeMain`, which a modal turns off — and tiles: a
+  dialog never has that button (a titled `NSPanel` and an `NSAlert` both lack it), and a window that can be a
+  full-screen Space's main window is a document window by definition.
 - **AppKit derives a window's subrole from `canBecomeMain`.** Two windows with identical style masks report
   `AXStandardWindow` or `AXDialog` purely according to whether the app overrode that method, so a decorationless
   terminal — which must override it to be typable at all — is indistinguishable from a decorated one by subrole,
@@ -1804,7 +1855,10 @@ typing in.
 **`WindowRegistry.rebind` is the only thing that re-points a binding**, and it buys native tab groups: keeping
 the `WindowId` makes a tab switch _unobservable to the core_, so the column, its width, its workspace and its
 float state survive one without a single `Event`. Three maps move together or the seam leaks — number, element,
-and the record's element. A destroy notification therefore **waits for one scan** before retiring an id.
+and the record's element. A destroy notification therefore **waits for one scan** before retiring an id. What
+it may *not* carry across is a picture: every photograph held by id — the cover's kept still, a hoist's, a
+peek's — is of the window the id named before, so a re-point to another number drops them
+(`WindowRegistry.onRebound`), keeping only the corner reading, which is the chrome's.
 
 **The group's rectangle is the only evidence, and the tab AppKit selects is given it** — not a background
 tab's own frame, which is wherever that tab was last shown, since a write reaches only the selected one. The
@@ -1886,10 +1940,13 @@ unanswered read is then nothing at all, never `nil`.** The element such a report
 arriving that nothing has bound yet as one emira will never manage, and only the app tells them apart — where
 a `nil` read into a timeout puts the core on no window, which draws every window on the strip see-through
 (§ _Scrims_) with nothing standing to correct it. A stale belief is corrected by the next report.
-**A read that answers `nil` is asked again when the active app's next arrival is bound**: a window that takes focus as
-it opens is reported before the scan binds it, and reads as focus on nothing emira manages, with no report
-after it. A tiled arrival hides that, the core focusing it on adoption; a floated one — a rule's, a dialog's —
-would hold the keyboard while the core believed nothing did, and `close-window` would close nothing.
+**A report on an element nothing has bound yet is answered when it binds**: a window that takes focus as it
+opens is reported before the scan binds it, and reads as focus on nothing emira manages, with no report after
+it. A tiled arrival hides that, the core focusing it on adoption; a floated one — a rule's, a dialog's — would
+hold the keyboard while the core believed nothing did, and `close-window` would close nothing. The report
+carries the element, so the watcher keeps the newest one (`unboundFocus`, dropped by any later report) and the
+window a scan binds to it is the focus — no read, which a JVM can time out. Failing that, the active app is
+asked again once its next arrival is bound.
 
 **A main window moving is a focus report where no other came.** AppKit posts `AXFocusedWindowChanged` and then
 `AXMainWindowChanged` as a window becomes key, but an app can post the second alone — Ghostty does, for a click
@@ -1945,11 +2002,16 @@ notification would have bought it.
 **Off the glass is a question rather than a certificate.** A window the list still carries with `isOnScreen`
 false is one of four things: in the Dock, on another Space, a background tab, or ordered out by an app that
 posted no destroy — and that last one keeps its entry for as long as its process lives, so absence from the
-list never settles it. The other three are alive and AX lists all of them, so the reading buys one scan of the
-app rather than a retirement and `AXEnumerator`'s join is what answers, retiring only what AX has stopped
-listing *and* the window server is not showing. Capped per window like an unaccounted stray, or a window on
-another Space costs a scan of its app every interval forever; what the watcher already knows is in the Dock or
-behind ⌘H is left out; and emira's own placements never reach it, a parked column keeping its sliver on screen.
+list never settles it. The reading buys one scan of the app rather than a retirement, and `AXEnumerator`'s join
+is what answers, retiring only what AX has stopped listing *and* the window server is not showing. Capped per
+window like an unaccounted stray, or a window on another Space costs a scan of its app every interval forever;
+what the watcher already knows is in the Dock or behind ⌘H is left out; and emira's own placements never reach
+it, a parked column keeping its sliver on screen.
+
+**But AX describes one Space**, the one in front: while an app has a window in native full screen — a Space of
+its own — its answer leaves out whichever of its windows are on the other one, alive and unmoved. So a window
+whose app has one in full screen is never retired as departed (`WorldWatcher.isElsewhere`); a close still
+arrives as its destroy notification, and a death as its absence from the window list.
 
 **The join judges absence only from an answer that agrees with the list** — an on-screen entry AX did not
 describe, or an AX window no entry matches, is what a successor looks like a moment before it can be seen, so
@@ -2024,6 +2086,14 @@ and they merge toward "met already open", the only one of the two mistakes that 
 was already using where they put it. The scan already in flight is one of those requests — what its replay is
 left to announce is precisely what that scan missed — so the merge runs over it as well as over the ones
 coalesced behind it.
+
+**But a met-kind scan does not make a newborn window met.** An app slow to list a new window — a JVM's prompt —
+loses the race to the heartbeat's stray scan, and read off that scan's question its rules are never asked: a
+prompt that should float, tiled. So the window's own age answers first (`WorldWatcher.isNewborn`): the boot scan
+records the highest window number the window server had issued (`bootWatermark`; numbers are issued in order),
+and a window numbered above it that the heartbeat has not yet seen standing unmanaged for a round is an arrival,
+whichever scan found it. A window open since before boot — another Space, an agent's settings — is met as
+ever, and so is one that stood a round on the glass unmanaged, which is the case the merge rule protects.
 
 **Observers speak `WorldObservation`, not `Event`.** Four cases decide the type: "a window appeared" is not a
 window we can name (the notification carries an element with no window number, so the response is a re-scan),
@@ -2720,6 +2790,7 @@ emira/
     │   │                Observation · AXObservers · FocusIntent · FrameWrites · EnhancedUI
     │   │                PinFence (is the pin on top yet — the teleport's second fence)
     │   ├── Capture/     CaptureService · SurfaceCache · SCKCapturer
+    │   │                WindowCard (what a window kept out of capture is drawn as)
     │   │                DesktopCapturer (one display with every window taken out of it)
     │   │                CornerSurvey (the radius of each window no cover has filmed at rest)
     │   ├── Compositor/  ScreenGeometry (THE Y-flip) · Overlay · Reconstruction (one per display)
