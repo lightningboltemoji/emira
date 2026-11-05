@@ -57,6 +57,10 @@ private enum AXKey {
     static let titleUIElement = "AXTitleUIElement"
 }
 
+/// An app that did not answer in time, which says nothing about what was asked of it. Thrown by the reads
+/// that decide something, so a window's silence is never taken for what the window is.
+struct AXUnanswered: Error {}
+
 /// The AX *actions* emira performs. Separate from attributes because an action is performed, not
 /// written, and confusing the two is a silent no-op.
 private enum AXAction {
@@ -66,8 +70,8 @@ private enum AXAction {
     static let press = "AXPress"
 }
 
-/// An application's AX element, and the object the per-app messaging timeout is set on. Created from a
-/// pid — the only place a pid appears above the shell's boundary; the core keys apps by `bundleId`.
+/// An application's AX element. Created from a pid — the only place a pid appears above the shell's
+/// boundary; the core keys apps by `bundleId`.
 public struct AXApplication: @unchecked Sendable {
 
     public let pid: pid_t
@@ -80,13 +84,6 @@ public struct AXApplication: @unchecked Sendable {
     public init(pid: pid_t) {
         self.pid = pid
         self.element = AXUIElementCreateApplication(pid)
-    }
-
-    /// Bound how long any AX call through this element may block before returning `.cannotComplete`.
-    /// AX calls are synchronous Mach IPC serviced by the target's main run loop, so a spinning app would
-    /// otherwise hold our per-app queue indefinitely.
-    public func setMessagingTimeout(_ seconds: Float) {
-        AXUIElementSetMessagingTimeout(element, seconds)
     }
 
     /// The attribute behind the `setFrame`-comes-out-wrong bug. Unreadable (most apps never expose it)
@@ -122,12 +119,9 @@ public struct AXApplication: @unchecked Sendable {
     }
 
     /// The window the app considers focused. Exists because an `NSWorkspace` activation notification
-    /// names an app, not a window.
-    func focusedWindow() -> AXWindow? {
-        guard let raw = copyAttribute(element, AXKey.focusedWindow),
-              CFGetTypeID(raw) == AXUIElementGetTypeID()
-        else { return nil }
-        return AXWindow(raw as! AXUIElement)
+    /// names an app, not a window. Throws `AXUnanswered` from an app that said nothing either way.
+    func focusedWindow() throws -> AXWindow? {
+        try copyElement(element, AXKey.focusedWindow).map(AXWindow.init)
     }
 }
 
@@ -144,66 +138,78 @@ public struct AXWindow: @unchecked Sendable {
     }
 
     /// Read for display and rule matching; **never** for identity after binding — titles churn.
-    public var title: String? { copyAttribute(element, AXKey.title) as? String }
+    public var title: String? { get throws { try readAttribute(element, AXKey.title) as? String } }
 
     /// `AXWindow` for an ordinary window, `AXSheet`/`AXPopover` for the attached kinds.
-    public var role: String? { copyAttribute(element, AXKey.role) as? String }
+    public var role: String? { get throws { try readAttribute(element, AXKey.role) as? String } }
 
     /// The element this one hangs from — the window a sheet is attached to. An ordinary window answers
     /// its application, which is no window any registry holds, so a lookup can ask without the role.
     var parent: AXWindow? {
-        guard let raw = copyAttribute(element, AXKey.parent),
-              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
-        return AXWindow(raw as! AXUIElement)
+        get throws { try copyElement(element, AXKey.parent).map(AXWindow.init) }
     }
 
     /// `AXStandardWindow`, `AXDialog`, `AXFloatingWindow`, … The primary input to the tiling taxonomy.
-    public var subrole: String? { copyAttribute(element, AXKey.subrole) as? String }
+    public var subrole: String? { get throws { try readAttribute(element, AXKey.subrole) as? String } }
 
     /// Whether the window is in the Dock. A minimized window leaves the strip like a close.
-    public var isMinimized: Bool { copyAttribute(element, AXKey.minimized) as? Bool ?? false }
+    public var isMinimized: Bool {
+        get throws { try readAttribute(element, AXKey.minimized) as? Bool ?? false }
+    }
 
     /// On a native full-screen Space, and therefore excluded from tiling entirely.
-    public var isFullScreen: Bool { fullScreen ?? false }
+    public var isFullScreen: Bool {
+        get throws { try readAttribute(element, AXKey.fullScreen) as? Bool ?? false }
+    }
     /// `isFullScreen` with a read that failed told apart from a window that is not.
     public var fullScreen: Bool? { copyAttribute(element, AXKey.fullScreen) as? Bool }
 
     /// Whether this window can ever be its application's *main* one — `AXMain`'s **settability**, not its
     /// value. AppKit exposes the attribute as writable only where `NSWindow.canBecomeMain` is true, so
     /// `false` is the framework saying this surface is not a primary window and never will be.
-    public var canBecomeMain: Bool { isSettable(element, AXKey.main) }
+    public var canBecomeMain: Bool { get throws { try isSettable(element, AXKey.main) } }
 
     /// `AXSize`'s **settability**: AppKit exposes it as writable only on a window whose style mask is
     /// resizable. A round trip, and asked of every window at first sight.
-    public var isResizable: Bool { isSettable(element, AXKey.size) }
+    public var isResizable: Bool { get throws { try isSettable(element, AXKey.size) } }
 
     /// Any stoplight button, or the title bar's own text: a unified toolbar hides the title, and a titled
     /// window that is neither closable, miniaturizable nor resizable lists no buttons. Up to four round
     /// trips, short-circuiting.
     public var hasTitleBar: Bool {
-        [AXKey.closeButton, AXKey.titleUIElement, AXKey.minimizeButton, AXKey.zoomButton].contains {
-            copyElement(element, $0) != nil
+        get throws {
+            try [AXKey.closeButton, AXKey.titleUIElement, AXKey.minimizeButton, AXKey.zoomButton].contains {
+                try copyElement(element, $0) != nil
+            }
         }
     }
 
     /// Whether the window has a full-screen button: it can be a full-screen Space's main window, which is
     /// a document window's trait and never a dialog's. One round trip.
-    public var canFullScreen: Bool { copyElement(element, AXKey.fullScreenButton) != nil }
+    public var canFullScreen: Bool {
+        get throws { try copyElement(element, AXKey.fullScreenButton) != nil }
+    }
 
     /// A destroyed element answers `kAXErrorInvalidUIElement` to everything, so any attribute would do;
-    /// `role` is the cheapest. **A busy app answers `false` too**, when the read times out — treat this
-    /// as evidence, not proof.
-    public var isAlive: Bool { role != nil }
+    /// `role` is the cheapest. `nil` from an app that did not answer, whose window may be either.
+    public var isAlive: Bool? { try? role != nil }
 
     /// Core (top-left, global) coordinates — no flip, see the file header. Position and size are two
     /// round trips; a window answering one and not the other is unplaceable, so the pair is
     /// all-or-nothing.
     public var frame: Rect? {
-        guard let origin = axValue(element, AXKey.position, .cgPoint, CGPoint.zero),
-              let size = axValue(element, AXKey.size, .cgSize, CGSize.zero)
-        else { return nil }
-        return Rect(x: Double(origin.x), y: Double(origin.y),
-                    width: Double(size.width), height: Double(size.height))
+        get throws {
+            guard let origin = try axValue(element, AXKey.position, .cgPoint, CGPoint.zero),
+                  let size = try axValue(element, AXKey.size, .cgSize, CGSize.zero)
+            else { return nil }
+            return Rect(x: Double(origin.x), y: Double(origin.y),
+                        width: Double(size.width), height: Double(size.height))
+        }
+    }
+
+    /// `frame` for a caller that has to tell a window with none from an app that said nothing.
+    var frameRead: FrameRead {
+        do { return try frame.map(FrameRead.frame) ?? .gone } catch { return .unanswered }
     }
 
     /// Every attribute emira cares about in one pass: eight round trips, once, at first sight, and up to
@@ -212,19 +218,29 @@ public struct AXWindow: @unchecked Sendable {
     /// `nil` when the element has no readable frame, or is not a window at all — `kAXWindowsAttribute`
     /// is not the pure list its name promises, e.g. Finder answers it with the desktop, an
     /// `AXScrollArea`. Dropped here rather than reported unbound, since it will never bind.
-    public func snapshot(bundleId: String) -> ObservedWindow? {
-        guard let role = WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen,
-                                    canBecomeMain: canBecomeMain, isResizable: isResizable,
-                                    hasTitleBar: hasTitleBar, canFullScreen: canFullScreen),
-              let frame
+    ///
+    /// Throws `AXUnanswered` from an app that stops partway: half a description decides a role wrongly.
+    public func snapshot(bundleId: String) throws -> ObservedWindow? {
+        guard let role = try WindowRole(axRole: role, axSubrole: subrole, isFullScreen: isFullScreen,
+                                        canBecomeMain: canBecomeMain, isResizable: isResizable,
+                                        hasTitleBar: hasTitleBar, canFullScreen: canFullScreen),
+              let frame = try frame
         else { return nil }
         return ObservedWindow(
             pid: ownerPid,
             bundleId: bundleId,
-            title: title ?? "",
+            title: try title ?? "",
             role: role,
             frame: frame,
-            isMinimized: isMinimized)
+            isMinimized: try isMinimized)
+    }
+
+    /// `snapshot`, with up to `timeout` for each call. Set on this element alone and lifted after, since
+    /// this is the element writes go through.
+    public func snapshot(bundleId: String, within timeout: Float) throws -> ObservedWindow? {
+        AXUIElementSetMessagingTimeout(element, timeout)
+        defer { AXUIElementSetMessagingTimeout(element, 0) }
+        return try snapshot(bundleId: bundleId)
     }
 
     @discardableResult
@@ -256,7 +272,7 @@ public struct AXWindow: @unchecked Sendable {
     func place(at rect: Rect, crossing: Bool = false) -> (accepted: Bool, actual: Rect?) {
         var accepted = setSize(rect.size)
         accepted = setPosition(rect.origin) && accepted
-        guard let landed = frame else { return (accepted, nil) }
+        guard let landed = try? frame else { return (accepted, nil) }
         guard !landed.isClose(to: rect, within: Tolerance.landing) else { return (accepted, landed) }
         // A corrective pass, same order: the size write may have been clamped against the *old* position.
         // One — an app that refuses twice asserts a constraint we may not override — but across displays
@@ -268,7 +284,7 @@ public struct AXWindow: @unchecked Sendable {
             accepted = setPosition(rect.origin) && accepted
             // `landed` cannot stand in for a read that fails here: it predates two writes whose whole
             // purpose is to move the window, so a corrective pass that worked would report as drift.
-            actual = frame
+            actual = try? frame
             guard let now = actual, !now.isClose(to: rect, within: Tolerance.landing) else { break }
         }
         return (accepted, actual)
@@ -297,18 +313,13 @@ public struct AXWindow: @unchecked Sendable {
         performAction(element, AXAction.raise)
     }
 
-    /// Press the window's close button — the public equivalent of the user clicking the red dot, which
-    /// is deliberately *not* the same as quitting the app or destroying the window behind its back: the
-    /// app runs its own close path, so an unsaved document still gets to put up its sheet.
-    ///
-    /// Returns `false` when the window exposes no close button (a panel, a sheet, an app that hides it).
-    /// Nothing else here reports success either — the truth that the window went away arrives as an
-    /// `AXUIElementDestroyed` observation, not as this return value.
+    /// Press the window's close button, as clicking the red dot would: the app runs its own close path, so
+    /// an unsaved document still gets its sheet. `false` for a window with no button, and the window going
+    /// is a destroy observation, never this answer. Throws `AXUnanswered` with nothing pressed.
     @discardableResult
-    func close() -> Bool {
-        guard let raw = copyAttribute(element, AXKey.closeButton),
-              CFGetTypeID(raw) == AXUIElementGetTypeID() else { return false }
-        return performAction(raw as! AXUIElement, AXAction.press)
+    func close() throws -> Bool {
+        guard let button = try copyElement(element, AXKey.closeButton) else { return false }
+        return performAction(button, AXAction.press)
     }
 
     /// Not IPC — `AXUIElementGetPid` reads it out of the element — so it is free and cannot time out.
@@ -348,10 +359,10 @@ extension WindowRole {
     /// resizable unless it is an `AXUnknown` that can be main, or `AXUnknown` *and* never main. The last
     /// three arguments are round trips, read only where they decide.
     public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool,
-                 canBecomeMain: @autoclosure () -> Bool,
-                 isResizable: @autoclosure () -> Bool,
-                 hasTitleBar: @autoclosure () -> Bool,
-                 canFullScreen: @autoclosure () -> Bool = false) {
+                 canBecomeMain: @autoclosure () throws -> Bool,
+                 isResizable: @autoclosure () throws -> Bool,
+                 hasTitleBar: @autoclosure () throws -> Bool,
+                 canFullScreen: @autoclosure () throws -> Bool) rethrows {
         switch axRole {
         case "AXWindow":  break                       // an ordinary window; shape, then subrole, decide
         case "AXSheet":   self = isFullScreen ? .other : .sheet;   return
@@ -364,13 +375,13 @@ extension WindowRole {
         }
         // A toolkit with its own AX tree answers `AXUnknown` for an ordinary window, and its settable
         // `AXMain` is the half to believe whatever the shape: a JVM draws its dialogs undecorated and fixed.
-        let unknownButMain = axSubrole == "AXUnknown" && canBecomeMain()
-        if !unknownButMain && !isResizable() && !hasTitleBar() { return nil }   // app chrome
+        let unknownButMain = try axSubrole == "AXUnknown" && canBecomeMain()
+        if try !unknownButMain && !isResizable() && !hasTitleBar() { return nil }   // app chrome
         switch axSubrole {
         case "AXStandardWindow":       self = .standard
         // A main window a modal is blocking answers `AXDialog` (AppKit derives it from `canBecomeMain`),
         // and only its full-screen button gives it away.
-        case "AXDialog":               self = canFullScreen() ? .standard : .dialog
+        case "AXDialog":               self = try canFullScreen() ? .standard : .dialog
         case "AXSystemDialog":         self = .dialog
         case "AXFloatingWindow":       self = .panel
         case "AXSystemFloatingWindow": self = .panel
@@ -378,38 +389,55 @@ extension WindowRole {
         default:                       self = .other
         }
     }
+
+    /// Classify a window with no full-screen button to ask about.
+    public init?(axRole: String?, axSubrole: String?, isFullScreen: Bool,
+                 canBecomeMain: @autoclosure () throws -> Bool,
+                 isResizable: @autoclosure () throws -> Bool,
+                 hasTitleBar: @autoclosure () throws -> Bool) rethrows {
+        try self.init(axRole: axRole, axSubrole: axSubrole, isFullScreen: isFullScreen,
+                      canBecomeMain: canBecomeMain(), isResizable: isResizable(),
+                      hasTitleBar: hasTitleBar(), canFullScreen: false)
+    }
 }
 
 // CF bridging (the +1/+0 boundary)
 
 /// A *Copy* function: it hands back a +1 reference that Swift's `CFTypeRef?` binding takes ownership of.
-/// Every non-`.success` `AXError` collapses to `nil` — at this layer they are the same fact.
-private func copyAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+/// Throws `AXUnanswered` for `.cannotComplete`; every other `AXError` is the app's answer, and is `nil`.
+private func readAttribute(_ element: AXUIElement, _ name: String) throws -> CFTypeRef? {
     var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
-        return nil
+    switch AXUIElementCopyAttributeValue(element, name as CFString, &value) {
+    case .success: return value
+    case .cannotComplete: throw AXUnanswered()
+    default: return nil
     }
-    return value
+}
+
+/// `readAttribute` for a caller with nothing to do about a timeout.
+private func copyAttribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+    try? readAttribute(element, name)
 }
 
 /// An attribute whose value is another element — a window's buttons, its title text — or `nil` when
 /// it answers with anything else.
-private func copyElement(_ element: AXUIElement, _ name: String) -> AXUIElement? {
-    guard let raw = copyAttribute(element, name), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
+private func copyElement(_ element: AXUIElement, _ name: String) throws -> AXUIElement? {
+    guard let raw = try readAttribute(element, name), CFGetTypeID(raw) == AXUIElementGetTypeID() else {
         return nil
     }
     return (raw as! AXUIElement)
 }
 
 /// Whether an attribute can be *written*, a different question from what it currently reads. A round
-/// trip like any other. Every non-`.success` `AXError` collapses to `false`: an element that cannot
-/// answer the question cannot be written either.
-private func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
+/// trip like any other, and `readAttribute`'s split: any other `AXError` is `false`, since an element
+/// that cannot answer the question cannot be written either.
+private func isSettable(_ element: AXUIElement, _ name: String) throws -> Bool {
     var settable: DarwinBoolean = false
-    guard AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success else {
-        return false
+    switch AXUIElementIsAttributeSettable(element, name as CFString, &settable) {
+    case .success: return settable.boolValue
+    case .cannotComplete: throw AXUnanswered()
+    default: return false
     }
-    return settable.boolValue
 }
 
 /// **Not** a *Copy* function — it borrows the value, so there is no +1 to balance here.
@@ -432,8 +460,8 @@ private func performAction(_ element: AXUIElement, _ name: String) -> Bool {
 /// Stating it lets the compiler check our callers instead of warning about the raw-pointer conversion.
 private func axValue<T: BitwiseCopyable>(
     _ element: AXUIElement, _ name: String, _ type: AXValueType, _ zero: T
-) -> T? {
-    guard let raw = copyAttribute(element, name), CFGetTypeID(raw) == AXValueGetTypeID() else {
+) throws -> T? {
+    guard let raw = try readAttribute(element, name), CFGetTypeID(raw) == AXValueGetTypeID() else {
         return nil
     }
     var out = zero

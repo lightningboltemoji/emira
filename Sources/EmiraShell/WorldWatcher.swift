@@ -43,6 +43,7 @@ public final class WorldWatcher {
 
     /// How many times a scan of one app may be retried before we accept its answer. The failures this
     /// covers are startup races measured in frames, so the second attempt is nearly always the last.
+    /// The final one is patient (`AXClient.patientTimeout`): the race it is left for is a slow app.
     public static let maxScanAttempts = 3
 
     /// How long to wait before re-scanning an app whose answer looked like a race — long enough for the
@@ -84,9 +85,11 @@ public final class WorldWatcher {
     /// reports in its ease-out tail. Uncapped: a window still moving has no right moment to re-place.
     public static let stillnessQuiet: TimeInterval = 0.12
 
-    /// How many times a focus read is asked before an unreadable answer is believed. An app putting up a
-    /// sheet stops answering AX until the sheet is in — ~280 ms, past one `AXClient.defaultTimeout` —
-    /// and the attempt queued behind the timeout lands just after it.
+    /// How many times in a row a silent app is asked a question before the rest waits for `reconcile`:
+    /// ~5 s at one `AXClient.defaultTimeout` an attempt, so it answers as it recovers.
+    public static let maxUnansweredAttempts = 20
+
+    /// How many times a focus read that names no window is asked before that answer is left to stand.
     public static let maxFocusReadAttempts = 2
 
     private let source: any ObservationSource
@@ -114,6 +117,10 @@ public final class WorldWatcher {
     /// An app has announced a window, which the window server will show in its own time and say nothing
     /// when it does — so a plane masked against it watches for the arrival (`Scrims.expectArrival`).
     public var onWindowAnnounced: (@MainActor () -> Void)?
+
+    /// Told when a window moves that no write of ours is answering for — an app placing itself, or a
+    /// write given up on landing after all. Nothing in the core recuts for it (`Scrims.expectMovement`).
+    public var onWindowMoved: (@MainActor () -> Void)?
 
     /// Something that restacks the desktop happened — a click, an app coming forward — whether or not
     /// any app reports a focus for it. A plane that reads the stacking (`HoistPanels`) reads it again.
@@ -143,14 +150,21 @@ public final class WorldWatcher {
     /// Windows that moved again while their read was out. Re-read exactly once when it returns.
     private var moved: Set<WindowId> = []
 
+    /// Windows that moved and whose app outlasted `maxUnansweredAttempts`, read again by `reconcile`.
+    private var overdue: Set<WindowId> = []
+
+    /// The newest focus question an app outlasted `maxUnansweredAttempts` on, asked again by `reconcile`.
+    /// One slot: a newer question is about a newer report.
+    private var owedFocus: (@MainActor () -> Void)?
+
     /// Apps with a scan out on a lane right now, and whether that scan is asking about windows emira met
     /// already open. The gate on the *scan* coalescer, and the provenance a replay of it inherits.
     private var scanning: [pid_t: Bool] = [:]
 
-    /// Apps whose scan was asked for again while one was out, and whether that request was for windows
-    /// emira met already open. Re-scanned exactly once when the scan in flight returns; the flag merges
-    /// with `||`, since a window wrongly announced as born now is resized and can take the desktop with it.
-    private var rescan: [pid_t: Bool] = [:]
+    /// Apps whose scan was asked for again while one was out, re-scanned once when it returns. Requests
+    /// merge toward "met already open", since a window wrongly announced as born is resized, and toward
+    /// the lowest attempt, so a retry keeps its place in the budget and a request starts over.
+    private var rescan: [pid_t: (alreadyOpen: Bool, attempt: Int)] = [:]
 
     /// Windows whose element is destroyed and whose *id* has not been retired yet, because a scan may
     /// still hand it to a successor (`vanish`). Dead for every other purpose — see `isLive`.
@@ -329,6 +343,7 @@ public final class WorldWatcher {
             for id in registry.forget(app: pid) {
                 reading.remove(id)
                 moved.remove(id)
+                overdue.remove(id)
                 vanishing.remove(id)
                 stillness[id] = nil
                 offGlass[id] = nil
@@ -374,6 +389,7 @@ public final class WorldWatcher {
 
         case .windowMoved(let id):
             guard isLive(id), !writes.isWriting(id) else { return }
+            onWindowMoved?()
             guard !reading.contains(id) else { moved.insert(id); return }
             readFrame(of: id)
 
@@ -472,28 +488,35 @@ public final class WorldWatcher {
     }
 
     /// Ask which of an app's windows has focus, for a report that named the app and no managed window.
-    /// Only for an app we track, and only if no focus request overtakes the read (case 6 above).
-    /// **An unanswered read is not an answer** — the element named is as likely a window arriving that
-    /// nothing has bound yet — so a busy app leaves the standing belief for the next report to correct.
+    /// Only for an app we track, and only if no focus request overtakes the read (case 6 above). A busy
+    /// app leaves the standing belief until it has said: the element named is as likely a window arriving.
     private func readFocus(of pid: pid_t) {
         guard apps[pid] != nil else { return }
         readFocus(of: pid, since: intent.newest, attempt: 1)
     }
 
-    /// One attempt of `readFocus`. A retry keeps the first attempt's marker: the report left then.
-    /// `settling` marks the clearing's read, and `ours` is what it is judged against (`settleFocus`).
+    /// One attempt of `readFocus`. A retry keeps the first attempt's marker: the report left then. `settling`
+    /// marks the clearing's read, and `ours` is what it is judged against (`settleFocus`). An answer is
+    /// current however late it comes, so all that can overtake it is its app losing the keyboard.
     private func readFocus(of pid: pid_t, since asked: FocusIntent.Ticket, attempt: Int,
                            settling: Bool = false, ours: WindowId? = nil) {
         source.focusedWindow(of: pid) { [weak self] read in
-            guard let self, !isStopped, intent.isCurrent(asked) else { return }
-            guard case .window(let id) = read else {
-                guard attempt < Self.maxFocusReadAttempts else { return }
-                return readFocus(of: pid, since: asked, attempt: attempt + 1, settling: settling, ours: ours)
+            guard let self, !isStopped, intent.isCurrent(asked), isActive(pid) else { return }
+            let again: @MainActor () -> Void = { [weak self] in
+                guard let self, apps[pid] != nil else { return }
+                readFocus(of: pid, since: asked, attempt: attempt + 1, settling: settling, ours: ours)
             }
-            guard settling else { return resolveFocus(id) }
-            noteFocus(id)
-            guard id != ours else { return }
-            emit(.focusChanged(id, origin: .system))
+            switch read {
+            case .unanswered where attempt < Self.maxUnansweredAttempts: again()
+            case .unanswered: owedFocus = again
+            case .unreadable where attempt < Self.maxFocusReadAttempts: again()
+            case .unreadable: break
+            case .window(let id):
+                guard settling else { return resolveFocus(id) }
+                noteFocus(id)
+                guard id != ours else { return }
+                emit(.focusChanged(id, origin: .system))
+            }
         }
     }
 
@@ -533,6 +556,7 @@ public final class WorldWatcher {
         // The element is dead either way, so stop reading it now rather than at retirement.
         reading.remove(id)
         moved.remove(id)
+        overdue.remove(id)
         stillness[id] = nil
         // Nobody to ask: an app we hold no scan target for cannot produce a successor.
         guard let target = apps[record.pid] else {
@@ -580,6 +604,7 @@ public final class WorldWatcher {
         registry.forget(id)
         reading.remove(id)
         moved.remove(id)
+        overdue.remove(id)
         stillness[id] = nil
         minimized.remove(id)
         fullScreen.remove(id)
@@ -592,13 +617,13 @@ public final class WorldWatcher {
     // Reconciliation (the standing question the notification stream cannot answer)
 
     /// Make the standing invariants true again: every app we know observed, every managed window
-    /// watched, every managed window still on the glass, every on-screen window managed.
+    /// watched, every move read, every managed window still on the glass, every on-screen window managed.
     ///
     /// The standing check behind an otherwise entirely edge-triggered design, where every discovery path
     /// is one notification at one moment and a missed one is never reissued. Level-triggered and cheap:
     /// the list is a window-server query, and AX is reached only when the two disagree.
     ///
-    /// Each of the four is a state rather than a race, which is what separates them from the retry
+    /// Each of the five is a state rather than a race, which is what separates them from the retry
     /// chain: a race resolves itself and is waited out under a budget, a state stays wrong until
     /// something asks again.
     ///
@@ -625,6 +650,14 @@ public final class WorldWatcher {
         for (_, target) in apps.sorted(by: { $0.key < $1.key }) {
             register(target)
             if let ids = watched[target.pid] { source.watch(windows: ids, of: target.pid) }
+        }
+        // A move no report will repeat, unless a write out is answering for the window already.
+        for id in overdue.sorted() where !reading.contains(id) && !writes.isWriting(id) {
+            readFrame(of: id, attempt: Self.maxUnansweredAttempts)
+        }
+        if let ask = owedFocus {
+            owedFocus = nil
+            ask()
         }
 
         guard !isPainting() else { return }
@@ -731,12 +764,15 @@ public final class WorldWatcher {
             guard let inFlight = scanning[target.pid] else { return true }
             // The scan in flight is one of the requests that answer stands for, so its question merges
             // too: what the replay is left to announce is whatever that scan missed.
-            rescan[target.pid] = (rescan[target.pid] ?? false) || alreadyOpen || inFlight
+            let earlier = rescan[target.pid]
+            rescan[target.pid] = ((earlier?.alreadyOpen ?? false) || alreadyOpen || inFlight,
+                                  min(earlier?.attempt ?? attempt, attempt))
             return false
         }
         guard !admitted.isEmpty else { return }
         for target in admitted { scanning[target.pid] = alreadyOpen }
-        enumerator.enumerate(apps: admitted, ignoring: unmanageable) { [weak self] report in
+        enumerator.enumerate(apps: admitted, ignoring: unmanageable,
+                             patient: attempt + 1 >= Self.maxScanAttempts) { [weak self] report in
             self?.absorb(report, attempt: attempt, alreadyOpen: alreadyOpen)
         }
     }
@@ -843,17 +879,12 @@ public final class WorldWatcher {
             readFocus(of: active)
         }
 
-        // Something was asked for while the scan was out: ask again now rather than through the retry
-        // budget, since this is a request we coalesced, not a race we are waiting out. Split by the
-        // question that was asked, so the replay is the request rather than a default.
-        var born: [ScanTarget] = []
-        var met: [ScanTarget] = []
+        // Something was asked for while the scan was out: ask again now rather than after the retry
+        // delay, with the question that was asked, so the replay is the request rather than a default.
         for target in report.apps {
-            guard let wasAlreadyOpen = rescan.removeValue(forKey: target.pid) else { continue }
-            if wasAlreadyOpen { met.append(target) } else { born.append(target) }
+            guard let request = rescan.removeValue(forKey: target.pid) else { continue }
+            scan([target], attempt: request.attempt, alreadyOpen: request.alreadyOpen)
         }
-        if !born.isEmpty { scan(born, attempt: 0) }
-        if !met.isEmpty { scan(met, attempt: 0, alreadyOpen: true) }
 
         // A window one side of the join described and the other didn't is the "asked too early" race.
         // Retry the apps that failed: not `source.applications()`, which may answer differently and turn
@@ -904,36 +935,9 @@ public final class WorldWatcher {
 
     // Focus (the report that isn't self-describing)
 
-    /// Pass a focus report to the core — unless it is our own stale echo, or macOS backfilling the
-    /// window that just died.
-    ///
-    /// `Event.focusChanged` means "focus moved, so scroll the viewport to reveal it", and carries whether
-    /// *we* moved it — the fact `[focus] system-events` judges, and one only this file holds. Two other
-    /// things post the identical notification, and each is filtered by the same record that answers that.
-    ///
-    /// **Our own focus, arriving late.** `Effect.focus` provokes the same report, and the design counts
-    /// on absorbing that echo because a reveal of an already-revealed window is a no-op. It is only a
-    /// no-op while the echo is *current*: the round trip crosses per-app lanes with no order between
-    /// them (`FocusIntent`), so spamming `focus` across a slow app and a fast one delivers an echo
-    /// naming a window two presses back, and the core — mid-scroll — retargets the live transition
-    /// backwards to reveal it. Swallowed outright rather than passed on, because it says nothing the
-    /// core does not already hold: the reducer wrote that focus optimistically when it emitted the
-    /// effect, so the echo can only ever confirm it or corrupt it.
-    ///
-    /// **macOS filling a hole.** An app whose key window closes picks an arbitrary replacement, so
-    /// closing the tenth Ghostty window can land focus on the first and snap the strip across the
-    /// desktop. AppKit picks that replacement *synchronously* and destroys the closing element later, so
-    /// `AXFocusedWindowChanged` normally arrives *before* `AXUIElementDestroyed` and the two cases are
-    /// indistinguishable without asking whether the displaced window still exists — live means the user
-    /// moved focus, dead means macOS filled a hole. The registry answers free when the destroy got here
-    /// first; only the awkward order costs a round trip, and the re-check on the answer covers a destroy
-    /// that arrived while we asked. Failing toward "dead" only drops a reveal (the next focus change
-    /// reveals); the opposite mistake would drop a real window off the strip, which is why this never
-    /// synthesizes a `windowVanished`.
-    ///
-    /// Only the app that lost the window fills its hole, so a report from another app skips the question,
-    /// and only the active app's reports get here at all (`handle`). A quit keeps it: `appDeparting`
-    /// forgets the quitting app, which is the one case where macOS does pick the next app.
+    /// Pass a focus report to the core, unless it is our own stale echo (`FocusIntent`) or macOS filling
+    /// the hole a closed window left, which only asking whether the displaced window exists tells from
+    /// the user (`ObservationSource.isAlive`). Silence is neither answer, so it is asked until it is one.
     private func resolveFocus(_ id: WindowId?) {
         checkShownAfterFade()
         switch intent.resolve(id) {
@@ -971,9 +975,23 @@ public final class WorldWatcher {
         guard isLive(displaced) else { return }   // already known dead — free answer
         // The probe is a queued read too: a focus request issued while it is out makes this report
         // news about the past (case 6 above).
-        let asked = intent.newest
+        confirmAlive(displaced, thenFocus: id, since: intent.newest, attempt: 1)
+    }
+
+    /// Report focus on `id` if `displaced` still exists. An app that does not answer is asked until it
+    /// does, and a newer report can overtake the one being confirmed.
+    private func confirmAlive(_ displaced: WindowId, thenFocus id: WindowId?,
+                              since asked: FocusIntent.Ticket, attempt: Int) {
         source.isAlive(displaced) { [weak self] alive in
-            guard let self, alive, isLive(displaced), intent.isCurrent(asked) else { return }
+            guard let self, isLive(displaced), intent.isCurrent(asked), focus == id else { return }
+            guard let alive else {
+                let again: @MainActor () -> Void = { [weak self] in
+                    self?.confirmAlive(displaced, thenFocus: id, since: asked, attempt: attempt + 1)
+                }
+                guard attempt < Self.maxUnansweredAttempts else { owedFocus = again; return }
+                return again()
+            }
+            guard alive else { return }
             emit(.focusChanged(id, origin: .system))
         }
     }
@@ -1085,27 +1103,41 @@ public final class WorldWatcher {
     // Frame reads (the coalescer)
 
     /// Read one window's frame, then honour at most one move that arrived while we were asking.
-    private func readFrame(of id: WindowId) {
+    private func readFrame(of id: WindowId, attempt: Int = 1) {
         reading.insert(id)
-        source.readFrame(of: id) { [weak self] frame in
+        overdue.remove(id)
+        source.readFrame(of: id) { [weak self] read in
             guard let self else { return }
             reading.remove(id)
-            // An empty read is a window that closed mid-drag. Say nothing — `windowVanished` reports it,
-            // and inventing a frame for a dead window puts a lie in `World`.
-            if let frame {
+            // A window `gone` closed mid-drag. Say nothing — `windowVanished` reports it, and inventing
+            // a frame for a dead window puts a lie in `World`.
+            if case .frame(let frame) = read {
                 // Kept in step so a tab succession has an up-to-date rectangle to recognise: between
                 // scans, a drag is the one thing that moves a window without our asking.
                 registry.noteFrame(id, frame)
                 emit(.windowFrameChanged(id, frame))
                 checkFullScreen(id, frame)
             }
-            // Whether or not it carried a frame, an answer is evidence the window was still moving —
-            // and a read that came back empty still has to stop holding the settle open. With no hand
-            // anywhere near it, the same evidence opens the window's own wait instead.
+            // Whatever it carried, a read back has to stop holding the settle open. An answer is also
+            // evidence the window was still moving, which with no hand anywhere near it opens the
+            // window's own wait. No answer is evidence of nothing: its stillness waits for one.
             if isSettling { waitForQuiet() }
-            else if !isButtonDown { waitForStillness(of: id) }
+            else if !isButtonDown, read != .unanswered { waitForStillness(of: id) }
+            if read == .unanswered { return askAgain(id, after: attempt) }
             guard moved.remove(id) != nil, isLive(id) else { return }
             readFrame(of: id)
         }
+    }
+
+    /// A move its app has not answered for is still owed a frame, and nothing else will ask: that report
+    /// was the only one. A write going out answers instead, with its own read-back or a landing.
+    private func askAgain(_ id: WindowId, after attempt: Int) {
+        moved.remove(id)
+        guard isLive(id) else { return }
+        guard attempt < Self.maxUnansweredAttempts, !writes.isWriting(id) else {
+            overdue.insert(id)
+            return
+        }
+        readFrame(of: id, attempt: attempt + 1)
     }
 }

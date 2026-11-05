@@ -56,6 +56,22 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
         #expect(role?.tiles == true)
     }
 
+    /// A trait the app did not answer for decides nothing: `AXDialog` with no word on the full-screen
+    /// button would file a blocked main window as a dialog, and a role is decided once.
+    @Test func aTraitLeftUnansweredIsThrownRatherThanReadAsNo() {
+        struct Silence: Error {}
+        func silent() throws -> Bool { throw Silence() }
+        #expect(throws: Silence.self) {
+            try WindowRole(axRole: "AXWindow", axSubrole: "AXDialog", isFullScreen: false,
+                           canBecomeMain: true, isResizable: true, hasTitleBar: true,
+                           canFullScreen: silent())
+        }
+        #expect(throws: Silence.self) {
+            try WindowRole(axRole: "AXWindow", axSubrole: "AXStandardWindow", isFullScreen: false,
+                           canBecomeMain: true, isResizable: silent(), hasTitleBar: true)
+        }
+    }
+
     @Test func anElementThatIsNotAWindowIsDeclinedRatherThanFiledUnderOther() {
         // `kAXWindowsAttribute` does not contain only windows: Finder answers it with the desktop,
         // whose role is `AXScrollArea`. `.other` means "a real window emira leaves alone", so filing
@@ -569,7 +585,7 @@ private func entry(_ number: CGWindowID, pid: pid_t = 100, frame: Rect,
 
         func applications() -> [ScanTarget] { targets }
 
-        func windows(of target: ScanTarget,
+        func windows(of target: ScanTarget, patient: Bool,
                      then completion: @escaping @MainActor (ScanAnswer) -> Void) {
             guard holdsAnswers else {
                 completion(answer(for: target.pid))

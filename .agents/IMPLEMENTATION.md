@@ -434,6 +434,29 @@ it either — an app that refuses a resize *without moving* posts nothing for `W
 unverified makes that predicate answer `false`. Deliberately **not** a retry — nothing is scheduled — so a hung
 app costs one extra set per real event instead of a busy loop.
 
+**A set that timed out is not always a set undone.** The message stays in the app's queue, so a write given up on
+can land when the app recovers — measured after a 5 s stall, and not after an 11 s one — and it reaches the core as
+the app moving itself. Giving up takes about a second per window, and a quarter of one per group for the
+enhanced-UI read: every call is bounded by `AXClient.defaultTimeout`, set **once, on the system-wide element**, the
+only one that reaches every other. A timeout on an application element stops there, and a window element obtained
+through it waits the system's 1.5 s.
+
+**A read that times out is the app saying nothing, never the app saying no.** A bound that short is routinely
+shorter than an app's own stall, so `AXAccess` keeps `.cannotComplete` apart from every other answer (`AXUnanswered`)
+wherever a read decides something. A scan's description of a window is all-or-nothing, since a role is decided once
+and a missing subrole reads as another kind of window: the app that stops answering ends the pass, and
+`ScanAnswer.isComplete` says the rest went unread, so its windows are no departures and the scan is asked again. A
+call that always outlasts the bound is never answered by asking again, so the last attempt of a scan waits instead
+(`AXClient.patientTimeout`, set on each window element and lifted after, since writes go through it). One attempt
+and no longer than that: a call that waits holds the lane, with that app's writes behind it. A report is the only
+one coming, so a frame or focus read that went unanswered is asked again, up to `WorldWatcher.maxUnansweredAttempts`
+in a row and then on every reconciliation. Asking is cheap where waiting is not: one call at a time, on a lane a write
+can still get onto. A write going out takes a frame's question over: its read-back answers it, and a read landing
+inside a write would put a frame in the middle of it. A close is a command given once, so `AXExecutor` asks for its
+button the same way, pressing nothing until the app has answered, and stops at the same budget: `reconcile` repairs
+a state, and a close firing long after it was given is not one. The press is never repeated, since one that timed out
+is still in the app's queue.
+
 A snap-path event arriving mid-transition (a `windowCreated` during a scroll) **redirects** the session rather
 than returning nothing. Every such path goes through the same opens-or-redirects call the command paths use.
 
@@ -1551,6 +1574,8 @@ is drawing while a write that touches it — where the window stood, or where it
 takes the new one with the last `axLanded` or `axFailed`: one set, masked once, against a desktop that has
 stopped. A hand resize, a float toggle and every move under `off` take this path. A covered display is not
 held for its writes, because until its cover comes down the stand-ins draw the veil, from the core's geometry.
+A focus change on a held display waits with it: against a hung app, as long as a write takes to give up, which is
+about a second for each of that app's windows the group moves.
 
 **Every frame in the mask is the window server's, and the core says when to read it.** A binding names a
 window and its veil, and carries no rectangle: the stacking is read in one
@@ -1580,6 +1605,14 @@ affordable is the layer tree — a re-cut moves the shapes and names the veils t
 leaves a veil fading through it undisturbed (`ScrimWindow.set`), and a reading that changes nothing paints
 nothing at all.
 
+**A write still out holds the watch open** (`Scrims.isWriting`, from `FrameWrites`). Quiet is evidence about the
+server and says nothing of an app that has not got to the write: it moves when it recovers, with the set held for
+that landing and the move's echo dropped as the write's own, so nothing else would read it. So a watch reads on past
+`settleQuiet` and `settleLimit` for as long as any write is out, and one starts as a group goes out
+(`FrameWrites.onBegin`) if none is running. Quiet still ends what it can answer: a stale frame is dropped on its
+own schedule. Past its settle a watch is waiting on an app, for up to a second, so it yields to the frame loop
+(`Scrims.isPainting`).
+
 **Under a cover the watch waits** (`ScrimPlane.setCovered`, from the raise until the dismissal begins). Every
 reading synchronizes the cover's own commit, one a frame, so a watch running under a spring costs frames, and
 the scrim it would correct is out of sight. A set there is cut once, because the cover's stand-ins draw the
@@ -1600,6 +1633,15 @@ was cut around. So the reconciliation sweep — which reads the whole window lis
 its own paint gate — fans out the one fact it can see for free, that the on-screen set is not the one it saw
 last (`WorldWatcher.onStackChanged` → `Scrims.recut`). A re-cut that comes out the same paints nothing, so a
 quiet desktop costs a set comparison. A foreign window that *moves* is still corrected only by the next set.
+
+**A managed window can leave a mask with no set on the way too** (`WorldWatcher.onWindowMoved` →
+`Scrims.expectMovement`): an app placing itself, or a write given up on landing after all. The core has nothing to
+recut on. A tiled window that stopped elsewhere is written back and recut when that lands, which from a hung app
+is a second off, and one that stopped where the strip wants it writes nothing and looks exactly like the echo of
+our own write stopping, which is most `windowSelfPlaced`s and is not worth a window-list read under a cover. So the
+shell reports every move no write is answering for, ahead of reading its frame, since an app can stop answering
+the moment it has moved, and the plane watches until the reading stands still. A report mid-watch starts its quiet
+over rather than restarting it: reports outrun readings, and a watch restarted for each would never take one.
 
 **An announced window is watched onto the glass** (`WorldWatcher.onWindowAnnounced` → `Scrims.expectArrival`).
 An app announces a window — an unknown main window, then `AXWindowCreated` — 13 to 34 ms before the window
@@ -1927,19 +1969,26 @@ app `NSWorkspace` last activated; a move to another app arrives as that app's ac
 its own. The same fact bounds the question that tells a backfill from the user (`PRINCIPLES.md` §4): **only the app that lost
 the window fills its hole**, so a report from another app is focus leaving and is never asked about a window
 mid-close. A quit is where macOS does choose the next app, and it keeps the question, because `appDeparting`
-forgets the quitting app before there is anything to compare it with.
+forgets the quitting app before there is anything to compare it with. **Silence is neither answer**, so
+`WorldWatcher.confirmAlive` asks until the app says: read as dead it leaves the core on the old window and the
+keyboard's veiled, read as alive it moves focus off a window that may be closing. The answer is about one report,
+so a newer report drops it.
 
 **Focus in a sheet is focus in the window it is attached to.** A sheet is never in `AXWindows`, so the element
 `AXFocusedWindowChanged` names is one the registry does not know — and AppKit posts no focus change when the
 sheet goes away, so focus left on anything but its window never comes back to it. A notification naming an
 unknown element is therefore a question rather than an answer (`WorldObservation.focusMovedUnmanaged`), and it
 becomes the same read an activation costs, which names a focused element's `AXParent` when that is the window
-the registry knows. **A read that times out is asked once more** (`WorldWatcher.maxFocusReadAttempts`): an app
-putting up a sheet stops answering AX for longer than one `AXClient` timeout while the sheet comes in. **An
-unanswered read is then nothing at all, never `nil`.** The element such a report names is as likely a window
-arriving that nothing has bound yet as one emira will never manage, and only the app tells them apart — where
-a `nil` read into a timeout puts the core on no window, which draws every window on the strip see-through
-(§ _Scrims_) with nothing standing to correct it. A stale belief is corrected by the next report.
+the registry knows. **A read that times out is asked until the app answers** (`WorldWatcher.maxUnansweredAttempts`
+in a row, then `reconcile`): an app putting up a sheet stops answering AX for longer than one `AXClient` timeout
+while the sheet comes in. The parent is part of the read: a focused element the registry does not know, whose app
+did not say what it hangs from, is no answer yet. **An unanswered read is nothing at all, never `nil`.** The element
+such a report names is as likely a window arriving that nothing has bound yet as one emira will never manage, and
+only the app tells them apart — where a `nil` read into a timeout puts the core on no window, with nothing standing
+to correct it. An answer is current however late it comes, so the only thing that overtakes one is its app losing
+the keyboard. **An answer naming no window is a different fact** (`FocusedWindowRead.unreadable`): an app with nothing
+focused, asked once more (`maxFocusReadAttempts`) and left to stand, since polling it would run on every activation
+of an app with no windows open.
 **A report on an element nothing has bound yet is answered when it binds**: a window that takes focus as it
 opens is reported before the scan binds it, and reads as focus on nothing emira manages, with no report after
 it. A tiled arrival hides that, the core focusing it on adoption; a floated one — a rule's, a dialog's — would
@@ -1979,15 +2028,18 @@ list read yields; registering an observer is AX work on that app's own lane and 
 The read is on the main thread and stays there: moving it to a background queue relocates the wait rather than
 removing it, since the same per-connection lock is what our own frame commit then blocks on.
 
-**It holds four invariants, not one, and the division is race versus state.** A race resolves itself, so it is
+**It holds five invariants, not one, and the division is race versus state.** A race resolves itself, so it is
 waited out under a budget in the edge plane; a state stays wrong until something asks again, and only the
 heartbeat can ask forever. Every app we know is observed — a registration that failed leaves an app deaf to us,
 which no edge can repair because a budget must terminate. **Every managed window is watched**, on the same
 terms and for a sharper reason: a window whose own registration an app refused has no destroy notification for
-the rest of its life, and the rollback that lets one be retried is reached only by a scan. Every managed window
-still exists — the destroy notification comes from the app, and a wedged app sends nothing. Every on-screen
-window is managed. The retry chain is kept in front of the first two as a hurry rather than a repair: it
-answers a launch race in milliseconds instead of at the next tick, and running out no longer means giving up.
+the rest of its life, and the rollback that lets one be retried is reached only by a scan. A registration that timed
+out lands all the same, so a retry finding it already there has succeeded. **Every report is answered**: a move or a
+focus change is reported once, so a window whose app went quiet on the read stays out of place, or the keyboard's
+window veiled, until something asks (`WorldWatcher.overdue`, `owedFocus`). Every managed window still exists — the
+destroy notification comes from the app, and a wedged app sends nothing. Every on-screen window is managed. The
+retry chain is kept in front of the first three as a hurry rather than a repair: it answers a launch race in
+milliseconds instead of at the next tick, and running out no longer means giving up.
 
 **The window server is the authority the removal direction rests on**, because it owns the window rather than
 the app does — the one witness a beachballed app cannot keep quiet. Absence from `CGWindowListCopyWindowInfo`
@@ -2085,7 +2137,8 @@ the scan coalescer: several requests for one app merge into one answer whose win
 and they merge toward "met already open", the only one of the two mistakes that leaves a window the user
 was already using where they put it. The scan already in flight is one of those requests — what its replay is
 left to announce is precisely what that scan missed — so the merge runs over it as well as over the ones
-coalesced behind it.
+coalesced behind it. Attempts merge toward the lowest: a request is owed the whole budget, and a retry landing
+while a scan is out is still the race and keeps its place, or a chain colliding with its own watch retry never ends.
 
 **But a met-kind scan does not make a newborn window met.** An app slow to list a new window — a JVM's prompt —
 loses the race to the heartbeat's stray scan, and read off that scan's question its rules are never asked: a

@@ -364,7 +364,7 @@ scrims.surveyCorners = { [cornerSurvey] guessed, onScreen in
 }
 cornerSurvey.onMeasured = { [weak scrims] in scrims?.cornersMeasured() }
 // A peek appearing, moving or going is the stacking changing under the veils, with no set to say so.
-peekPanels.onChange = { [weak scrims] in scrims?.peeksChanged() }
+peekPanels.onChange = { [weak scrims] in scrims?.expectMovement() }
 
 // A succession re-points an id at another window: every picture held by that id is of the one before.
 registry.onRebound = { [weak capture, weak hoistPanels, weak peekPanels] id in
@@ -532,6 +532,12 @@ watcher.onStackChanged = { [weak scrims] in scrims?.recut() }
 
 // An announced window reaches the glass milliseconds later, under whatever veil it lands on.
 watcher.onWindowAnnounced = { [weak scrims] in scrims?.expectArrival() }
+
+// A window can leave where a mask was cut around it with no set on the way: on its own account, or under
+// a write whose landing is seconds off. The plane reads the server until both have finished.
+watcher.onWindowMoved = { [weak scrims] in scrims?.expectMovement() }
+frameWrites.onBegin = { [weak scrims] in scrims?.expectMovement() }
+scrims.isWriting = { frameWrites.isActive }
 
 // A click or an activation can restack the desktop with no focus report behind it; the hoists read the
 // stacking again rather than wait for their next round.

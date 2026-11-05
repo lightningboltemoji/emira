@@ -41,9 +41,10 @@ import EmiraCore
 // it after the AX write that caused it has already landed — 8 to 42 ms later, measured — so the reading a
 // mask was cut against goes stale under it with no event to hang a repaint on. A set is therefore painted
 // at once and then cut again while the reading keeps changing, bounded by quiet and by a deadline
-// (`settleQuiet`, `settleLimit`). It is `HoistPanels`' fence in another place: what the window server
-// shows can only be found out by asking it. Cutting again costs a shape's path and nothing else, so a
-// veil fading through it is undisturbed (`ScrimWindow`).
+// (`settleQuiet`, `settleLimit`), and for as long as a write is out, since a slow app moves when it gets
+// to it (`isWriting`). It is `HoistPanels`' fence in another place: what the window server shows can only
+// be found out by asking it. Cutting again costs a shape's path and nothing else, so a veil fading through
+// it is undisturbed (`ScrimWindow`).
 //
 // **The photograph is refilmed when the desktop is quiet.** Never on a focus change: the window server
 // serializes screenshots, and a focus change is also a cover, whose batch is the one latency in emira
@@ -197,6 +198,10 @@ public final class Scrims: ScrimPlane {
     /// waits on our own commit, so an arrival watch takes none (`WorldWatcher.isPainting`'s reason).
     public var isPainting: @MainActor () -> Bool = { false }
 
+    /// Whether a frame write is out on a lane (`FrameWrites.isActive`). A slow app moves whenever it gets
+    /// to it, so a watch cannot take a quiet reading to mean the window has finished.
+    public var isWriting: @MainActor () -> Bool = { false }
+
     /// Told, with every cut, which windows it outlined with no reading at rest and which numbers are on
     /// screen at all — so they can be measured (`CornerSurvey`), and `cornersMeasured` can cut again.
     public var surveyCorners: @MainActor (_ guessed: [CGWindowID], _ onScreen: Set<CGWindowID>) -> Void
@@ -244,6 +249,8 @@ public final class Scrims: ScrimPlane {
     private var filmingStrip: [MonitorId: Rect] = [:]
     /// Bumped per display by every set, so a settling re-read from an older one owns nothing.
     private var settleGeneration: [MonitorId: Int] = [:]
+    /// The watch running on each display: readings with nothing new so far, and when it stops regardless.
+    private var watches: [MonitorId: (quiet: Int, deadline: Date)] = [:]
 
     /// Each window the core named `moving`, at the frame the window server was still reporting for it
     /// when it was named — dropped the moment that reading changes, which is the server catching up.
@@ -346,6 +353,7 @@ public final class Scrims: ScrimPlane {
         }
         covered.insert(monitor)
         settleGeneration[monitor, default: 0] &+= 1        // a watch in flight would read every frame
+        watches[monitor] = nil
     }
 
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
@@ -380,6 +388,7 @@ public final class Scrims: ScrimPlane {
         painted.removeAll()
         stale.removeAll()
         naming.removeAll()
+        watches.removeAll()
     }
 
     /// Cut every mask against the window server again: the reading one was cut against has moved with
@@ -391,11 +400,13 @@ public final class Scrims: ScrimPlane {
         }
     }
 
-    /// A peek of ours has appeared, moved or gone. Our own window reaches the window server's list in its
-    /// own time too, so each display drawing anything is watched until the reading stands still.
-    public func peeksChanged() {
+    /// Something is moving that no set describes: a write going out, a window placing itself, a peek of
+    /// ours. Each display drawing anything is watched until the reading stands still; one already watched
+    /// starts its quiet over instead, since reports outrun readings and a restart per report never reads.
+    public func expectMovement() {
         for monitor in surfaces.keys.sorted() where isActive(monitor) && !covered.contains(monitor) {
-            watch(monitor)
+            guard watches[monitor] != nil else { watch(monitor); continue }
+            watches[monitor] = (0, Date().addingTimeInterval(Self.settleLimit))
         }
     }
 
@@ -640,23 +651,32 @@ public final class Scrims: ScrimPlane {
     private func watch(_ monitor: MonitorId) {
         settleGeneration[monitor, default: 0] &+= 1
         let mine = settleGeneration[monitor] ?? 0
-        let deadline = Date().addingTimeInterval(Self.settleLimit)
-        func again(_ quiet: Int) {
+        watches[monitor] = (0, Date().addingTimeInterval(Self.settleLimit))
+        func again() {
+            guard let watch = watches[monitor] else { return }
             // A reading that has stopped changing is the server caught up, and a deadline is the answer
             // to a write it will never show. Either way nothing is waited on any longer, so a window
             // still standing where it was named is standing there for good and declines again.
-            guard quiet < Self.settleQuiet, Date() < deadline else {
-                guard stale[monitor] != nil else { return }
+            let settled = watch.quiet >= Self.settleQuiet || Date() >= watch.deadline
+            if settled, stale[monitor] != nil {
                 stale[monitor] = nil
                 paint(monitor, change: .cut)
+            }
+            guard !settled || isWriting() else {
+                watches[monitor] = nil
                 return
             }
             scheduler.schedule(after: Self.settleInterval) { [weak self] in
                 guard let self, settleGeneration[monitor] == mine else { return }
-                again(paint(monitor, change: .cut) ? 0 : quiet + 1)
+                // Past the settle it is only a slow write being waited for, which yields to the frames.
+                if !settled || !isPainting() {
+                    let quiet = paint(monitor, change: .cut) ? 0 : (watches[monitor]?.quiet ?? 0) + 1
+                    watches[monitor]?.quiet = quiet
+                }
+                again()
             }
         }
-        again(0)
+        again()
     }
 
     /// Each see-through window's shape on `display`, bottom→top, its veil, and what was outlined at a guess.

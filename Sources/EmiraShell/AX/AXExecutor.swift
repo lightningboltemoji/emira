@@ -124,7 +124,7 @@ public final class AXExecutor: Executor {
             // is the app's call, and the answer arrives as a destroy observation rather than here.
             case .closeWindow(let id):
                 guard let record = registry.record(id) else { continue }
-                writer.close(record)
+                close(record)
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
@@ -147,6 +147,17 @@ public final class AXExecutor: Executor {
                 }
                 Self.report(landings, for: moves, to: feedback)
             }
+        }
+    }
+
+    /// Close a window, asking again while its app has not answered: a command is given once, and nothing
+    /// was pressed. Unlike a read this has no `reconcile` behind it, since a close that fires long after
+    /// the user gave it is not a request they are still making.
+    private func close(_ record: WindowRegistry.Record, attempt: Int = 1) {
+        writer.close(record) { [weak self] answered in
+            guard let self, !answered, attempt < WorldWatcher.maxUnansweredAttempts,
+                  registry.record(record.id) != nil else { return }
+            close(record, attempt: attempt + 1)
         }
     }
 

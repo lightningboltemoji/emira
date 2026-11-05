@@ -86,10 +86,22 @@ public enum WorldObservation: Sendable, Equatable {
 
 /// What an app answered when asked which of its windows has focus.
 public enum FocusedWindowRead: Sendable, Equatable {
-    /// No answer — busy, gone, or without AX. Evidence of nothing, and never to be read as `nil`.
+    /// It did not answer in time, so it is still to say. Evidence of nothing, and never to be read as `nil`.
+    case unanswered
+    /// It answered without naming a window: nothing has focus, or it is gone or without AX. Not `nil` either.
     case unreadable
     /// It named a window: one emira manages or the one a focused sheet is attached to, else `nil`.
     case window(WindowId?)
+}
+
+/// What a read of a window's frame came to.
+public enum FrameRead: Sendable, Equatable {
+    /// Where the window stands.
+    case frame(Rect)
+    /// There is no frame to read: it closed between the notification and the read, a normal race.
+    case gone
+    /// Its app did not answer, which leaves the window wherever it went. Evidence of nothing.
+    case unanswered
 }
 
 /// Everything the live world needs from macOS, and nothing more.
@@ -126,17 +138,17 @@ public protocol ObservationSource: AnyObject {
     /// run-loop source, and its AX lane.
     func unwatch(app: pid_t)
 
-    /// Read a managed window's current frame, off the main actor, answering on it. `nil` when the window
-    /// stopped answering — it closed between the notification and the read, a normal race.
-    func readFrame(of window: WindowId, then: @escaping @MainActor (Rect?) -> Void)
+    /// Read a managed window's current frame, off the main actor, answering on it.
+    func readFrame(of window: WindowId, then: @escaping @MainActor (FrameRead) -> Void)
 
     /// Whether a managed window still exists, off the main actor, answering on it.
     ///
     /// The notification stream cannot answer this: an app that loses its key window picks a new one and
     /// posts `AXFocusedWindowChanged` *before* the old element is destroyed, so a focus report means
     /// either "the user moved focus" or "macOS backfilled a dead window" and only a read tells them apart
-    /// (`WorldWatcher.resolveFocus`). A window the registry has already forgotten is `false`.
-    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void)
+    /// (`WorldWatcher.resolveFocus`). A window the registry has already forgotten is `false`, and one
+    /// whose app did not answer is `nil`.
+    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void)
 
     /// Which of an app's windows has focus, off the main actor, answering on it — the read an
     /// activation costs, since `NSWorkspace` names only the app. Answers exactly once.

@@ -41,6 +41,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     /// How many times each app has been asked for its windows — the instrument for the scan
     /// coalescer, which exists to keep this number off the app's serial AX lane.
     private(set) var scanCounts: [pid_t: Int] = [:]
+    /// Whether each scan, in order, was asked to wait out a slow app.
+    private(set) var patience: [Bool] = []
 
     /// When true, `windows(of:then:)` parks its completion instead of answering, so a test can hold a
     /// scan open and drive a second request into it — the only way to reach two overlapping scans of
@@ -56,9 +58,10 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     func target(for pid: pid_t) -> ScanTarget? { (targets + unswept).first { $0.pid == pid } }
 
-    func windows(of target: ScanTarget,
+    func windows(of target: ScanTarget, patient: Bool,
                  then completion: @escaping @MainActor (ScanAnswer) -> Void) {
         scanCounts[target.pid, default: 0] += 1
+        patience.append(patient)
         guard holdsAnswers else {
             completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries))
             return
@@ -96,9 +99,11 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var watchSucceeds = true
     /// When true, frame reads park in `pendingReads` instead of answering.
     var holdsFrameReads = false
-    var pendingReads: [(WindowId, @MainActor (Rect?) -> Void)] = []
+    var pendingReads: [(WindowId, @MainActor (FrameRead) -> Void)] = []
     /// What a frame read answers when it isn't held.
     var frames: [WindowId: Rect] = [:]
+    /// How many frame reads go unanswered before the app answers again.
+    var unansweredReads = 0
     /// The windows a full-screen read answers `true` for.
     var fullScreen: Set<WindowId> = []
 
@@ -121,10 +126,14 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     func unwatch(app: pid_t) { unwatchedApps.append(app) }
 
-    func readFrame(of window: WindowId, then: @escaping @MainActor (Rect?) -> Void) {
+    func readFrame(of window: WindowId, then: @escaping @MainActor (FrameRead) -> Void) {
         frameReads.append(window)
         guard holdsFrameReads else {
-            then(frames[window])
+            guard unansweredReads == 0 else {
+                unansweredReads -= 1
+                return then(.unanswered)
+            }
+            then(frames[window].map(FrameRead.frame) ?? .gone)
             return
         }
         pendingReads.append((window, then))
@@ -132,21 +141,31 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
     /// Answer the oldest parked read.
     func answerRead(_ frame: Rect?) {
+        answerRead(frame.map(FrameRead.frame) ?? .gone)
+    }
+
+    func answerRead(_ read: FrameRead) {
         guard !pendingReads.isEmpty else { return }
         let (_, completion) = pendingReads.removeFirst()
-        completion(frame)
+        completion(read)
     }
 
     private(set) var aliveProbes: [WindowId] = []
     /// When true, aliveness probes park in `pendingProbes` instead of answering.
     var holdsProbes = false
-    var pendingProbes: [(WindowId, @MainActor (Bool) -> Void)] = []
+    var pendingProbes: [(WindowId, @MainActor (Bool?) -> Void)] = []
     /// Windows this source considers dead. Anything not listed is alive.
     var dead: Set<WindowId> = []
+    /// How many probes go unanswered before the app answers again.
+    var unansweredProbes = 0
 
-    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void) {
+    func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void) {
         aliveProbes.append(window)
         guard holdsProbes else {
+            guard unansweredProbes == 0 else {
+                unansweredProbes -= 1
+                return then(nil)
+            }
             then(!dead.contains(window))
             return
         }
@@ -154,7 +173,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     }
 
     /// Answer the oldest parked probe.
-    func answerProbe(_ alive: Bool) {
+    func answerProbe(_ alive: Bool?) {
         guard !pendingProbes.isEmpty else { return }
         let (_, completion) = pendingProbes.removeFirst()
         completion(alive)
@@ -555,6 +574,59 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(world.created.map(\.title) == ["one", "term"])
     }
 
+    /// A call that always outlasts the bound is never answered by asking again at it, so the attempt
+    /// the race has not been won by waits. One only: it holds the lane with the app's writes behind it.
+    @Test func onlyTheLastAttemptOfAScanWaits() {
+        let world = LiveWorld()
+        world.windows.targets.removeAll { $0.pid == 100 }
+        world.windows.entries.removeAll { $0.number == 3 }
+
+        world.watcher.start()
+        while world.scheduler.fire() > 0 {}
+
+        #expect(world.windows.patience == [false, false, true])
+    }
+
+    /// A retry landing while a scan is out is still that race, and spends the budget. Replayed as a
+    /// request it starts over, so an app slow to register and to describe itself is scanned for good.
+    @Test func aRetryMetByAScanStillOutKeepsItsPlaceInTheBudget() {
+        let world = LiveWorld()
+        world.windows.targets.removeAll { $0.pid == 100 }
+        world.windows.entries.removeAll { $0.number == 3 }
+        world.source.watchSucceeds = false
+        world.windows.holdsAnswers = true
+
+        world.watcher.start()
+        var rounds = 0
+        while rounds < 40 {
+            while !world.windows.pending.isEmpty { world.windows.answerScan() }
+            guard world.scheduler.fire() > 0 else { break }
+            rounds += 1
+        }
+
+        #expect(rounds < 40, "it ends")
+        #expect(world.windows.patience.last == true, "and it reaches the attempt that waits")
+    }
+
+    /// A request is owed the whole budget, whatever a retry beside it had spent.
+    @Test func aRequestMetByAScanStillOutStartsOver() {
+        let world = LiveWorld()
+        world.windows.targets.removeAll { $0.pid == 100 }
+        world.windows.entries.removeAll { $0.number == 3 }
+        world.source.watchSucceeds = false             // two retries at each step, the scan's and the watch's
+        world.watcher.start()
+        world.scheduler.fire()
+        world.windows.holdsAnswers = true
+        world.scheduler.fire()                         // the last attempt held out, and a retry waiting on it
+        world.watcher.handle(.windowAppeared(200))     // and then a fresh request
+        let scans = world.windows.patience.count
+
+        world.windows.answerScan()
+
+        #expect(world.windows.patience.count == scans + 1)
+        #expect(world.windows.patience.last == false, "from the start of the budget, not its end")
+    }
+
     @Test func aRetryOnlyRevisitsTheAppsTheScanCovered() {
         // Re-asking `source.applications()` would turn a one-app retry into a full re-scan of every
         // app on the machine, on a path that fires whenever anything fails to bind.
@@ -849,6 +921,155 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
 
         world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
         #expect(world.recorder.events.last == .windowSelfPlaced(id))
+    }
+
+    /// **A move no write answers for is told at once**, ahead of the read of it: an app can stop answering
+    /// the moment it has moved, and the mask is cut from the window server rather than from that read.
+    @Test func aMoveNoWriteAnswersForIsTold() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        var told = 0
+        world.watcher.onWindowMoved = { told += 1 }
+
+        world.watcher.handle(.windowMoved(id))
+        #expect(told == 1)
+
+        world.writes.begin([id])
+        world.watcher.handle(.windowMoved(id))
+        #expect(told == 1, "that is the write's own echo, and the write is what is being watched")
+
+        world.writes.end([id])
+        world.watcher.handle(.windowMoved(id))
+        #expect(told == 2, "a move after the landing is the app's, a write given up on included")
+    }
+
+    /// **A move its app has not answered for is still owed a frame**, and it was the only report coming.
+    /// An app that moves a window and stalls leaves the strip believing it never moved.
+    @Test func aReadTheAppDidNotAnswerIsAskedAgain() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+        world.source.unansweredReads = 2
+
+        world.watcher.handle(.windowMoved(id))
+        #expect(world.source.frameReads == [id, id, id])
+        #expect(world.recorder.events.last == .windowFrameChanged(id, rect(40, 40)))
+
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+        #expect(world.recorder.events.last == .windowSelfPlaced(id))
+    }
+
+    /// No answer is evidence of nothing, so it opens no wait: a window announced as having stopped
+    /// would be answered from the frame `World` already holds, which writes nothing.
+    @Test func noAnswerIsNotStillness() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.unansweredReads = .max
+
+        world.watcher.handle(.windowMoved(id))
+        world.scheduler.fire(after: WorldWatcher.stillnessQuiet)
+
+        #expect(world.source.frameReads.count == WorldWatcher.maxUnansweredAttempts)
+        #expect(!world.recorder.events.contains(.windowSelfPlaced(id)))
+    }
+
+    /// The asking in a row is bounded and the heartbeat is not: an app can stall for longer than any
+    /// budget, and a window it moved first would otherwise stay wherever it went.
+    @Test func theHeartbeatAsksUntilTheAppAnswers() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+        world.source.unansweredReads = WorldWatcher.maxUnansweredAttempts + 1
+
+        world.watcher.handle(.windowMoved(id))
+        let budget = world.source.frameReads.count
+        world.heartbeat.beat()
+        #expect(world.source.frameReads.count == budget + 1, "one a beat against a hung app, no more")
+        #expect(!world.recorder.events.contains(.windowFrameChanged(id, rect(40, 40))))
+
+        world.heartbeat.beat()
+        #expect(world.recorder.events.contains(.windowFrameChanged(id, rect(40, 40))))
+
+        let answered = world.source.frameReads.count
+        world.heartbeat.beat()
+        #expect(world.source.frameReads.count == answered, "and it stops when it is answered")
+    }
+
+    /// A write's read-back reports where the window stands, and a read landing inside it would put a
+    /// frame in the middle of a write. The question waits, and a beat still finds it afterwards.
+    @Test func aWriteGoingOutTakesTheQuestion() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.frames[id] = rect(40, 40)
+        world.source.holdsFrameReads = true
+
+        world.watcher.handle(.windowMoved(id))
+        world.writes.begin([id])
+        world.source.answerRead(.unanswered)
+        #expect(world.source.pendingReads.isEmpty, "not asked again over the write")
+
+        world.heartbeat.beat()
+        #expect(world.source.pendingReads.isEmpty, "nor on a beat while it is out")
+
+        world.writes.end([id])
+        world.heartbeat.beat()
+        #expect(world.source.pendingReads.count == 1)
+    }
+
+    /// An app force-quit while hung is the commonest way out of one, and it takes its windows at once.
+    @Test func anAppThatQuitOwesNoFrames() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.unansweredReads = .max
+
+        world.watcher.handle(.windowMoved(id))
+        world.watcher.handle(.appTerminated(100))
+        let reads = world.source.frameReads.count
+        world.heartbeat.beat()
+
+        #expect(world.source.frameReads.count == reads)
+    }
+
+    /// A window that goes is owed nothing, so a hung app's dead window is not asked about for good.
+    @Test func aWindowThatGoesIsNoLongerAskedAbout() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+        world.source.unansweredReads = .max
+
+        world.watcher.handle(.windowMoved(id))
+        let reads = world.source.frameReads.count
+        world.watcher.handle(.windowVanished(id))
+        world.scheduler.fire(after: WorldWatcher.successionGrace)
+        world.heartbeat.beat()
+
+        #expect(world.source.frameReads.count == reads)
+    }
+
+    /// An app that answers `gone` has answered: there is no asking again, and the wait still opens.
+    @Test func aWindowWithNoFrameIsNotAskedAgain() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let id = try #require(world.id(titled: "term"))
+        world.scheduler.fire()
+
+        world.watcher.handle(.windowMoved(id))
+        #expect(world.source.frameReads == [id])
+        world.heartbeat.beat()
+        #expect(world.source.frameReads == [id])
     }
 
     /// An app animating its own size reports at the refresh rate. Each report pushes the answer out
@@ -1408,7 +1629,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         let world = LiveWorld()
         world.watcher.start()
         world.watcher.handle(.appActivated(200))
-        world.source.focused[200] = .unreadable
+        world.source.focused[200] = .unanswered
         let prompt = element(4)
         world.watcher.handle(.focusMovedUnmanaged(200, element: prompt))
 
@@ -1475,13 +1696,94 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // puts the core on no window at all — which draws every window on the strip see-through.
         let world = LiveWorld()
         world.watcher.start()
-        world.source.focused[200] = .unreadable
+        world.source.focused[200] = .unanswered
         let before = world.recorder.events.count
 
         world.watcher.handle(.focusMovedUnmanaged(200))
 
-        #expect(world.source.focusReads == Array(repeating: 200, count: WorldWatcher.maxFocusReadAttempts))
+        #expect(world.source.focusReads == Array(repeating: 200, count: WorldWatcher.maxUnansweredAttempts))
         #expect(world.recorder.events.count == before, "and nothing invented in its place")
+    }
+
+    /// An app that answers and names nothing has said all it is going to, so it is not polled: that is
+    /// every activation of an app with no windows open.
+    @Test func aFocusReadThatNamesNoWindowIsLeftToStand() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .unreadable
+
+        world.watcher.handle(.appActivated(200))
+        #expect(world.source.focusReads == Array(repeating: 200, count: WorldWatcher.maxFocusReadAttempts))
+
+        world.heartbeat.beat()
+        #expect(world.source.focusReads.count == WorldWatcher.maxFocusReadAttempts, "nor asked on a beat")
+    }
+
+    /// The report is the only one coming: an app that stalls for longer than any budget has still taken
+    /// the keyboard, and nothing else would tell the core so.
+    @Test func theHeartbeatAsksWhichWindowHasFocusUntilTheAppSays() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.source.focused[200] = .unanswered
+
+        world.watcher.handle(.appActivated(200))
+        let budget = world.source.focusReads.count
+        #expect(budget == WorldWatcher.maxUnansweredAttempts)
+        world.heartbeat.beat()
+        #expect(world.source.focusReads.count == budget + 1, "one a beat against a hung app, no more")
+
+        world.source.focused[200] = .window(one)
+        world.heartbeat.beat()
+        #expect(world.recorder.events.contains(.focusChanged(one, origin: .system)))
+
+        let answered = world.source.focusReads.count
+        world.heartbeat.beat()
+        #expect(world.source.focusReads.count == answered, "and it stops when it is answered")
+    }
+
+    /// An answer is current however late it comes, so the one thing that makes it wrong is the keyboard
+    /// having left: believed, it would put focus back on an app the user has gone from.
+    @Test func aFocusReadAnsweredAfterItsAppLostTheKeyboardIsDropped() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        world.source.holdsFocusReads = true
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.appActivated(100))
+
+        world.source.answerFocusRead(.window(one))
+
+        #expect(!world.recorder.events.contains(.focusChanged(one, origin: .system)))
+    }
+
+    /// One left asking on the heartbeat ends with the same answer, and is not asked again.
+    @Test func aFocusReadOvertakenOnTheHeartbeatIsNotAskedAgain() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .unanswered
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.appActivated(100))
+        world.heartbeat.beat()
+        let reads = world.source.focusReads.filter { $0 == 200 }.count
+
+        world.heartbeat.beat()
+
+        #expect(world.source.focusReads.filter { $0 == 200 }.count == reads)
+    }
+
+    /// A process that has gone answers instantly and forever, and asking it would mint it a lane.
+    @Test func anAppThatQuitIsNotAskedWhichWindowHasFocus() {
+        let world = LiveWorld()
+        world.watcher.start()
+        world.source.focused[200] = .unanswered
+        world.watcher.handle(.appActivated(200))
+        world.watcher.handle(.appTerminated(200))
+        let reads = world.source.focusReads.count
+
+        world.heartbeat.beat()
+
+        #expect(world.source.focusReads.count == reads)
     }
 
     @Test func aFocusReadThatTimesOutIsAskedAgainBeforeItIsBelieved() {
@@ -1495,7 +1797,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMovedUnmanaged(200))
         let before = world.recorder.events.count
 
-        world.source.answerFocusRead(.unreadable)
+        world.source.answerFocusRead(.unanswered)
         #expect(world.recorder.events.count == before, "a timeout alone reports nothing")
         world.source.answerFocusRead(.window(one))
 
@@ -1512,7 +1814,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         _ = world.intent.request(term)
         let before = world.recorder.events.count
 
-        world.source.answerFocusRead(.unreadable)
+        world.source.answerFocusRead(.unanswered)
 
         #expect(world.source.focusReads == [200], "not asked again")
         #expect(world.recorder.events.count == before, "and not even the unanswered `nil`")
@@ -1574,6 +1876,86 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.focusMoved(term))
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(term, origin: .system)])
+    }
+
+    /// The liveness question is a focus read: an app that goes quiet for a moment is asked once more,
+    /// since the sheet that silenced it is over by the time the next attempt reaches it.
+    @Test func aLivenessQuestionTheAppDidNotAnswerIsAskedAgain() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(two))
+        world.source.unansweredProbes = 1
+        let before = world.recorder.events.count
+
+        world.watcher.handle(.focusMoved(one))
+
+        #expect(world.source.aliveProbes == [two, two])
+        #expect(Array(world.recorder.events.dropFirst(before)) == [.focusChanged(one, origin: .system)])
+    }
+
+    /// Silence reports nothing, since the opposite mistake moves focus off a window about to be gone.
+    /// It is never taken for "dead" either: that would leave the keyboard's window veiled for good.
+    @Test func theHeartbeatAsksALivenessQuestionUntilTheAppSays() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(two))
+        world.source.unansweredProbes = WorldWatcher.maxUnansweredAttempts + 1
+        let reported = Event.focusChanged(one, origin: .system)
+
+        world.watcher.handle(.focusMoved(one))
+        let budget = world.source.aliveProbes.count
+        #expect(budget == WorldWatcher.maxUnansweredAttempts)
+        #expect(!world.recorder.events.contains(reported))
+
+        world.heartbeat.beat()
+        #expect(world.source.aliveProbes.count == budget + 1, "one a beat against a hung app, no more")
+        #expect(!world.recorder.events.contains(reported))
+
+        world.heartbeat.beat()
+        #expect(world.recorder.events.contains(reported))
+
+        let answered = world.source.aliveProbes.count
+        world.heartbeat.beat()
+        #expect(world.source.aliveProbes.count == answered, "and it stops when it is answered")
+    }
+
+    /// An answer can take seconds, and it is about a report the user may have moved past: believed, it
+    /// would pull focus back to a window they left.
+    @Test func aLivenessAnswerOvertakenByANewerReportReportsNothing() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        let term = try! #require(world.id(titled: "term"))
+        world.watcher.handle(.focusMoved(two))
+        world.source.holdsProbes = true
+        world.watcher.handle(.focusMoved(one))
+        world.watcher.handle(.focusMoved(term))     // another app, so reported without asking
+        let before = world.recorder.events.count
+
+        world.source.answerProbe(true)
+
+        #expect(world.recorder.events.count == before)
+    }
+
+    /// A window that turns out to be gone is the report macOS fills a hole with, on the heartbeat too.
+    @Test func aLivenessQuestionAnsweredDeadOnTheHeartbeatReportsNothing() {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try! #require(world.id(titled: "one"))
+        let two = try! #require(world.id(titled: "two"))
+        world.watcher.handle(.focusMoved(two))
+        world.source.unansweredProbes = WorldWatcher.maxUnansweredAttempts
+        world.source.dead = [two]
+
+        world.watcher.handle(.focusMoved(one))
+        world.heartbeat.beat()
+
+        #expect(!world.recorder.events.contains(.focusChanged(one, origin: .system)))
     }
 
     @Test func aSwallowedEchoIsNotWhatTheNextReportIsReadAgainst() {
@@ -1673,7 +2055,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         // came forward.
         let world = LiveWorld()
         world.watcher.start()
-        world.source.focused[200] = .unreadable
+        world.source.focused[200] = .unanswered
         let before = world.recorder.events.count
 
         world.watcher.handle(.appActivated(200))

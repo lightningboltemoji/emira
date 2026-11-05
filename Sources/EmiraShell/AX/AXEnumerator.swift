@@ -44,10 +44,14 @@ public struct ScannedWindow: Sendable {
 public struct ScanAnswer: Sendable {
     public let windows: [ScannedWindow]
     public let entries: [WindowListEntry]
+    /// Whether the app answered for every window it listed. `false` makes `windows` a prefix, and a
+    /// window missing from it missing for no reason at all.
+    public let isComplete: Bool
 
-    public init(windows: [ScannedWindow], entries: [WindowListEntry]) {
+    public init(windows: [ScannedWindow], entries: [WindowListEntry], isComplete: Bool = true) {
         self.windows = windows
         self.entries = entries
+        self.isComplete = isComplete
     }
 }
 
@@ -59,9 +63,10 @@ public protocol WindowSource {
     /// them. Deliberately narrower than `target(for:)`; see there.
     func applications() -> [ScanTarget]
     /// One app's windows *and the window list read alongside them* (`ScanAnswer`), delivered on the main
-    /// actor. Must call `completion` exactly once — including when the app answers with nothing, the
-    /// common case for an app with no AX support or one that has just quit.
-    func windows(of target: ScanTarget, then completion: @escaping @MainActor (ScanAnswer) -> Void)
+    /// actor, exactly once — even for an app answering with nothing, as one without AX or just quit does.
+    /// `patient` gives each window `AXClient.patientTimeout`, for an app the short bound never gets through.
+    func windows(of target: ScanTarget, patient: Bool,
+                 then completion: @escaping @MainActor (ScanAnswer) -> Void)
     /// The public window list on its own — what reconciliation re-reads to find windows no notification
     /// accounted for. Touches no app's run loop, so it costs nothing an app can slow down.
     func windowList() -> [WindowListEntry]
@@ -194,12 +199,11 @@ public final class AXEnumerator {
         enumerate(apps: source.applications(), completion: completion)
     }
 
-    /// Scan exactly these apps and report. Returns immediately; `completion` runs on the main actor
-    /// once every app has answered.
-    ///
-    /// The fan-out is deliberately not sequential: apps are independent processes with independent main
-    /// run loops, so scanning at once costs the *maximum* of their latencies rather than the sum.
+    /// Scan exactly these apps and report. Returns immediately; `completion` runs on the main actor once
+    /// every app has answered. All at once, since apps are independent processes with independent main
+    /// run loops, so it costs the *maximum* of their latencies rather than the sum.
     public func enumerate(apps targets: [ScanTarget], ignoring unmanageable: Unmanageable = .none,
+                          patient: Bool = false,
                           completion: @escaping @MainActor (Report) -> Void) {
         guard !targets.isEmpty else {
             // No apps is a legitimate answer (usually a missing Accessibility grant), but a callback
@@ -212,7 +216,7 @@ public final class AXEnumerator {
 
         let gather = Gather(pending: targets.count)
         for target in targets {
-            source.windows(of: target) { [self] answer in
+            source.windows(of: target, patient: patient) { [self] answer in
                 gather.answers[target.pid] = answer
                 gather.pending -= 1
                 guard gather.pending == 0 else { return }
@@ -312,8 +316,12 @@ public final class AXEnumerator {
         var unbound: [Report.Unbound] = []
         var rejected: Set<AXWindow> = []
         var unclaimed = 0
+        /// Whether the app stopped answering partway through (`ScanAnswer.isComplete`).
+        var stoppedAnswering = false
         /// Whether this app is worth asking again — the retry's target set is built from this.
-        var isIncomplete: Bool { !unbound.isEmpty || unclaimed > 0 || !undescribed.isEmpty }
+        var isIncomplete: Bool {
+            !unbound.isEmpty || unclaimed > 0 || !undescribed.isEmpty || stoppedAnswering
+        }
     }
 
     /// Both joins for one app, against the window list it answered with.
@@ -324,6 +332,7 @@ public final class AXEnumerator {
     private func join(_ answer: ScanAnswer, of target: ScanTarget,
                       ignoring unmanageable: Unmanageable, onto screens: [Rect]) -> AppOutcome {
         var outcome = AppOutcome()
+        outcome.stoppedAnswering = !answer.isComplete
 
         var fresh: [ScannedWindow] = []
         for window in answer.windows {
@@ -351,13 +360,14 @@ public final class AXEnumerator {
         // always a native tab going to the background, which posts nothing at all — hence a set
         // difference rather than a notification.
         //
-        // Two ways an app's answer is not a picture to judge absence from, and both cost a column if
+        // Three ways an app's answer is not a picture to judge absence from, and all cost a column if
         // believed. It described *nothing* — the shape of a timeout, a missing grant and a process on
-        // its way out alike, where trusting it would take the app's whole strip down at once. Or the two
-        // sides of the join disagree about it, which is the same race `unclaimed` reports and is exactly
-        // what a successor looks like a moment before we can see it. Either way the app is skipped here
-        // and `isIncomplete` asks again. A tab group always leaves its selected tab behind, so the case
-        // this exists for never rides on a scan that came back short.
+        // its way out alike, where trusting it would take the app's whole strip down at once. It stopped
+        // answering partway, so the windows it never reached say nothing. Or the two sides of the join
+        // disagree about it, which is the same race `unclaimed` reports and is exactly what a successor
+        // looks like a moment before we can see it. Any way the app is skipped here and `isIncomplete` asks
+        // again. A tab group always leaves its selected tab behind, so the case this exists for never
+        // rides on a scan that came back short.
         //
         // **A disagreement the caller has written off is not that race** (`unmanageable`): a successor is
         // moments old, and a window the app keeps for good would hold its every departure for as long as
@@ -371,7 +381,8 @@ public final class AXEnumerator {
         }
         let disagrees = unplacedArrival || unclaimedEntry
         let listed = Set(outcome.rebound)
-        let departures = answer.windows.isEmpty || disagrees ? [] : registry.records(ofApps: [target.pid])
+        let unjudged = answer.windows.isEmpty || !answer.isComplete || disagrees
+        let departures = unjudged ? [] : registry.records(ofApps: [target.pid])
             .filter { !listed.contains($0.id) }
             .map { WindowIdentity.Departure(id: $0.id, pid: $0.pid, frame: $0.frame) }
         let arrivals = binding.matches.map { fresh[$0.observed].observed }
@@ -399,9 +410,8 @@ public final class AXEnumerator {
         // on the departed one's rectangle — but a departure with no successor rests on the app's silence
         // alone, and that is the one answer here nobody can take back: no second `AXWindowCreated` is
         // coming for a window that never closed, so a wrongly retired id is a live window off the strip
-        // for good. AX's silence has a second reading. `snapshot` is seven round trips under a messaging
-        // timeout, and a busy app that fails one of them drops a window out of its own answer — which
-        // looks exactly like a backgrounded tab from here.
+        // for good. AX's silence has a second reading: a window `snapshot` found no frame for drops out
+        // of its own app's answer, which looks exactly like a backgrounded tab from here.
         //
         // The window server tells the two apart for free, since the list is already read: a background
         // tab is ordered out and a closed window is not listed at all, so an entry that is *still on
@@ -500,20 +510,27 @@ public final class AXWindowSource: WindowSource {
         return ScanTarget(pid: pid, bundleId: appId)
     }
 
-    /// Read one app's windows on its own lane, and the window list with them. A window whose frame is
-    /// unreadable is dropped here rather than reported unbound: without a frame there is nothing to
-    /// join *on*.
-    ///
-    /// The list read sits on the lane, immediately after: `CGWindowListCopyWindowInfo` queries the window
-    /// server rather than the app, so it is safe off the main actor and safe concurrently across lanes.
-    public func windows(of target: ScanTarget,
+    /// Read one app's windows on its own lane, and the window list with them, which asks the window server
+    /// and so is safe there. A window with no frame is dropped, having nothing to join *on*, and the first
+    /// the app does not answer for ends the pass: one timeout against a hung app, not one per window.
+    public func windows(of target: ScanTarget, patient: Bool,
                         then completion: @escaping @MainActor (ScanAnswer) -> Void) {
         client.perform(app: target.pid) { application in
-            let windows = application.windows().compactMap { window in
-                window.snapshot(bundleId: target.bundleId)
-                    .map { ScannedWindow(observed: $0, element: window) }
+            var windows: [ScannedWindow] = []
+            var isComplete = true
+            for window in application.windows() {
+                do {
+                    guard let observed = try patient
+                        ? window.snapshot(bundleId: target.bundleId, within: AXClient.patientTimeout)
+                        : window.snapshot(bundleId: target.bundleId)
+                    else { continue }
+                    windows.append(ScannedWindow(observed: observed, element: window))
+                } catch {
+                    isComplete = false
+                    break
+                }
             }
-            return ScanAnswer(windows: windows, entries: WindowListEntry.current())
+            return ScanAnswer(windows: windows, entries: WindowListEntry.current(), isComplete: isComplete)
         } then: { answer in
             completion(answer)
         }

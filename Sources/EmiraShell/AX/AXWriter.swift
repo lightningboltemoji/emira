@@ -92,10 +92,10 @@ public protocol WindowWriter {
     /// `focus`'s record and completion contract, and silent where there is no sink to hand it to.
     func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void)
 
-    /// Ask the window to close itself, as clicking its close button would. Reports nothing: the window
-    /// actually going away arrives as a destroy observation, and an app is entitled to refuse (or to
-    /// put up a save sheet and close later, or never).
-    func close(_ window: WindowRegistry.Record)
+    /// Ask the window to close itself, as clicking its close button would, and say whether its app answered:
+    /// `false` is nothing pressed. Whether the window goes is a destroy observation, since an app is entitled
+    /// to refuse, or to put up a save sheet and close later, or never.
+    func close(_ window: WindowRegistry.Record, then completion: @escaping @MainActor (Bool) -> Void)
 }
 
 /// `WindowWriter` against the real system: `AXClient` for the lanes and the messaging timeout,
@@ -238,10 +238,11 @@ public final class AXWindowWriter: WindowWriter {
         } then: { _ in }
     }
 
-    public func close(_ window: WindowRegistry.Record) {
+    public func close(_ window: WindowRegistry.Record,
+                      then completion: @escaping @MainActor (Bool) -> Void) {
         let element = window.element
         client.perform(app: window.pid) { _ in
-            element.close()
-        } then: { _ in }
+            (try? element.close()) != nil
+        } then: { completion($0) }
     }
 }

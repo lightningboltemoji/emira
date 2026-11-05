@@ -43,11 +43,14 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
     var windowsByPid: [pid_t: [ScannedWindow]] = [:]
     var entries: [WindowListEntry] = []
     var screens: [Rect] = []
+    /// Whether the app answers for every window it lists (`ScanAnswer.isComplete`).
+    var answersInFull = true
 
     func applications() -> [ScanTarget] { targets }
-    func windows(of target: ScanTarget,
+    func windows(of target: ScanTarget, patient: Bool,
                  then completion: @escaping @MainActor (ScanAnswer) -> Void) {
-        completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries))
+        completion(ScanAnswer(windows: windowsByPid[target.pid] ?? [], entries: entries,
+                              isComplete: answersInFull))
     }
     func windowList() -> [WindowListEntry] { entries }
     func screenAreas() -> [Rect] { screens }
@@ -177,6 +180,27 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         #expect(report.snapshots.isEmpty)
         // Reported, not acted on: retiring the id is `WorldWatcher`'s, so that the core hears about it.
         #expect(group.registry.record(group.id) != nil)
+    }
+
+    /// **An app that stopped answering partway has said nothing about the windows it never reached.** A
+    /// minimized one is off screen, so the window server cannot speak for it, and believing the absence
+    /// would take a live window off the strip for good.
+    @Test func aWindowAnAppNeverGotToIsNoDeparture() {
+        let group = Group()
+        let elsewhere = Rect(x: 900, y: 39, width: 600, height: 1100)
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one"),
+                                                   tab(2, title: "other", frame: elsewhere)]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere)]
+        _ = group.rescan()
+
+        group.source.windowsByPid = [ghostty.pid: [tab(1, title: "tab one")]]
+        group.source.entries = [entry(1), entry(2, frame: elsewhere, onScreen: false)]
+        group.source.answersInFull = false
+        let report = group.rescan()
+
+        #expect(report.departed.isEmpty)
+        #expect(report.isIncomplete, "and it is asked again")
+        #expect(report.incompleteApps == [ghostty])
     }
 }
 
@@ -386,10 +410,10 @@ private func entry(_ number: CGWindowID, frame: Rect = groupFrame, onScreen: Boo
         }
         func unwatch(window: WindowId, of app: pid_t) { unwatchedWindows.append(window) }
         func unwatch(app: pid_t) {}
-        func readFrame(of window: WindowId, then: @escaping @MainActor (Rect?) -> Void) {
-            then(frames[window])
+        func readFrame(of window: WindowId, then: @escaping @MainActor (FrameRead) -> Void) {
+            then(frames[window].map(FrameRead.frame) ?? .gone)
         }
-        func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool) -> Void) { then(true) }
+        func isAlive(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void) { then(true) }
         func focusedWindow(of app: pid_t, then: @escaping @MainActor (FocusedWindowRead) -> Void) {
             then(.unreadable)
         }

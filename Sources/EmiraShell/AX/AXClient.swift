@@ -10,8 +10,8 @@ import Foundation
 //    *own* main run loop, so calling one from ours lets a busy Chrome stall our display link.
 //  · Serial per app — shared lanes let one hung app stall placement everywhere; per-call lanes let two
 //    sets race into one window out of order, breaking the size → position → size clamping dance.
-//  · Bounded — `AXUIElementSetMessagingTimeout` turns "wait forever" into `.cannotComplete`, which
-//    `AXAccess` collapses to `nil` and the reducer sees as `Event.axFailed`.
+//  · Bounded — `AXUIElementSetMessagingTimeout` turns "wait forever" into `.cannotComplete`, which is
+//    an app that did not answer to `AXAccess` and `Event.axFailed` to the reducer.
 //
 // Not `async`/`await`: `Executor.execute` returns immediately by contract, so a suspension point inside
 // effect execution would be exactly the re-entrancy the pump forbids.
@@ -29,20 +29,23 @@ public final class AXClient {
     /// hold-timeout that would otherwise be the only thing to notice a hung app.
     public static let defaultTimeout: Float = 0.25
 
+    /// The bound on a call asked to wait: one that always outlasts `defaultTimeout` is never answered by
+    /// asking again. It holds its app's lane for as long, with that app's writes queued behind it.
+    nonisolated public static let patientTimeout: Float = 1.5
+
     /// One app's lane: its AX application element and the serial queue every call through it runs on.
     private struct Lane {
         let application: AXApplication
         let queue: DispatchQueue
     }
 
-    /// The per-app messaging timeout, applied once per lane at creation.
-    private let timeout: Float
-
     /// The lanes, keyed by pid. Created lazily on first contact with an app and dropped when it quits.
     private var lanes: [pid_t: Lane] = [:]
 
+    /// Bounds every AX call this process makes, through the system-wide element: a timeout set on an
+    /// application element stops there, and a window element obtained through it waits the system's 1.5 s.
     public init(timeout: Float = AXClient.defaultTimeout) {
-        self.timeout = timeout
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), timeout)
     }
 
     /// Run `work` against an app's AX element on that app's serial queue, then deliver its result on the
@@ -60,8 +63,7 @@ public final class AXClient {
         }
     }
 
-    /// The AX application element for a pid, creating its lane on first contact. Go through here rather
-    /// than `AXApplication(pid:)` — it is what guarantees the messaging timeout is set.
+    /// The AX application element for a pid, creating its lane on first contact.
     public func application(for pid: pid_t) -> AXApplication {
         lane(for: pid).application
     }
@@ -75,14 +77,11 @@ public final class AXClient {
     /// How many apps currently have a lane.
     public var laneCount: Int { lanes.count }
 
-    /// Get or create an app's lane. The messaging timeout is set once here, on the application element:
-    /// every window element obtained *through* it inherits the timeout.
+    /// Get or create an app's lane.
     private func lane(for pid: pid_t) -> Lane {
         if let existing = lanes[pid] { return existing }
-        let application = AXApplication(pid: pid)
-        application.setMessagingTimeout(timeout)
         let lane = Lane(
-            application: application,
+            application: AXApplication(pid: pid),
             queue: DispatchQueue(label: "xyz.emira.ax.\(pid)", qos: .userInitiated))
         lanes[pid] = lane
         return lane

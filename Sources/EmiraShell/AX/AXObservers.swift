@@ -220,7 +220,8 @@ public final class AXObservationSource: ObservationSource {
                 for name in AXNotification.window {
                     let result = AXObserverAddNotification(
                         handle.observer, element.element, name as CFString, handle.refcon)
-                    ok = (result == .success) && ok
+                    // A registration that timed out lands all the same, and this is the retry finding it.
+                    ok = (result == .success || result == .notificationAlreadyRegistered) && ok
                 }
                 return ok ? nil : id
             }
@@ -262,16 +263,16 @@ public final class AXObservationSource: ObservationSource {
         }
     }
 
-    public func readFrame(of id: WindowId, then completion: @escaping @MainActor (Rect?) -> Void) {
+    public func readFrame(of id: WindowId, then completion: @escaping @MainActor (FrameRead) -> Void) {
         guard let record = registry.record(id) else {
-            completion(nil)
+            completion(.gone)
             return
         }
         let element = record.element
         client.perform(app: record.pid) { _ in
-            element.frame
-        } then: { frame in
-            completion(frame)
+            element.frameRead
+        } then: { read in
+            completion(read)
         }
     }
 
@@ -283,7 +284,7 @@ public final class AXObservationSource: ObservationSource {
         } then: { completion($0) }
     }
 
-    public func isAlive(_ id: WindowId, then completion: @escaping @MainActor (Bool) -> Void) {
+    public func isAlive(_ id: WindowId, then completion: @escaping @MainActor (Bool?) -> Void) {
         // A window the registry has forgotten is one we were already told about — a free answer.
         guard let record = registry.record(id) else {
             completion(false)
@@ -300,11 +301,19 @@ public final class AXObservationSource: ObservationSource {
     public func focusedWindow(of pid: pid_t,
                               then completion: @escaping @MainActor (FocusedWindowRead) -> Void) {
         client.perform(app: pid) { application in
-            application.focusedWindow().map { ($0, $0.parent) }
+            Result {
+                try application.focusedWindow().map { window in
+                    (window, Result { try window.parent })
+                }
+            }
         } then: { [weak self] read in
-            guard let self, let (window, parent) = read else { return completion(.unreadable) }
-            // A focused sheet is focus in the window it is attached to, which is the one emira manages.
-            completion(.window(registry.id(for: window) ?? parent.flatMap { registry.id(for: $0) }))
+            guard let self, case .success(let focused) = read else { return completion(.unanswered) }
+            guard let (window, parent) = focused else { return completion(.unreadable) }
+            if let id = registry.id(for: window) { return completion(.window(id)) }
+            // A focused sheet is focus in the window it is attached to, which is the one emira manages,
+            // so a window with no id and no answer about its parent is not yet focus on nothing.
+            guard case .success(let above) = parent else { return completion(.unanswered) }
+            completion(.window(above.flatMap { registry.id(for: $0) }))
         }
     }
 

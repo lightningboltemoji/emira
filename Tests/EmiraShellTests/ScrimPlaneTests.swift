@@ -607,6 +607,125 @@ import EmiraCore
         }
     }
 
+    // The slow write — a window that moves whenever its app gets round to it.
+
+    /// A veiled window beside an opaque one, the opaque one free to move onto it.
+    static func besideAMover() -> (stack: Stack, under: Rect, moved: Rect) {
+        let under = Rect(x: 0, y: 0, width: 400, height: 400)
+        return (Stack([Self.pane(9, Rect(x: 600, y: 0, width: 100, height: 100)), Self.pane(1, under)]),
+                under, Rect(x: 100, y: 100, width: 100, height: 100))
+    }
+
+    /// **A write still out holds the watch open**, since quiet says nothing about a window its app has
+    /// not got to: it moves when it recovers, and the set that would recut it is held for that landing.
+    @Test func aWriteStillOutKeepsTheWatchReadingPastQuiet() {
+        let (stack, _, moved) = Self.besideAMover()
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        var writing = true
+        scrims.isWriting = { writing }
+        Self.show(scrims, [Self.binding(1)])
+
+        for _ in 0..<(Scrims.settleQuiet * 3) { #expect(clock.fire(), "still waiting on the write") }
+        #expect(Self.shows(surface, 1, 150, 150))
+
+        stack.panes[0] = Self.pane(9, moved)
+        #expect(clock.fire())
+        #expect(!Self.shows(surface, 1, 150, 150), "the mask followed the window when it finally went")
+        #expect(surface.changes.last == .cut)
+
+        writing = false
+        while clock.fire() {}
+        #expect(!clock.fire(), "and it ends with the write")
+    }
+
+    /// Quiet still ends what quiet can answer. A stale frame is a claim about the *server* catching up,
+    /// so a window the write has not moved declines again on the old schedule, watched or not.
+    @Test func aStaleFrameStillEndsAtQuietWhileAWriteIsOut() {
+        let pin = Rect(x: 300, y: 0, width: 100, height: 800)
+        let under = Rect(x: 200, y: 0, width: 400, height: 800)
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, pin), Self.pane(2, under)], scheduler: clock)
+        scrims.isWriting = { true }
+        Self.show(scrims, [Self.binding(1)], .dissolve, moving: [WindowId(2)])
+        #expect(Self.shows(surface, 1, 350, 400))
+
+        for _ in 0..<Scrims.settleQuiet { clock.fire() }
+        #expect(!Self.shows(surface, 1, 350, 400))
+        #expect(clock.fire(), "the write is still being watched")
+    }
+
+    /// Past its settle, a watch is waiting on an app rather than on the server, and it may be a second:
+    /// it yields to the frame loop, as an arrival watch does, without giving up on the write.
+    @Test func aWatchPastItsSettleReadsNothingWhileFramesArePainted() {
+        let (stack, _, _) = Self.besideAMover()
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        var painting = false
+        scrims.isPainting = { painting }
+        scrims.isWriting = { true }
+        Self.show(scrims, [Self.binding(1)])
+        for _ in 0...Scrims.settleQuiet { clock.fire() }
+
+        painting = true
+        let before = stack.reads
+        #expect(clock.fire(), "still watching")
+        #expect(stack.reads == before, "nothing read mid-frame")
+
+        painting = false
+        #expect(clock.fire())
+        #expect(stack.reads == before + 1)
+    }
+
+    /// **A window can leave a mask with no set on the way**: an app placing itself, a write given up on
+    /// landing after all. Told that something is moving, the plane reads until the desktop stands still.
+    @Test func anExpectedMovementIsWatchedOntoTheMask() {
+        let (stack, _, moved) = Self.besideAMover()
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.veiling(stack, clock)
+        #expect(Self.shows(surface, 1, 150, 150))
+
+        scrims.expectMovement()
+        stack.panes[0] = Self.pane(9, moved)
+        #expect(clock.fire())
+        #expect(!Self.shows(surface, 1, 150, 150))
+        #expect(surface.changes.last == .cut)
+        while clock.fire() {}
+    }
+
+    /// Reports outrun readings, so one arriving mid-watch starts its quiet over and adds no second watch:
+    /// a watch restarted for each would be pushed back by every report and never read at all.
+    @Test func anExpectedMovementExtendsTheWatchRunning() {
+        let (stack, _, _) = Self.besideAMover()
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)])
+        for _ in 0..<(Scrims.settleQuiet - 1) { clock.fire() }
+
+        let read = stack.reads
+        scrims.expectMovement()
+        for _ in 0..<Scrims.settleQuiet { #expect(clock.fire(), "its quiet started over") }
+        #expect(stack.reads == read + Scrims.settleQuiet, "one reading a tick: one watch")
+        #expect(!clock.fire())
+    }
+
+    /// Nothing is read for a movement no mask can show: under a cover, or with nothing veiled.
+    @Test func anExpectedMovementReadsNothingWithNoMaskToKeep() {
+        let (stack, _, _) = Self.besideAMover()
+        let clock = ManualScheduler()
+        let (bare, _) = Self.plane(stack: stack, scheduler: clock)
+        bare.expectMovement()
+        #expect(stack.reads == 0)
+        #expect(!clock.fire())
+
+        let (covered, _) = Self.veiling(stack, clock)
+        covered.setCovered(true, on: Self.monitor)
+        let read = stack.reads
+        covered.expectMovement()
+        #expect(!clock.fire())
+        #expect(stack.reads == read)
+    }
+
     // The arrival — an app announces a window, and the window server shows it in its own time.
 
     /// A plane holding one veiled window, with the set's own settle watch already over.

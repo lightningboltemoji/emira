@@ -242,6 +242,24 @@ import EmiraCore
         #expect(!writes.isWriting(WindowId(1)))
     }
 
+    @Test("each write going out is told, and the record knows when the last one is back")
+    func aWriteGoingOutIsTold() {
+        let writes = FrameWrites()
+        var told = 0
+        writes.onBegin = { told += 1 }
+        #expect(!writes.isActive)
+
+        writes.begin([WindowId(1)])
+        writes.begin([WindowId(2)])
+        #expect(told == 2)
+        #expect(writes.isActive)
+
+        writes.end([WindowId(1)])
+        #expect(writes.isActive)
+        writes.end([WindowId(2)])
+        #expect(!writes.isActive)
+    }
+
     @Test("a whole point off is the app's answer, at the threshold the reducer diffs against")
     func aWholePointOffIsReported() {
         // The core writes whole points, so a landing a point away is not rounding. Staying silent here
@@ -530,6 +548,48 @@ import EmiraCore
         #expect(events.events.isEmpty)
     }
 
+    @Test("a close its app did not answer is asked again, and no further once it does")
+    func aCloseIsAskedUntilItsAppAnswers() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.unansweredCloses = 3
+        let events = Recorder()
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.closeWindow(a)], feedback: events.sink)
+
+        #expect(writer.closed == Array(repeating: a, count: 4))
+        #expect(events.events.isEmpty)
+    }
+
+    @Test("an app that stays silent is asked about a close for the budget, then let go")
+    func aSilentAppIsAskedAboutACloseOnlyForTheBudget() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.unansweredCloses = .max
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.closeWindow(a)], feedback: Recorder().sink)
+
+        #expect(writer.closed.count == WorldWatcher.maxUnansweredAttempts)
+    }
+
+    @Test("a window that left the registry while its close was out is not asked about again")
+    func aCloseStopsAskingOnceTheWindowHasGone() {
+        let registry = WindowRegistry()
+        let a = Self.adopt(registry, pid: 100, number: 1)
+        let writer = ScriptedWriter()
+        writer.unansweredCloses = .max
+        writer.onClose = { registry.forget(a) }
+
+        AXExecutor(registry: registry, writer: writer)
+            .execute([.closeWindow(a)], feedback: Recorder().sink)
+
+        #expect(writer.closed == [a])
+    }
+
     @Test("capture is not the truth plane's to answer")
     func captureIsNotAnsweredHere() {
         // `capture` routes to `CaptureService` via `CompositingExecutor`, so an ack from here would be
@@ -783,6 +843,10 @@ final class ScriptedWriter: WindowWriter {
     /// How each move answers. Default: accepted, landed exactly where it was asked to.
     var landing: ((WindowMove) -> WindowLanding)?
 
+    /// How many closes go unanswered before the app says anything, and what happens as each is asked.
+    var unansweredCloses = 0
+    var onClose: (@MainActor () -> Void)?
+
     /// Hold every completion until `flush()`.
     var defersCompletion = false
     private var held: [@MainActor () -> Void] = []
@@ -825,7 +889,13 @@ final class ScriptedWriter: WindowWriter {
 
     func raise(_ window: WindowRegistry.Record) { raised.append(window.id) }
 
-    func close(_ window: WindowRegistry.Record) { closed.append(window.id) }
+    func close(_ window: WindowRegistry.Record, then completion: @escaping @MainActor (Bool) -> Void) {
+        closed.append(window.id)
+        onClose?()
+        guard unansweredCloses > 0 else { return completion(true) }
+        unansweredCloses -= 1
+        completion(false)
+    }
 
     /// Deliver every held answer, in the order the placements were made.
     func flush() {
@@ -849,7 +919,7 @@ private final class SilentFocusWriter: WindowWriter {
                       then completion: @escaping @MainActor () -> Void) {}
     func focusNothing(on display: Rect, then completion: @escaping @MainActor () -> Void) {}
     func raise(_ window: WindowRegistry.Record) {}
-    func close(_ window: WindowRegistry.Record) {}
+    func close(_ window: WindowRegistry.Record, then completion: @escaping @MainActor (Bool) -> Void) {}
 }
 
 /// Answers the two planes `AXExecutor` does not own, instantly, and forwards everything else — the
