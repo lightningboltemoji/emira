@@ -3,15 +3,16 @@
 // windows stack into one column and part again — before the word rests whole.
 //
 // Pure: `frame(t)` is an SVG string and nothing here touches a DOM, so the preview page and the
-// renderer draw the same picture from the same code.
+// renderer draw the same picture from the same code. The app draws it natively from a port,
+// `WordmarkScene.swift`, held to `windows(t)` by the golden `golden.ts` writes.
 //
 // **The `e` never moves.** It anchors the strip, so whatever happens to its right, the word still
 // starts where it starts — and no step may put another letter first.
 
 // --- Canvas --------------------------------------------------------------------------------------
 // In points, exported at 2×. As tall as a window and its shadow need; as wide as the strip plus a grow,
-// since the `e` holds still and a grow pushes everything after it right. `Wordmark.swift` and the
-// README both draw at this aspect.
+// since the `e` holds still and a grow pushes everything after it right. The onboarding window and
+// the README both draw at this aspect.
 
 export const WIDTH = 472;
 export const HEIGHT = 136;
@@ -40,9 +41,9 @@ const INK = "#ffffff";
 
 const STIFFNESS = 320;
 const OMEGA = Math.sqrt(STIFFNESS);
-// The app's rate: `Wordmark.swift` reads unclamped delays and paces by the display, so it can play
-// every frame on a 120 Hz screen. Browsers can't — see `bun run ship`.
-export const FPS = 120;
+// The README's rate. Browsers turn any frame delay of 10 ms or less into 100 ms, so 17 ms frames are
+// the shortest that play on time.
+export const FPS = 60;
 
 // A grow or shrink, in points of column width.
 const RESIZE_STEP = 40;
@@ -291,14 +292,35 @@ function letterScale(letter: Letter, w: number, h: number): number {
     return Math.max(0, Math.min(X_HEIGHT, (w - 2 * padX) / GLYPHS[letter].width, (h / 2 - padY) / reach));
 }
 
-function windowSVG(letter: Letter, { x, y, w, h, o }: Record<Prop, number>): string {
-    const g = GLYPHS[letter];
+/** One window as drawn: its rect and corner radius, its opacity, and where its glyph sits — the baseline's
+ *  left end, in y-down canvas space, and the glyph's size as points per x-height. */
+export interface Drawn { letter: Letter; x: number; y: number; w: number; h: number; r: number; o: number; gx: number; gy: number; k: number }
+
+function drawn(letter: Letter, { x, y, w, h, o }: Record<Prop, number>): Drawn {
     const k = letterScale(letter, w, h);
-    const gx = x + (w - g.width * k) / 2;
-    const gy = y + h / 2 + ANCHOR * k;            // the baseline, in y-down canvas space
-    const r = Math.min(RADIUS, w / 3, h / 3);
+    return {
+        letter, x, y, w, h,
+        r: Math.min(RADIUS, w / 3, h / 3),
+        o: Math.min(1, Math.max(0, o)),
+        gx: x + (w - GLYPHS[letter].width * k) / 2,
+        gy: y + h / 2 + ANCHOR * k,
+        k,
+    };
+}
+
+/** Every window `t` seconds into the loop, in the order they draw. The focused window draws last, so one
+ *  moving past its neighbour passes over it. */
+export function windows(t: number): Drawn[] {
+    const { index, strip } = stepAt(t);
+    const motion = advance(STARTS[index], STEPS[index].target, wrap(t) - STEPS[index].t);
+    const order = [...LETTERS].sort((a, b) => Number(a === strip.focus) - Number(b === strip.focus));
+    return order.map((l) => drawn(l, Object.fromEntries(PROPS.map((p) => [p, motion[l][p].x])) as Record<Prop, number>));
+}
+
+function windowSVG({ letter, x, y, w, h, r, o, gx, gy, k }: Drawn): string {
+    const g = GLYPHS[letter];
     const dot = g.dot ? `<circle cx="${f(g.dot[0])}" cy="${f(g.dot[1])}" r="${DOT_R}" fill="${INK}" stroke="none"/>` : "";
-    return `<g opacity="${f(Math.min(1, Math.max(0, o)))}">` +
+    return `<g opacity="${f(o)}">` +
         `<rect x="${f(x)}" y="${f(y)}" width="${f(w)}" height="${f(h)}" rx="${f(r)}" fill="url(#window)" filter="url(#shadow)"/>` +
         `<g transform="translate(${f(gx)} ${f(gy)}) scale(${f(k)} ${f(-k)})" fill="none" stroke="${INK}" ` +
         `stroke-width="${S}" stroke-linecap="round" stroke-linejoin="round"><path d="${g.d}"/>${dot}</g></g>`;
@@ -314,14 +336,6 @@ const DEFS =
 
 /** The picture `t` seconds into the loop, as a standalone SVG document. */
 export function frame(t: number, { scale = 1 } = {}): string {
-    const { index, strip } = stepAt(t);
-    const motion = advance(STARTS[index], STEPS[index].target, wrap(t) - STEPS[index].t);
-    // The focused window draws last, so one moving past its neighbour passes over it.
-    const order = [...LETTERS].sort((a, b) => Number(a === strip.focus) - Number(b === strip.focus));
-    const windows = order.map((l) => {
-        const at = Object.fromEntries(PROPS.map((p) => [p, motion[l][p].x])) as Record<Prop, number>;
-        return windowSVG(l, at);
-    });
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH * scale}" height="${HEIGHT * scale}" ` +
-        `viewBox="0 0 ${WIDTH} ${HEIGHT}">${DEFS}${windows.join("")}</svg>`;
+        `viewBox="0 0 ${WIDTH} ${HEIGHT}">${DEFS}${windows(t).map(windowSVG).join("")}</svg>`;
 }

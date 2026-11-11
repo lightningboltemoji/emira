@@ -46,13 +46,9 @@ let package = Package(
         // enforce that on its own — EmiraConfig pulls in EmiraCore — so `ImportFenceTests` pins it.
         .target(name: "EmiraSettings",
                 dependencies: ["EmiraCore", "EmiraConfig", "EmiraMotion", "EmiraGuide"]),
-        // The onboarding window's wordmark is a resource of the target that draws it, not of the app
-        // bundle: `Bundle.module` resolves in a bare `swift build` daemon too, so the first-launch
-        // window looks the same however emira was started. `make app` copies the bundle inwards.
         .target(name: "EmiraShell",
                 dependencies: ["EmiraCore", "EmiraConfig", "EmiraProtocol", "EmiraSettings",
-                               "EmiraGuide"],
-                resources: [.copy("Resources/logo.webp")]),
+                               "EmiraGuide"]),
         .executableTarget(name: "emira-daemon", dependencies: ["EmiraShell"]),
         // The CLI names `Command` (it parses argv straight into the one vocabulary, §2), so it
         // depends on EmiraCore as well — which EmiraProtocol already pulls in. EmiraConfig is

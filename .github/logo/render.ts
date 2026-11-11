@@ -4,11 +4,7 @@
 //
 //   bun render.ts                     out/logo.webp, out/logo.png, out/logo.svg
 //   bun render.ts --out <path>        the webp there instead
-//   bun run ship                      both shipped copies: the app's, and the README's
-//
-// The two copies differ because their players do. The app draws at 295×85 points and plays every frame,
-// so its copy is 2× that at 120 fps. Browsers clamp any frame of 10 ms or less to 100 ms, so the
-// README's is 60 fps — 17 ms frames are the shortest that play on time — at 2× its 472-wide slot.
+//   bun run ship                      the README's copy, and the app's golden (`golden.ts`)
 //   bun render.ts --scale 1           at 1× rather than 2×
 //   bun render.ts --fps 60            at that rate rather than scene.ts's
 //   bun render.ts --sheet             out/sheet.png: every step as it settles, on light and dark
@@ -35,7 +31,7 @@ const option = (name: string): string | undefined => {
 const scale = Number(option("--scale") ?? 2);
 const FPS = Number(option("--fps") ?? SCENE_FPS);
 // Scratch — the stills, the sheet — always lands here; `--out` moves only the webp, so shipping it
-// into the app's resources leaves nothing else beside it.
+// beside the README leaves nothing else there.
 const scratch = join(import.meta.dir, "out");
 const out = option("--out") ?? join(scratch, "logo.webp");
 

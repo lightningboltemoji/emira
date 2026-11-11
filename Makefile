@@ -88,26 +88,13 @@ print-version:
 # Accessibility. `CODESIGN_IDENTITY` overrides it with a Developer ID, which brings the hardened
 # runtime and a secure timestamp with it — both of which notarization requires.
 #
-# The onboarding window's wordmark rides in as SwiftPM's resource bundle for the `EmiraShell` target
-# rather than as a loose file, so `Bundle.module` resolves both here and in a bare `swift build` tree.
-# A missing bundle is a `fatalError` in SwiftPM's generated accessor, so the `cp` must fail the build.
-#
 # The nested CLI is signed *before* the app: signing a bundle seals its `Contents` into
 # `CodeResources`, so nested *code* signed afterwards would invalidate the outer signature.
-#
-# **The resource bundle is not signed at all**, and must not be. It holds one WebP and no code, so the
-# outer seal already covers it — `logo.webp` appears in the app's own `CodeResources` either way, and
-# `codesign --verify --deep --strict` passes with the nested bundle unsigned. Signing it is also not
-# portable: whether SwiftPM gives that bundle a `Contents/Info.plist` or lays it out flat depends on
-# the toolchain, and `codesign` rejects the flat form outright — "bundle format unrecognized, invalid,
-# or unsuitable" — so a build that signed it would pass here and fail on an older Xcode.
 APP_NAME := emira
 DIST     := dist
 BUNDLE   := $(DIST)/$(APP_NAME).app
 CONTENTS := $(BUNDLE)/Contents
 RELEASE  := .build/release
-# SwiftPM's name for a target's resources: <package>_<target>.bundle.
-RESOURCE_BUNDLE := Emira_EmiraShell.bundle
 
 CODESIGN_IDENTITY ?= -
 ifeq ($(CODESIGN_IDENTITY),-)
@@ -162,7 +149,6 @@ app:
 	                        -c "Set :CFBundleVersion $(BUILD)" $(CONTENTS)/Info.plist
 	cp $(RELEASE)/emira-daemon $(CONTENTS)/MacOS/emira-daemon
 	cp $(RELEASE)/emira        $(CONTENTS)/MacOS/emira
-	cp -R $(RELEASE)/$(RESOURCE_BUNDLE) $(CONTENTS)/Resources/$(RESOURCE_BUNDLE)
 	codesign --force --sign "$(CODESIGN_IDENTITY)" $(SIGN_FLAGS) $(CONTENTS)/MacOS/emira
 	codesign --force --sign "$(CODESIGN_IDENTITY)" $(SIGN_FLAGS) $(BUNDLE)
 	@echo "built $(BUNDLE) — version $(VERSION) ($(BUILD))"

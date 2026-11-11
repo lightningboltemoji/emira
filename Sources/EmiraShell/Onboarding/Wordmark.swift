@@ -1,137 +1,189 @@
 import AppKit
-import ImageIO
+import QuartzCore
 
 // The window's heading: the README's wordmark, animated — each letter of "emira" is a window, emira's
-// commands play on them, and the word rests whole before they start again. Drawn by `.github/logo`. An
-// animated WebP that ImageIO decodes with its alpha, so one file carries both appearances.
+// commands play on them, and the word rests whole before they start again. `WordmarkScene` says where
+// every window is at an instant; this draws that as a few layers per window.
 //
-// **One frame is decoded at a time.** All of them held at the size this draws is hundreds of MB for a
-// decoration, which is exactly what a `CAKeyframeAnimation` over `contents` requires; a single frame costs
-// ~1 ms. So the view keeps the clock itself: every display refresh asks which frame is due and decodes it
-// if it changed. A refresh-driven clock is never late by its own decode, and a 60 Hz display shows every
-// other frame of a 120 fps asset rather than playing it at half speed.
+// The view keeps the clock itself: every display refresh asks the scene for the instant it will reach the
+// glass and moves the layers there. Nothing is baked, so a 120 Hz display gets every frame and any backing
+// scale is crisp. A refresh that would draw what is already up — most of a hold — commits nothing.
 
-/// The animated wordmark, as a view that draws itself from the asset's frames.
+/// The animated wordmark, as a view that draws itself from the scene.
 @MainActor
 final class Wordmark: NSView {
 
-    /// The size it draws at, in points — the asset's aspect. `.github/logo` exports the app's copy at
-    /// exactly twice this, so a frame decodes without resampling.
+    /// The size it draws at, in points: the scene's canvas at five eighths.
     static let size = NSSize(width: 295, height: 85)
 
-    /// Frames are decoded to twice the drawn size, which is the backing scale of every display that has
-    /// one. Asking for fewer pixels is what makes the per-frame decode cheap.
-    private static let pixelWidth = size.width * 2
+    private static let scale = size.width / WordmarkScene.size.width
 
-    /// What a frame that declares no delay gets: the rate the asset is written at.
-    private static let defaultDelay: TimeInterval = 1.0 / 120
-
-    private let source: CGImageSource
-    /// When each frame comes due, in seconds into the loop.
-    private let starts: [TimeInterval]
-    private let loop: TimeInterval
+    private let tiles: [WordmarkScene.Letter: Tile]
 
     private var link: CADisplayLink?
     /// The refresh the loop started on — the first one after the view reached a window.
     private var origin: CFTimeInterval?
-    private var shown = -1
+    private var shown: [WordmarkScene.Window] = []
 
-    /// `nil` when the asset is missing or unreadable, and the window opens without a heading — a
-    /// decoration may not be the reason onboarding can't be shown.
-    init?(searching roots: [URL] = Wordmark.resourceRoots) {
-        guard let url = Self.logoURL(searching: roots),
-              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              CGImageSourceGetCount(source) > 0 else { return nil }
-        let delays = Self.delays(of: source)
-        self.source = source
-        self.starts = delays.indices.map { delays[..<$0].reduce(0, +) }
-        self.loop = delays.reduce(0, +)
-        super.init(frame: NSRect(origin: .zero, size: Self.size))
+    init() {
+        let bounds = NSRect(origin: .zero, size: Self.size)
+        tiles = Dictionary(uniqueKeysWithValues: WordmarkScene.Letter.allCases.map {
+            ($0, Tile($0, in: bounds, scale: Self.scale))
+        })
+        super.init(frame: bounds)
 
         wantsLayer = true
-        layer?.contentsGravity = .resizeAspect
-        layer?.contentsScale = 2
+        for letter in WordmarkScene.Letter.allCases { layer?.addSublayer(tiles[letter]!.group) }
         translatesAutoresizingMaskIntoConstraints = false
         widthAnchor.constraint(equalToConstant: Self.size.width).isActive = true
         heightAnchor.constraint(equalToConstant: Self.size.height).isActive = true
 
-        show(0)
+        show(WordmarkScene.windows(at: 0))
     }
 
     required init?(coder: NSCoder) { return nil }     // never comes from a nib; there aren't any
 
-    /// SwiftPM's name for a target's resources — the name `make app` copies it into the bundle under.
-    static let resourceBundleName = "Emira_EmiraShell.bundle"
-
-    /// Where to look, in order: the `.app`'s `Contents/Resources`, then beside the executable.
-    static var resourceRoots: [URL] {
-        [Bundle.main.resourceURL, Bundle.main.bundleURL].compactMap(\.self)
-    }
-
-    /// The wordmark asset, or `nil` if it isn't where the build put it.
-    ///
-    /// Not `Bundle.module`: which paths its generated accessor searches depends on the toolchain, and
-    /// it `fatalError`s on a miss. Resolution stays optional so `init?` can do what it promises.
-    static func logoURL(searching roots: [URL] = Wordmark.resourceRoots) -> URL? {
-        for root in roots {
-            guard let bundle = Bundle(url: root.appendingPathComponent(resourceBundleName)) else { continue }
-            if let url = bundle.url(forResource: "logo", withExtension: "webp") { return url }
-        }
-        return nil
-    }
-
-    /// Each frame's delay in file order, from the WebP's own metadata — no decoding, so the whole list is
-    /// cheap to take up front. Unclamped, because the clamped delay reads a 120 fps frame as 100 ms.
-    private static func delays(of source: CGImageSource) -> [TimeInterval] {
-        (0..<CGImageSourceGetCount(source)).map { index in
-            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [String: Any]
-            let webp = properties?[kCGImagePropertyWebPDictionary as String] as? [String: Any]
-            let delay = webp?[kCGImagePropertyWebPUnclampedDelayTime as String] as? TimeInterval
-                ?? webp?[kCGImagePropertyWebPDelayTime as String] as? TimeInterval
-                ?? defaultDelay
-            // A zero delay means "as fast as you can", which for a decoration means the default.
-            return delay > 0 ? delay : defaultDelay
-        }
-    }
-
-    /// The clock runs while the view is in a window. The link holds the view, so it has to be let go of
-    /// here — nothing else ends it.
+    /// The clock runs while the view is in a window, unless the system was asked for less movement. The
+    /// link holds the view, so it has to be let go of here — nothing else ends it.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         link?.invalidate()
         link = nil
         origin = nil
-        guard window != nil else { return }
+        show(WordmarkScene.windows(at: 0))
+        guard window != nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let link = displayLink(target: self, selector: #selector(tick))
         link.add(to: .main, forMode: .common)       // `.common` covers onboarding's modal session
         self.link = link
     }
 
-    /// Show the frame due when this refresh reaches the glass.
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        let scale = window?.backingScaleFactor ?? 2
+        for tile in tiles.values { tile.contentsScale = scale }
+    }
+
+    /// Show the instant this refresh reaches the glass.
     @objc private func tick(_ link: CADisplayLink) {
         let now = link.targetTimestamp
         let origin = self.origin ?? now
         self.origin = origin
-        let t = (now - origin).truncatingRemainder(dividingBy: loop)
-        // The last frame starting at or before `t`; `starts[0]` is 0, so there always is one.
-        var lo = 0, hi = starts.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if starts[mid] <= t { lo = mid + 1 } else { hi = mid }
-        }
-        show(lo - 1)
+        show(WordmarkScene.windows(at: now - origin))
     }
 
-    /// Draw one frame, unless it's the one already up. ImageIO composites animated WebP frames whole, so
-    /// a frame is the picture and not a patch to blend.
-    private func show(_ index: Int) {
-        guard index != shown else { return }
-        shown = index
-        if let frame = CGImageSourceCreateThumbnailAtIndex(source, index, [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: Self.pixelWidth,
-        ] as CFDictionary) {
-            layer?.contents = frame
+    /// Move the layers to `windows`, unless that is what they already show to the hundredth of a point.
+    private func show(_ windows: [WordmarkScene.Window]) {
+        let windows = windows.map(\.snapped)
+        guard windows != shown else { return }
+        shown = windows
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for (order, window) in windows.enumerated() {
+            tiles[window.letter]!.show(window, order: order)
         }
+        CATransaction.commit()
+    }
+}
+
+/// One window's layers. The group carries the opacity, so a dimmed window fades as one picture — its
+/// shadow doesn't show through its fill.
+@MainActor
+private final class Tile {
+
+    let group = CALayer()
+    /// Casts the shadow from a path, under the fill: the fill has to clip to its corners, and a layer that
+    /// clips clips its own shadow.
+    private let caster = CALayer()
+    private let fill = CAGradientLayer()
+    private let pen = CAShapeLayer()
+    private let dot = CAShapeLayer()
+    private let centreline: CGPath
+    private let dotPath: CGPath?
+    /// Points per canvas point.
+    private let scale: CGFloat
+
+    /// The app icon's greens, bottom to top; letters are white, which reads on a light window and a dark one.
+    private static let colors = [
+        CGColor(srgbRed: 0.059, green: 0.545, blue: 0.302, alpha: 1),   // #0f8b4d
+        CGColor(srgbRed: 0.137, green: 0.659, blue: 0.384, alpha: 1),   // #23a862
+    ]
+
+    init(_ letter: WordmarkScene.Letter, in bounds: CGRect, scale: CGFloat) {
+        centreline = WordmarkScene.Glyph.centreline(letter)
+        dotPath = WordmarkScene.Glyph.dot(letter)
+        self.scale = scale
+        group.frame = bounds
+        group.allowsGroupOpacity = true
+
+        caster.shadowColor = .black
+        caster.shadowOpacity = 0.22
+        caster.shadowOffset = CGSize(width: 0, height: -1.5 * scale)
+        caster.shadowRadius = 2.5 * scale
+        group.addSublayer(caster)
+
+        fill.colors = Self.colors
+        fill.startPoint = CGPoint(x: 0.5, y: 0)
+        fill.endPoint = CGPoint(x: 0.5, y: 1)
+        fill.masksToBounds = true
+        caster.addSublayer(fill)
+
+        pen.frame = bounds
+        pen.fillColor = nil
+        pen.strokeColor = .white
+        pen.lineCap = .round
+        pen.lineJoin = .round
+        group.addSublayer(pen)
+
+        dot.frame = bounds
+        dot.fillColor = .white
+        group.addSublayer(dot)
+
+        contentsScale = 2       // until the window says otherwise
+    }
+
+    /// The backing scale every layer rasterizes at.
+    var contentsScale: CGFloat {
+        get { pen.contentsScale }
+        set { for layer in [group, caster, fill, pen, dot] { layer.contentsScale = newValue } }
+    }
+
+    /// Draw `window` third from the back if `order` is 2. The canvas is y down and the layers y up.
+    func show(_ window: WordmarkScene.Window, order: Int) {
+        let height = WordmarkScene.size.height
+        let rect = CGRect(x: window.rect.minX * scale, y: (height - window.rect.maxY) * scale,
+                          width: window.rect.width * scale, height: window.rect.height * scale)
+        let radius = window.cornerRadius * scale
+
+        group.opacity = Float(window.opacity)
+        group.zPosition = CGFloat(order)
+
+        caster.frame = rect
+        caster.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: rect.size),
+                                   cornerWidth: radius, cornerHeight: radius, transform: nil)
+        fill.frame = caster.bounds
+        fill.cornerRadius = radius
+
+        let size = window.glyphScale * scale
+        var transform = CGAffineTransform(translationX: window.glyphOrigin.x * scale,
+                                          y: (height - window.glyphOrigin.y) * scale)
+            .scaledBy(x: size, y: size)
+        pen.path = centreline.copy(using: &transform)
+        pen.lineWidth = WordmarkScene.Glyph.stroke * size
+        dot.path = dotPath?.copy(using: &transform)
+    }
+}
+
+private extension WordmarkScene.Window {
+    /// Rounded past what any display resolves, so the tail of a spring compares equal to where it lands.
+    var snapped: Self {
+        func snap(_ value: Double) -> Double { (value * 100).rounded() / 100 }
+        func snap(_ point: CGPoint) -> CGPoint { CGPoint(x: snap(point.x), y: snap(point.y)) }
+        return Self(letter: letter,
+                    rect: CGRect(origin: snap(rect.origin), size: CGSize(width: snap(rect.width),
+                                                                         height: snap(rect.height))),
+                    cornerRadius: snap(cornerRadius),
+                    opacity: snap(opacity * 10) / 10,
+                    glyphOrigin: snap(glyphOrigin),
+                    glyphScale: snap(glyphScale))
     }
 }

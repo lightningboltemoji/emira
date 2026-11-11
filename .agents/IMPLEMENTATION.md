@@ -2861,9 +2861,9 @@ emira/
     │   ├── Ipc/         SocketServer · RequestRouter
     │   │                DesktopSubject (State → DesktopStatus) · DesktopPublisher (the diff, on every drain)
     │   ├── MenuBar/     StatusItem — StatusModel (pure) + LoginItem + MenuBarItem
-    │   ├── Onboarding/  Onboarding (policy) · OnboardingWindow · Wordmark · PulseButton
-    │   └── Resources/   logo.webp — a resource of the target that draws it, so `Bundle.module`
-    │                    resolves in a bare `swift build` tree too
+    │   └── Onboarding/  Onboarding (policy) · OnboardingWindow · PulseButton
+    │                    WordmarkScene (pure — `.github/logo/scene.ts` ported, held to it by a golden)
+    │                    Wordmark (draws the scene a layer per window, every display refresh)
     ├── emira-daemon/main.swift   accessory NSApplication; the wiring. Also answers `--probe-capture`
     └── emira/           main.swift (argv → Command → socket) · ConfigCommand.swift (straight to file)
 ```
@@ -2973,7 +2973,8 @@ The architecture exists to make testing cheap, so the pyramid is weighted at the
   armed for its own `duration` and leaves over `GuideFade` while the other stays up), hotkeys —
   including that `suspend`/`resume` hands every chord
   back while the settings window is up, and **the keycode table pinned entry by entry against `kVK_*`** —
-  config loading, onboarding, teardown. The table lives in `EmiraCore`, which may not import Carbon, so this
+  config loading, onboarding (with `WordmarkSceneTests`, which holds the wordmark's port to
+  `.github/logo/scene.ts` through the golden `bun run ship` writes), teardown. The table lives in `EmiraCore`, which may not import Carbon, so this
   suite is where it meets Apple's header, and it checks injectivity too: a transposition is invisible at every
   call site.
   Everything runs against the seams in §7 — the shell's untestable calls are one file deep at every boundary.
