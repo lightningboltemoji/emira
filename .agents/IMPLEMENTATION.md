@@ -3002,8 +3002,8 @@ interruption.
   `CADisplayLink`), so anything put under launchd would be this same GUI process. Launch-at-login is
   `SMAppService.mainApp`, and "Quit stops the daemon" comes free. The one thing given up is crash-respawn.
 - **TCC records a grant against the code signature of what runs**, so grant stability _is_ product stability.
-  Ad-hoc signing identifies the app by cdhash, which changes every build, so macOS re-asks on every rebuild
-  until a Developer ID signature replaces it.
+  Builds and releases are signed with the self-signed `emira` certificate (see the Makefile), so grants
+  carry across `make install` and updates. An ad-hoc build would be re-asked every time.
 - **The git tag is the only version authority.** No file in the tree carries a version number. `make app` asks
   `git describe` and stamps the answer into the bundle's _copy_ of `Info.plist`; the source file keeps `0.0.0`,
   which is what a build from a tarball honestly is. Run out of `.build` there is no bundle and `emira --version`

@@ -82,11 +82,11 @@ print-version:
 # machine and no chance of a CLI and a daemon from different builds talking past each other. Nothing
 # here puts it on `$PATH` — that is a Homebrew cask's `binary` stanza, or `make install-cli`.
 #
-# **Signing defaults to ad-hoc (`--sign -`)**, which is enough to load and run locally. It is *not*
-# enough for TCC to remember a grant across rebuilds: an ad-hoc signature is identified by its
-# cdhash, which changes with every build, so macOS treats each build as a new app and re-asks for
-# Accessibility. `CODESIGN_IDENTITY` overrides it with a Developer ID, which brings the hardened
-# runtime and a secure timestamp with it — both of which notarization requires.
+# Signed with the self-signed `emira` certificate when it's in the login keychain, so Accessibility
+# and Screen Recording survive a rebuild (ad hoc, the fallback, loses them every time). CI signs
+# releases with the same certificate from the `production` environment's secrets. Its p12 is backed
+# up outside the repo; a new certificate means every user grants again. A real identity also turns
+# on the hardened runtime.
 #
 # The nested CLI is signed *before* the app: signing a bundle seals its `Contents` into
 # `CodeResources`, so nested *code* signed afterwards would invalidate the outer signature.
@@ -96,11 +96,19 @@ BUNDLE   := $(DIST)/$(APP_NAME).app
 CONTENTS := $(BUNDLE)/Contents
 RELEASE  := .build/release
 
-CODESIGN_IDENTITY ?= -
+# By hash, since codesign matches a name as a substring.
+ifeq ($(origin CODESIGN_IDENTITY),undefined)
+  EMIRA_CERT        := $(shell security find-identity -p codesigning 2>/dev/null | awk '/"emira"/ { print $$2; exit }')
+  CODESIGN_IDENTITY := $(or $(EMIRA_CERT),-)
+  TIMESTAMP         := --timestamp=none
+else
+  TIMESTAMP         := --timestamp
+endif
+
 ifeq ($(CODESIGN_IDENTITY),-)
   SIGN_FLAGS :=
 else
-  SIGN_FLAGS := --options runtime --timestamp
+  SIGN_FLAGS := --options runtime $(TIMESTAMP)
 endif
 
 # --- The app icon --------------------------------------------------------------------------------
