@@ -159,14 +159,14 @@ public enum Event: Sendable, Equatable, Codable {
     /// wrote optimistically is a guess (`World.unverified`), and the next pass re-issues the set.
     case axFailed(WindowId)
 
-    /// A `capture(win)` produced pixels the cover can be built from — the window's own still, or, under
-    /// `CoverMode.immediate`, one kept from an earlier cover standing in for it. Once every window a
+    /// A `capture(win)` produced pixels the cover can be built from — the window's own still, or, where
+    /// `CoverMode.standsIn`, one kept from an earlier cover standing in for it. Once every window a
     /// transition needs has reported ready, the core raises the cover (`beginTransition`) or grows an
     /// already-raised one (`extendCover`).
     case captureReady(WindowId)
 
-    /// The window's *own* still has landed for a window the cover is standing in for. Only
-    /// `CoverMode.immediate` produces one, and it settles nothing: the transition's gates were paid at
+    /// The window's *own* still has landed for a window the cover is standing in for. Only a
+    /// `CoverMode` that stands in produces one, and it settles nothing: the transition's gates were paid at
     /// `captureReady`, so this asks for a content swap and changes no geometry.
     case captureRefreshed(WindowId)
 

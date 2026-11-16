@@ -707,7 +707,7 @@ public enum ConfigSchema {
 
         Setting("animation.cover", \.coverMode, .word,
                 label: "Cover mode",
-                help: "exact waits for current screenshots; immediate uses stale screenshots to begin sooner.",
+                help: "exact waits for new screenshots; immediate reuses old ones; immediate-fresh retakes them in the background.",
                 section: .animation),
     ]
 

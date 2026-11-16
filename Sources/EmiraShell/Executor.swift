@@ -131,7 +131,7 @@ public final class MockExecutor: Executor {
         // the core is never told it did, so there is no reply for even a perfect system to give — and a
         // scrim the shell declined to draw is not a failure the core could act on.
         case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
-             .setPeeks, .setScrims, .setTarp, .setCoverClearing, .keepStill,
+             .setPeeks, .setScrims, .setTarp, .setCoverClearing, .keepStills,
              .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec:
             break
         }

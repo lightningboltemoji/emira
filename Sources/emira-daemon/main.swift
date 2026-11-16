@@ -240,6 +240,11 @@ let compositor = Compositor(surfaces: [])
 /// notification later.
 capture.isAttached = { ScreenGeometry.attached().contains($0) }
 compositor.isAttached = { ScreenGeometry.attached().contains($0) }
+/// Whether anyone is at the machine, which `CoverMode.immediateFresh` asks before filming at rest. The
+/// window server answers it for the whole session, and asks no grant for it.
+capture.secondsSinceInput = {
+    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+}
 
 /// Watches for reconfigurations. A source, so it reports the new display set and nothing more; what
 /// the daemon does about it is `syncDisplays` plus one `Event.screensChanged`.
@@ -392,8 +397,8 @@ var captureHeadMs: [MonitorId: Double] = [:]
 }
 
 capture.onBatchResolved = { report in
-    // The head is when the batch stopped blocking the raise, not when it finished; under
-    // `CoverMode.immediate` those are different numbers.
+    // The head is when the batch stopped blocking the raise, not when it finished; where the
+    // `CoverMode` stands in those are different numbers.
     if report.isHead { captureHeadMs[report.monitor] = (report.gate ?? report.elapsed) * 1000 }
     log(String(format: "capture:%@ %@%d window%@ — raise at %@, done at %.0f ms%@%@%@",
                on(report.monitor),
@@ -568,6 +573,11 @@ if ProcessInfo.processInfo.environment["EMIRA_TRACE"] == "1" {
         for effect in effects { line += "         → \(effect)\n" }
         FileHandle.standardError.write(Data(line.utf8))
     }
+    // `CoverMode.immediateFresh`'s standing cost, which no reduce shows: it films with nothing in the pump.
+    capture.onRefreshed = { windows, elapsed in
+        log(String(format: "refresh: %d window%@ in %.0f ms", windows, windows == 1 ? "" : "s",
+                   elapsed * 1000))
+    }
 }
 
 // The pointer plane's read direction: two consumers of the same samples, neither of which the watcher
@@ -604,7 +614,9 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
         entry.reconstruction.veil = { [weak scrims] in scrims?.veil(of: $0) ?? 0 }
         entry.reconstruction.backdrop = { [weak scrims] in scrims?.backdrop(of: $0) }
     }
-    capture.mode = config.coverMode
+    // With no cover raised there is no mode to raise it by, and nothing for a refresh to stand in for.
+    let cover = config.transitionMode.covers ? config.coverMode : .exact
+    capture.mode = cover
     // Not a geometry setting, but the reducer reads the same value to arm the deadline this is cut from.
     pinFence.holdTimeout = config.holdTimeout
     executor.transitionMode = config.transitionMode
@@ -614,9 +626,9 @@ pointer.onWarp = { [pointerSamples] point in pointerSamples.pointerWarped(to: po
     // The pointer's rung, for the same reason as `windowAnimation` above it: the core emits the same
     // warp under all three, and the position the upper two decide against is only readable out here.
     pointer.recentres = config.mouseFollowsFocus.recentres
-    // Two features want the stills a cover leaves behind and neither is the other's: `immediate` raises
-    // over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
-    let keepsStills = config.coverMode == .immediate
+    // Two features want the stills a cover leaves behind and neither is the other's: a cover that stands
+    // in raises over them, `preview` draws the guide's tiles from them. Either is reason enough to keep them.
+    let keepsStills = cover.standsIn
         || (config.guide.preview.enabled && config.guide.preview.content == .stills)
     surfaceCache.keepsStills = keepsStills
     // Wanted by nobody now, so the stills already kept retire rather than sitting there until the byte

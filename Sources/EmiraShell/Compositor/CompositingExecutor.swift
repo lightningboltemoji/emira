@@ -203,8 +203,9 @@ public final class CompositingExecutor: Executor {
                     store.capture(batch.targets, on: batch.monitor, feedback: feedback)
                 }
                 for effect in run.effects {
-                    guard case .keepStill(let monitor, let id, let size) = effect else { continue }
-                    store.keep(CaptureTarget(id: id, size: size), on: monitor)
+                    guard case .keepStills(let monitor, let kept) = effect else { continue }
+                    store.keep(kept.sorted { $0.key < $1.key }.map { CaptureTarget(id: $0.key, size: $0.value) },
+                               on: monitor)
                 }
             case .hoist:
                 // Last wins, and there is only ever one in a run: the core emits the whole set, so two
@@ -283,7 +284,7 @@ public final class CompositingExecutor: Executor {
         case .beginTransition, .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer,
              .endTransition, .setCoverClearing:
             return .presentation
-        case .capture, .keepStill:
+        case .capture, .keepStills:
             return .capture
         case .setHoists:
             return .hoist
@@ -346,7 +347,7 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
+            case .setFrame, .park, .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
                  .restoreFocus, .focusNothing,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec:

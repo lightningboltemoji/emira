@@ -74,14 +74,14 @@ public enum Effect: Sendable, Equatable, Codable {
     /// so a window owed by two covers is filmed once and its untagged `captureReady` settles both.
     ///
     /// `size` is the window's size *now*, which decides whether a still kept from an earlier cover may
-    /// stand in for this one (`CoverMode.immediate`) — a window that merely moved is showing the pixels
+    /// stand in for this one (`CoverMode.standsIn`) — a window that merely moved is showing the pixels
     /// it was filmed with. Zero for a window the world has lost, which no kept still matches.
     case capture(MonitorId, WindowId, size: Size)
 
-    /// `win` is at rest on `monitor` at `size` with that display's cover just gone: keep a still of it at
-    /// that size, so the next cover can stand in for it (`CoverMode.immediate`). Owes no ack and gates
-    /// nothing; a still already kept at that size is enough, and is most of them.
-    case keepStill(MonitorId, WindowId, size: Size)
+    /// `monitor`'s cover is gone, and these are the windows its next one likely scopes, each at its resting
+    /// size: keep a still of each, so that cover can stand in for it (`CoverMode.standsIn`). The whole set,
+    /// empty included, replacing the last — what `CoverMode.immediateFresh` re-films.
+    case keepStills(MonitorId, [WindowId: Size])
 
     // Transition lifecycle — the layered reconstruction (Compositor)
 
@@ -98,8 +98,8 @@ public enum Effect: Sendable, Equatable, Codable {
     case extendCover(MonitorId, [LayerBinding])
 
     /// Swap one layer's stand-in for the window's own still, which has since landed — a cross-fade of
-    /// *contents*, at whatever rect the last tick left the layer at. Emitted only under
-    /// `CoverMode.immediate`. Not a frame of motion, so the shell owns the fade, as it does
+    /// *contents*, at whatever rect the last tick left the layer at. Emitted only where
+    /// `CoverMode.standsIn`. Not a frame of motion, so the shell owns the fade, as it does
     /// `endTransition`'s.
     case refreshLayer(LayerId)
 

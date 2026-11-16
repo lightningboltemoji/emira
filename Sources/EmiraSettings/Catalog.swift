@@ -682,7 +682,7 @@ public enum Scenes {
 
     /// **The trade `animation.cover` is**: a head latency against a briefly wrong window. The take shows
     /// the two shapes rather than claiming a duration — `exact` pauses and then moves sharply from the
-    /// first frame; `immediate` moves on the cue and sharpens when the app catches up.
+    /// first frame; `immediate` and `immediate-fresh` move on the cue and sharpen when the app catches up.
     ///
     /// The rearrangement carries a **width change** with it, and it has to: a stale still can only be
     /// seen to be stale where the rect it is painted into has changed shape, and a pure translation

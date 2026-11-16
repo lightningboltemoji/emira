@@ -516,6 +516,43 @@ import EmiraCore
         return context.makeImage()!
     }
 
+    /// `image`'s pixels in the colour space `name` — a copy of the same bytes under an RGB profile, and
+    /// grey with alpha (premultiplied white) under a grey one, which no bitmap context the reads use can host.
+    static func retagged(_ image: CGImage, as name: CFString) -> CGImage? {
+        guard let space = CGColorSpace(name: name) else { return nil }
+        if space.model == .rgb { return image.copy(colorSpace: space) }
+        let (width, height) = (image.width, image.height)
+        let argb = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                             space: CGColorSpaceCreateDeviceRGB(),
+                             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                                 | CGBitmapInfo.byteOrder32Big.rawValue)!
+        argb.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let source = argb.data!.bindMemory(to: UInt8.self, capacity: width * height * 4)
+        var grey = [UInt8](repeating: 0, count: width * height * 2)
+        for pixel in 0..<(width * height) {
+            grey[pixel * 2] = source[pixel * 4]
+            grey[pixel * 2 + 1] = source[pixel * 4]
+        }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 16, bytesPerRow: width * 2,
+                       space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                       provider: CGDataProvider(data: Data(grey) as CFData)!, decode: nil, shouldInterpolate: false,
+                       intent: .defaultIntent)
+    }
+
+    /// Alpha is no colour space's, so a still reads alike in any: drawn as a copy where the reads' context
+    /// can host its space (`CapturedSurface.context`), converted where it cannot.
+    @Test(arguments: [CGColorSpace.displayP3, CGColorSpace.sRGB, CGColorSpace.genericGrayGamma2_2].map { $0 as String })
+    func aStillReadsAlikeInAnyColourSpace(_ name: String) throws {
+        let whole = Self.window(radius: 12, size: CGSize(width: 400, height: 300))
+        let holed = Self.unpainting(whole, 100, onRight: true)
+        let retagged = try #require(Self.retagged(whole, as: name as CFString))
+        #expect(CapturedSurface.measuredCorner(of: retagged, scale: 1)
+                == CapturedSurface.measuredCorner(of: whole, scale: 1))
+        #expect(CapturedSurface.measuredCorner(of: retagged, scale: 1) != nil)
+        #expect(CapturedSurface.measuredWhole(of: retagged))
+        #expect(!CapturedSurface.measuredWhole(of: try #require(Self.retagged(holed, as: name as CFString))))
+    }
+
     @Test(arguments: [0.0, 6.0, 10.0, 12.0, 16.0, 26.0])
     func theRadiusIsReadBackOffTheAlpha(radius: Double) {
         let image = Self.window(radius: CGFloat(radius), size: CGSize(width: 400, height: 300))
@@ -1092,11 +1129,11 @@ import EmiraCore
         cache.record(Capturer.surface(WindowId(2), Self.size, pixels: 40), mintedAt: 0, for: WindowId(2),
                      pinnedBy: nil)
 
-        service.keep(CaptureTarget(id: WindowId(1), size: Self.size), on: CaptureServiceTests.display)
+        service.keep([CaptureTarget(id: WindowId(1), size: Self.size)], on: CaptureServiceTests.display)
         #expect(capturer.requests.isEmpty, "a still that fits is enough")
 
         let wider = Size(width: 1000, height: 600)
-        service.keep(CaptureTarget(id: WindowId(2), size: wider), on: CaptureServiceTests.display)
+        service.keep([CaptureTarget(id: WindowId(2), size: wider)], on: CaptureServiceTests.display)
         #expect(capturer.requests.map { $0.map(\.id) } == [[WindowId(2)]])
         #expect(capturer.bases == [nil], "a film for no cover takes no base")
 
@@ -1109,8 +1146,113 @@ import EmiraCore
     /// Nothing wants a still kept, so nothing is filmed.
     @Test func aStoreKeepingNoStillsFilmsNothing() {
         let (service, capturer, _, _) = CaptureServiceTests.service([1], mode: .exact)
-        service.keep(CaptureTarget(id: WindowId(1), size: Self.size), on: CaptureServiceTests.display)
+        service.keep([CaptureTarget(id: WindowId(1), size: Self.size)], on: CaptureServiceTests.display)
         #expect(capturer.requests.isEmpty)
+    }
+
+    // Keeping the kept stills fresh
+
+    /// The time `SurfaceCache` stamps a photograph with, moved by hand.
+    @MainActor final class Clock {
+        var now = Date(timeIntervalSince1970: 0)
+        func advance(_ seconds: TimeInterval) { now += seconds }
+    }
+
+    /// An `.immediateFresh` service whose cache holds a photograph of each of `ids` taken at the clock's zero, every
+    /// one of them named for the next cover — the state a cover coming down leaves behind.
+    static func kept(_ ids: [UInt64], mode: CoverMode = .immediateFresh)
+        -> (CaptureService, Capturer, CaptureServiceTests.ManualScheduler, Clock, SurfaceCache) {
+        let clock = Clock()
+        let cache = SurfaceCache(keepsStills: true, reducer: .inline, now: { clock.now })
+        for id in ids.map(WindowId.init) {
+            cache.record(Capturer.surface(id, size, pixels: 40), mintedAt: 0, for: id, pinnedBy: nil)
+        }
+        let (service, capturer, scheduler, _) = CaptureServiceTests.service(ids, mode: mode, cache: cache)
+        service.keep(ids.map { CaptureTarget(id: WindowId($0), size: size) }, on: CaptureServiceTests.display)
+        return (service, capturer, scheduler, clock, cache)
+    }
+
+    /// Every window named for the next cover is filmed again once its still has aged, **one at a time**:
+    /// the window server takes one screenshot at a time, and two in flight inflate both.
+    @Test func immediateFreshFilmsTheKeptWindowsAgainOneAtATime() {
+        let (service, capturer, scheduler, clock, cache) = Self.kept([1, 2])
+        #expect(capturer.requests.isEmpty, "stills that fit need no film to be kept")
+
+        clock.advance(CaptureService.refreshInterval)
+        scheduler.fire()
+        #expect(capturer.requests.map { $0.map(\.id) } == [[WindowId(1)]])
+        #expect(capturer.bases == [nil], "a film for no cover takes no base")
+
+        capturer.send(WindowId(1), size: Self.size, pixels: 40)
+        capturer.close()
+        #expect(capturer.requests.map { $0.map(\.id) } == [[WindowId(1)], [WindowId(2)]])
+        capturer.send(WindowId(2), size: Self.size, pixels: 40)
+        capturer.close()
+
+        #expect(cache.age(of: WindowId(1)) == 0)
+        #expect(cache.age(of: WindowId(2)) == 0)
+        #expect(scheduler.scheduledDelays == [CaptureService.refreshInterval], "…and it goes round again")
+        #expect(service.isIdle)
+    }
+
+    /// A still younger than half the interval is a cover's film or the last refresh's own, and is left.
+    @Test func aYoungStillIsLeftAlone() {
+        let (service, capturer, scheduler, clock, _) = Self.kept([1])
+        clock.advance(CaptureService.refreshInterval / 2 - 0.1)
+        withExtendedLifetime(service) { scheduler.fire() }
+        #expect(capturer.requests.isEmpty)
+        #expect(scheduler.scheduledDelays == [CaptureService.refreshInterval])
+    }
+
+    /// Nobody at the input, nobody to see a stand-in: the clock keeps running and films nothing.
+    @Test func nothingIsRefreshedWithNobodyAtTheInput() {
+        let (service, capturer, scheduler, clock, _) = Self.kept([1])
+        service.secondsSinceInput = { CaptureService.refreshAttention }
+        clock.advance(10 * CaptureService.refreshInterval)
+        withExtendedLifetime(service) { scheduler.fire() }
+        #expect(capturer.requests.isEmpty)
+        #expect(scheduler.scheduledDelays == [CaptureService.refreshInterval])
+    }
+
+    /// A cover opening mid-refresh is the latency anyone feels, so the refresh stops at the film it is on.
+    @Test func aRefreshGivesWayToACover() {
+        let (service, capturer, scheduler, clock, _) = Self.kept([1, 2])
+        clock.advance(CaptureService.refreshInterval)
+        scheduler.fire()
+        service.capture([CaptureTarget(id: WindowId(2), size: Self.size)], feedback: Log().sink)
+        capturer.send(WindowId(1), size: Self.size, pixels: 40, batch: 0)
+        capturer.close(batch: 0)
+
+        #expect(capturer.requests.map { $0.map(\.id) } == [[WindowId(1)], [WindowId(2)]],
+                "the cover's batch, and no film after it")
+        #expect(capturer.bases.last != nil)
+    }
+
+    /// A set replaces the one before it, empty included: a window gone to another workspace is parked,
+    /// and filming it there would trade its stand-in for a sliver's.
+    @Test func aNewSetReplacesTheLast() {
+        let (service, capturer, scheduler, clock, _) = Self.kept([1])
+        service.keep([], on: CaptureServiceTests.display)
+        clock.advance(CaptureService.refreshInterval)
+        withExtendedLifetime(service) { scheduler.fire() }
+        #expect(capturer.requests.isEmpty)
+        #expect(scheduler.scheduledDelays == [CaptureService.refreshInterval], "the clock ran, with nothing due")
+    }
+
+    /// Only `immediate-fresh` runs the clock, and leaving it stops one already running.
+    @Test func onlyImmediateFreshRefreshes() {
+        let (_, immediateCapturer, immediateScheduler, immediateClock, _) = Self.kept([1], mode: .immediate)
+        immediateClock.advance(CaptureService.refreshInterval)
+        #expect(immediateScheduler.scheduledDelays.isEmpty)
+        immediateScheduler.fire()
+        #expect(immediateCapturer.requests.isEmpty)
+
+        let (service, capturer, scheduler, clock, _) = Self.kept([1])
+        service.mode = .immediate
+        clock.advance(CaptureService.refreshInterval)
+        withExtendedLifetime(service) { scheduler.fire() }
+        #expect(capturer.requests.isEmpty)
+        #expect(scheduler.scheduledDelays.isEmpty)
     }
 
     // When a kept still may not stand in

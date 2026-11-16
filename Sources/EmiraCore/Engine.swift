@@ -2514,17 +2514,20 @@ public enum Engine {
         ids.map { .capture(monitor, $0, size: s.world.windows[$0]?.frame.size ?? .zero) }
     }
 
-    /// The windows at rest on `monitor`'s glass, at the sizes the world records — what its next cover most
-    /// likely scopes. A head batch films a window at its size *before* the transition, so one the
-    /// transition resized would otherwise have no stand-in next time (`Effect.keepStill`).
+    /// What `monitor`'s next cover most likely scopes, at the sizes the world records: its glass and a
+    /// shoulder column either side (`Effect.keepStills`). Named after every cover, because a head batch
+    /// films a window at its size *before* the transition and one it resized would have no stand-in.
     private static func keptStills(_ s: State, on monitor: MonitorId) -> [Effect] {
-        guard s.config.coverMode == .immediate, let metrics = s.metrics(of: monitor),
-              let shown = s.monitors.shown(on: monitor) else { return [] }
-        let resting = s.workspaces[shown].visibleWindowIds(
-            scrollOffset: s.motion.offset(of: monitor).current, metrics: metrics)
-        return (resting + metrics.pinFrames.map(\.window)).compactMap { id in
-            s.world.windows[id].map { .keepStill(monitor, id, size: $0.frame.size) }
+        guard s.config.coverMode.standsIn else { return [] }
+        var kept: [WindowId: Size] = [:]
+        if let metrics = s.metrics(of: monitor), let shown = s.monitors.shown(on: monitor) {
+            let offset = s.motion.offset(of: monitor).current
+            let near = s.workspaces[shown].sweptWindowIds(from: offset, to: offset, metrics: metrics)
+            for id in near + metrics.pinFrames.map(\.window) {
+                kept[id] = s.world.windows[id]?.frame.size
+            }
         }
+        return [.keepStills(monitor, kept)]
     }
 
     /// The offset that frames `id`'s column, from `offset` — centred, or the minimal reveal. `nil` for a

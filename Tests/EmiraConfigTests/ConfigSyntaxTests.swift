@@ -1256,10 +1256,12 @@ import EmiraCore
         #expect(try ConfigSyntaxTests.parse("[animation]\nhold-timeout = 2\n").coverMode == .exact)
     }
 
-    @Test func bothCoverModesParse() throws {
+    @Test func everyCoverModeParses() throws {
         #expect(try ConfigSyntaxTests.parse("[animation]\ncover = \"immediate\"\n").coverMode
                     == .immediate)
         #expect(try ConfigSyntaxTests.parse("[animation]\ncover = \"exact\"\n").coverMode == .exact)
+        #expect(try ConfigSyntaxTests.parse("[animation]\ncover = \"immediate-fresh\"\n").coverMode
+                    == .immediateFresh)
     }
 
     /// The two word-valued keys of `[animation]` are independent: neither implies anything about the
@@ -1275,7 +1277,7 @@ import EmiraCore
     @Test func anUnknownCoverModeIsRefusedAndTheLegalOnesNamed() {
         #expect(ConfigSyntaxTests.diagnostic("[animation]\ncover = \"fast\"\n")
                 == .badValue(line: 2, key: "animation.cover",
-                             message: "must be \"exact\" or \"immediate\", not \"fast\""))
+                             message: "must be \"exact\" or \"immediate\" or \"immediate-fresh\", not \"fast\""))
     }
 
     // `animation.window` — the schema's one word-valued key

@@ -48,7 +48,7 @@ import EmiraCore
 //
 // Pieces are handed back as they land rather than as a batch, and in request order — which is the
 // caller's policy, not ScreenCaptureKit's enumeration order: a cover gated on the base alone
-// (`CoverMode.immediate`) waits for one capture rather than all of them, and the extend gate acks per
+// (`CoverMode.standsIn`) waits for one capture rather than all of them, and the extend gate acks per
 // window. The base is captured before any window because it is the gate — no layer can be raised until
 // it lands.
 //

@@ -128,7 +128,7 @@ public final class AXExecutor: Executor {
 
             // The other planes, routed by `CompositingExecutor` before they reach here. Exhaustive so a
             // new `Effect` case must be assigned a home rather than falling through.
-            case .capture, .keepStill, .setHoists, .setPeeks, .setScrims, .setTarp, .setCoverClearing,
+            case .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp, .setCoverClearing,
                  .beginTransition, .extendCover, .elevateLayer, .setLayerFrame,
                  .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec:
                 break

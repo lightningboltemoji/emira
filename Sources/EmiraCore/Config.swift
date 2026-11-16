@@ -28,9 +28,9 @@ public enum TransitionMode: String, Sendable, Equatable, Codable, CaseIterable {
     public var animates: Bool { self == .smooth }
 }
 
-/// When a cover may go up: once every window in it is exact, or the moment the desktop behind it is.
-/// The question `WindowAnimation` answers in space — what to paint where the pixels aren't there yet —
-/// asked in time. Neither mode changes a frame of emitted geometry.
+/// When a cover may go up — once every window in it is exact, or the moment the desktop behind it is —
+/// and how old the stills standing in may be. `WindowAnimation`'s question, what to paint where the
+/// pixels aren't there yet, asked in time; no mode changes a frame of emitted geometry.
 public enum CoverMode: String, Sendable, Equatable, Codable, CaseIterable {
     /// Raise only once every scoped window's own still has landed: pixel-identical to the desktop it
     /// replaces, at a head latency that grows with the number of columns the motion sweeps.
@@ -40,6 +40,15 @@ public enum CoverMode: String, Sendable, Equatable, Codable, CaseIterable {
     /// then one capture whatever the strip looks like — at the price of a window whose content changed
     /// since it was last filmed being briefly wrong.
     case immediate
+    /// `immediate`, with the windows the next cover most likely scopes filmed again every few seconds
+    /// while the desktop is in use, so a stand-in is seconds old rather than as old as the last cover to
+    /// show it. The price is a capture at rest, which a keypress landing on one waits behind.
+    case immediateFresh = "immediate-fresh"
+
+    /// Whether a kept still may stand in for a window's own — what lets a cover rise on the base alone.
+    public var standsIn: Bool { self != .exact }
+    /// Whether the kept stills are filmed again at rest, not only when a cover shows their windows.
+    public var refreshes: Bool { self == .immediateFresh }
 }
 
 /// Which focus changes emira did not ask for it will honour. Apps move focus to themselves at moments

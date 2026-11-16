@@ -288,7 +288,7 @@ command                                            (m = the display it acts on)
                            └─ Event.tick(dt) × N  →  Effect.setLayerFrame
                                 └─ m's animators settled AND every scoped axLanded
                                      └─ Effect.endTransition(m) → Event.crossfadeDone(m)
-                                          └─ Effect.keepStill(m, win, size:) per resting win  (immediate)
+                                          └─ Effect.keepStills(m, [win: size]) next cover's scope  (stands in)
 ```
 
 **Which calls carry a display and which do not is the whole of the vocabulary change.** A cover belongs to one
@@ -402,7 +402,7 @@ moves nothing would clear the wait for sets still in flight and cross-fade onto 
 - **The per-frame pass is total over its bindings.** Scope is decided when a session opens and ownership is
   not: a workspace handed to another display leaves the cover it left holding stand-ins with no geometry
   behind them. Each gets `Effect.hideLayer` rather than nothing, because nothing is not "no layer" — it is a
-  layer standing at its capture-time frame, which under `immediate` is an origin from an older desktop. The
+  layer standing at its capture-time frame, which under a mode that stands in is an origin from an older desktop. The
   edit that moves ownership emits that frame itself: a tick skips a settled display, and an edit can change
   what a raised cover draws while leaving that screen nothing to animate.
 
@@ -475,20 +475,33 @@ Every exit length is safe for one reason: a cover is dismissed only once its ani
 reals have landed, so it always comes off a desktop that already matches it. What a dissolve hides is content
 that went stale under the cover, never geometry. The numbers live in `CompositingExecutor`, above the test seam.
 
-`CoverMode` decides when a window _has_ pixels. Under `immediate` a window whose kept photograph fits is acked
-at once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a cross-fade of one
-layer's _contents_ that settles no gate — and so is owed for as long as the cover is up, the batch deadline
-having settled the acks and nothing else. `SurfaceCache` holds **one photograph per window** — the best one
-taken of it, whether or not a cover is showing it — and matches on **size alone**, which is freshness only while
-the geometry a size was computed against holds, so a display change drops the lot
-(`CaptureService.forgetKeptStills`) and the next cover pays the cold-cache round trip.
+`CoverMode` decides when a window _has_ pixels. Under `immediate` and `immediate-fresh` a window whose kept
+photograph fits is acked at once; its real capture returns as `Event.captureRefreshed` → `Effect.refreshLayer`, a
+cross-fade of one layer's _contents_ that settles no gate — and so is owed for as long as the cover is up, the batch
+deadline having settled the acks and nothing else. `SurfaceCache` holds **one photograph per window** — the best one
+taken of it, whether or not a cover is showing it — and matches on **size alone**, which is freshness only while the
+geometry a size was computed against holds, so a display change drops the lot (`CaptureService.forgetKeptStills`)
+and the next cover pays the cold-cache round trip.
 
 A head batch films a window at the size it has *before* the transition, so a window the transition resizes —
 `cycle-width`, `grow`, a column widening on a departure, every arrival — would have no stand-in for the next
-one. So once a cover is down, the core names every window resting on that display at its size
-(`Effect.keepStill`, at `crossfadeDone` unless a new cover has opened there), and the store films the ones
-whose kept still no longer fits (`CaptureService.keep`). Most fit, so most transitions film nothing; the
-capture plane is idle at that moment, and a film for no cover takes no base and owes no ack.
+one. So once a cover is down, the core names what that display's next cover most likely scopes — the windows
+on its glass and a shoulder column either side, a sweep that has not picked a direction — each at its size, as
+one set replacing the last (`Effect.keepStills`, at `crossfadeDone` unless a new cover has opened there), and
+the store films the ones whose kept still no longer fits (`CaptureService.keep`). Most fit, so most transitions
+film nothing; the capture plane is idle at that moment, and a film for no cover takes no base and owes no ack.
+
+**Size is the whole of freshness to the match, and none of it to the eye.** A window that kept its size while its
+content changed — a terminal typed into for ten minutes — still fits a still as old as the last cover that showed
+it, and `immediate` raises over that. `immediate-fresh` films the named set again at rest
+(`CaptureService.refresh`): every `refreshInterval` it films each window whose photograph is past half the interval,
+so a stand-in is a few seconds old rather than a cover old. One at a time, into an idle window server only, giving
+way the moment anything else is filming — the server takes one screenshot at a time and a cover's head is the
+latency anyone feels — so a keypress landing on a refresh waits behind the one film in flight and no more. Nothing
+is filmed while input has sat for `refreshAttention`: nobody is there to see a stand-in. The set being whole, empty
+included, is what keeps a refresh off windows gone to another workspace, filmed for a cover that is not coming. A
+refresh is an ordinary `film`, so it lands unpinned and reduced: it buys content, not resolution. With no cover
+raised (`transition = off`) the shell runs as `exact`, since there is nothing to stand in for.
 
 The best one is the newest, except where the newest has a hole in it. An app that rasterizes what is on
 screen leaves a still transparent where the window hung off the display, and a stand-in built from one
@@ -522,7 +535,10 @@ since none was taken, so every plane cuts it at the floor it is drawn at.
 that.** The radius is read off every still as it lands (`CapturedSurface.measuredCorner`), at the scale the
 still was drawn at: the alpha deficit of a block at each top corner, an area antialiasing conserves, inverted
 from a quarter-disc's. A block is no more than half the window, so it holds one corner and never reaches the
-next. A still that is not its window's frame measures nothing.
+next. A still that is not its window's frame measures nothing. Every read of a still's pixels — this, the hole
+test, the reduction — draws it as a copy (`CapturedSurface.context`): in its own colour space and the layout it
+was filmed in, because alpha belongs to no colour space, and converting a full-screen still to read a few
+alpha values costs more of emira's CPU than the film did.
 
 **What else is clear in a block is in its far strips** — the rows and columns past any corner's reach, where an
 opaque window is opaque out to the edge. What both corners show there is a border, and comes off both as the

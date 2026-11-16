@@ -317,7 +317,7 @@ public final class Reconstruction: CoverSurface {
     /// cutting a silhouette short is the error the base can cover.
     private static let fallbackCornerRadius: Double = 12
 
-    /// How long a stand-in takes to become the window's own pixels (`CoverMode.immediate`). Well under
+    /// How long a stand-in takes to become the window's own pixels (`CoverMode.standsIn`). Well under
     /// the cross-fade that ends a transition, because this one happens *during* the motion and its job
     /// is to be finished before the eye has settled anywhere.
     private static let refreshDuration: TimeInterval = 0.12

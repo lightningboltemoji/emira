@@ -21,9 +21,10 @@ import EmiraCore
 //     batch a piece came from goes with it — pieces reach the store in arrival order, which is not the
 //     order they were filmed in.
 //
-// `CoverMode` is the only policy here the core does not decide, and it changes one thing: whether a
+// `CoverMode` is the only policy here the core does not decide, and it changes two things: whether a
 // window whose kept still fits is ready *now*, its own capture following as a `captureRefreshed`, or
-// only once that capture lands. The gate the core counts down is identical either way.
+// only once that capture lands; and whether the stills kept for the next cover are filmed again at rest
+// (`refresh`). The gate the core counts down is identical every way.
 
 /// A window's corner radius in points as one still read it, and whether that still showed the window at
 /// rest. A reading off a window the server is animating is near its corner, and stands in for one at rest
@@ -68,6 +69,19 @@ public struct CapturedSurface: Sendable {
         self.corner = corner
         self.isWhole = isWhole
     }
+
+    /// A bitmap context `image` draws into as a copy: its own colour space where that can host one, the
+    /// device's otherwise, in ScreenCaptureKit's layout. Any other converts every pixel of a still on each
+    /// draw — tens of milliseconds for a full-screen window, to read a handful of alpha values.
+    static func context(width: Int, height: Int, drawing image: CGImage) -> CGContext? {
+        [image.colorSpace, CGColorSpaceCreateDeviceRGB()].lazy.compactMap { $0 }.compactMap {
+            CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                      space: $0, bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                          | CGBitmapInfo.byteOrder32Little.rawValue)
+        }.first
+    }
+    /// Where alpha sits in each pixel of a `context(width:height:drawing:)`: premultiplied B,G,R,A in memory.
+    static let alphaByte = 3
 
     /// The widest border, in pixels, the window server draws a window inside. A margin both corners share
     /// past it is unpainted or translucent window, and a corner read inside that would read short.
@@ -124,15 +138,9 @@ public struct CapturedSurface: Sendable {
     /// One top corner's block, `x` being where the image's own origin goes so that the wanted corner lands
     /// in it: `0` for the left corner, `probe − width` for the right, whose side is the block's last column.
     private static func block(ofTopCornerAt x: Int, of image: CGImage, probe: Int) -> Block? {
-        // `byteOrder32Big` with `premultipliedFirst` pins the layout to A,R,G,B in memory, so byte 0 of
-        // each pixel is unambiguously the alpha. `CGBitmapContext` has no legal alpha-only format.
-        let stride = probe * 4
-        guard let context = CGContext(
-            data: nil, width: probe, height: probe, bitsPerComponent: 8, bytesPerRow: stride,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                | CGBitmapInfo.byteOrder32Big.rawValue)
-        else { return nil }
+        // `CGBitmapContext` has no legal alpha-only format, so alpha is one byte of four.
+        guard let context = context(width: probe, height: probe, drawing: image) else { return nil }
+        let stride = context.bytesPerRow
 
         // Core Graphics draws from a bottom-left origin into a top-down buffer, so aligning the image's
         // *top* with the block's top means placing its origin `probe − height` below zero. Backwards
@@ -146,7 +154,7 @@ public struct CapturedSurface: Sendable {
         var deficit = 0, side = 0, top = 0, inside = 0
         for row in 0..<probe {
             for column in 0..<probe {
-                let clear = 255 - Int(bytes[row * stride + column * 4])
+                let clear = 255 - Int(bytes[row * stride + column * 4 + alphaByte])
                 guard clear > 0 else { continue }
                 deficit += clear
                 let fromSide = x == 0 ? column : probe - 1 - column
@@ -181,13 +189,8 @@ public struct CapturedSurface: Sendable {
     public static func measuredWhole(of image: CGImage) -> Bool {
         guard image.width > 0, image.height > 0 else { return true }
         let (columns, rows) = (20, 4)
-        let stride = columns * 4
-        guard let context = CGContext(
-            data: nil, width: columns, height: rows, bitsPerComponent: 8, bytesPerRow: stride,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                | CGBitmapInfo.byteOrder32Big.rawValue)
-        else { return true }
+        guard let context = context(width: columns, height: rows, drawing: image) else { return true }
+        let stride = context.bytesPerRow
 
         context.interpolationQuality = .low
         context.draw(image, in: CGRect(x: 0, y: 0, width: columns, height: rows))
@@ -196,7 +199,7 @@ public struct CapturedSurface: Sendable {
         let bytes = data.bindMemory(to: UInt8.self, capacity: rows * stride)
         for column in 0..<columns {
             var alpha = 0
-            for row in 0..<rows { alpha += Int(bytes[row * stride + column * 4]) }
+            for row in 0..<rows { alpha += Int(bytes[row * stride + column * 4 + alphaByte]) }
             if alpha <= rows { return false }
         }
         return true
@@ -314,7 +317,7 @@ public protocol CaptureStore: AnyObject {
     /// and within a bounded time. A batch that finds that display's session already open is *growing*
     /// its cover and takes no new base.
     ///
-    /// Under `CoverMode.immediate` a window a kept still fits is acked at once, its own capture arriving
+    /// Where `CoverMode.standsIn`, a window a kept still fits is acked at once, its own capture arriving
     /// later as `Event.captureRefreshed` — still one `captureReady` per window.
     func capture(_ targets: [CaptureTarget], on monitor: MonitorId, feedback: EventSink)
 
@@ -336,9 +339,10 @@ public protocol CaptureStore: AnyObject {
     /// Ignored if a newer cover on that display claimed them.
     func discard(_ token: CoverToken)
 
-    /// Keep a still of `target` at its size for `monitor`'s next cover, filming it now unless one is
-    /// kept already. Owes no ack, and a store that keeps no stills has nothing to do.
-    func keep(_ target: CaptureTarget, on monitor: MonitorId)
+    /// Keep a still of each of `targets` at its size for `monitor`'s next cover, filming those with none
+    /// kept already. The whole set, replacing the last named for that display. Owes no ack, and a store
+    /// that keeps no stills has nothing to film.
+    func keep(_ targets: [CaptureTarget], on monitor: MonitorId)
 }
 
 /// What one batch cost and yielded. Reported because the other instrument cannot see it:
@@ -359,7 +363,7 @@ public struct CaptureReport: Sendable {
     /// i.e. what a keypress feels like before anything moves. `nil` if it never stopped owing them.
     public let gate: TimeInterval?
     /// Wall-clock from the request to the base landing, `nil` if it never did. The gate can be no
-    /// earlier than this, and under `.immediate` it should be barely later.
+    /// earlier than this, and where the mode stands in it should be barely later.
     public let base: TimeInterval?
     /// Wall-clock from the request to the resolution: `SCShareableContent` plus the fan-out.
     public let elapsed: TimeInterval
@@ -397,13 +401,36 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     public var concealed: @MainActor () -> Set<CGWindowID> = { [] }
     private let scheduler: any DelayScheduler
     private let deadline: TimeInterval
-    /// Where stills go to outlive their cover, and where `.immediate`'s stand-ins come from.
+    /// Where stills go to outlive their cover, and where a stand-in comes from.
     private let cache: SurfaceCache
 
     /// When a cover may be raised. Read when a batch is *issued*, so a config reload landing mid-flight
     /// changes the next transition rather than the one in the air — the same rule `Reconstruction`
     /// applies to `WindowAnimation`.
-    public var mode: CoverMode
+    public var mode: CoverMode {
+        didSet {
+            guard mode != oldValue else { return }
+            // `exact` names no set, so the one held would outlive the windows it was true of.
+            if !mode.standsIn { kept.removeAll() }
+            armRefresh()
+        }
+    }
+
+    /// How often `CoverMode.immediateFresh` looks for a kept still to film again, and so about the oldest
+    /// a stand-in gets while the desktop is in use. Half of it is young enough to be left alone, which
+    /// is a cover's film and the last refresh's own.
+    public static let refreshInterval: TimeInterval = 3
+    /// How long input may sit untouched before refreshing pauses: nobody is there to see a stand-in.
+    public static let refreshAttention: TimeInterval = 30
+    /// Seconds since the last keypress, click or pointer motion anywhere in the session.
+    public var secondsSinceInput: @MainActor () -> TimeInterval = { 0 }
+    /// Called as each refresh finishes having filmed anything: how many windows, and how long it took.
+    public var onRefreshed: (@MainActor (Int, TimeInterval) -> Void)?
+
+    /// The windows the core last named for each display's next cover (`keep`), which `refresh` films.
+    private var kept: [MonitorId: [CaptureTarget]] = [:]
+    /// Names the armed refresh, bumped by every arming, so a superseded one does nothing.
+    private var refreshGeneration = 0
 
     /// Called as each batch resolves. The daemon logs it; nothing decides on it.
     public var onBatchResolved: (@MainActor (CaptureReport) -> Void)?
@@ -455,7 +482,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         var repliesOwed: Int
 
         /// When the *last* base arrived, and when the last ack went out — the two numbers that say
-        /// whether `.immediate` did anything. Both relative to `startedAt`, both recorded once.
+        /// whether standing in did anything. Both relative to `startedAt`, both recorded once.
         var baseAt: TimeInterval?
         var gateAt: TimeInterval?
         /// Windows this batch's own captures reached the store for — what a stand-in is overtaken by.
@@ -491,6 +518,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         self.cache = cache
         self.mode = mode
         self.deadline = deadline
+        armRefresh()
     }
 
     /// One display's worth — the ordinary case, and what every test that is not about the routing wants.
@@ -516,6 +544,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         self.capturers = Dictionary(capturers.map { ($0.monitor, $0.capturer) },
                                     uniquingKeysWith: { first, _ in first })
         let live = Set(self.capturers.keys)
+        kept = kept.filter { live.contains($0.key) }
         for monitor in openCovers.subtracting(live) {
             openCovers.remove(monitor)
             coverGeneration[monitor, default: 0] &+= 1   // pixels still in flight belong to nothing
@@ -544,9 +573,52 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         clearStore(of: token.monitor)
     }
 
-    public func keep(_ target: CaptureTarget, on monitor: MonitorId) {
-        guard cache.keepsStills, cache.surface(for: target.id, at: target.size) == nil else { return }
-        film(target.id, on: monitor) { _ in }
+    public func keep(_ targets: [CaptureTarget], on monitor: MonitorId) {
+        kept[monitor] = targets
+        guard cache.keepsStills else { return }
+        for target in targets where cache.surface(for: target.id, at: target.size) == nil {
+            film(target.id, on: monitor) { _ in }
+        }
+    }
+
+    /// Start the clock `refresh` runs on, or stop it where the mode does not refresh.
+    private func armRefresh() {
+        refreshGeneration &+= 1
+        guard mode.refreshes else { return }
+        let armed = refreshGeneration
+        scheduler.schedule(after: Self.refreshInterval) { [weak self] in
+            guard let self, armed == refreshGeneration else { return }
+            refresh(armed)
+        }
+    }
+
+    /// Film again every kept window whose still is past half the interval, one at a time, then rearm.
+    /// Skipped while nobody is at the input, and given up on as soon as anything else is filming:
+    /// the window server takes one screenshot at a time, and a cover's head is the latency anyone feels.
+    private func refresh(_ armed: Int) {
+        var due: [(MonitorId, WindowId)] = []
+        if secondsSinceInput() < Self.refreshAttention {
+            var seen = Set<WindowId>()
+            for (monitor, targets) in kept.sorted(by: { $0.key < $1.key }) {
+                for target in targets where seen.insert(target.id).inserted
+                    && cache.age(of: target.id) ?? .infinity >= Self.refreshInterval / 2 {
+                    due.append((monitor, target.id))
+                }
+            }
+        }
+        refilm(due[...], armed, startedAt: Date(), filmed: 0)
+    }
+
+    private func refilm(_ due: ArraySlice<(MonitorId, WindowId)>, _ armed: Int, startedAt: Date,
+                        filmed: Int) {
+        guard armed == refreshGeneration else { return }    // the mode changed under it
+        guard let (monitor, id) = due.first, isIdle else {
+            if filmed > 0 { onRefreshed?(filmed, Date().timeIntervalSince(startedAt)) }
+            return armRefresh()
+        }
+        film(id, on: monitor) { [weak self] _ in
+            self?.refilm(due.dropFirst(), armed, startedAt: startedAt, filmed: filmed + 1)
+        }
     }
 
     /// Forget the photograph kept of `window`: its id now names another window.
@@ -595,7 +667,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         // and before the batch is even on the wire: a synchronous capturer could otherwise film a window
         // whose stand-in had not been claimed yet, and its own photograph would then read as a match.
         var stoodIn: Set<WindowId> = []
-        if mode == .immediate {
+        if mode.standsIn {
             for target in targets where cache.surface(for: target.id, at: target.size) != nil {
                 cache.pin(target.id, to: monitor)
                 stoodIn.insert(target.id)
@@ -628,7 +700,7 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
         }
 
         // The stand-ins have pixels already, so they are ready as soon as anything is — `ready` still
-        // routes them through rule 2's hold, which is the whole of what `.immediate` waits for. Before
+        // routes them through rule 2's hold, which is the whole of what standing in waits for. Before
         // the batch goes on the wire, so that a capturer answering synchronously cannot deliver a
         // window's own still before the stand-in it replaces has been declared.
         for id in stoodIn { ready(generation: mine, id) }
@@ -820,5 +892,6 @@ public final class CaptureService: CaptureStore, SurfaceFilmer {
     /// covers' own stay: `Event.screensChanged` takes those transitions down itself.
     public func forgetKeptStills() {
         cache.removeAll()
+        kept.removeAll()
     }
 }

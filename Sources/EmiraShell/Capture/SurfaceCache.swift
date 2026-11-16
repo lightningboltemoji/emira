@@ -215,6 +215,12 @@ public final class SurfaceCache {
     /// must not pass for the window, and in a minimap the trade reverses — a hole is the visible one.
     public func anySurface(for id: WindowId) -> CapturedSurface? { photos[id]?.surface }
 
+    /// How long ago `id`'s photograph was taken, at whatever size — what `CoverMode.immediateFresh`
+    /// refreshes by.
+    public func age(of id: WindowId) -> TimeInterval? {
+        photos[id].map { now().timeIntervalSince($0.takenAt) }
+    }
+
     /// `id`'s corner as best read, whatever became of the photograph it was read off: the newest reading at
     /// rest, else the newest of the window animating. `nil` for a window never read.
     public func corner(of id: WindowId) -> CornerReading? { corners[id]?.corner }
@@ -305,16 +311,8 @@ public final class SurfaceCache {
         let image = surface.image
         guard let (width, height) = reducedSize(of: image, by: ratio) else { return nil }
 
-        // The still's own colour space where it can host a context, the device's otherwise — a space
-        // `CGBitmapContext` refuses (indexed, or a pattern) is worth a colour shift in a stand-in.
-        let spaces = [image.colorSpace, CGColorSpaceCreateDeviceRGB()].compactMap { $0 }
-        let context = spaces.lazy.compactMap {
-            CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                      space: $0,
-                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                          | CGBitmapInfo.byteOrder32Little.rawValue)
-        }.first
-        guard let context else { return nil }
+        // A space `CGBitmapContext` refuses (indexed, or a pattern) is worth a colour shift in a stand-in.
+        guard let context = CapturedSurface.context(width: width, height: height, drawing: image) else { return nil }
 
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))

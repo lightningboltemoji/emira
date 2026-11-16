@@ -381,20 +381,49 @@ import EmiraMotion
         let focused = try #require(settled.world.focusedWindow)
 
         let (_, out) = Engine.reduce(settled, .crossfadeDone(MonitorId(1)))
-        let kept = out.compactMap { effect -> (WindowId, Size)? in
-            if case .keepStill(_, let id, let size) = effect { (id, size) } else { nil }
-        }
-        let size = try #require(kept.first { $0.0 == focused }?.1)
-        #expect(size == settled.world.windows[focused]?.frame.size)
+        let kept = try #require(Self.keptStills(out, on: MonitorId(1)))
+        #expect(kept[focused] == settled.world.windows[focused]?.frame.size)
     }
 
-    /// Only `immediate` stands in by size, so only `immediate` asks.
+    /// The set is the next cover's scope before it has a direction: what is on the glass and a shoulder
+    /// column either side, since a one-column move brings one on. Nothing further out.
+    @Test func theCoverComingDownNamesAShoulderAndNothingFurther() throws {
+        let config = EngineFix.laddered(Config(coverMode: .immediateFresh))
+        let (built, fx) = EngineFix.run(EngineFix.booted(config: config),
+                                        (1...6).map { .windowCreated(EngineFix.snapshot($0)) })
+        let settled = EngineFix.settle(built, fx)
+        let (_, out) = Engine.reduce(settled, .crossfadeDone(MonitorId(1)))
+        let kept = try #require(Self.keptStills(out, on: MonitorId(1)))
+
+        let metrics = try #require(settled.metrics(of: MonitorId(1)))
+        let offset = settled.motion.offset(of: MonitorId(1)).current
+        let visible = Set(settled.layout.visibleWindowIds(scrollOffset: offset, metrics: metrics))
+        #expect(visible.isSubset(of: Set(kept.keys)))
+        #expect(kept.count == visible.count + 1, "the strip ends on the right, so one shoulder")
+    }
+
+    /// An empty display still names its set: the one it replaces may be windows since moved elsewhere,
+    /// and `immediate-fresh` would go on filming them.
+    @Test func aDisplayWithNothingOnItNamesAnEmptySet() throws {
+        let config = EngineFix.laddered(Config(coverMode: .immediate))
+        let (_, out) = Engine.reduce(EngineFix.booted(config: config), .crossfadeDone(MonitorId(1)))
+        #expect(try #require(Self.keptStills(out, on: MonitorId(1))).isEmpty)
+    }
+
+    /// Only a mode that stands in matches by size, so only one that does asks.
     @Test func anExactCoverKeepsNothingOnTheWayDown() {
         let config = EngineFix.laddered(Config())
         let (built, builtFx) = EngineFix.run(EngineFix.booted(config: config),
                                              (1...2).map { .windowCreated(EngineFix.snapshot($0)) })
         let (resized, fx) = EngineFix.run(EngineFix.settle(built, builtFx), [.command(.cycleWidth)])
         let (_, out) = Engine.reduce(EngineFix.settle(resized, fx), .crossfadeDone(MonitorId(1)))
-        #expect(!out.contains { if case .keepStill = $0 { true } else { false } })
+        #expect(!out.contains { if case .keepStills = $0 { true } else { false } })
+    }
+
+    /// The one `keepStills` for `monitor` among `effects`, if there is one.
+    static func keptStills(_ effects: [Effect], on monitor: MonitorId) -> [WindowId: Size]? {
+        effects.lazy.compactMap { effect -> [WindowId: Size]? in
+            if case .keepStills(monitor, let kept) = effect { kept } else { nil }
+        }.first
     }
 }

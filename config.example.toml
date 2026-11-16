@@ -98,8 +98,9 @@ hold-timeout = 1
 # One of "stretch", "crop".
 window = "stretch"
 
-# exact waits for current screenshots; immediate uses stale screenshots to begin sooner.
-# One of "exact", "immediate".
+# exact waits for new screenshots; immediate reuses old ones; immediate-fresh retakes them in
+# the background.
+# One of "exact", "immediate", "immediate-fresh".
 cover = "exact"
 
 # The share of each frame's motion that is smeared — 0.5 is a 180° film shutter, 0 is off.

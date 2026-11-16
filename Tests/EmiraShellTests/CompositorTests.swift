@@ -249,8 +249,8 @@ import EmiraCore
             requests.append(targets)
             timeline.record("capture@\(monitor.raw)[\(targets.map { "\($0.id.raw)" }.joined(separator: ","))]")
         }
-        func keep(_ target: CaptureTarget, on monitor: MonitorId) {
-            timeline.record("keep@\(monitor.raw)[\(target.id.raw)]")
+        func keep(_ targets: [CaptureTarget], on monitor: MonitorId) {
+            timeline.record("keep@\(monitor.raw)[\(targets.map { "\($0.id.raw)" }.joined(separator: ","))]")
         }
         func surface(for window: WindowId) -> CapturedSurface? { nil }
         func base(of monitor: MonitorId) -> CGImage? { nil }
@@ -432,13 +432,15 @@ import EmiraCore
         #expect(covering == ["covered@1", "uncovered@1"])
     }
 
-    /// A still kept for the next cover reaches the store as one target per window, with no batch and no
-    /// ack — nothing waits on it.
-    @Test func aKeptStillReachesTheStore() {
+    /// The stills kept for the next cover reach the store as one set per display, with no batch and no
+    /// ack — nothing waits on them. Empty included: it is what tells the store the last set is over.
+    @Test func keptStillsReachTheStoreAsOneSet() {
         let (executor, _, timeline, log) = Self.scrimHarness()
-        executor.execute([.keepStill(MonitorId(1), WindowId(3), size: Size(width: 10, height: 10))],
+        let size = Size(width: 10, height: 10)
+        executor.execute([.keepStills(MonitorId(1), [WindowId(5): size, WindowId(3): size]),
+                          .keepStills(MonitorId(2), [:])],
                          feedback: log.sink)
-        #expect(timeline.entries == ["keep@1[3]"])
+        #expect(timeline.entries == ["keep@1[3,5]", "keep@2[]"])
         #expect(log.events.isEmpty)
     }
 
@@ -460,7 +462,7 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .raise(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .closeWindow(WindowId(1))) == .truth)
         #expect(CompositingExecutor.plane(of: .capture(MonitorId(1), WindowId(1), size: .zero)) == .capture)
-        #expect(CompositingExecutor.plane(of: .keepStill(MonitorId(1), WindowId(1), size: .zero)) == .capture)
+        #expect(CompositingExecutor.plane(of: .keepStills(MonitorId(1), [:])) == .capture)
         #expect(CompositingExecutor.plane(of: .refreshLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .hideLayer(LayerId(1))) == .presentation)
         #expect(CompositingExecutor.plane(of: .setCursorHidden(true)) == .pointer)

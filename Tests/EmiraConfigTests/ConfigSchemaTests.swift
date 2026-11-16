@@ -63,12 +63,14 @@ import EmiraCore
         #expect(parsed.displays.count == 2)
     }
 
-    /// Every setting reaches the document, so a new entry cannot be added without being documented.
+    /// Every setting reaches the document, so a new entry cannot be added without being documented. Its help
+    /// is read back across the comment lines the document wraps it onto.
     @Test func everySettingIsWrittenDown() {
+        let unwrapped = ConfigSchema.document.replacingOccurrences(of: "\n# ", with: " ")
         for setting in ConfigSchema.settings {
             #expect(ConfigSchema.document.contains("\(setting.name) = "),
                     "\(setting.key) is missing from the generated document")
-            #expect(ConfigSchema.document.contains(setting.help),
+            #expect(unwrapped.contains(setting.help),
                     "\(setting.key)'s help is missing from the generated document")
         }
     }
