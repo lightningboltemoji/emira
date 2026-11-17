@@ -35,7 +35,9 @@ The investigation, the rejected alternative and the number that settled an argum
 - **A pinned window is on no layout, and therefore on no workspace.** It is held at an edge of a display,
   and every workspace that display shows is laid out beside it rather than under it. The tiled *area*
   shrinks by the band; what a width **means** does not, so pinning moves the arrangement and re-proportions
-  nothing.
+  nothing. A column wider than what is left is **squeezed** into it, since one hanging past the screen
+  whichever way the strip scrolls is clipped to fit, and the strip promises that never happens. The squeeze
+  is the pin's and not the column's: it is never written down, so letting the pin go gives the width back.
 
 **The order of the two goods.** If placement isn't instant and correct, we've failed. If we can _also_ make
 the signature scroll feel smooth, we've won. Everything in §3 is the second win, and none of it may become

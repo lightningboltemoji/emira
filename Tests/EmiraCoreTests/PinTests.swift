@@ -4,7 +4,7 @@ import Testing
 
 // The geometry a pin opens: one area becomes three, and each of the three answers a different
 // question. The load-bearing claim is that a proportion keeps its meaning across a pin — pinning moves
-// the strip and re-proportions nothing — while `fullscreen` and every ceiling move onto what is left.
+// the strip and re-proportions nothing — while whatever does not fit is squeezed into what is left.
 
 @Suite struct PinGeometryTests {
 
@@ -71,21 +71,64 @@ import Testing
         #expect(right.widthExtent == plain.widthExtent)
     }
 
-    @Test func fullscreenAndTheCeilingsReadWhatIsLeft() {
+    @Test func theWholeScreenSqueezesToWhatIsLeft() {
         let m = Self.metrics(.left, columnGap: 12)
-        #expect(m.contentExtent.span == 788)
         #expect(m.widthExtent.span == 1000)
-        #expect(m.contentExtent.resolve(.proportion(1.0)) == 788)
+        #expect(m.squeezed(m.widthExtent.resolve(.proportion(1.0))) == 788)
     }
 
-    /// The column a pin narrows is the *viewport*, so a preset wider than what is left is honoured and
-    /// simply cannot be framed — exactly as `width-presets = [1.5]` already is on an unpinned screen.
-    @Test func aPresetWiderThanTheClearAreaIsStillTheWidthItAsksFor() {
-        let m = Self.metrics(.left, width: 700)
+    // The squeeze
+
+    /// What fits beside the pin is left alone, so a pin moves a half-width column without resizing it.
+    @Test func aWidthThatFitsBesideThePinIsNotSqueezed() {
+        let m = Self.metrics(.left, width: 300)
         let layout = Layout(columns: [ColumnLayout(id: ColumnId(1), windowIds: [WindowId(1)],
                                                    widthOverride: .proportion(0.5))])
         #expect(layout.resolvedWidth(of: layout.columns[0], metrics: m) == 500)
-        #expect(m.contentArea.width == 300)
+    }
+
+    /// A column wider than what the pin leaves would be clipped whichever way the strip scrolled, so it is
+    /// squeezed into the clear area — and only as wide as that, however much wider it asked to be.
+    @Test func aWidthWiderThanTheClearAreaIsSqueezedIntoIt() {
+        let m = Self.metrics(.left, width: 700)
+        for share in [0.5, 0.75, 1.0] {
+            let layout = Layout(columns: [ColumnLayout(id: ColumnId(1), windowIds: [WindowId(1)],
+                                                       widthOverride: .proportion(share))])
+            #expect(layout.resolvedWidth(of: layout.columns[0], metrics: m) == 300)
+            #expect(layout.nominalWidth(of: layout.columns[0], metrics: m) == 1000 * share)
+        }
+    }
+
+    /// A column meant to overflow the screen keeps its overflow: the pin takes back the room it took and
+    /// no more, so `[1.5]` hangs as far past the clear area as it hung past the unpinned screen.
+    @Test func overflowTheIntentAskedForSurvivesTheSqueeze() {
+        let m = Self.metrics(.left, width: 200)
+        #expect(m.squeezed(1500) == 1300)
+        #expect(m.squeezed(1500) - m.contentArea.width == 1500 - m.nominalArea.width)
+    }
+
+    @Test func nothingPinnedSqueezesNothing() {
+        let m = Self.metrics()
+        for width in [100.0, 500, 1000, 1500] { #expect(m.squeezed(width) == width) }
+    }
+
+    /// The inverse a writer stores through: below the clear width a width is itself, above it the
+    /// overflow is put back, and on it — where everything up to the screen lands — what was there stays.
+    @Test func unsqueezingPutsBackWhatTheSqueezeTook() {
+        let m = Self.metrics(.left, width: 200)
+        #expect(m.unsqueezed(400, keeping: 1000) == 400)
+        #expect(m.unsqueezed(800, keeping: 1000) == 1000)
+        #expect(m.unsqueezed(800, keeping: 900) == 900)
+        #expect(m.unsqueezed(800, keeping: 600) == 800)
+        #expect(m.unsqueezed(1300, keeping: 1500) == 1500)
+        for width in [100.0, 500, 800, 1300] { #expect(m.squeezed(m.unsqueezed(width, keeping: 0)) == width) }
+    }
+
+    @Test func aFullscreenColumnFillsWhatIsLeftEvenUnderAWidePin() {
+        let m = Self.metrics(.left, width: 700)
+        let layout = Layout(columns: [ColumnLayout(id: ColumnId(1), windowIds: [WindowId(1)],
+                                                   fullscreen: .plain)])
+        #expect(layout.resolvedWidth(of: layout.columns[0], metrics: m) == 300)
     }
 
     @Test func aFullscreenColumnFillsWhatIsLeftAndNoMore() {

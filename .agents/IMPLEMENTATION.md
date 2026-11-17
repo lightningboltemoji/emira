@@ -796,7 +796,8 @@ the working area up to each pin's own edge. With nothing pinned the second is th
 - **Nominal** is what a proportion is a share of: `widthExtent`, the preset ladder, and a `grow N%` step.
   A pin does not enter it, which is the whole of *pinning re-proportions nothing*.
 - **Logical** (`contentArea`) is where the strip lives: column 0 starts at its left edge, every scroll target
-  frames against it, and `fullscreen` and the width ceilings resolve against it (`contentExtent`).
+  frames against it, the width ceilings are its width, and every column width is squeezed into it
+  (`LayoutMetrics.squeezed`) — `fullscreen`, the whole nominal width, filling it exactly.
 - **Physical** (`screenArea`) is what is on screen for the strip: `visibleWindowIds` (less the peeks, the
   reducer's `setFrame`-vs-`park` switch, `placedWindowIds`), the capture scope, and the sweep. The park lot
   still hugs `workingArea`'s corner — a lot inset by the outer gap would poke a nub a margin's width in.
@@ -819,6 +820,17 @@ layer off at the margin and a window would pop into being instead of sliding thr
 a hand resize) shadows a preset index (from `cycle-width`). Because it shadows rather than replaces, the width
 underneath needs no memory and no restore policy. Percentages are of the **working area**, not of the column's
 own width, so `grow`/`shrink` are exact inverses.
+
+**A pin squeezes what the stack resolves to, and nothing writes the squeeze back.** Under the stack sits
+`LayoutMetrics.squeezed`: a width that fits beside the pins is itself, one that does not is cut to the clear
+width, and overflow the intent asked for (`width-presets = [1.5]`) is kept. It is read off the bands on every
+resolution, so a column that leaves a pinned display, or a pin released, has its width back with nothing to
+restore. The cost is that every writer measuring a width on screen — `grow`/`shrink`, the hand-resize adoption,
+the width a column lends the pin it becomes — stores `unsqueezed` instead, the inverse: across the flat part,
+where everything from the clear width to the screen's lands alike, it keeps the width the column already asks
+for. A `shrink` goes below the flat part and is the width from then on. `cycle-width` passes over a rung that
+resolves to the width the column already has, which a squeeze makes common: beside a ½ pin, every rung from ½ up
+is the same 50%.
 
 **Two things raise the top of that stack, and `Fullscreen.Origin` is which.** `asked` is the verb, and it is
 the one size-changing verb a cascade keeps — *zoom in on this one*, a shadow over a derived size, with

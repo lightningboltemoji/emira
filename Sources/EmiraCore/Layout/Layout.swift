@@ -224,10 +224,10 @@ public struct LayoutMetrics: Sendable, Equatable {
     // working area with the outer gaps taken off and nothing else.
     //
     // **A pin narrows the first two and never the third.** Pinning moves the strip; it does not
-    // re-proportion it, so `[0.5]` is half the screen with a pin and without one, and no column is
-    // resized by the act of pinning. What a pin *does* bound is `fullscreen` and every width ceiling,
-    // which are statements about usable room rather than proportions the user typed: `contentExtent` is
-    // that side of the line and `widthExtent` the other.
+    // re-proportion it, so `[0.5]` is half the screen with a pin and without one, and a column that
+    // fits beside the pin is never resized by it. One that does not is `squeezed` into what is left — a
+    // bound read off the geometry on every resolution and never a width written down, so releasing the
+    // pin gives the width back with nothing to restore.
 
     /// The strip's area **as if nothing were pinned**: the working area inset by the outer gaps. What a
     /// width proportion is a share of, and the box a pin's band is measured out of.
@@ -247,10 +247,23 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// vertical counterpart is `Column`'s own, built from the column box and `windowGap`.
     public var widthExtent: Extent { Extent(span: nominalArea.width, gap: columnGap) }
 
-    /// What `fullscreen` and every width ceiling resolve against — the same extent over the **clear**
-    /// viewport. Equal to `widthExtent` with nothing pinned, and the pair is the whole of what a pin
-    /// does to widths.
-    public var contentExtent: Extent { Extent(span: contentArea.width, gap: columnGap) }
+    /// A width laid out against the whole screen, fitted to what the pins leave of it: the overflow the
+    /// pins caused comes off, and overflow the intent asked for (`width-presets = [1.5]`) stays. The
+    /// identity with nothing pinned, and the whole of what a pin does to a column's width.
+    public func squeezed(_ width: Double) -> Double {
+        Swift.min(width, contentArea.width) + Swift.max(width - nominalArea.width, 0)
+    }
+
+    /// The width `squeezed` turns into `width` — what a writer stores for a width measured on screen, so
+    /// a squeeze is never written back. Everything from the clear width to the screen's squeezes to the
+    /// clear width, so landing on it keeps `current` if `current` is one of those.
+    public func unsqueezed(_ width: Double, keeping current: Double) -> Double {
+        let clear = contentArea.width, full = nominalArea.width, slack = Tolerance.placement
+        guard abs(width - clear) > slack else {
+            return current >= clear - slack && current <= full + slack ? current : width
+        }
+        return width < clear ? width : width + full - clear
+    }
 
     /// What a height fixed to a preset is a share of — the column box and the gap it stacks with, the
     /// vertical twin of `widthExtent`. Equal to `Column.extent` by construction: a column's box is the
@@ -697,9 +710,8 @@ public struct Layout: Sendable, Equatable, Codable {
     /// Capped at the content width once an answer is in play, which bounds two stacked windows on
     /// different quantization grids from chasing each other upward.
     ///
-    /// The cap is the **clear** width — what is left beside the pins — where the intent underneath is a
-    /// share of the nominal one, so a preset may resolve wider than the viewport exactly as
-    /// `width-presets = [1.5]` already does. Only `fullscreen` and the ceilings mean *usable*.
+    /// The cap is the **clear** width — what is left beside the pins — which the intent already keeps to
+    /// unless it asked to overflow, as `width-presets = [1.5]` does.
     public func resolvedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
         let intent = uncorrectedWidth(of: column, metrics: metrics)
         var answered = false
@@ -717,13 +729,17 @@ public struct Layout: Sendable, Equatable, Codable {
     /// no `SizeCorrection` consulted. This *is* the question a correction answers, and an answer
     /// matched against a question nobody asked is the one way this machinery goes wrong.
     ///
-    /// The two rungs read different extents, and that is the whole of what a pin does to a width.
-    /// `fullscreen` is "fill what is usable", so it is a share of the **clear** viewport; a preset or a
-    /// grown override is a share of the **nominal** one, so pinning a window re-proportions nothing.
+    /// The nominal width squeezed beside the pins, so `fullscreen` fills exactly what they leave.
     private func uncorrectedWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
-        guard !column.isFullscreen else { return metrics.contentExtent.resolve(.proportion(1.0)) }
-        return metrics.widthExtent.resolve(
-            column.widthOverride ?? metrics.widthPresets.size(at: column.widthPreset))
+        metrics.squeezed(nominalWidth(of: column, metrics: metrics))
+    }
+
+    /// What `column`'s width stack comes to on the whole screen, before any pin squeezes it: every rung
+    /// is a share of the **nominal** viewport, `fullscreen` being all of it. What a writer keeps when the
+    /// width it measured is only the squeeze's (`LayoutMetrics.unsqueezed`).
+    public func nominalWidth(of column: ColumnLayout, metrics: LayoutMetrics) -> Double {
+        metrics.widthExtent.resolve(column.isFullscreen ? .proportion(1.0)
+            : column.widthOverride ?? metrics.widthPresets.size(at: column.widthPreset))
     }
 
     /// A column's resolved width by id — what `cycleWidth` animates *to*, so the presentation plane

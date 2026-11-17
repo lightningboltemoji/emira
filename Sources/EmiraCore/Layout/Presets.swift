@@ -84,6 +84,18 @@ public struct PresetCycle: Sendable, Equatable, Codable {
         return (i + 1) % count
     }
 
+    /// The next selection `resolve` sets apart from `current`: `nextIndex(after:)`, stepping past every
+    /// rung that would leave the width where it is. A ladder whose every rung is alike takes the plain step.
+    public func nextIndex(after index: Int, unlike current: Double,
+                          _ resolve: (PresetSize) -> Double) -> Int {
+        var candidate = index
+        for _ in 0..<count {
+            candidate = nextIndex(after: candidate)
+            if abs(resolve(size(at: candidate)) - current) > Tolerance.placement { return candidate }
+        }
+        return nextIndex(after: index)
+    }
+
     /// The previous selection, wrapping past the start back to the end.
     public func previousIndex(before index: Int) -> Int {
         guard let i = normalized(index) else { return 0 }

@@ -1456,12 +1456,15 @@ public enum Engine {
         // The band starts at the width the column had, both rungs of it: every action seeds something a
         // verb already owns, so `grow`, `shrink` and `cycle-width` are the pin's width control with
         // nothing new behind them. A fullscreen column lends the width it resolved to and not the flag,
-        // which names an arrangement the strip is about to close over.
+        // which names an arrangement the strip is about to close over — unsqueezed, as every writer stores.
         let column = s.layout.columnIndex(ofWindow: focused).map { s.layout.columns[$0] }
-        let resolved = column.map { s.layout.resolvedWidth(of: $0, metrics: metrics) }
+        let lent = column.map { column in
+            metrics.unsqueezed(s.layout.resolvedWidth(of: column, metrics: metrics),
+                               keeping: s.layout.nominalWidth(of: column, metrics: metrics))
+        }
         return departFromLayout(&s, focused) { s in
             s.world.setPin(focused, on: monitor, side: side, widthPreset: column?.widthPreset ?? 0,
-                           widthOverride: resolved.flatMap { metrics.widthExtent.proportion(of: $0) })
+                           widthOverride: lent.flatMap { metrics.widthExtent.proportion(of: $0) })
         }
     }
 
@@ -2730,10 +2733,13 @@ public enum Engine {
         // Inert on a cascade — **after** the pin branch, because a pin is on no workspace at all and
         // its band still walks the same two rungs whatever the layout underneath is doing.
         guard s.layout.kind == .strip else { return [] }
-        return resizeFocusedColumn(&s) { layout, column, metrics, _ in
-            // Also clears any `grow`/`shrink` override, putting the column back on the ladder.
-            layout.setWidthPreset(metrics.widthPresets.nextIndex(after: column.widthPreset),
-                                  ofColumn: column.id)
+        return resizeFocusedColumn(&s) { layout, column, metrics, from in
+            // Also clears any `grow`/`shrink` override, putting the column back on the ladder. Rungs a
+            // pin squeezes to the width the column already has are passed over: a press always shows.
+            let next = metrics.widthPresets.nextIndex(after: column.widthPreset, unlike: from) {
+                metrics.squeezed(metrics.widthExtent.resolve($0))
+            }
+            layout.setWidthPreset(next, ofColumn: column.id)
         }
     }
 
@@ -2816,8 +2822,10 @@ public enum Engine {
                                                        centered: centered) {
                 travel = Swift.min(travel, notch)     // only ever shorter: a detent catches, it never pulls
             }
-            let width = Swift.min(Swift.max(from + sign * travel, floor), ceiling)
-            // Stored in the unit the user typed: a percentage leaves a proportion, points leave points.
+            let shown = Swift.min(Swift.max(from + sign * travel, floor), ceiling)
+            // Stored unsqueezed, so a squeezed column grown against the clear width keeps the width it
+            // gets back on release — and in the unit the user typed: a percentage leaves a proportion.
+            let width = metrics.unsqueezed(shown, keeping: layout.nominalWidth(of: column, metrics: metrics))
             let intent: PresetSize
             switch delta {
             case .percent: intent = metrics.widthExtent.proportion(of: width) ?? .fixed(width)
@@ -2963,8 +2971,8 @@ public enum Engine {
         // The question, not the answer: `metrics.uncorrected` is what a `SizeCorrection` is keyed on.
         let toWidth = s.layout.resolvedWidth(ofColumn: column.id, metrics: metrics.uncorrected) ?? fromWidth
 
-        // Nothing to look at: a single-preset cycle, two presets resolving alike, or a clamp that left the
-        // intent where it was. The stored intent still moved, so a later press acts at once. `framedAt`
+        // Nothing to look at: a ladder whose every rung resolves alike, or a clamp that left the intent
+        // where it was. The stored intent still moved, so a later press acts at once. `framedAt`
         // is skipped with it: a column reaching here at one width is already at 100%, and a content-width
         // column rests flush under both reveal and center, so its anchor is the offset it already has.
         guard !approximatelyEqualScalar(fromWidth, toWidth) else { return reassertTruthPlane(&s) }
@@ -3458,7 +3466,8 @@ public enum Engine {
         let clamped = Swift.min(Swift.max(width, Swift.min(minimumColumnWidth, from)),
                                 Swift.max(available, from))
         var strip = s.workspaces[name]
-        strip.setWidthOverride(metrics.widthExtent.proportion(of: clamped) ?? .fixed(clamped),
+        let stored = metrics.unsqueezed(clamped, keeping: strip.nominalWidth(of: column, metrics: metrics))
+        strip.setWidthOverride(metrics.widthExtent.proportion(of: stored) ?? .fixed(stored),
                                ofColumn: column.id)
         s.workspaces[name] = strip
     }

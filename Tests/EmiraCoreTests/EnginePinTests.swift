@@ -303,6 +303,107 @@ import Testing
         #expect(settled.metrics()!.contentArea.width >= LayoutMetrics.minimumColumnWidth)
     }
 
+    // The squeeze
+
+    /// A ½ pin beside two full-width columns, the arrangement the squeeze exists for: windows 2 and 3 ask
+    /// for the whole screen and get the 500 the pin leaves. Focus on the pin.
+    static func squeezed(ladder: [Double] = [0.5, 1.0]) -> State {
+        let config = Config(widthPresets: PresetCycle(ladder.map { .proportion($0) }), transitionMode: .off)
+        var s = EngineFix.world(3, config: config)
+        let half = ladder.firstIndex(of: 0.5)!
+        s.layout.setWidthPreset(half, ofColumn: s.layout.columns[0].id)
+        for i in 1...2 { s.layout.setWidthOverride(.proportion(1.0), ofColumn: s.layout.columns[i].id) }
+        s.world.setFocus(WindowId(1))
+        let (pinned, fx) = Self.pin(s, .left)
+        return EngineFix.settle(pinned, fx)
+    }
+
+    static func width(of id: WindowId, _ s: State) -> Double {
+        s.workspaces.targetFrames(s.placements())[id]!.width
+    }
+
+    static func command(_ s: State, focusing id: WindowId, _ command: Command) -> State {
+        var s = s
+        s.world.setFocus(id)
+        let (next, fx) = EngineFix.run(s, [.command(command)])
+        return EngineFix.settle(next, fx)
+    }
+
+    /// Release the pin on the left, from wherever focus is.
+    static func released(_ s: State) -> State {
+        command(s, focusing: WindowId(1), .pin(.off))
+    }
+
+    @Test func columnsWiderThanWhatThePinLeavesAreSqueezedIntoIt() {
+        let s = Self.squeezed()
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), s), 500))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(3), s), 500))
+    }
+
+    /// Nothing was written down, so there is nothing to restore: the release is the squeeze stopping.
+    @Test func releasingThePinGivesTheWidthBack() {
+        let s = Self.released(Self.squeezed())
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), s), 1000))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(3), s), 1000))
+    }
+
+    /// A `grow` against the clear width moves nothing — and must not record the squeeze as the width.
+    @Test func growingASqueezedColumnKeepsTheWidthItGetsBack() {
+        let grown = Self.command(Self.squeezed(), focusing: WindowId(2), .grow(.percent(10)))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), grown), 500))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), Self.released(grown)), 1000))
+    }
+
+    /// A `shrink` is a width the user chose off what they could see, so it is the width from then on.
+    @Test func shrinkingASqueezedColumnIsTheNewWidth() {
+        let shrunk = Self.command(Self.squeezed(), focusing: WindowId(2), .shrink(.percent(10)))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), shrunk), 400))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), Self.released(shrunk)), 400))
+    }
+
+    /// A hand pulling a squeezed column outward is held at the clear width, which is the squeeze's and
+    /// not the hand's; pulling it inward is a width.
+    @Test func aDragOnASqueezedColumnRecordsOnlyWhatTheHandChanged() {
+        let s = Self.squeezed()
+        let frame = s.workspaces.targetFrames(s.placements())[WindowId(2)]!
+        var wider = frame, narrower = frame
+        wider.size.width = 700
+        narrower.size.width = 300
+        let drag = { (to: Rect) in
+            EngineFix.settle(EngineFix.run(s, [.dragBegan, .windowFrameChanged(WindowId(2), to),
+                                               .dragEnded]).0)
+        }
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), Self.released(drag(wider))), 1000))
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), Self.released(drag(narrower))), 300))
+    }
+
+    /// Pinning a squeezed column lends the pin the width it asked for, not the one it was squeezed to,
+    /// so it comes back off the pin as wide as it went on.
+    @Test func pinningASqueezedColumnLendsItsUnsqueezedWidth() {
+        let pinned = Self.command(Self.squeezed(), focusing: WindowId(2), .pin(.right))
+        #expect(pinned.world.pins[WindowId(2)]?.widthOverride == .proportion(1.0))
+    }
+
+    /// The ladder steps past every rung the pin squeezes to the width the column already has: from ½
+    /// beside a ½ pin, ⅔ and 1 both land on the clear 500, so the press goes on to ⅓.
+    @Test func cycleWidthSkipsRungsTheSqueezeMakesAlike() {
+        var s = Self.squeezed(ladder: [1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0])
+        s.layout.setWidthPreset(1, ofColumn: s.layout.columns[0].id)
+        let cycled = Self.command(s, focusing: WindowId(2), .cycleWidth)
+        #expect(cycled.layout.columns[0].widthPreset == 0)
+        #expect(EngineFix.approxScalar(Self.width(of: WindowId(2), cycled), 1000.0 / 3.0))
+    }
+
+    @Test func cycleWidthPassesOverAlikeRungsWithNothingPinnedToo() {
+        let config = Config(widthPresets: PresetCycle([.proportion(0.5), .proportion(0.5),
+                                                       .proportion(1.0)]), transitionMode: .off)
+        var s = EngineFix.world(2, config: config)
+        s.layout.setWidthPreset(0, ofColumn: s.layout.columns[0].id)
+        let cycled = Self.command(s, focusing: WindowId(1), .cycleWidth)
+        // The duplicate ½ is alike, so it is passed over too — the rule is the width, not the pin.
+        #expect(cycled.layout.columns[0].widthPreset == 2)
+    }
+
     // Lifetime
 
     @Test func aDestroyedPinTakesItsRecordWithIt() {
