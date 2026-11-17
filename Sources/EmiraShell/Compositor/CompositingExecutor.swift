@@ -132,7 +132,13 @@ public final class CompositingExecutor: Executor {
         /// Outside the desktop entirely: a child process. Its own plane rather than a corner of the
         /// truth plane, because it shares nothing with AX — no window, no per-app lane, no ack.
         case system
+        /// The daemon's own settings. Nothing here executes it: it goes back to the daemon, which owns the
+        /// layer over the config file and reloads.
+        case config
     }
+
+    /// Where an `override` goes. The daemon holds the layer and the reload it causes; `nil` drops it.
+    public var onOverride: (@MainActor (OverrideIntent) -> Void)?
 
     /// Called when a cover comes down, with the frames blitted while *it* was up. The one smoothness
     /// measurement there is: `Spring` is analytic, so a six-frame lurch and a seventy-six-frame glide
@@ -240,6 +246,11 @@ public final class CompositingExecutor: Executor {
             case .truth:        truth.execute(run.effects, feedback: feedback)
             case .pointer:      pointer.execute(run.effects, feedback: feedback)
             case .system:       for line in Self.execLines(run.effects) { launcher.launch(line) }
+            case .config:
+                for effect in run.effects {
+                    guard case .override(let intent) = effect else { continue }
+                    onOverride?(intent)
+                }
             }
         }
     }
@@ -298,6 +309,8 @@ public final class CompositingExecutor: Executor {
             return .pointer
         case .exec:
             return .system
+        case .override:
+            return .config
         }
     }
 
@@ -350,7 +363,7 @@ public final class CompositingExecutor: Executor {
             case .setFrame, .park, .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
                  .restoreFocus, .focusNothing,
                  .confirmFocus, .raise, .closeWindow,
-                 .setCursorHidden, .warpPointer, .exec:
+                 .setCursorHidden, .warpPointer, .exec, .override:
                 break                       // routed to another plane; unreachable here
             }
         }

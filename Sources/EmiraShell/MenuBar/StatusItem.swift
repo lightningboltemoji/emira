@@ -5,8 +5,9 @@ import EmiraCore
 import EmiraSettings
 
 // The menu bar item — emira's entire GUI: the focused workspace's address, a way into the config
-// file, a quit and an open-at-login action, and a failure channel for the config file, which is
-// otherwise silent (the title becomes `!` and the menu says what broke). `StatusModel` holds the
+// file, a quit and an open-at-login action, a failure channel for the config file, which is
+// otherwise silent (the title becomes `!` and the menu says what broke), and what `override` has laid
+// over that file. `StatusModel` holds the
 // policy as pure data so it is testable without a status bar; `MenuBarItem` is the AppKit wiring.
 
 /// What the config file is doing to emira — the whole of what the menu bar has to say about it.
@@ -51,11 +52,16 @@ public struct StatusModel: Equatable, Sendable {
     /// What the last config load left behind.
     public var configStatus: ConfigStatus
 
+    /// The settings `override` has laid over the file, spelled as the file would. In the menu and not
+    /// the title: an override is chosen, so it is something to find rather than an alarm.
+    public var overrides: [String] = []
+
     public init(workspace: WorkspaceName = .first, elsewhere: [WorkspaceName] = [],
-                configStatus: ConfigStatus = .loaded) {
+                configStatus: ConfigStatus = .loaded, overrides: [String] = []) {
         self.workspace = workspace
         self.elsewhere = elsewhere
         self.configStatus = configStatus
+        self.overrides = overrides
     }
 
     /// The button's text: the workspace address normally, `!` when the config is broken. The address
@@ -162,6 +168,8 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
 
     /// Somewhere to report a failed login-item toggle. The daemon points this at its log.
     public var onError: (@MainActor (String) -> Void)?
+    /// Lift every override, back to what the file says.
+    public var onResetOverrides: (@MainActor () -> Void)?
     /// The settings window went up or came down. The daemon suspends its hotkeys while it is up:
     /// `RegisterEventHotKey` claims a chord at the window server, so a binding fires whatever is
     /// focused — and with every display scrimmed that would rearrange a desktop the user cannot see.
@@ -211,6 +219,12 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         set { update { $0.configStatus = newValue } }
     }
 
+    /// The settings laid over the file, which the menu lists with a way back.
+    public var overrides: [String] {
+        get { model.overrides }
+        set { update { $0.overrides = newValue } }
+    }
+
     private func update(_ change: (inout StatusModel) -> Void) {
         var next = model
         change(&next)
@@ -229,15 +243,26 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
     /// changed in System Settings, and the diagnostic can change while the menu is closed.
     public func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        let small = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
 
         if let consequence = model.consequence {
             menu.addItem(disabled("Config failed to parse"))
-            let small = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize,
-                                                    weight: .regular)
             for line in model.diagnosticLines() {
                 menu.addItem(disabled(line, font: small))
             }
             menu.addItem(disabled(consequence))
+            menu.addItem(.separator())
+        }
+
+        if !model.overrides.isEmpty {
+            menu.addItem(disabled("Overriding the config file"))
+            for line in model.overrides {
+                menu.addItem(disabled(line, font: small))
+            }
+            let reset = NSMenuItem(title: "Reset overrides", action: #selector(resetOverrides),
+                                   keyEquivalent: "")
+            reset.target = self
+            menu.addItem(reset)
             menu.addItem(.separator())
         }
 
@@ -359,6 +384,10 @@ public final class MenuBarItem: NSObject, NSMenuDelegate {
         } catch {
             onError?("login item: \(error.localizedDescription)")
         }
+    }
+
+    @objc private func resetOverrides() {
+        onResetOverrides?()
     }
 
     @objc private func quit() {

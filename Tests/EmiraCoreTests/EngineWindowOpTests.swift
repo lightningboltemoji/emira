@@ -213,6 +213,22 @@ import EmiraMotion
         #expect(s == State())
     }
 
+    /// `override` passes through for `exec`'s reason: the layer is the shell's, and the setting it
+    /// moves comes back as `configChanged`. Nothing about the desktop changes on the way out.
+    @Test func overrideEmitsOneEffectAndChangesNothing() {
+        let s = EngineFix.world(2)
+        let intent = OverrideIntent.toggle(key: "focus.unfocused-opacity", value: "1")
+        let (after, fx) = Engine.reduce(s, .command(.override(intent)))
+
+        #expect(fx == [.override(intent)])
+        #expect(after == s)
+        #expect(!after.motion.isTransitioning)
+        // …and it needs no desktop at all: a reset from an empty one still reaches the shell.
+        let (empty, resetFx) = Engine.reduce(State(), .command(.override(.reset(key: nil))))
+        #expect(resetFx == [.override(.reset(key: nil))])
+        #expect(empty == State())
+    }
+
     @Test func destroyingFocusedWindowRefocusesAndReflows() {
         var (s, _) = EngineFix.run(EngineFix.booted(), [
             .windowCreated(EngineFix.snapshot(1)),

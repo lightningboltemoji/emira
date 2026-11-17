@@ -27,6 +27,8 @@ import Testing
         .setCursorHidden(false),
         .warpPointer(into: Rect(x: 100, y: 100, width: 400, height: 300)),
         .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
+        .override(.toggle(key: "focus.unfocused-opacity", value: "1")),
+        .override(.reset(key: nil)),
     ]
 
     @Test func everyEffectRoundTrips() throws {

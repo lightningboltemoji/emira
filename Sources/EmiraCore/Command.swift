@@ -82,6 +82,18 @@ public enum Toggle: String, Sendable, Codable, CaseIterable, Equatable {
     }
 }
 
+/// What `override` asks of the in-memory layer over the config file. Keys and values are carried as the
+/// user spelled them — the way `emira config set` takes them — because the schema that reads them is
+/// `EmiraConfig`'s, and the core only passes them through.
+public enum OverrideIntent: Sendable, Codable, Equatable {
+    /// Lay `value` over the file's `key`, replacing whatever override that key already had.
+    case set(key: String, value: String)
+    /// The same, unless `key` is already laid at `value` — then lift it, back to the file.
+    case toggle(key: String, value: String)
+    /// Lift `key`'s override, or every override when `nil`.
+    case reset(key: String?)
+}
+
 /// How much to change a size by — the argument to `grow` / `shrink`. Always a magnitude: the verb
 /// carries the sign, so `grow -10%` is a syntax error rather than a second spelling of `shrink 10%`.
 /// A percentage is of the monitor's working extent, not of the current size, so the steps are uniform,
@@ -192,6 +204,9 @@ public enum Command: Sendable, Codable, Equatable {
     /// keystroke a window manager most owes its user. Says nothing about the desktop: a window the
     /// process opens arrives later as an ordinary creation.
     case exec(String)
+    /// Change a setting in memory, over what the config file says, until it is reset or the daemon
+    /// restarts. Says nothing about the desktop: what changes it arrives as `configChanged`.
+    case override(OverrideIntent)
     /// Dump the live `State` as JSON over the socket — introspection for `emira debug`.
     case dumpState
     /// Stream the desktop as JSON lines, a snapshot now and another whenever it changes — for a bar or

@@ -56,6 +56,9 @@ import Testing
             .focusWorkspace(.previousOccupied),
             .closeWindow, .centerColumn, .dumpState, .watch,
             .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
+            .override(.set(key: "layout.width-presets", value: "[0.5, 1]")),
+            .override(.toggle(key: "focus.unfocused-opacity", value: "1")),
+            .override(.reset(key: "focus.unfocused-blur")), .override(.reset(key: nil)),
         ]
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()

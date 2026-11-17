@@ -1,7 +1,7 @@
 // `emira config` — the config file, read and written here rather than asked of the daemon. It is a
 // file: the CLI opens it, `EmiraConfig` says what it means, and hot reload does the rest, so nothing
-// on this path talks to a socket and there is no `config` verb for it to send. What it needs from the
-// shell is nothing, which is what keeps the CLI framework-free and instant to launch.
+// on this path talks to a socket. `config override` never reaches this file: it changes the running
+// daemon rather than the file, so it is a verb, and `main.swift` sends it like one.
 //
 // **No sentence about a setting is written down here.** The label, the help, what a legal value is,
 // the default and the current reading all come off `ConfigSchema`; this file lays them out, decides
@@ -12,15 +12,19 @@ import EmiraConfig
 
 enum ConfigCommand {
 
-    /// The subcommands, in the order help prints them — the one place they are spelled. `Command.usage`
-    /// is that place for the verbs, and these are deliberately not verbs: the config file is not a
-    /// thing you ask the daemon to do.
-    static let usage = """
-      config check                Check the config file; print the diagnostic, if any.
-      config explain [<key>]      What a setting is, what it may be, and what it is now.
-      config get <key>            Print one setting's current value.
-      config set <key> <value>    Write one setting. The daemon picks it up on its own.
-    """
+    /// The subcommands, in the order help prints them — the one place the file's are spelled, followed by
+    /// `config override` as the vocabulary spells it. Its signature is too long for the column, so its
+    /// sentence goes under it.
+    static var usage: String {
+        let file = """
+          config check                Check the config file; print the diagnostic, if any.
+          config explain [<key>]      What a setting is, what it may be, and what it is now.
+          config get <key>            Print one setting's current value.
+          config set <key> <value>    Write one setting. The daemon picks it up on its own.
+        """
+        guard let sent = Vocabulary.verb(named: name) else { return file }
+        return file + "\n  \(sent.signature)\n" + String(repeating: " ", count: 30) + sent.summary
+    }
 
     /// The word that reaches this branch, before `Command.parse` ever sees it.
     static let name = "config"

@@ -30,8 +30,8 @@ func bundledVersion() -> String {
 }
 
 /// Help text. The verb list comes from `Vocabulary.usage` and the config subcommands from
-/// `ConfigCommand.usage`, so each vocabulary is defined in exactly one place — and they stay two
-/// vocabularies, because one is sent to the daemon and the other is a file on disk.
+/// `ConfigCommand.usage`, so each is defined in exactly one place. `config override` is a verb, and is
+/// listed with the rest of `config` rather than with the verbs.
 func help() -> String {
     """
     emira — scrollable tiling for macOS. Sends one command to the running daemon.
@@ -39,9 +39,9 @@ func help() -> String {
     Usage: emira [--dry-run] <command> [arguments]
 
     Commands:
-    \(Vocabulary.usage)
+    \(Vocabulary.usage(of: Vocabulary.verbs.filter { $0.name != ConfigCommand.name }))
 
-    The config file, read and written here rather than sent:
+    The config — the file is read and written here, and an override is sent to the running daemon:
     \(ConfigCommand.usage)
 
     Options:
@@ -74,12 +74,12 @@ guard !words.isEmpty else {
     exit(ExitCode.usage)
 }
 
-// `config` is local: it reads and writes a file and never dials the socket, so it branches off before
-// `Command.parse` sees a word of it. It is not a verb and must not become one — the config file is not
-// a thing you ask the daemon to do.
-if words.first == ConfigCommand.name {
+// `config` is local — it reads and writes the file and never dials the socket — except `config override`,
+// which changes the running daemon's settings and so is a verb like any other, sent below.
+if words.first == ConfigCommand.name, words.dropFirst().first != OverrideIntent.word {
     guard !isDryRun else {
-        complain("--dry-run prints the request that would be sent, and '\(ConfigCommand.name)' sends none")
+        let named = ([ConfigCommand.name] + words.dropFirst().prefix(1)).joined(separator: " ")
+        complain("--dry-run prints the request that would be sent, and '\(named)' sends none")
         exit(ExitCode.usage)
     }
     exit(ConfigCommand.run(Array(words.dropFirst())))
@@ -88,7 +88,11 @@ if words.first == ConfigCommand.name {
 // argv → Command → Request → wire
 
 do {
-    let request = Request(try Command.parse(words))
+    let command = try Command.parse(words)
+    // The one verb naming a setting, which the core cannot check and this binary can: a typo is refused
+    // where it was typed, rather than logged by a daemon nobody is reading.
+    if case .override(let intent) = command { try ConfigOverrides.check(intent) }
+    let request = Request(command)
     let line = try Wire.encode(request)
 
     if isDryRun {
@@ -121,6 +125,10 @@ do {
 } catch let error as CommandSyntaxError {
     complain("\(error)")
     complain("run 'emira --help' for the command list")
+    exit(ExitCode.usage)
+} catch let error as ConfigSyntaxError {
+    complain("'config override': \(error.message)")
+    complain("run 'emira config explain' for every setting emira has")
     exit(ExitCode.usage)
 } catch SocketClientError.daemonUnreachable(let path) {
     // Worth its own exit code: a state of the system a script can act on, not a bad command.

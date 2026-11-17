@@ -129,10 +129,11 @@ public final class MockExecutor: Executor {
         // about the window server this mock could only misrepresent.
         // The four standing sets join them for a fifth reason: each appears when its photograph lands and
         // the core is never told it did, so there is no reply for even a perfect system to give — and a
-        // scrim the shell declined to draw is not a failure the core could act on.
+        // scrim the shell declined to draw is not a failure the core could act on. An `override` is
+        // answered by the daemon reloading, which reaches the core as `configChanged` by its own path.
         case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
              .setPeeks, .setScrims, .setTarp, .setCoverClearing, .keepStills,
-             .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec:
+             .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec, .override:
             break
         }
     }

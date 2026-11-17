@@ -468,6 +468,7 @@ import EmiraCore
         #expect(CompositingExecutor.plane(of: .setCursorHidden(true)) == .pointer)
         #expect(CompositingExecutor.plane(of: .warpPointer(into: .zero)) == .pointer)
         #expect(CompositingExecutor.plane(of: .exec("ghostty")) == .system)
+        #expect(CompositingExecutor.plane(of: .override(.reset(key: nil))) == .config)
     }
 
     /// The hide the reducer prepends reaches the cursor and nothing else, and it stays *in front of*
@@ -501,6 +502,21 @@ import EmiraCore
         // Two contiguous execs are one run, and each line is launched, in order.
         #expect(launcher.launched == ["a", "b"])
         #expect(timeline.entries == ["truth[focus1]", "exec[a]", "exec[b]", "truth[raise2]"])
+    }
+
+    /// An override goes back to whoever holds the layer, in order, and to no plane at all — the reload
+    /// it causes is the daemon's, and arrives as `configChanged` rather than as an ack.
+    @Test func anOverrideReachesItsHandlerAndNoPlane() {
+        let (executor, launcher, timeline, log) = Self.execHarness()
+        var heard: [OverrideIntent] = []
+        executor.onOverride = { heard.append($0) }
+        let toggle = OverrideIntent.toggle(key: "focus.unfocused-opacity", value: "1")
+        executor.execute([.override(toggle), .override(.reset(key: nil))], feedback: log.sink)
+
+        #expect(heard == [toggle, .reset(key: nil)])
+        #expect(timeline.entries.isEmpty)
+        #expect(launcher.launched.isEmpty)
+        #expect(log.events.isEmpty)
     }
 
     @Test func aBatchIsSplitIntoMaximalContiguousRuns() {

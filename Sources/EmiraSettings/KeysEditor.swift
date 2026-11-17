@@ -866,8 +866,8 @@ final class CommandBubble: NSView {
             return AddressControl(words: words, name: name, onChange: onChange)
         case .magnitude(let units):
             return MagnitudeControl(units: units, onChange: onChange)
-        case .line(let placeholder):
-            return LineControl(placeholder: placeholder, onChange: onChange)
+        case .line(_, let placeholder, let hint):
+            return LineControl(placeholder: placeholder, hint: hint, onChange: onChange)
         }
     }
 
@@ -1113,8 +1113,7 @@ final class MagnitudeControl: ArgumentControl {
     @objc private func typed() { onChange() }
 }
 
-/// `.line` — the one genuinely open argument in the vocabulary, and the case that earns its place by
-/// being the only one a field is the honest control for.
+/// `.line` — an open argument, the one shape a field is the honest control for.
 @MainActor
 final class LineControl: ArgumentControl {
     var view: NSView { field }
@@ -1122,18 +1121,18 @@ final class LineControl: ArgumentControl {
     private let field = NSTextField()
     private let onChange: @MainActor () -> Void
 
-    init(placeholder: String, onChange: @escaping @MainActor () -> Void) {
+    init(placeholder: String, hint: String, onChange: @escaping @MainActor () -> Void) {
         self.onChange = onChange
         field.controlSize = .small
         field.placeholderString = placeholder
-        field.toolTip = "Run through /bin/sh, without waiting for it."
+        field.toolTip = hint
         field.translatesAutoresizingMaskIntoConstraints = false
         field.target = self
         field.action = #selector(typed)
     }
 
-    /// **Not trimmed to nothing and reported.** An empty shell line is refused by the vocabulary, and a
-    /// user halfway through typing one should not be told so on every keystroke.
+    /// **Not trimmed to nothing and reported.** An empty line is refused by the vocabulary, and a user
+    /// halfway through typing one should not be told so on every keystroke.
     var written: String? {
         let text = field.stringValue.trimmingCharacters(in: .whitespaces)
         return text.isEmpty ? nil : text

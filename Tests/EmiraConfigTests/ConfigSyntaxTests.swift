@@ -1106,6 +1106,33 @@ import EmiraCore
                 + "'focus': bad argument 'lefft' — expected <left|right|up|down>")
     }
 
+    /// `config override` names a setting, so this file can check the binding the core could only parse — and a
+    /// typo is a line number rather than a press that is logged and does nothing.
+    @Test func anOverrideBindingIsCheckedAgainstTheSchema() throws {
+        let config = try Self.parse("""
+        [keys]
+        fn-o = "config override toggle focus.unfocused-opacity 1"
+        fn-shift-o = "config override reset"
+        """)
+        #expect(config.keys.map(\.command) == [
+            .override(.toggle(key: "focus.unfocused-opacity", value: "1")),
+            .override(.reset(key: nil)),
+        ])
+
+        let unknown = Self.diagnostic("""
+        [keys]
+        fn-o = "config override toggle focus.unfocused-opacty 1"
+        """)
+        #expect(unknown?.description == "line 2: 'keys.fn-o' must be a command — "
+                + "'config override': unknown setting 'focus.unfocused-opacty'")
+        let bad = Self.diagnostic("""
+        [keys]
+        fn-o = "config override focus.unfocused-opacity -1"
+        """)
+        #expect(bad?.description == "line 2: 'keys.fn-o' must be a command — "
+                + "'config override': 'focus.unfocused-opacity' must be at least 0")
+    }
+
     @Test func aBindingsValueMustBeAString() {
         let error = Self.diagnostic("""
         [keys]

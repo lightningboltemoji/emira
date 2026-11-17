@@ -1265,6 +1265,11 @@ public enum Engine {
             // `windowCreated` whenever it is ready, and *that* is what animates.
             return [.exec(line)]
 
+        case .override(let intent):
+            // Changes nothing here either: the layer and the schema that reads it are the shell's, and
+            // the setting it moves comes back as `configChanged`, which is where the desktop answers.
+            return [.override(intent)]
+
         // The only verbs that are permanently a no-op here: `dumpState` and `watch` are *reads*,
         // answered out of band by the shell off `Runtime.state`. Everything else in the vocabulary does
         // something — a listed verb is a promise, since `Vocabulary.usage` is `emira --help`.

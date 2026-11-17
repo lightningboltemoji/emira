@@ -5,6 +5,7 @@ import AppKit
 import Darwin
 import Dispatch
 import Foundation
+import EmiraConfig
 import EmiraCore
 import EmiraProtocol
 import EmiraShell
@@ -85,8 +86,8 @@ let loader = ConfigLoader(path: Config.defaultPath(),
                           watcher: ConfigWatcher(watching: Config.defaultPath()),
                           scheduler: DispatchScheduler())
 
-/// The config as the file spells it, before `applyEnvironment`. Kept separate because the grant check
-/// below reads the user's *intent*.
+/// The config as the file spells it, before `applyEnvironment` — the last reading that parsed, and what
+/// an override is laid over. Kept separate because the grant check below reads the user's *intent*.
 var parsedConfig: Config
 /// The boot diagnostic, held until there is a menu bar item to show it on. It is also the bit that
 /// decides whether emira manages anything at all — see `startManaging`.
@@ -791,6 +792,47 @@ if bootConfigError == nil { startManaging() }
 // Only a successful parse becomes an event. The three subsystems told separately — reducer, hotkeys,
 // shell — must all read the *same* post-`applyEnvironment` value.
 
+/// The settings `override` has laid over the file. This run's alone: a restart is back to the file.
+var overrides = ConfigOverrides()
+
+/// Derive what everything runs on — the file's last reading, the overrides over it, then what this
+/// machine allows — and hand it to all three subsystems. The one route for a reload and an override.
+@MainActor func reconfigure() {
+    let live = applyEnvironment(to: overrides.applied(to: parsedConfig))
+    runtime.dispatch(.configChanged(live))
+    applyKeys(live)
+    applyShellConfig(live)
+}
+
+/// Carry out one `override` — from a key, the socket or the menu — and reload if it changed anything.
+@MainActor func applyOverride(_ intent: OverrideIntent) {
+    let changed: Bool
+    do {
+        changed = try overrides.apply(intent)
+    } catch let error as ConfigSyntaxError {
+        log("override: \(error.message)")
+        return
+    } catch {
+        log("override: \(error)")
+        return
+    }
+    guard changed else { return }
+    log(overrides.isEmpty ? "config: no overrides — running on the file"
+                          : "config: overriding \(overrides.lines.joined(separator: ", "))")
+    menuBar.overrides = overrides.lines
+    // Before a file has parsed there is nothing to lay these over, and the reading that parses takes them.
+    guard isManaging else { return }
+    reconfigure()
+}
+
+// Off the pump: a reload dispatches, and everywhere else it runs from a clean stack.
+executor.onOverride = { intent in
+    DispatchQueue.main.async { MainActor.assumeIsolated { applyOverride(intent) } }
+}
+// Straight in rather than through the vocabulary: a click is not the hand on the keyboard, so it must not
+// hide the pointer the way a command that did something does.
+menuBar.onResetOverrides = { applyOverride(.reset(key: nil)) }
+
 loader.onLoad = { result in
     // The settings window, if one is up, so an edit made elsewhere does not get clobbered by a draft
     // that never saw it. It tells its own save from a foreign edit itself — this only says "the file
@@ -798,11 +840,9 @@ loader.onLoad = { result in
     menuBar.configFileChanged()
     switch result {
     case .success(let parsed):
-        let live = applyEnvironment(to: parsed)
+        parsedConfig = parsed
         log("config: reloaded \(loader.path)")
-        runtime.dispatch(.configChanged(live))
-        applyKeys(live)
-        applyShellConfig(live)
+        reconfigure()
         menuBar.configStatus = .loaded
         // The parse a held emira has been waiting for. Last, so the boot scan places windows against a
         // core that already holds the config it was waiting for; the latch makes every later one an

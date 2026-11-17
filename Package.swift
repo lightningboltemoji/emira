@@ -49,11 +49,13 @@ let package = Package(
         .target(name: "EmiraShell",
                 dependencies: ["EmiraCore", "EmiraConfig", "EmiraProtocol", "EmiraSettings",
                                "EmiraGuide"]),
-        .executableTarget(name: "emira-daemon", dependencies: ["EmiraShell"]),
+        // `EmiraConfig` named for the layer `override` lays over the file, which the daemon holds.
+        .executableTarget(name: "emira-daemon", dependencies: ["EmiraShell", "EmiraConfig"]),
         // The CLI names `Command` (it parses argv straight into the one vocabulary, §2), so it
         // depends on EmiraCore as well — which EmiraProtocol already pulls in. EmiraConfig is
-        // `emira config`, which reads and writes the file locally rather than asking the daemon. What
-        // matters is what it *doesn't* have: no EmiraShell, no frameworks, nothing to slow down launch.
+        // `emira config`: the file, read and written locally, and the schema a `config override` is
+        // checked against before it is sent. What matters is what it *doesn't* have: no EmiraShell, no
+        // frameworks, nothing to slow down launch.
         .executableTarget(name: "emira", dependencies: ["EmiraProtocol", "EmiraCore", "EmiraConfig"]),
         .testTarget(name: "EmiraMotionTests", dependencies: ["EmiraMotion"]),
         .testTarget(name: "EmiraCoreTests", dependencies: ["EmiraCore"]),

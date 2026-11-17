@@ -157,14 +157,9 @@ public enum Catalog {
         }
     }
 
-    /// The verbs with no honest picture, and what a take would have had to invent to give them one.
-    ///
-    /// Three groups, and none of them is a gap in the catalogue. **The mock is one display showing one
-    /// workspace**, so every verb whose subject is another display or another workspace is genuinely
-    /// undemonstrable on it. **Three verbs need a mechanism the mock has no beat for** — membership,
-    /// floating, closing — and a take that mimed one would be teaching a picture the desktop cannot
-    /// actually make. **Three have no picture at all**: a shell line and JSON on a socket happen off
-    /// screen, which is the point of `exec` and the whole of `debug` and `watch`.
+    /// The verbs with no honest picture, and what a take would have had to invent to give them one: the
+    /// mock is one display showing one workspace, it has no beat for membership, floating or closing, and
+    /// four verbs (`exec`, `config`, `debug`, `watch`) have no picture of their own.
     public static let notDemonstrableVerbs: [String: String] = [
         "consume-or-expel": """
         Changes which column a window belongs to, and no beat moves a window between a column and its \
@@ -211,6 +206,10 @@ public enum Catalog {
         "exec": """
         Launches something, and says nothing about the desktop — a window the process opens arrives \
         later as an ordinary creation. The mock has no apps to launch and no dock to launch them from.
+        """,
+
+        "config": """
+        Changes a setting rather than the desktop, so what it looks like is whatever the setting it names         looks like — and that setting already has its own row and its own preview. A take would be         borrowing one of those and calling it this verb.
         """,
 
         "debug": """

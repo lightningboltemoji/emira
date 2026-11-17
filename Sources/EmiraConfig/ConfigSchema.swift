@@ -523,6 +523,9 @@ public enum ConfigSchema {
     alt-shift-h = "move-window left"
     cmd-alt-period = "center-column"
     alt-space = "exec ghostty"
+    # A setting changed in memory rather than here, until it is reset or emira restarts; `toggle` lifts
+    # it again on the next press. Any key `emira config set` takes, spelled the way it takes it.
+    alt-o = "config override toggle focus.unfocused-opacity 1"
     fn-h = "focus left"
     """
 

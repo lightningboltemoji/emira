@@ -38,6 +38,9 @@ import Testing
         .moveWorkspaceToMonitorAndFocus(.next), .moveWorkspaceToMonitorAndFocus(.direction(.left)),
         .closeWindow, .centerColumn, .dumpState, .watch,
         .exec("ghostty"), .exec("osascript -e 'tell application \"Ghostty\" to new window'"),
+        .override(.set(key: "layout.width-presets", value: "[0.5, 1]")),
+        .override(.toggle(key: "focus.unfocused-opacity", value: "1")),
+        .override(.reset(key: "focus.unfocused-blur")), .override(.reset(key: nil)),
     ]
 
     // The two load-bearing properties
@@ -118,8 +121,11 @@ import Testing
                         try Command.parse([verb.name, "50\(unit)"])
                     }
                 }
-            case .line:
-                #expect(throws: Never.self) { try Command.parse(line: "\(verb.name) ghostty") }
+            case .line(_, let placeholder, _):
+                // A placeholder is an example, so it has to be one the verb takes.
+                #expect(throws: Never.self, "\(verb.name)'s placeholder '\(placeholder)' is refused") {
+                    try Command.parse(line: "\(verb.name) \(placeholder)")
+                }
             }
         }
     }
@@ -169,6 +175,7 @@ import Testing
             "move-workspace-to-monitor-and-focus":
                 "move-workspace-to-monitor-and-focus <N|left|right|up|down|next|prev>",
             "exec": "exec <shell command>",
+            "config": "config override [toggle] <key> <value> | override reset [<key>]",
             "debug": "debug",
             "watch": "watch",
         ]
@@ -178,21 +185,29 @@ import Testing
         }
     }
 
-    /// Only `exec` takes the rest of the line, and it is `.line` that says so — the flag used to be a
-    /// third thing to remember to set.
-    @Test func onlyTheOpenArgumentTakesTheRestOfTheLine() {
+    /// Only `exec` and `config` take the rest of the line, and it is `.line` that says so — the flag
+    /// is not a third thing to remember to set.
+    @Test func onlyTheOpenArgumentsTakeTheRestOfTheLine() {
         for verb in Vocabulary.verbs {
             let isOpen: Bool
             if case .line = verb.argument { isOpen = true } else { isOpen = false }
-            #expect(isOpen == (verb.name == "exec"), "'\(verb.name)' disagrees about its raw tail")
+            #expect(isOpen == ["exec", "config"].contains(verb.name),
+                    "'\(verb.name)' disagrees about its raw tail")
         }
     }
 
-    /// **`config` is not a verb.** The CLI branches on that word before `Command.parse` ever sees it —
-    /// the config file is a file it reads, not a thing the daemon is asked to do — so a verb spelled
-    /// that way would be unreachable, and unreachable *silently*.
-    @Test func noVerbIsSpelledConfig() {
-        #expect(Vocabulary.verb(named: "config") == nil)
+    /// **`config` is a verb for `override` alone.** The CLI keeps the file's subcommands and sends only
+    /// `config override`, so the verb refuses every other one — a binding naming `config set` would
+    /// otherwise reach a daemon that has no file to write.
+    @Test func theConfigVerbTakesOnlyOverride() throws {
+        #expect(Command.override(.reset(key: nil)).words.prefix(2) == ["config", OverrideIntent.word])
+        for subcommand in ["check", "explain", "get", "set"] {
+            let error = try #require(throws: CommandSyntaxError.self) {
+                try Command.parse(line: "config \(subcommand) focus.unfocused-opacity 1")
+            }
+            #expect(error == .badArgument(verb: "config", value: subcommand,
+                                          expected: "override [toggle] <key> <value> | override reset [<key>]"))
+        }
     }
 
     // Canonical spellings (pinned — they're a user-facing contract)
@@ -242,7 +257,7 @@ import Testing
         #expect(try Command.parse(line: "cycle-width") == .cycleWidth)
     }
 
-    // `exec`, the one verb whose argument owns its own whitespace
+    // `exec`, whose argument owns its own whitespace
 
     /// The motivating binding: a shell line whose interior quoting and spacing must survive intact.
     /// Every other verb's argument is a word, so `parse(line:)` splits — for this one it must not.
@@ -272,6 +287,43 @@ import Testing
         }
         #expect(throws: CommandSyntaxError.missingArgument(verb: "exec", expected: "<shell command>")) {
             try Command.parse(["exec"])
+        }
+    }
+
+    // `config override`, whose value is the rest of the line too
+
+    /// The three forms. The key is one word; the value is everything after it, because a list owns its
+    /// spaces — and neither is checked here, since the schema that could is not the core's.
+    @Test func overrideReadsItsThreeForms() throws {
+        #expect(try Command.parse(line: "config override focus.unfocused-opacity 0.8")
+                == .override(.set(key: "focus.unfocused-opacity", value: "0.8")))
+        #expect(try Command.parse(line: "config override toggle focus.unfocused-opacity 1")
+                == .override(.toggle(key: "focus.unfocused-opacity", value: "1")))
+        #expect(try Command.parse(line: "config override reset focus.unfocused-opacity")
+                == .override(.reset(key: "focus.unfocused-opacity")))
+        #expect(try Command.parse(line: "config override reset") == .override(.reset(key: nil)))
+        #expect(try Command.parse(line: "config  override  layout.width-presets   [0.5,  1]  ")
+                == .override(.set(key: "layout.width-presets", value: "[0.5,  1]")))
+    }
+
+    /// From argv, a list the shell split comes back as one value — `emira config override k 0.5 1` and
+    /// the binding `config override k 0.5 1` land on the same intent.
+    @Test func overrideFromArgvRejoinsTheValue() throws {
+        #expect(try Command.parse(["config", "override", "layout.width-presets", "0.5", "1"])
+                == .override(.set(key: "layout.width-presets", value: "0.5 1")))
+        #expect(try Command.parse(["config", "override", "toggle", "layout.width-presets", "[0.5, 1]"])
+                == .override(.toggle(key: "layout.width-presets", value: "[0.5, 1]")))
+    }
+
+    @Test func overrideRefusesWhatIsMissingAndWhatIsExtra() throws {
+        let grammar = "override [toggle] <key> <value> | override reset [<key>]"
+        for line in ["config", "config override", "config override focus.unfocused-opacity",
+                     "config override toggle", "config override toggle focus.unfocused-opacity"] {
+            let error = try #require(throws: CommandSyntaxError.self) { try Command.parse(line: line) }
+            #expect(error == .missingArgument(verb: "config", expected: grammar), "\(line)")
+        }
+        #expect(throws: CommandSyntaxError.tooManyArguments(verb: "config", extra: ["b", "c"])) {
+            try Command.parse(line: "config override reset a b c")
         }
     }
 

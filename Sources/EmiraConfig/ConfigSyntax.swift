@@ -301,6 +301,16 @@ extension TOMLTable {
                 throw ConfigSyntaxError.badValue(
                     line: line, key: "\(prefix).\(chord)", message: "must be a command — \(error)")
             }
+            // The one command whose argument this file can check and the core cannot: it names a setting.
+            if case .override(let intent) = command {
+                do {
+                    try ConfigOverrides.check(intent)
+                } catch let error as ConfigSyntaxError {
+                    throw ConfigSyntaxError.badValue(
+                        line: line, key: "\(prefix).\(chord)",
+                        message: "must be a command — 'config override': \(error.message)")
+                }
+            }
             guard seen.insert(chord).inserted else {
                 throw ConfigSyntaxError.duplicateKey(line: line, key: "\(prefix).\(chord)")
             }

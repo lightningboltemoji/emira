@@ -27,7 +27,8 @@ Guiding bias, restated: **stay small.** emira is not a platform.
   · display tick dt │           (structure) + Motion + Config          │   · begin/endTransition   [CA]
   · trackpad swipe  │           + Pointer + Drag + TrackpadScroll      │   · setLayerFrame         [CA]
   · config reload   │                                                  │   · setCursorHidden/warp  [CG]
-                    └──────────────────────────────────────────────────┘   · exec                  [sh]
+                    │                                                  │   · exec                  [sh]
+                    └──────────────────────────────────────────────────┘   · override        [the daemon]
                              ▲                              │
                              │ feedback events              │ executed by
                              │ (axLanded, captureReady,     ▼
@@ -71,8 +72,17 @@ the reducer with the syntax and wire tests green the whole time, because those c
 **Its surface spelling is core-side, in `CommandSyntax.swift`, not in the CLI**, because the config file's
 keybindings need the identical `argv ↔ Command` mapping and `EmiraConfig` cannot depend on an executable.
 `words` is an exhaustive `switch` the compiler checks; a test pins the verb table against it. This is also why
-there is **no `swift-argument-parser`**: the grammar is "verb, then at most one word", and `exec` — the one verb
-whose argument is a _shell_ line — gets everything after its own word, unsplit.
+there is **no `swift-argument-parser`**: the grammar is "verb, then at most one word", and the two verbs whose
+argument is open text get everything after their own word, unsplit — `exec`, a _shell_ line, and `config`, whose
+`override` takes a setting and a value as `config set` does, and whose list values own their spaces. What an
+override _names_ the core cannot check, since the schema is `EmiraConfig`'s; the `[keys]` reader and the CLI both
+check it before anything is sent, so a typo is a line number or an exit code rather than a press the daemon logs.
+
+**`config` is one namespace across two places, and a verb for the half that is the daemon's.** `check`,
+`explain`, `get` and `set` act on the file, so the CLI keeps them and never dials the socket for them;
+`config override` acts on the running daemon, so the CLI sends it like any verb, deciding on that one word
+(`OverrideIntent.word`). The vocabulary's `config` takes only `override`, which is what keeps a binding from
+naming `config set` and reaching a daemon that has no file to write. `--help` lists all five together.
 
 **A verb is one list for the whole machine, whatever a workspace is doing.** `layout strip|stack` puts the
 focused workspace into an arrangement, and eight of the other verbs have no meaning in one of them —
@@ -85,7 +95,7 @@ than something surprising.
 **The table is `Vocabulary`, and the grammar in it is data.** A surface that must _offer_ the vocabulary
 rather than read it can call neither `usage` nor `parse`, since both answer only once something has been typed.
 So a `Verb` carries its argument as a **shape**, `Verb.Argument`, and the printed grammar is derived from it.
-Five shapes carry twenty-five verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
+Five shapes carry twenty-six verbs — `Setting.Kind`'s rule one vocabulary over, **one case per shape of
 control, never per verb** — and each reads its choices off the type that parses them back. It is top-level
 rather than nested in `Command`: a consumer of the _spellings_ is not a consumer of the reducer's input.
 
@@ -135,7 +145,8 @@ EmiraShell      imperative — Runtime, Executor, AX, Capture, Compositor, Guide
     │           Display, Hotkeys, ConfigLoader, IPC, MenuBar, Onboarding, Teardown.
     │  (deps: EmiraCore, EmiraConfig, EmiraProtocol, EmiraSettings, EmiraGuide; imports AppKit/QuartzCore/SCK/AX/Carbon/CG)
     ▲
-   ├── emira-daemon   executable — NSApplication accessory host that wires the Runtime.
+   ├── emira-daemon   executable — NSApplication accessory host that wires the Runtime, and holds
+   │                  the override layer (`EmiraConfig`'s `ConfigOverrides`) over the file.
    └── emira          executable — CLI; socket client, plus `emira config` over the file.
 ```
 
@@ -211,7 +222,7 @@ and the executors themselves, acking their own effects.
 
 **Effect execution splits by plane.** `CompositingExecutor` splits a batch into **maximal contiguous
 same-plane runs** — never partitioned, because emission order is the reducer's to decide — and routes each to
-its executor. There are eight planes:
+its executor. There are nine planes:
 
 | Plane        | Executor                              | Machinery                                            |
 | ------------ | ------------------------------------- | ---------------------------------------------------- |
@@ -223,6 +234,7 @@ its executor. There are eight planes:
 | truth        | `AXExecutor`                          | AX Mach IPC, serial per-app queues, slow, may refuse |
 | pointer      | `PointerExecutor`                     | CoreGraphics on the cursor itself                    |
 | system       | `ShellLauncher`                       | `/bin/sh -c`, fire and forget                        |
+| config       | the daemon (`onOverride`)             | the layer over the config file, then a reload        |
 
 **The hoist, peek and scrim planes are the presentation plane outside a transition**, and each is its own
 plane because nothing it does is a cover's: no base, no session, no ack the reducer counts down, and
@@ -2798,6 +2810,19 @@ _directory_ event that kills any file-level watch along with the inode; an in-pl
 the directory never sees. And because a directory watch wakes on any activity, what is reported is a change in
 the **parsed `Config`**, not a change to the file.
 
+**`config override` lays settings over the file, in memory, for this run alone** (`ConfigOverrides`). It takes exactly
+what `config set` takes, through the same codecs, so it refuses in the same words; a toggle is keyed on the value
+as well as the key, so two bindings on one setting each flip between their own value and the file's. The layer
+sits between the file's reading and `applyEnvironment` — `reconfigure` derives the live config from
+`parsedConfig`, the overrides over it, then the machine, and a reload and an override are its two callers — so an
+edit to the file under an override leaves the override on top, and lifting it lands on what the file says _now_.
+Nothing reaches the file: what persists is what was written down, and a restart is the file again. The verb takes
+`exec`'s route through the core (`Effect.override`, the `config` plane), because the layer and the schema are not
+the core's, and the daemon handles it on a hop off the pump so it reconfigures from the clean stack a reload
+does. An override is chosen rather than broken, so the menu lists it, under a Reset item, instead of taking the
+title the way a broken file does; that Reset calls the daemon directly, since a click is not the hand on the
+keyboard and must not hide the pointer the way a command that did something does.
+
 **Two functions the daemon owns, and both matter for correctness:**
 
 - **`applyEnvironment`** — the values a file may not decide, all four of them capabilities rather than
@@ -2814,7 +2839,7 @@ the **parsed `Config`**, not a change to the file.
   so they ride on `Event.screensChanged` beside the frame they inset rather than through `Config`.
 - **`applyShellConfig`** — the values that reach the shell rather than the reducer (`windowAnimation`,
   `coverMode`, `transitionMode`, the kept stills, the pointer rung and its monitor, the gesture tap). One
-  function, called at launch and again from `ConfigLoader.onLoad`. Two call sites assigning a property each is
+  function, called at launch and again from `reconfigure`, which a reload and an override both go through. Two call sites assigning a property each is
   where "the reducer and the shell read the same post-`applyEnvironment` value" goes quietly false. Two
   observations are gated here rather than left standing, and for one reason: each fires at its device's own
   rate for as long as it is installed, so neither the pointer's motion monitor nor the trackpad's tap is
@@ -2848,7 +2873,7 @@ emira/
     │                    Cascade (the quit pile, not a layout) · Park
     │                    Neighbourhood (which display draws a window — the largest share of it)
     ├── EmiraConfig/     TOML · ConfigSchema · ConfigSyntax · ConfigExample · ConfigExplain
-    │                    ConfigDocument · ConfigPath
+    │                    ConfigDocument · ConfigPath · ConfigOverrides (the layer `config override` lays)
     ├── EmiraProtocol/   Request · Reply · Wire (framing + probe) · SocketClient
     │                    DesktopStatus (what `watch` publishes: the public schema)
     ├── EmiraGuide/      GuideRenderer (the seam: a drawing · scale · palette · sources) · GuideFade

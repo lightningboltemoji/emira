@@ -130,7 +130,8 @@ public final class AXExecutor: Executor {
             // new `Effect` case must be assigned a home rather than falling through.
             case .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp, .setCoverClearing,
                  .beginTransition, .extendCover, .elevateLayer, .setLayerFrame,
-                 .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec:
+                 .hideLayer, .refreshLayer, .endTransition, .setCursorHidden, .warpPointer, .exec,
+                 .override:
                 break
             }
         }

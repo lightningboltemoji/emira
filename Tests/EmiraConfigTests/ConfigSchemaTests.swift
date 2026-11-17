@@ -58,7 +58,7 @@ import EmiraCore
         expected.displays = parsed.displays
         #expect(parsed == expected)
 
-        #expect(parsed.keys.count == 5)
+        #expect(parsed.keys.count == 6)
         #expect(parsed.windowRules.count == 4)
         #expect(parsed.displays.count == 2)
     }

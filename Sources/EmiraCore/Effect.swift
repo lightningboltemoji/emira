@@ -169,4 +169,10 @@ public enum Effect: Sendable, Equatable, Codable {
     /// the desktop, and unacked for the reason `closeWindow` is: what a process does belongs to the
     /// process. A window it opens arrives on its own as `Event.windowCreated`, by the ordinary path.
     case exec(String)
+
+    // Config — the daemon's own settings
+
+    /// Change the in-memory layer over the config file. Unacked: the daemon answers by reloading, and
+    /// that arrives as `Event.configChanged`, by the path a save to the file takes.
+    case override(OverrideIntent)
 }

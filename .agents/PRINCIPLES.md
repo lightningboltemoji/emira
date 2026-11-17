@@ -307,6 +307,12 @@ happen on.
   group one table from the next are the author's work. A file it cannot parse does not open it at all — the
   menu says so and the file is one click away — because splicing text whose meaning is unknown is the one
   thing a GUI must not do, and a config that will not parse is the one most worth editing by hand.
+- **An override departs from the file for one run; it is never a second file.** `config override` changes a
+  setting in memory — the veil off while a video plays beside the notes — and the file stays the authority on
+  everything that lasts: lifting it lands on what the file says now, and a restart is the file again. It is a state
+  with two exits, and the menu lists what is laid, so a forgotten one cannot pass for a config that stopped
+  working. The settings window edits the file and so shows the file; an override is the one way the desktop may
+  differ from it, which is why the menu says so beside the window's own item.
 - **A surface that covers the desktop comes off it, whatever else has failed.** The settings window dims
   every display and suspends the chords, so Escape and a double click on the dim are the whole of the way
   back to the machine, and both are unconditional. The composition is alive because it is _on screen_ rather

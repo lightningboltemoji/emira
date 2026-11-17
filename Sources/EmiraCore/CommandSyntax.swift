@@ -45,7 +45,7 @@ public enum CommandSyntaxError: Error, Equatable, CustomStringConvertible {
 // `Direction(rawValue:)` were two statements of one fact, and now there is one.
 //
 // The shape is `Argument`, and the rule is `Setting.Kind`'s one vocabulary over: **one case per shape of
-// control, never per verb.** Five cases carry twenty-five verbs.
+// control, never per verb.** Five cases carry twenty-six verbs.
 
 /// The command vocabulary: every verb emira answers to, and the grammar of what each one takes.
 ///
@@ -60,7 +60,10 @@ public enum Vocabulary {
     }
 
     /// One indented line per verb, columns aligned. The CLI adds its own header.
-    public static var usage: String {
+    public static var usage: String { usage(of: verbs) }
+
+    /// The same, for some of them — a help that lists a verb under another heading leaves it out here.
+    public static func usage(of verbs: [Verb]) -> String {
         let width = verbs.map(\.signature.count).max() ?? 0
         return verbs.map { verb in
             let padding = String(repeating: " ", count: width - verb.signature.count + 2)
@@ -100,7 +103,7 @@ public struct Verb: Sendable {
     }
 
     /// This verb's argument is the rest of the line, verbatim — `parse(line:)` hands it over unsplit.
-    /// Only a `.line` takes one, and only because a shell line owns its own whitespace.
+    /// Only a `.line` takes one, and only because what it carries owns its own whitespace.
     var takesRawTail: Bool {
         if case .line = argument { return true }
         return false
@@ -109,8 +112,8 @@ public struct Verb: Sendable {
     public func matches(_ word: String) -> Bool { word == name || aliases.contains(word) }
 
     /// What a verb takes after its name — **one case per shape of control**, which is why five of them
-    /// cover twenty-five verbs. A case serving a single verb is the sign the table has stopped paying for
-    /// itself; `.line` sits at that edge and earns it by being the only genuinely open argument here.
+    /// cover twenty-six verbs. A case serving a single verb is the sign the table has stopped paying for
+    /// itself; `.line` is the field, for the arguments that are genuinely open.
     public enum Argument: Sendable, Equatable {
         /// Nothing. The verb is the whole command, and a word after it is a typo.
         case none
@@ -133,8 +136,9 @@ public struct Verb: Sendable {
         /// toggle cannot be spelled wrong.
         case magnitude(units: [String])
 
-        /// The rest of the line, verbatim.
-        case line(placeholder: String)
+        /// The rest of the line, verbatim. Open text has no shape to derive a grammar from, so it is
+        /// spelled; `placeholder` is an example the field shows, and parses; `hint` is what it means.
+        case line(grammar: String, placeholder: String, hint: String)
 
         /// What the field beside an address popup takes.
         public enum Name: Sendable, Equatable {
@@ -158,8 +162,8 @@ public struct Verb: Sendable {
                 return "<\(grammar)>"
             case .magnitude(let units):
                 return "<" + units.map { "N\($0)" }.joined(separator: "|") + ">"
-            case .line(let placeholder):
-                return "<\(placeholder)>"
+            case .line(let grammar, _, _):
+                return grammar
             }
         }
     }
@@ -197,6 +201,7 @@ extension Command {
         case .closeWindow:                    return ["close-window"]
         case .centerColumn:                   return ["center-column"]
         case .exec(let line):                 return ["exec", line]
+        case .override(let intent):           return ["config", OverrideIntent.word] + intent.words
         // `debug` is the user-facing spelling; `dump-state` parses as an alias.
         case .dumpState:                      return ["debug"]
         case .watch:                          return ["watch"]
@@ -321,9 +326,15 @@ extension Vocabulary {
              summary: "Hand this workspace to another display and follow it.",
              build: { verb, args in .moveWorkspaceToMonitorAndFocus(try monitorRef(args, verb: verb)) }),
 
-        Verb("exec", argument: .line(placeholder: "shell command"),
+        Verb("exec", argument: .shellLine,
              summary: "Run a shell command line, without waiting for it.",
              build: { verb, args in .exec(try commandLine(args, verb: verb)) }),
+
+        // The one `config` subcommand that is a verb: the rest read and write the file, so the CLI keeps
+        // them, and a binding that names one is refused here rather than reaching a file it cannot.
+        Verb("config", argument: .configOverride,
+             summary: "Change a setting in memory, until reset — the file is left alone.",
+             build: { verb, args in .override(try overrideIntent(args, verb: verb)) }),
 
         Verb("debug", aliases: ["dump-state"], summary: "Print the daemon's live state as JSON.",
              build: bare(.dumpState)),
@@ -426,6 +437,37 @@ extension Vocabulary {
         return String(line)
     }
 
+    /// `override [toggle] <key> <value>`, or `override reset [<key>]`. The value is everything after the
+    /// key, because a list (`[0.5, 1]`) owns its spaces; whether the key exists and the value fits it is
+    /// the schema's to say, outside the core.
+    private static func overrideIntent(_ args: [String], verb: Verb) throws -> OverrideIntent {
+        var rest = args.joined(separator: " ").trimmed
+        let missing = CommandSyntaxError.missingArgument(verb: verb.name, expected: verb.argument.signature)
+        guard let subcommand = popWord(&rest) else { throw missing }
+        guard subcommand == OverrideIntent.word else { throw badArgument(subcommand, verb: verb) }
+        guard let first = popWord(&rest) else { throw missing }
+        switch first {
+        case "reset":
+            guard let key = popWord(&rest) else { return .reset(key: nil) }
+            try noMore(rest.split(whereSeparator: \.isWhitespace).map(String.init)[...], verb: verb.name)
+            return .reset(key: key)
+        case "toggle":
+            guard let key = popWord(&rest), !rest.isEmpty else { throw missing }
+            return .toggle(key: key, value: String(rest))
+        default:
+            guard !rest.isEmpty else { throw missing }
+            return .set(key: first, value: String(rest))
+        }
+    }
+
+    /// The first word of `text`, leaving the rest with its leading whitespace stripped.
+    private static func popWord(_ text: inout Substring) -> String? {
+        let word = text.prefix(while: { !$0.isWhitespace })
+        guard !word.isEmpty else { return nil }
+        text = text.dropFirst(word.count).trimmed
+        return String(word)
+    }
+
     /// A workspace address (`1`…`9`, `0`, `a`…`z`) or one of the four relative motions. `0` is a legal
     /// address, not an off-by-one. `prev`/`prev-non-empty` parse; the long forms are what `words` emits.
     private static func workspaceRef(_ args: [String], verb: Verb) throws -> WorkspaceRef {
@@ -459,7 +501,8 @@ extension Vocabulary {
 
 }
 
-// The five grammars the table spends, each read off the type that parses it back.
+// The grammars the table spends, each read off the type that parses it back — but the two open ones,
+// which have no type to read.
 
 extension Verb.Argument {
 
@@ -478,6 +521,16 @@ extension Verb.Argument {
 
     /// `<strip|stack>`. No default, for `pin`'s reason.
     static let layoutKind = Verb.Argument.words(Layout.Kind.allCases.map(\.rawValue), default: nil)
+
+    /// `exec`'s: a line `/bin/sh` reads, so emira has nothing to check in it.
+    static let shellLine = Verb.Argument.line(grammar: "<shell command>", placeholder: "shell command",
+                                              hint: "Run through /bin/sh, without waiting for it.")
+
+    /// `config override`'s: a key and a value as `config set` takes them, which only the schema can read.
+    static let configOverride = Verb.Argument.line(
+        grammar: "override [toggle] <key> <value> | override reset [<key>]",
+        placeholder: "override toggle focus.unfocused-opacity 1",
+        hint: "A setting as `emira config set` takes it, held in memory until reset. The file is left alone.")
 
     /// One of the 36 addresses, or a relative motion. The relatives are spelled the way `words` emits
     /// them; `usage` compresses the accepted set, aliases and all.
@@ -520,6 +573,21 @@ extension SizeDelta {
     private static func number(_ value: Double) -> String {
         guard value == value.rounded(), abs(value) < 1e15 else { return String(value) }
         return String(Int64(value))
+    }
+}
+
+extension OverrideIntent {
+    /// The `config` subcommand that names an override — the one the CLI sends rather than keeps.
+    public static let word = "override"
+
+    /// The words after `config override`. The value stays one word whatever it holds — `parse` takes the rest of
+    /// the line as the value, so a list's spaces come back unchanged.
+    var words: [String] {
+        switch self {
+        case .set(let key, let value):    return [key, value]
+        case .toggle(let key, let value): return ["toggle", key, value]
+        case .reset(let key):             return ["reset"] + (key.map { [$0] } ?? [])
+        }
     }
 }
 
