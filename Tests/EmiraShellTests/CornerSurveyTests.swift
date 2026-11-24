@@ -151,27 +151,27 @@ import Testing
     /// A cover's batch is the latency anyone feels: a busy capture plane takes nothing, and the survey
     /// looks again on its own or the moment a cover comes down.
     @Test func aBusyCapturePlaneIsWaitedOut() {
-        var idle = false
+        let idle = Shared(false)
         let (survey, meter, scheduler) = Self.survey()
-        survey.isIdle = { idle }
+        survey.isIdle = { idle.value }
 
         survey.survey([7])
         #expect(meter.asked.isEmpty)
         scheduler.fire()
         #expect(meter.asked.isEmpty, "still busy")
 
-        idle = true
+        idle.value = true
         scheduler.fire()
         #expect(meter.asked == [7])
     }
 
     @Test func aCoverComingDownResumesTheSurveyAtOnce() {
-        var idle = false
+        let idle = Shared(false)
         let (survey, meter, _) = Self.survey()
-        survey.isIdle = { idle }
+        survey.isIdle = { idle.value }
 
         survey.survey([7])
-        idle = true
+        idle.value = true
         survey.resume()
         #expect(meter.asked == [7])
     }

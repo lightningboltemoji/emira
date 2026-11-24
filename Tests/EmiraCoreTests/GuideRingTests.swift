@@ -72,13 +72,11 @@ import EmiraMotion
         #expect(abs(s.motion.focusRingDisplacement.minX) < Motion.settleEpsilon)
     }
 
-    @Test func aRefocusMidFlightCarriesTheRingsVelocityThrough() {
+    @Test func aRefocusMidFlightCarriesTheRingsVelocityThrough() throws {
         let (first, _) = Self.focus(Self.world(3), .left)
         var s = first
         for _ in 0..<10 { s = Engine.reduce(s, .tick(dt: 1.0 / 120)).0 }
-        let inFlight = try? #require(s.motion.focusRing)
-        #expect(inFlight != nil)
-        let speed = s.motion.focusRing.map { abs($0.x.velocity) } ?? 0
+        let speed = abs(try #require(s.motion.focusRing).x.velocity)
         #expect(speed > 0)                                  // genuinely moving before the interrupt
 
         let (again, _) = Self.focus(s, .left)

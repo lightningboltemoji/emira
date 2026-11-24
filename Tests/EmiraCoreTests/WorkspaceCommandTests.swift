@@ -580,7 +580,7 @@ import Testing
     /// A sign, not a distance: every unfocused workspace is exactly one screen away, which bounds a
     /// switch's capture scope to two screens of windows and makes `1 → z` the same motion as `1 → 2`.
     @Test func theVerticalOffsetIsASignAndNeverAMultiple() {
-        var s = Self.smoothWorld(1)
+        let s = Self.smoothWorld(1)
         let metrics = s.metrics()!
         let shown = name("5")
         #expect(s.workspaces.verticalOffset(of: shown, from: shown, metrics: metrics) == 0)
@@ -597,7 +597,7 @@ import Testing
     /// The *physical* working height, not the content area: measured against `contentArea` a neighbour's
     /// edge would come to rest inside the outer-gap margin, which the cover paints.
     @Test func theTravelIsThePhysicalHeightNotTheContentArea() {
-        var s = Self.smoothWorld(1, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
+        let s = Self.smoothWorld(1, config: Config(widthPresets: PresetCycle([.proportion(0.5)]),
                                               outerGaps: EdgeInsets(uniform: 20)))
         let metrics = s.metrics()!
         #expect(metrics.contentArea.height < metrics.workingArea.height)

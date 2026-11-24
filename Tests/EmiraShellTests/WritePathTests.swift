@@ -222,7 +222,7 @@ import EmiraCore
         let writes = FrameWrites()
 
         AXExecutor(registry: registry, writer: writer, writes: writes)
-            .execute([.setFrame(id, Self.rect(40))], feedback: Recorder().sink)
+            .execute([.setFrame(id, Self.rect(40))], feedback: .nowhere)
         #expect(writes.isWriting(id))
 
         writer.flush()
@@ -243,7 +243,7 @@ import EmiraCore
         writes.onLanded = { told.append(($0, $1, writes.isWriting($0))) }
 
         AXExecutor(registry: registry, writer: writer, writes: writes)
-            .execute([.setFrame(id, Self.rect(40))], feedback: Recorder().sink)
+            .execute([.setFrame(id, Self.rect(40))], feedback: .nowhere)
 
         #expect(told.count == 1)
         #expect(told.first?.0 == id)
@@ -591,7 +591,7 @@ import EmiraCore
         writer.unansweredCloses = .max
 
         AXExecutor(registry: registry, writer: writer)
-            .execute([.closeWindow(a)], feedback: Recorder().sink)
+            .execute([.closeWindow(a)], feedback: .nowhere)
 
         #expect(writer.closed.count == WorldWatcher.maxUnansweredAttempts)
     }
@@ -605,7 +605,7 @@ import EmiraCore
         writer.onClose = { registry.forget(a) }
 
         AXExecutor(registry: registry, writer: writer)
-            .execute([.closeWindow(a)], feedback: Recorder().sink)
+            .execute([.closeWindow(a)], feedback: .nowhere)
 
         #expect(writer.closed == [a])
     }
@@ -839,6 +839,11 @@ private final class ManualScheduler: DelayScheduler {
 final class Recorder {
     private(set) var events: [Event] = []
     lazy var sink = EventSink { [weak self] event in self?.events.append(event) }
+}
+
+extension EventSink {
+    /// A reply address nothing reads — for a test about what a subsystem does, not what it reports.
+    static let nowhere = EventSink { _ in }
 }
 
 /// A `WindowWriter` that answers from a script instead of a desktop. `defersCompletion` models real

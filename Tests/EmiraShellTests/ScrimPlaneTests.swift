@@ -426,18 +426,18 @@ import EmiraCore
     @Test func aMeasuredRadiusCutsTheMaskAgain() {
         let veiled = Rect(x: 0, y: 0, width: 800, height: 600)
         let dialog = Rect(x: 100, y: 100, width: 300, height: 200)
-        var measured: Double?
+        let measured = Shared<Double?>(nil)
         let surface = RecordingSurface()
         let scrims = Scrims(filmer: InstantFilmer(),
                             identify: { $0 == 1 ? WindowId(1) : nil },
-                            corner: { id, _ in id == nil ? measured.map(Self.atRest) : nil },
+                            corner: { id, _ in id == nil ? measured.value.map(Self.atRest) : nil },
                             stack: { [Self.pane(77, dialog), Self.pane(1, veiled)] },
                             build: { _, _, _ in surface })
         scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
         Self.show(scrims, [Self.binding(1)])
         #expect(!Self.shows(surface, 1, 104, 104), "unmeasured: the fallback's 12 pt cuts the corner out")
 
-        measured = 17
+        measured.value = 17
         scrims.cornersMeasured()
         #expect(Self.shows(surface, 1, 104, 104))
         #expect(surface.changes.last == .cut)
@@ -623,8 +623,8 @@ import EmiraCore
         let (stack, _, moved) = Self.besideAMover()
         let clock = ManualScheduler()
         let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
-        var writing = true
-        scrims.isWriting = { writing }
+        let writing = Shared(true)
+        scrims.isWriting = { writing.value }
         Self.show(scrims, [Self.binding(1)])
 
         for _ in 0..<(Scrims.settleQuiet * 3) { #expect(clock.fire(), "still waiting on the write") }
@@ -635,7 +635,7 @@ import EmiraCore
         #expect(!Self.shows(surface, 1, 150, 150), "the mask followed the window when it finally went")
         #expect(surface.changes.last == .cut)
 
-        writing = false
+        writing.value = false
         while clock.fire() {}
         #expect(!clock.fire(), "and it ends with the write")
     }
@@ -662,18 +662,18 @@ import EmiraCore
         let (stack, _, _) = Self.besideAMover()
         let clock = ManualScheduler()
         let (scrims, _) = Self.plane(stack: stack, scheduler: clock)
-        var painting = false
-        scrims.isPainting = { painting }
+        let painting = Shared(false)
+        scrims.isPainting = { painting.value }
         scrims.isWriting = { true }
         Self.show(scrims, [Self.binding(1)])
         for _ in 0...Scrims.settleQuiet { clock.fire() }
 
-        painting = true
+        painting.value = true
         let before = stack.reads
         #expect(clock.fire(), "still watching")
         #expect(stack.reads == before, "nothing read mid-frame")
 
-        painting = false
+        painting.value = false
         #expect(clock.fire())
         #expect(stack.reads == before + 1)
     }
@@ -790,15 +790,15 @@ import EmiraCore
         let stack = Stack([Self.pane(1, Rect(x: 0, y: 0, width: 400, height: 400))])
         let clock = ManualScheduler()
         let (scrims, _) = Self.veiling(stack, clock)
-        var painting = true
-        scrims.isPainting = { painting }
+        let painting = Shared(true)
+        scrims.isPainting = { painting.value }
         let before = stack.reads
 
         scrims.expectArrival()
         #expect(clock.fire(), "still watching")
         #expect(stack.reads == before, "nothing read mid-frame")
 
-        painting = false
+        painting.value = false
         #expect(clock.fire())
         #expect(stack.reads == before + 1)
     }

@@ -110,7 +110,7 @@ import Testing
     /// `next` steps over an address the *other* display holds: the monitor is the container, and
     /// cycling should not leave it.
     @Test func relativeMotionStepsOverAnotherDisplaysAddresses() {
-        var s = desktop()
+        let s = desktop()
         let here = s.monitors.shown
         let theirs = try! #require(s.monitors.shown(on: right))
         #expect(theirs == here.next, "the fixture wants the neighbouring address on the other screen")
@@ -366,7 +366,7 @@ import Testing
     /// the destination display's parking lot, where there is nothing visible to animate.
     @Test func sendingAWindowToAParkedAddressCoversOneScreen() {
         let s = Self.desktop(3, config: EngineFix.fullWidth)
-        let parked = try! #require(s.resolve(WorkspaceRef.next))
+        let parked = s.resolve(WorkspaceRef.next)
         let (after, _) = Engine.reduce(s, .command(.moveToWorkspace(.name(parked))))
         #expect(after.motion.transitioningMonitors == [Self.left])
     }

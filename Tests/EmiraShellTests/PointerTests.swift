@@ -600,14 +600,14 @@ import EmiraCore
         covered.motion.raiseCover(on: covered.monitors.focused, focused: covered.world.focusedWindow)
         covered.motion.confirmCover(on: covered.monitors.focused)
 
-        var current = covered
+        let current = Shared(covered)
         let log = PointerTests.EventLog()
-        let focus = Self.reader({ current }, log.sink)
+        let focus = Self.reader({ current.value }, log.sink)
 
         focus.pointerMoved(to: inside)          // suspended: tracked, not reported
         #expect(log.events.isEmpty)
 
-        current = uncovered                     // the cover comes down
+        current.value = uncovered               // the cover comes down
         focus.pointerMoved(to: inside.offsetBy(dx: 2, dy: 2))
         #expect(log.events.isEmpty, "the pointer never left the window it was already over")
     }
@@ -633,12 +633,12 @@ import EmiraCore
         let inside = Self.point(in: state, of: target)
         state.pointer.isCursorHidden = true
 
-        var current = state
+        let current = Shared(state)
         let log = PointerTests.EventLog()
-        let focus = Self.reader({ current }, log.sink)
+        let focus = Self.reader({ current.value }, log.sink)
         focus.pointerMoved(to: inside)
 
-        current.pointer.isCursorHidden = false
+        current.value.pointer.isCursorHidden = false
         focus.pointerMoved(to: inside.offsetBy(dx: 5, dy: 5))
         #expect(log.events.isEmpty)
     }

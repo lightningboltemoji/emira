@@ -92,15 +92,13 @@ import EmiraCore
         func retire() { isRetired = true }
     }
 
-    static let sink = EventSink { _ in }
-
     /// A peek stands over its display's share of the column, and its number answers for the column.
     @Test func aPeekStandsOverItsDisplaysShareOfTheColumn() {
         let filmer = HoistPlaneTests.HeldFilmer()
         let built = Self.peekPlaneBuilt(filmer: filmer)
         let column = Rect(x: 700, y: 0, width: 700, height: 800)
         built.plane.setPeeks([PeekBinding(window: WindowId(3), monitor: Self.left, frame: column)],
-                             feedback: Self.sink)
+                             feedback: .nowhere)
         let surface = try! #require(built.surfaces.surfaces[WindowId(3)])
         #expect(surface.slice == Rect(x: 700, y: 0, width: 300, height: 800))
         #expect(surface.whole == column)
@@ -118,17 +116,17 @@ import EmiraCore
         let built = Self.peekPlaneBuilt(filmer: filmer, kept: kept)
         let column = Rect(x: 700, y: 0, width: 700, height: 800)
         built.plane.setPeeks([PeekBinding(window: WindowId(3), monitor: Self.left, frame: column)],
-                             feedback: Self.sink)
+                             feedback: .nowhere)
         let surface = try! #require(built.surfaces.surfaces[WindowId(3)])
         #expect(surface.images == 1, "the kept still, before any film has landed")
 
         built.plane.setPeeks([PeekBinding(window: WindowId(3), monitor: Self.left,
-                                          frame: column.offsetBy(dx: 50, dy: 0))], feedback: Self.sink)
+                                          frame: column.offsetBy(dx: 50, dy: 0))], feedback: .nowhere)
         #expect(filmer.films.count == 1, "moved, not resized: the same photograph")
 
         built.plane.setPeeks([PeekBinding(window: WindowId(3), monitor: Self.left,
                                           frame: Rect(x: 600, y: 0, width: 800, height: 800))],
-                             feedback: Self.sink)
+                             feedback: .nowhere)
         #expect(filmer.films.count == 2)
         filmer.deliver()
         #expect(surface.images >= 3)
@@ -139,9 +137,9 @@ import EmiraCore
         let built = Self.peekPlaneBuilt()
         built.plane.setPeeks([PeekBinding(window: WindowId(3), monitor: Self.left,
                                           frame: Rect(x: 700, y: 0, width: 700, height: 800))],
-                             feedback: Self.sink)
+                             feedback: .nowhere)
         let surface = try! #require(built.surfaces.surfaces[WindowId(3)])
-        built.plane.setPeeks([], feedback: Self.sink)
+        built.plane.setPeeks([], feedback: .nowhere)
         #expect(surface.isRetired)
         #expect(built.plane.standIn(for: surface.number) == nil)
     }
@@ -184,7 +182,7 @@ import EmiraCore
             .execute([.setFrame(leaving, Rect(x: 1200, y: 0, width: 400, height: 400)),
                       .setFrame(staying, Rect(x: 300, y: 0, width: 400, height: 400)),
                       .park(parking, Rect(x: 2199, y: 860, width: 400, height: 400))],
-                     feedback: Recorder().sink)
+                     feedback: .nowhere)
         let crossing = Dictionary(uniqueKeysWithValues: writer.placements.flatMap(\.moves)
             .map { ($0.record.id, $0.crossesDisplays) })
         #expect(crossing[leaving] == true)

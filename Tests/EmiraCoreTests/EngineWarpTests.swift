@@ -92,7 +92,7 @@ import Testing
 
     // With no session open the visit is paid at once
 
-    @Test func aFocusWithNoTransitionWarpsImmediately() {
+    @Test func aFocusWithNoTransitionWarpsImmediately() throws {
         let s = EngineFix.world(3, config: Self.followingSnapped)
         let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
 
@@ -100,8 +100,8 @@ import Testing
         #expect(rects.count == 1)
         #expect(next.pointer.pendingWarp == nil)
         // Into the window that now has focus, and inside the working area.
-        let focused = try? #require(next.world.focusedWindow)
-        #expect(rects.first == next.world.windows[focused ?? WindowId(0)]?.frame
+        let focused = try #require(next.world.focusedWindow)
+        #expect(rects.first == next.world.windows[focused]?.frame
             .intersection(next.metrics()!.workingArea))
     }
 

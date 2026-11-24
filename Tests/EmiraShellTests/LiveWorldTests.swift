@@ -3146,8 +3146,8 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     @Test func theFadeCheckWaitsOutAFrameLoopRatherThanReadingThroughIt() {
         // The list read waits on our own pending frame, so it is taken between transitions, never in one.
         let world = LiveWorld()
-        var painting = true
-        world.watcher.isPainting = { painting }
+        let painting = Shared(true)
+        world.watcher.isPainting = { painting.value }
         world.watcher.start()
         let one = try! #require(world.id(titled: "one"))
         let two = try! #require(world.id(titled: "two"))
@@ -3159,7 +3159,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.scheduler.fire(after: WorldWatcher.fadeAllowance)
         #expect(!world.recorder.events.contains(.windowShown(two, false)), "not while a frame is in flight")
 
-        painting = false
+        painting.value = false
         world.scheduler.fire(after: WorldWatcher.fadeAllowance)
         #expect(world.recorder.events.contains(.windowShown(two, false)))
     }

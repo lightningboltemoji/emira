@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 // emira — a scrollable-tiling window manager for macOS (see PRINCIPLES.md / IMPLEMENTATION.md).
@@ -68,3 +68,8 @@ let package = Package(
                     dependencies: ["EmiraShell", "EmiraCore", "EmiraProtocol"]),
     ]
 )
+
+// Fail the build for warnings
+for target in package.targets {
+    target.swiftSettings = (target.swiftSettings ?? []) + [.treatAllWarnings(as: .error)]
+}

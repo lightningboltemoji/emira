@@ -690,7 +690,7 @@ import Testing
     /// Every exit owes it, including the one where nothing ever answered.
     @Test func aTimedOutCoverStillPaysTheFocusItOwes() {
         let start = Self.overlapping()
-        let (s, command) = EngineFix.run(start, [.command(.focus(.left))])
+        let (s, _) = EngineFix.run(start, [.command(.focus(.left))])
         #expect(s.owedFocus[MonitorId(1)] == .window(WindowId(1)))
         let (after, fx) = Engine.reduce(s, .holdTimeout(MonitorId(1)))
         #expect(after.owedFocus.isEmpty)

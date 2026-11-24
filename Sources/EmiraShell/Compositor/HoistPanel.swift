@@ -218,6 +218,7 @@ public final class HoistPanel: HoistSurface {
 /// A borderless window of ours that takes a click without activating the daemon. A window that is not a
 /// non-activating panel activates its app on a click, whether or not it can become key — and the daemon
 /// coming forward lands after, or instead of, the activation the click was asking for.
+@MainActor
 func clickablePanel(_ rect: CGRect) -> NSPanel {
     let panel = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
