@@ -214,8 +214,8 @@ public struct World: Sendable, Equatable, Codable {
     /// `pruneTiledFocus` drops it when its window stops being tiled, `noteTiledFocus` moves it on.
     public private(set) var lastTiledFocus: WindowId?
     /// The last window focus rested on, **whatever kind of window it was** — the same shelter from that
-    /// transient `nil`, one constraint looser, because a float and a full-screen window are both windows
-    /// a user works in and neither is ever `lastTiledFocus`. What an arrival is measured against.
+    /// transient `nil`, one constraint looser, because a float is a window a user works in and is never
+    /// `lastTiledFocus`. What an arrival is measured against.
     public private(set) var lastFocus: WindowId?
     /// When each window last took focus — the whole of what emira knows about **stacking**, and it is
     /// derived rather than read: the window server's own answer costs a `CGWindowListCopyWindowInfo`
@@ -226,8 +226,9 @@ public struct World: Sendable, Equatable, Codable {
     /// still alive. The app's to do and nobody's to announce, so it is a reading (`Event.windowShown`)
     /// rather than a notification; `isOnScreen` is its reader.
     public private(set) var unshown: Set<WindowId> = []
-    /// The windows in native full screen — each on a Space of its own, off the strip until it comes back.
-    /// A reading (`Event.windowFullScreen`), since macOS announces neither edge of it.
+    /// The windows in native full screen, each on a Space of its own; a tiled one keeps its column
+    /// (`LayoutMetrics.fullScreen`). A reading (`Event.windowFullScreen`), since macOS announces neither
+    /// edge of it.
     public private(set) var fullScreen: Set<WindowId> = []
     /// The counter behind `focusedAt`. Monotonic and never reset — it orders the session rather than the
     /// windows in it, so two windows can never share a rank.
@@ -499,8 +500,9 @@ public struct World: Sendable, Equatable, Codable {
     /// permits tiling, and its
     /// app is not `Cmd-H` hidden. Config-driven float overrides subtract from this elsewhere.
     public func participatesInTiling(_ id: WindowId) -> Bool {
-        guard let window = windows[id], !window.isMinimized, !isFloating(id),
-              !isPinned(id), !fullScreen.contains(id) else { return false }
+        guard let window = windows[id], !window.isMinimized, !isFloating(id), !isPinned(id) else {
+            return false
+        }
         return !isAppHidden(of: id)
     }
 
@@ -677,11 +679,10 @@ public struct World: Sendable, Equatable, Codable {
         windows.keys.filter(participatesInTiling).sorted()
     }
 
-    /// The live windows that are off the screen and coming back — in the Dock, behind ⌘H, or in native
-    /// full screen — which `Workspaces.reconcile` keeps a place for.
+    /// The live windows that are off the screen and coming back — in the Dock or behind ⌘H — which
+    /// `Workspaces.reconcile` keeps a place for.
     public var awayWindowIds: Set<WindowId> {
-        Set(windows.values.filter { $0.isMinimized || isAppHidden(of: $0.id) || fullScreen.contains($0.id) }
-                .map(\.id))
+        Set(windows.values.filter { $0.isMinimized || isAppHidden(of: $0.id) }.map(\.id))
     }
 
     /// The ids of every live window owned by `bundleId`, sorted — what app-level operations read.

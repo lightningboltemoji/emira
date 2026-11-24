@@ -546,7 +546,8 @@ extension LayoutMetrics {
                 parkFloors: [WindowId: Double] = [:],
                 parkingLot: ParkingLot? = nil,
                 pins: [PinSide: PinBand] = [:],
-                neighbourhood: Neighbourhood? = nil) {
+                neighbourhood: Neighbourhood? = nil,
+                fullScreen: Set<WindowId> = []) {
         let config = display.map(config.on(display:)) ?? config
         self.init(workingArea: workingArea,
                   widthPresets: config.widthPresets,
@@ -560,6 +561,7 @@ extension LayoutMetrics {
                   parkFloors: parkFloors,
                   parkingLot: parkingLot,
                   pins: pins,
-                  neighbourhood: neighbourhood)
+                  neighbourhood: neighbourhood,
+                  fullScreen: fullScreen)
     }
 }

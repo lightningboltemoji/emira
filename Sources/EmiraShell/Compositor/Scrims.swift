@@ -71,7 +71,7 @@ public protocol ScrimPlane: AnyObject {
     /// is out of sight, and every re-read of the window server waits on that cover's commit each frame.
     func setCovered(_ covered: Bool, on monitor: MonitorId)
 
-    /// Whether `monitor` is showing its desktop, or a full-screen window's Space that has none to film.
+    /// Whether `monitor` is showing its desktop, or a full-screen window's Space with none to film or cut.
     func setDesktopShown(_ shown: Bool, on monitor: MonitorId)
 }
 
@@ -165,6 +165,10 @@ public final class Scrims: ScrimPlane {
     static let settleQuiet = 4
     static let settleLimit: TimeInterval = 0.4
 
+    /// How long a desktop the core has said is back stays held, waiting for the window server to show it,
+    /// before the server's reading is taken regardless — the backstop for a scrim that is never told.
+    static let returnLimit: TimeInterval = 1.5
+
     /// How often the window server is read while an announced window is expected, how many unchanged
     /// readings after it moved end the wait (~150 ms, past the open animation's hold at its overshoot),
     /// and how many readings it may take regardless (~a second).
@@ -223,12 +227,16 @@ public final class Scrims: ScrimPlane {
     private var veiledAsked: Set<MonitorId> = []
     /// Bumped per display by every film, so one answering after its surface was rebuilt owns nothing.
     private var filmGeneration: [MonitorId: Int] = [:]
-    /// The displays showing a full-screen window's Space, which hold their photograph rather than film
-    /// the black that stands where the desktop was.
+    /// The displays out of sight — from the core's word that a full-screen window's Space is in front
+    /// until their scrim is on the active Space again — which hold their photograph and their masks rather
+    /// than film the black where the desktop was, or cut against a reading of another Space.
     private var unshown: Set<MonitorId> = []
-    /// The displays a film was turned away from while out of sight, taken at the next quiet moment
-    /// whatever the throttle says: what was asked for may be a photograph known to be wrong.
+    /// The displays a film was turned away from while out of sight, taken when the desktop is back and at
+    /// any quiet moment after whatever the throttle says: what was asked for may be known to be wrong.
     private var owed: Set<MonitorId> = []
+    /// Bumped per display by every word on whether its desktop is in sight, so a wait for it to come back
+    /// that the desktop going again has replaced owns nothing.
+    private var returnGeneration: [MonitorId: Int] = [:]
 
     /// How far the photographs are blurred, in points — `[focus] unfocused-blur`, read out here for
     /// `Reconstruction.motionBlur`'s reason: the core emits the same bindings under every setting of
@@ -247,6 +255,10 @@ public final class Scrims: ScrimPlane {
 
     /// What each display's mask is actually drawing, so a re-read that finds nothing new paints nothing.
     private var painted: [MonitorId: [ScrimVeil]] = [:]
+    /// What each display's mask drew when a watch last saw the reading stand still under it, which every cut
+    /// that changes the mask is watched for. A window going full screen grows over its neighbours before
+    /// anything says why, and the desktop comes back as it left: this is the mask held while out of sight.
+    private var steady: [MonitorId: [ScrimVeil]] = [:]
 
     /// The tarp the core last named per display, its surface, the strip that surface covers, the strip's
     /// photograph, and the cut it is drawing. Built on the first tarp a display is sent, since the strip
@@ -368,15 +380,54 @@ public final class Scrims: ScrimPlane {
     }
 
     public func setDesktopShown(_ shown: Bool, on monitor: MonitorId) {
+        returnGeneration[monitor, default: 0] &+= 1
         guard !shown else {
-            unshown.remove(monitor)
+            guard unshown.contains(monitor) else { return }
+            awaitReturn(monitor, generation: returnGeneration[monitor] ?? 0,
+                        until: Date().addingTimeInterval(Self.returnLimit))
             return
         }
-        unshown.insert(monitor)
+        guard unshown.insert(monitor).inserted else { return }
+        settleGeneration[monitor, default: 0] &+= 1        // a watch in flight would read the wrong Space
+        watches[monitor] = nil
+        if let held = steady[monitor], held != painted[monitor], let surface = surfaces[monitor] {
+            painted[monitor] = held
+            surface.setVeils(held, change: .cut)
+        }
         // A film in flight may catch the desktop going, and what is under it may change before it is back.
         filmGeneration[monitor, default: 0] &+= 1
         filmingStrip[monitor] = nil
         owed.insert(monitor)
+    }
+
+    /// Hold until this display's scrim is on the active Space and the reading has stood still. The core
+    /// says the desktop is back before macOS shows it: until then the server lists none of its windows, and
+    /// for a few frames after it still has the returning one at full-screen size, over its neighbours.
+    private func awaitReturn(_ monitor: MonitorId, generation: Int, until deadline: Date,
+                             after previous: [StackedWindow]? = nil, quiet: Int = 0) {
+        guard returnGeneration[monitor] == generation, unshown.contains(monitor) else { return }
+        guard Date() < deadline, let surface = surfaces[monitor] else { return reveal(monitor) }
+        var previous = previous
+        var quiet = quiet
+        if surface.isOnActiveSpace, !isPainting() {
+            let reading = stack()
+            quiet = reading == previous ? quiet + 1 : 0
+            previous = reading
+            if quiet >= Self.settleQuiet { return reveal(monitor, against: reading) }
+        }
+        scheduler.schedule(after: Self.settleInterval) { [weak self] in
+            self?.awaitReturn(monitor, generation: generation, until: deadline, after: previous, quiet: quiet)
+        }
+    }
+
+    /// The desktop is on the glass again: cut against what the server shows, and take the film it is owed.
+    private func reveal(_ monitor: MonitorId, against reading: [StackedWindow]? = nil) {
+        unshown.remove(monitor)
+        if isActive(monitor), !covered.contains(monitor) {
+            paint(monitor, change: .cut, against: reading)
+            watch(monitor)
+        }
+        if owed.contains(monitor), wantsPhotograph(monitor) { refilm(monitor) }
     }
 
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
@@ -410,6 +461,7 @@ public final class Scrims: ScrimPlane {
         // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
         applied.removeAll()
         painted.removeAll()
+        steady.removeAll()
         stale.removeAll()
         naming.removeAll()
         watches.removeAll()
@@ -419,16 +471,23 @@ public final class Scrims: ScrimPlane {
     /// nothing in the core to say so — a window emira never placed has left the glass or arrived on it
     /// (`WorldWatcher.onStackChanged`). A cut that comes out the same paints nothing.
     public func recut() {
-        for monitor in surfaces.keys.sorted() where isActive(monitor) {
-            paint(monitor, change: .cut)
-        }
+        for monitor in surfaces.keys.sorted() where isActive(monitor) { cutAndWatch(monitor) }
+    }
+
+    /// A cut no watch asked for. One that changed the mask is watched like a set's, so `steady` takes it
+    /// once the reading has stood still under it.
+    private func cutAndWatch(_ monitor: MonitorId) {
+        guard paint(monitor, change: .cut), watches[monitor] == nil, isActive(monitor),
+              !covered.contains(monitor), !unshown.contains(monitor) else { return }
+        watch(monitor)
     }
 
     /// Something is moving that no set describes: a write going out, a window placing itself, a peek of
     /// ours. Each display drawing anything is watched until the reading stands still; one already watched
     /// starts its quiet over instead, since reports outrun readings and a restart per report never reads.
     public func expectMovement() {
-        for monitor in surfaces.keys.sorted() where isActive(monitor) && !covered.contains(monitor) {
+        for monitor in surfaces.keys.sorted()
+        where isActive(monitor) && !covered.contains(monitor) && !unshown.contains(monitor) {
             guard watches[monitor] != nil else { watch(monitor); continue }
             watches[monitor] = (0, Date().addingTimeInterval(Self.settleLimit))
         }
@@ -459,7 +518,10 @@ public final class Scrims: ScrimPlane {
             let changed = previous.map { $0 != reading } ?? false
             let moved = moved || changed
             let quiet = changed || !moved ? 0 : quiet + 1
-            guard quiet < Self.arrivalQuiet else { return }
+            guard quiet < Self.arrivalQuiet else {
+                for monitor in surfaces.keys where isActive(monitor) { steady[monitor] = painted[monitor] }
+                return
+            }
             again(after: reading, moved: moved, quiet: quiet, left: left)
         }
         read(after: nil, moved: false, quiet: 0, left: Self.arrivalLimit)
@@ -467,9 +529,7 @@ public final class Scrims: ScrimPlane {
 
     /// A radius `surveyCorners` asked for has been measured: cut every mask again with it.
     public func cornersMeasured() {
-        for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false {
-            paint(monitor, change: .cut)
-        }
+        for monitor in surfaces.keys.sorted() where current[monitor]?.isEmpty == false { cutAndWatch(monitor) }
     }
 
     /// The desktop may have changed and the capture plane is idle — the moment a cover comes down.
@@ -567,7 +627,7 @@ public final class Scrims: ScrimPlane {
     private func apply(_ bindings: [ScrimBinding], on monitor: MonitorId, change: ScrimChange) {
         paint(monitor, change: change)
         // Cut once even under a cover: its stand-ins draw the veils this cut decides (`veil(of:)`).
-        guard isActive(monitor), !covered.contains(monitor) else { return }
+        guard isActive(monitor), !covered.contains(monitor), !unshown.contains(monitor) else { return }
         watch(monitor)
     }
 
@@ -578,6 +638,9 @@ public final class Scrims: ScrimPlane {
     private func paint(_ monitor: MonitorId, change: ScrimChange,
                        against reading: [StackedWindow]? = nil) -> Bool {
         guard surfaces[monitor] != nil, frames[monitor] != nil else { return false }
+        // Out of sight, the server's reading is of a Space this scrim is not on, and would take every
+        // window on the desktop out of its veil: what is painted is held until the desktop is back.
+        guard !unshown.contains(monitor) else { return false }
         // A display drawing nothing needs no stacking: there is no mask to cut against it.
         let stacked = isActive(monitor) ? (reading ?? stack()) : []
         let here = drawn(on: monitor, in: stacked)
@@ -690,6 +753,7 @@ public final class Scrims: ScrimPlane {
                 stale[monitor] = nil
                 paint(monitor, change: .cut)
             }
+            if watch.quiet >= Self.settleQuiet { steady[monitor] = painted[monitor] }
             guard !settled || isWriting() else {
                 watches[monitor] = nil
                 return

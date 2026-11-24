@@ -144,7 +144,8 @@ public struct State: Sendable, Equatable, Codable {
             parkingLot: ParkingLot(among: world.monitors),
             pins: world.pinBands(on: id),
             neighbourhood: Neighbourhood(frame: monitor.frame,
-                                         others: world.monitors.filter { $0.id != id }.map(\.frame)))
+                                         others: world.monitors.filter { $0.id != id }.map(\.frame)),
+            fullScreen: world.fullScreen)
     }
 
     /// The **acting** monitor's metrics — the display the user is on, which is what a verb naming no
@@ -989,16 +990,19 @@ public enum Engine {
             return (s, effects)
 
         case .windowFullScreen(let id, true):
-            // A departure like a minimize's, except the keyboard stays where it is: the window in full
-            // screen is the one in front, and handing focus on would take the user back out of it.
+            // Not a departure: the window keeps its column and the keyboard, and macOS's own animation is
+            // the whole transition. Nothing on the desktop moves, so the pass only records it off the glass.
             guard s.world.windows[id] != nil, !s.world.fullScreen.contains(id) else { return (s, []) }
-            let effects = departFromLayout(&s, id) { $0.world.setFullScreen(id, true) }
+            s.world.setFullScreen(id, true)
+            let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         case .windowFullScreen(let id, false):
-            // Back on the desktop, and still the window the user is in.
+            // Back in the column nothing moved, at the frame its app restores: the pass writes only a
+            // window that came back somewhere else.
             guard s.world.fullScreen.contains(id) else { return (s, []) }
-            let effects = returnFromAway(&s, id, focusing: true) { $0.world.setFullScreen(id, false) }
+            s.world.setFullScreen(id, false)
+            let effects = reassertTruthPlane(&s)
             return (s, effects)
 
         case .windowShown(let id, let shown):
@@ -3145,9 +3149,9 @@ public enum Engine {
     /// **On screen is the whole of the constraint, so it is asked rather than assumed.** `lastFocus`
     /// outlives its window being minimized, `Cmd-H` hidden, or parked on a workspace the user has since
     /// left — and in each of those, dividing by its frame measures an arrival against something nobody
-    /// can see. `isOnScreen` is exactly the line the widening was drawn for: it keeps the two anchors
-    /// `lastTiledFocus` was losing (a float and a full-screen window are both unplaced and both in
-    /// view) and drops those three, the last of which is the first window on a workspace switched to.
+    /// can see. `isOnScreen` is exactly the line the widening was drawn for: it keeps the anchor
+    /// `lastTiledFocus` was losing (a float is unplaced and in view) and drops those three, the last of
+    /// which is the first window on a workspace switched to.
     private static func arrivalAnchor(_ s: State, of snapshot: WindowSnapshot) -> WindowArrival.Anchor? {
         guard !snapshot.wasAlreadyOpen, let id = s.world.lastFocus, s.world.isOnScreen(id),
               let anchor = s.world.windows[id] else { return nil }
@@ -3195,7 +3199,7 @@ public enum Engine {
                                     mover: id, animatingFrom: seeded) + announce
     }
 
-    /// A window back from the Dock, ⌘H or full screen, put back where it stood (`Workspaces.awayPlaces`).
+    /// A window back from the Dock or ⌘H, put back where it stood (`Workspaces.awayPlaces`).
     /// Out of view, the desktop follows it only if it is the window the user is in or `focusing` makes it
     /// so — `false` for ⌘H undone, whose app's focus report decides, in whichever order the two arrive.
     private static func returnFromAway(_ s: inout State, _ id: WindowId, focusing: Bool,

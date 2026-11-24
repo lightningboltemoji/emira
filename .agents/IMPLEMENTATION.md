@@ -1263,9 +1263,9 @@ whichever window the scan reached first rather than anything a user chose.
 column does this open beside", so it insists on a column, and reads `World.lastTiledFocus`.
 `Engine.arrivalAnchor` answers "what did this window open out of", which needs a window on screen and nothing
 more, so it reads `World.lastFocus` — the same shelter from the transient `nil`, without the column. Sharing
-the first would make the mechanism silent in exactly the states where a small window is most likely: neither a
-float nor a full-screen window is ever `lastTiledFocus`, so working in either leaves the ratio measured
-against a window the user left behind, or against nothing at all.
+the first would make the mechanism silent in exactly the states where a small window is most likely: a float
+is never `lastTiledFocus`, so working in one leaves the ratio measured against a window the user left behind,
+or against nothing at all.
 
 All three actions are **seeds into somewhere the user can already reach**: `workspace` is the move
 `move-to-workspace` performs, `float` writes the tri-state `Command.float` toggles, `width` is the override
@@ -1274,20 +1274,30 @@ All three actions are **seeds into somewhere the user can already reach**: `work
 it, so a standing rule would be a second authority over it.
 
 Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/panels/popovers float;
-native-fullscreen windows are excluded, and a window that goes full screen later leaves the strip until it
-comes back (`Event.windowFullScreen`, read of every frame filling a display the watcher learns, whether a
-report, a write's landing or an adoption, since macOS announces neither edge and a strip that went on placing
-it would rewrite it at the rate it reports); app chrome that merely happens to carry an `NSWindow` is declined
+a window adopted already in native full screen is excluded, and one that goes full screen later keeps its
+column (`Event.windowFullScreen`, read of every frame filling a display the watcher learns, whether a report, a
+write's landing or an adoption, since macOS announces neither edge and a strip that went on placing it would
+rewrite it at the rate it reports); app chrome that merely happens to carry an `NSWindow` is declined
 outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the
 strip, animated out like a close.
 
-**A window gone to the Dock, behind ⌘H or into full screen is away, and comes back where it stood**
+**A window gone to the Dock or behind ⌘H is away, and comes back where it stood**
 (`World.awayWindowIds` → `Workspaces.awayPlaces` → `Layout.rejoin`): to its own workspace, into its stack at
 its row if that column outlived it, else beside the nearest window it stood by, at its column's width. A place
 keeps the strip's order with the windows already away spliced in, so neighbours that left together come back
 in their order whichever returns first. In view the return is an arrival; out of view the desktop follows it
-only as far as the window the user is in — a Dock restore and a full-screen exit take focus, and an unhide
-(`Event.windowUnhidden`) leaves it to its app's own report, which can land before the return or after it.
+only as far as the window the user is in — a Dock restore takes focus, and an unhide (`Event.windowUnhidden`)
+leaves it to its app's own report, which can land before the return or after it.
+
+**A window in native full screen is not away: it keeps its column** (`LayoutMetrics.fullScreen`). macOS draws it
+on a Space of its own and animates it there and back, and that animation is the whole of the transition: nothing
+on the desktop moves for it, so there is no cover. One would have nothing to hide, and everything it filmed would
+be macOS mid-animation — the desktop not yet back, the window still laid out full screen. The set rides in the
+metrics beside the lot, so every geometry query sees it: the column keeps its width, and nothing places, parks,
+scopes, peeks or veils the window. It is still a member — focus can land on it, which takes the user to its
+Space; a window opened meanwhile opens beside it; closing it closes its column. Its app restores the frame it
+left, which is its slot, so coming back writes nothing unless the strip moved the column meanwhile. Shown the
+desktop meanwhile, the user sees the slot empty, as macOS shows it without emira.
 
 ### Pinning
 
@@ -1600,14 +1610,18 @@ next one, or a desktop that declines to be filmed at all is asked again at every
 that never *asked* for the photograph is not one (`veiledAsked`): a boot with something parked sends the tarp
 ahead of the first set, and its film of the lot's strip alone would otherwise pace the veils off the glass.
 
-**Never while a full-screen window's Space is in front** (`Effect.setDesktopShown`). A display showing one has
-no desktop on it, and its film is black: held as the photograph, every veil there would dim to black until a
-later cover happened to refilm it. The core says so (`State.desktopsUnderFullScreen`), because it knows first:
-a window going full screen keeps the keyboard, and the window in front of a display is the one last focused
-there. macOS takes the desktop away over several hundred milliseconds, and the window server's own readings —
-`isOnActiveSpace`, the window list — change only after the film has already gone black. So the plane holds its
-photograph from the moment it is told, turns away a film in flight, and owes one: the first quiet moment after
-the desktop is back films it, whatever the throttle says, since what is under it may have changed while away.
+**Nothing is filmed or cut while a full-screen window's Space is in front** (`Effect.setDesktopShown`). A
+display showing one has no desktop on it: its film is black, and its reading lists none of the desktop's
+windows, so a cut takes every veil off. The two edges come from different witnesses, each the one that is right
+about its edge. Going, the core says so (`State.desktopsUnderFullScreen`): a window going full screen keeps the
+keyboard, the window in front of a display is the one last focused there, and the core knows it before macOS
+has begun taking the desktop away. The window server's readings change only once the film has gone black.
+Coming back, the core is early: macOS holds every change to a desktop window until its Space switch is done,
+and for a few frames after, the reading still has the window that was full screen at that size, over its
+neighbours. So the plane holds until its own scrim is on the active Space and the reading has stood still. In
+between it holds its photograph and the mask as it last stood still (`Scrims.steady`, since the window going
+full screen grows over its neighbours a few milliseconds before the core says why), turns away a film in flight,
+and owes one, taken as the desktop comes back whatever the throttle says.
 
 **No display nobody is veiling is ever filmed** (`Scrims.wantsPhotograph`), which is the whole of what the
 setting being off costs: no capture at boot, none every `desktopMaxAge` after, and no photograph held. The
@@ -1693,7 +1707,9 @@ window emira never managed arrives on the glass or leaves it, and no set is comi
 was cut around. So the reconciliation sweep — which reads the whole window list every interval anyway, past
 its own paint gate — fans out the one fact it can see for free, that the on-screen set is not the one it saw
 last (`WorldWatcher.onStackChanged` → `Scrims.recut`). A re-cut that comes out the same paints nothing, so a
-quiet desktop costs a set comparison. A foreign window that *moves* is still corrected only by the next set.
+quiet desktop costs a set comparison. One that changes the mask is watched until the reading stands still, as a
+set's is, so the mask held while a desktop is out of sight (`Scrims.steady`) is never one a re-cut has since put
+right. A foreign window that *moves* is still corrected only by the next set.
 
 **A managed window can leave a mask with no set on the way too** (`WorldWatcher.onWindowMoved` →
 `Scrims.expectMovement`): an app placing itself, or a write given up on landing after all. The core has nothing to

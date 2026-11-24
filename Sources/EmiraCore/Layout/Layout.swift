@@ -218,6 +218,10 @@ public struct LayoutMetrics: Sendable, Equatable {
     /// This display among the others — which of them the window server draws a window on. Rides here for
     /// the lot's reason. Defaults to the working area alone, where every window placed is drawn here.
     public var neighbourhood: Neighbourhood
+    /// The members in native full screen, which macOS draws on a Space of their own (`World.fullScreen`).
+    /// Their columns keep their width, and no query here places, parks, scopes or shows them. Rides here
+    /// for the lot's reason: a query that missed it would write to a window macOS is drawing, or film it.
+    public var fullScreen: Set<WindowId>
 
     public init(
         workingArea: Rect,
@@ -232,7 +236,8 @@ public struct LayoutMetrics: Sendable, Equatable {
         parkFloors: [WindowId: Double] = [:],
         parkingLot: ParkingLot? = nil,
         pins: [PinSide: PinBand] = [:],
-        neighbourhood: Neighbourhood? = nil
+        neighbourhood: Neighbourhood? = nil,
+        fullScreen: Set<WindowId> = []
     ) {
         self.workingArea = workingArea
         self.widthPresets = widthPresets
@@ -247,6 +252,7 @@ public struct LayoutMetrics: Sendable, Equatable {
         self.parkingLot = parkingLot ?? ParkingLot(frame: workingArea)
         self.pins = pins
         self.neighbourhood = neighbourhood ?? Neighbourhood(frame: workingArea)
+        self.fullScreen = fullScreen
     }
 
     //
@@ -857,7 +863,7 @@ public struct Layout: Sendable, Equatable, Codable {
         var frames: [WindowId: Rect] = [:]
         // Layout order, because the ordinals are handed out along it and a run has to be reproducible.
         // Whole points, because AX stores nothing finer and a fractional target lands where AX rounds it.
-        for id in allWindowIds {
+        for id in allWindowIds where !metrics.fullScreen.contains(id) {
             guard let frame = natural[id] else { continue }
             frames[id] = (placed.contains(id) ? frame
                 : Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics)).rounded()
@@ -901,7 +907,7 @@ public struct Layout: Sendable, Equatable, Codable {
         let lot = metrics.parkingLot
 
         var frames: [WindowId: Rect] = [:]
-        for id in allWindowIds {
+        for id in allWindowIds where !metrics.fullScreen.contains(id) {
             guard let frame = natural[id] else { continue }
             frames[id] = Self.park(id, size: frame.size, in: lot, at: &cursor, metrics: metrics).rounded()
         }
@@ -977,10 +983,10 @@ public struct Layout: Sendable, Equatable, Codable {
     /// into the outer-gap margin counts as on screen. Under `stack`, **everything**: a cascade lays
     /// every tile inside the content area, so nothing on a shown one is ever parked.
     public func visibleWindowIds(scrollOffset: Double, metrics: LayoutMetrics) -> [WindowId] {
-        guard kind == .strip else { return allWindowIds }
+        guard kind == .strip else { return allWindowIds.filter { !metrics.fullScreen.contains($0) } }
         let view = metrics.physicalViewport(at: scrollOffset)
         return windowIds(inColumns: strip(metrics: metrics)
-            .visibleColumnIndices(viewportWidth: view.width, offset: view.offset))
+            .visibleColumnIndices(viewportWidth: view.width, offset: view.offset), metrics: metrics)
     }
 
     /// The windows the viewport touches at **any** offset between `from` and `to`, plus a shoulder
@@ -1000,21 +1006,22 @@ public struct Layout: Sendable, Equatable, Codable {
     /// the edits that open a cover there resize every tile at once. The capture head is `n` calls, and
     /// what bounds it is that a focus change opens no cover at all.
     public func sweptWindowIds(from: Double, to: Double, metrics: LayoutMetrics) -> [WindowId] {
-        guard kind == .strip else { return allWindowIds }
+        guard kind == .strip else { return allWindowIds.filter { !metrics.fullScreen.contains($0) } }
         let strip = strip(metrics: metrics)
         // The *same* physical viewport `visibleWindowIds` uses, which is why both go through
         // `physicalViewport`. A scope narrower than the park set is a window on screen with no layer.
         let view = metrics.physicalViewport(at: Swift.min(from, to), widenedBy: abs(to - from))
         let swept = strip.visibleColumnIndices(viewportWidth: view.width, offset: view.offset)
-        return windowIds(inColumns: strip.shoulderedColumnIndices(swept))
+        return windowIds(inColumns: strip.shoulderedColumnIndices(swept), metrics: metrics)
     }
 
-    /// The windows in the given column indices, flattened in layout order.
-    private func windowIds(inColumns indices: [Int]) -> [WindowId] {
+    /// The windows in the given column indices that this desktop draws, flattened in layout order.
+    private func windowIds(inColumns indices: [Int], metrics: LayoutMetrics) -> [WindowId] {
         let wanted = Set(indices)
         return columns.enumerated()
             .filter { wanted.contains($0.offset) }
             .flatMap { $0.element.windowIds }
+            .filter { !metrics.fullScreen.contains($0) }
     }
 
     // Scroll targets (thin delegations to `Strip`, keyed by window)

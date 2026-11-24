@@ -280,20 +280,41 @@ import EmiraMotion
         #expect(fx.contains(.focus(WindowId(2))))
     }
 
-    // Native full screen: a Space of the window's own, off the strip until it comes back.
+    // Native full screen: a Space of the window's own, its column kept while it is there. macOS's own
+    // animation is the whole transition both ways, so nothing on the desktop moves for it.
 
-    /// The window leaves the strip and keeps the keyboard — it is the one in front, and handing focus on
-    /// would take the user straight back out of full screen.
-    @Test func fullScreenLeavesTheStripAndKeepsFocus() {
+    /// What entering or leaving full screen must not emit: anything that moves a window or films one.
+    static func moves(_ effects: [Effect]) -> [Effect] {
+        effects.filter {
+            switch $0 {
+            case .setFrame, .park, .capture, .beginTransition: true
+            default: false
+            }
+        }
+    }
+
+    static func touches(_ effects: [Effect], _ id: WindowId) -> Bool {
+        effects.contains {
+            switch $0 {
+            case .setFrame(let w, _), .park(let w, _), .capture(_, let w, _): w == id
+            default: false
+            }
+        }
+    }
+
+    /// The window keeps its column and the keyboard — it is the one in front, and handing focus on would
+    /// take the user straight back out of full screen. Nothing closes up over its place.
+    @Test func fullScreenKeepsTheColumnAndTheKeyboardAndMovesNothing() {
         var (s, _) = EngineFix.run(EngineFix.booted(), [
             .windowCreated(EngineFix.snapshot(1)),
             .windowCreated(EngineFix.snapshot(2)),   // focus w2
         ])
+        let columns = s.layout.columns
         let fx: [Effect]
         (s, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), true))
-        #expect(s.world.tiledWindowIds == [WindowId(1)])
+        #expect(s.layout.columns == columns)
         #expect(s.world.focusedWindow == WindowId(2))
-        #expect(!fx.contains(.focus(WindowId(1))))
+        #expect(Self.moves(fx).isEmpty)
         #expect(!s.world.isOnScreen(WindowId(2)))
     }
 
@@ -311,64 +332,86 @@ import EmiraMotion
         #expect(!fx.contains { if case .setFrame(WindowId(2), _) = $0 { true } else { false } })
     }
 
-    @Test func leavingFullScreenRejoinsTheStripAndFocuses() {
+    /// Back at the frame its app restores, which is the slot nothing moved: no write, no cover, and no
+    /// focus asked for — the window coming out of full screen is already the one in front.
+    @Test func leavingFullScreenMovesNothing() throws {
         var (s, _) = EngineFix.run(EngineFix.booted(), [
             .windowCreated(EngineFix.snapshot(1)),
             .windowCreated(EngineFix.snapshot(2)),
         ])
-        (s, _) = Engine.reduce(s, .windowFullScreen(WindowId(2), true))
-        let fx: [Effect]
-        (s, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), false))
-        #expect(s.world.tiledWindowIds.contains(WindowId(2)))
-        #expect(s.world.focusedWindow == WindowId(2))
-        #expect(fx.contains(.focus(WindowId(2))))
+        let slot = try #require(s.world.windows[WindowId(2)]?.frame)
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(2), true)).0)
+        s = EngineFix.run(s, [.windowFrameChanged(WindowId(2), Rect(x: 0, y: 0, width: 1000, height: 800)),
+                              .windowFrameChanged(WindowId(2), slot)]).0
+        let (next, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), false))
+        #expect(Self.moves(fx).isEmpty)
+        #expect(!fx.contains(.focus(WindowId(2))))
+        #expect(next.world.isOnScreen(WindowId(2)))
     }
 
-    /// Full screen is a trip, not a departure: the column the window comes back to is as wide as the one
-    /// it left, where a new window starts on the ladder's first rung.
-    @Test func leavingFullScreenComesBackAtTheWidthItWentAt() throws {
+    /// The strip can still change while the window is away, and a cover for it neither films the window
+    /// nor writes it: the desktop shows its slot empty. Back, it is put in the slot as it now stands.
+    @Test func aColumnMovedWhileAwayIsWhereTheWindowIsPutBack() throws {
+        var (s, _) = EngineFix.run(EngineFix.booted(), [
+            .windowCreated(EngineFix.snapshot(1)),
+            .windowCreated(EngineFix.snapshot(2)),   // focus w2
+        ])
+        let left = try #require(s.world.windows[WindowId(2)]?.frame)
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(2), true)).0)
+
+        let (moved, moving) = Engine.reduce(s, .command(.moveWindow(.left)))
+        let (settled, sequence) = EngineFix.settleRecording(moved, moving)
+        s = settled
+        #expect(sequence.contains { if case .beginTransition = $0 { true } else { false } })
+        #expect(!Self.touches(sequence, WindowId(2)))
+        #expect(s.layout.columnIndex(ofWindow: WindowId(2)) == 0)
+
+        s = EngineFix.run(s, [.windowFrameChanged(WindowId(2), left)]).0
+        let (_, fx) = Engine.reduce(s, .windowFullScreen(WindowId(2), false))
+        let target = try #require(fx.compactMap { effect -> Rect? in
+            if case .setFrame(WindowId(2), let frame) = effect { frame } else { nil }
+        }.first)
+        #expect(target != left)
+    }
+
+    /// The column keeps whatever width it had: there is nothing to remember, since it never closed.
+    @Test func theColumnKeepsItsWidthWhileTheWindowIsAway() throws {
         var s = EngineFix.world(3)                                    // w1 | w2 | w3, w3 focused
         s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
         let before = try #require(s.layout.columns.last)
         #expect(before.windowIds == [WindowId(3)])
-        let grown = try #require(before.widthOverride)
 
         s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), true)).0)
-        #expect(s.layout.columnIndex(ofWindow: WindowId(3)) == nil)
+        #expect(s.layout.columns.last == before)
         s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), false)).0)
-
-        let after = try #require(s.layout.columns.first { $0.windowIds == [WindowId(3)] })
-        #expect(after.widthOverride == grown)
-        #expect(after.widthPreset == before.widthPreset)
-        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
-        #expect(s.workspaces.awayPlaces.isEmpty)                      // read once, and gone
+        #expect(s.layout.columns.last == before)
+        #expect(s.workspaces.awayPlaces.isEmpty)
     }
 
-    /// The width a window came back with is its own, not the strip's habit: a second window that was
-    /// never away opens on the ladder as ever.
-    @Test func onlyTheWindowThatWasAwayTakesItsOldWidth() throws {
+    /// A window opened meanwhile is a new column on the ladder beside the one in front, as ever.
+    @Test func aWindowOpenedWhileAnotherIsFullScreenStartsOnTheLadder() throws {
         var s = EngineFix.world(2)
         s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        let grown = try #require(s.layout.columns.last?.widthOverride)
         s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(2), true)).0)
         s = EngineFix.settle(Engine.reduce(s, .windowCreated(EngineFix.snapshot(3))).0)
 
         let fresh = try #require(s.layout.columns.first { $0.windowIds == [WindowId(3)] })
         #expect(fresh.widthOverride == nil)
         #expect(fresh.widthPreset == 0)
-        #expect(s.workspaces.awayPlaces.map(\.window) == [WindowId(2)]) // still away, still remembered
+        #expect(s.layout.columns.first { $0.windowIds == [WindowId(2)] }?.widthOverride == grown)
     }
 
-    /// A window that closes while away never comes back, so nothing it left is kept for it.
-    @Test func aWindowClosedInFullScreenLeavesNothingBehind() {
+    /// A window that closes in full screen takes its column with it, like any close.
+    @Test func aWindowClosedInFullScreenTakesItsColumn() {
         var s = EngineFix.world(3)
-        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
         s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), true)).0)
-        #expect(s.workspaces.awayPlaces.map(\.window) == [WindowId(3)])
         s = EngineFix.settle(Engine.reduce(s, .windowDestroyed(WindowId(3))).0)
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2)])
         #expect(s.workspaces.awayPlaces.isEmpty)
     }
 
-    // Away and back: the Dock, ⌘H and native full screen all return a window to where it stood.
+    // Away and back: the Dock and ⌘H return a window to where it stood.
 
     /// A settled strip of one window per entry, each of the app named, left to right.
     private func apps(_ bundles: [String]) -> State {

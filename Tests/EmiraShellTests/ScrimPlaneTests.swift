@@ -23,6 +23,7 @@ import EmiraCore
         }
         func setDesktop(_ image: CGImage?) { desktop = image }
         func retire() { isRetired = true }
+        var isOnActiveSpace = true
     }
 
     /// A `DelayScheduler` whose work runs only when a test says so — the settling re-reads hang off it.
@@ -958,17 +959,179 @@ import EmiraCore
         #expect(surface.desktop == nil)
     }
 
-    /// The desktop may have changed while it was away, and a film was turned away from it: the first quiet
-    /// moment back takes one, inside the throttle, and the throttle paces the next as before.
-    @Test func theDesktopBackIsFilmedAtTheNextQuietMoment() {
+    /// The desktop may have changed while it was away, and a film was turned away from it: it is filmed
+    /// as soon as it is back, inside the throttle, and the throttle paces the next as before.
+    @Test func theDesktopBackIsFilmedOnceItIsOnTheGlass() {
         let filmer = InstantFilmer()
-        let (scrims, _) = Self.filming(filmer)
+        let clock = ManualScheduler()
+        let (scrims, _) = Self.plane(stack: [], filmer: filmer, scheduler: clock)
+        scrims.setScrims([Self.binding(1)], on: Self.monitor, change: .cut, moving: [])
         scrims.setDesktopShown(false, on: Self.monitor)
         scrims.setDesktopShown(true, on: Self.monitor)
-        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.count == 1)
+        while clock.fire() {}
         #expect(filmer.films.count == 2)
         scrims.desktopMayHaveChanged()
         #expect(filmer.films.count == 2)
+    }
+
+    /// The core says the desktop is back as macOS starts bringing it back, and the server lists none of
+    /// its windows until macOS has: held until the scrim is on the active Space, a veil never comes off.
+    @Test func theHoldLastsUntilTheScrimIsOnTheActiveSpace() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(1, here)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        let held = surface.veils
+        let painted = surface.changes.count
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        stack.panes = []
+        surface.isOnActiveSpace = false
+        scrims.setDesktopShown(true, on: Self.monitor)
+        scrims.recut()
+        clock.fire()
+        #expect(surface.changes.count == painted)
+        #expect(surface.veils == held)
+
+        stack.panes = [Self.pane(1, here)]
+        surface.isOnActiveSpace = true
+        while clock.fire() {}
+        #expect(surface.veils == held)
+        #expect(Self.shows(surface, 1, 200, 200))
+    }
+
+    /// For a few frames after macOS has shown the desktop, the server still has the window that was full
+    /// screen at that size, in front of the neighbours it is landing beside. The hold waits out the
+    /// reading changing, so no frame in between takes their veils off.
+    @Test func theHoldLastsUntilTheReadingStandsStill() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let slot = Rect(x: 550, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(2, slot), Self.pane(1, here)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        while clock.fire() {}
+        scrims.setDesktopShown(false, on: Self.monitor)
+
+        stack.panes = [Self.pane(2, Self.display), Self.pane(1, here)]   // still drawn full screen
+        scrims.setDesktopShown(true, on: Self.monitor)
+        clock.fire()
+        clock.fire()
+        #expect(Self.shows(surface, 1, 200, 200))
+        stack.panes = [Self.pane(2, slot), Self.pane(1, here)]           // the server catches up
+        while clock.fire() { #expect(Self.shows(surface, 1, 200, 200)) }
+        #expect(Self.shows(surface, 1, 200, 200))
+    }
+
+    /// The reading of a full-screen Space lists none of the desktop's windows, and cut against it every
+    /// veil would come off them, to come back only once something cut again after the desktop returned.
+    @Test func aDesktopOutOfSightHoldsItsMask() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(1, here)])
+        let (scrims, surface) = Self.plane(stack: stack)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        let held = surface.veils
+        let painted = surface.changes.count
+        #expect(!held.isEmpty)
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        stack.panes = []
+        scrims.recut()
+        Self.show(scrims, [Self.binding(1)], .cut)
+        #expect(surface.changes.count == painted)
+        #expect(surface.veils == held)
+    }
+
+    /// The window going full screen grows over its neighbours in the reading a few milliseconds before the
+    /// core says why, and a cut then takes their veils off. What is held is the mask as it last stood still.
+    @Test func aDesktopGoingOutOfSightHoldsTheMaskItLastStoodStillAt() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(1, here)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        while clock.fire() {}                                     // the watch sees it stand still
+        let still = surface.veils
+        #expect(Self.shows(surface, 1, 200, 200))
+
+        stack.panes = [Self.pane(2, Self.display), Self.pane(1, here)]   // a window grows over it
+        scrims.expectMovement()
+        clock.fire()
+        #expect(!Self.shows(surface, 1, 200, 200))
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        #expect(surface.veils == still)
+    }
+
+    /// A watch can stand still on a reading that is lagging, and a recut is what puts the mask right. It is
+    /// watched like a set's, so the mask the display holds going out of sight is the corrected one.
+    @Test func aRecutIsWhatTheHoldKeeps() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(1, here)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        stack.panes = [Self.pane(2, Self.display), Self.pane(1, here)]   // lagging, and standing still
+        while clock.fire() {}
+        #expect(!Self.shows(surface, 1, 200, 200))
+
+        stack.panes = [Self.pane(1, here)]                                // caught up, with no set to say so
+        scrims.recut()
+        #expect(Self.shows(surface, 1, 200, 200))
+        while clock.fire() {}
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        #expect(Self.shows(surface, 1, 200, 200))
+    }
+
+    /// The arrival watch stands still on the newcomer cut out of the veil, and that is the mask held.
+    @Test func whatAnArrivalStoodStillAtIsWhatTheHoldKeeps() {
+        let here = Rect(x: 100, y: 100, width: 400, height: 300)
+        let stack = Stack([Self.pane(1, here)])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        while clock.fire() {}
+
+        scrims.expectArrival()
+        stack.panes.insert(Self.pane(9, Rect(x: 150, y: 150, width: 100, height: 100)), at: 0)
+        while clock.fire() {}
+        #expect(!Self.shows(surface, 1, 200, 200))
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        #expect(!Self.shows(surface, 1, 200, 200))
+        #expect(Self.shows(surface, 1, 400, 300))
+    }
+
+    /// A watch that ends with a pane still taken as moving cuts once more on the way out, against the reading
+    /// it stood still at: that last cut is the mask held.
+    @Test func theCutAWatchEndsOnIsWhatTheHoldKeeps() {
+        let pin = Rect(x: 0, y: 0, width: 500, height: 800)
+        let under = Rect(x: 200, y: 0, width: 400, height: 800)
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: [Self.pane(1, pin), Self.pane(2, under)], scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .dissolve, moving: [WindowId(2)])
+        while clock.fire() {}
+        #expect(!Self.shows(surface, 1, 350, 400))
+
+        scrims.setDesktopShown(false, on: Self.monitor)
+        #expect(!Self.shows(surface, 1, 350, 400))
+    }
+
+    @Test func theDesktopBackIsCutAgainstWhatTheServerShows() {
+        let stack = Stack([Self.pane(1, Rect(x: 100, y: 100, width: 400, height: 300))])
+        let clock = ManualScheduler()
+        let (scrims, surface) = Self.plane(stack: stack, scheduler: clock)
+        Self.show(scrims, [Self.binding(1)], .cut)
+        scrims.setDesktopShown(false, on: Self.monitor)
+        let moved = Rect(x: 500, y: 100, width: 400, height: 300)
+        stack.panes = [Self.pane(1, moved)]
+        scrims.setDesktopShown(true, on: Self.monitor)
+        while clock.fire() {}
+        #expect(Self.shows(surface, 1, 600, 200))
+        #expect(!Self.shows(surface, 1, 200, 200))
     }
 
     // The frost. The blur is baked into the film, so the radius has to reach the filmer.

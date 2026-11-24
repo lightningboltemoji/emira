@@ -57,7 +57,7 @@ public enum Event: Sendable, Equatable, Codable {
     /// to the app's own report of which window the user is in.
     case windowUnhidden(WindowId)
 
-    /// A window entered or left native full screen: a Space of its own, off the strip while it is there.
+    /// A window entered or left native full screen: a Space of its own, its column kept while it is there.
     /// A reading — macOS posts nothing for either edge — taken of each frame the shell learns.
     case windowFullScreen(WindowId, Bool)
 

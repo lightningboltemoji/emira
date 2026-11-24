@@ -61,8 +61,16 @@ enum EngineFix {
     /// settle. What a real daemon does over ~300 ms, with no clock in it. An arrival animates, so a
     /// test wanting "a placed world" has to close the transition rather than assume instant placement.
     static func settle(_ start: State, _ effects: [Effect] = []) -> State {
+        settleRecording(start, effects).state
+    }
+
+    /// `settle`, with every effect the drive emitted on the way — what a test asking "was this window
+    /// ever written or filmed" reads, since most of a transition's writes land after its first event.
+    static func settleRecording(_ start: State,
+                                _ effects: [Effect] = []) -> (state: State, effects: [Effect]) {
         var s = start
         var queue = effects
+        var emitted = effects
         for _ in 0..<4000 {
             var feedback: [Event] = []
             for effect in queue {
@@ -83,16 +91,17 @@ enum EngineFix {
             }
             queue = []
             if feedback.isEmpty {
-                guard s.motion.isTransitioning else { return s }
+                guard s.motion.isTransitioning else { return (s, emitted) }
                 feedback = [.tick(dt: 1.0 / 120)]
             }
             for event in feedback {
                 let (next, out) = Engine.reduce(s, event)
                 s = next
                 queue += out
+                emitted += out
             }
         }
-        return s
+        return (s, emitted)
     }
 
     /// A booted state holding `count` tiled windows, at rest — the ordinary "given a world" setup.

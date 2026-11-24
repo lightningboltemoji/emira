@@ -43,6 +43,9 @@ public protocol ScrimSurface: AnyObject {
     func setDesktop(_ image: CGImage?)
     /// Take it off the screen for good — the display has gone, or the daemon is quitting.
     func retire()
+    /// Whether the Space it was ordered in on is the one its display shows — the window server's own
+    /// word that the desktop is back, which comes as macOS finishes bringing it back.
+    var isOnActiveSpace: Bool { get }
 }
 
 /// One see-through window in the mask: the shape the desktop shows through, and how much of it shows. The
@@ -191,6 +194,8 @@ public final class ScrimWindow: NSObject, ScrimSurface {
         isShowing = false
         window.orderOut(nil)
     }
+
+    public var isOnActiveSpace: Bool { window.isOnActiveSpace }
 
     /// A window's shape, minted see-through at nothing: a cut takes it to its veil in the same turn, and
     /// a dissolve fades it up from there.

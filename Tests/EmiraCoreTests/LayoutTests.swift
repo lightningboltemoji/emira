@@ -640,6 +640,25 @@ import Testing
         #expect(fourColumns().visibleWindowIds(scrollOffset: 0, metrics: metrics) == [w10, w20, w21, w30])
     }
 
+    /// A member in native full screen is drawn by macOS on a Space of its own: its column keeps its width,
+    /// so nothing around it moves, and every query that places, parks, scopes or shows a window leaves it
+    /// out — one in col1's stack (w21) as surely as one alone in a column (w40, parked at this offset).
+    @Test func aFullScreenMemberKeepsItsWidthAndIsLeftOutOfEveryQuery() {
+        let layout = fourColumns()
+        var away = metrics
+        away.fullScreen = [w21, w40]
+        #expect(layout.naturalFrames(scrollOffset: 0, metrics: away)
+                == layout.naturalFrames(scrollOffset: 0, metrics: metrics))
+        let placed = layout.targetFrames(scrollOffset: 0, metrics: metrics)
+        let kept = layout.targetFrames(scrollOffset: 0, metrics: away)
+        #expect(kept[w21] == nil && kept[w40] == nil)
+        #expect(kept[w10] == placed[w10] && kept[w20] == placed[w20] && kept[w30] == placed[w30])
+        #expect(layout.visibleWindowIds(scrollOffset: 0, metrics: away) == [w10, w20, w30])
+        #expect(layout.sweptWindowIds(from: 0, to: 300, metrics: away) == [w10, w20, w30])
+        var cursor = 0
+        #expect(layout.parkedFrames(metrics: away, parkingFrom: &cursor).keys.sorted() == [w10, w20, w30])
+    }
+
     /// Why the transition scope is a *sweep* rather than "visible at the start ∪ visible at the end": a
     /// viewport travelling further than its own width crosses columns on screen at neither endpoint, and
     /// those would slide across the cover with no captured layer, as holes.

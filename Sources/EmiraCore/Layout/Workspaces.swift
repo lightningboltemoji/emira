@@ -42,8 +42,8 @@ struct WorkspaceState: Sendable, Equatable, Codable {
     }
 }
 
-/// Where a window away from the strips — in the Dock, behind ⌘H, in native full screen — stood when it
-/// left: the workspace, and its spot there.
+/// Where a window away from the strips — in the Dock or behind ⌘H — stood when it left: the workspace,
+/// and its spot there.
 public struct AwayPlace: Sendable, Equatable, Codable {
     public let window: WindowId
     public let workspace: WorkspaceName
