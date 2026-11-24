@@ -574,4 +574,54 @@ import Testing
         #expect(Self.setScrims(closing) == taught)
         #expect(Self.change(closing) == .cut)
     }
+
+    // Which desktops are in sight. A display showing a full-screen window's Space has no desktop on it to
+    // photograph, and the core knows that from the window going, before macOS has finished taking it away.
+
+    static func desktopShown(_ effects: [Effect]) -> [MonitorId: Bool] {
+        effects.reduce(into: [:]) { if case .setDesktopShown(let m, let shown) = $1 { $0[m] = shown } }
+    }
+
+    @Test func aWindowGoingFullScreenTakesItsDisplaysDesktopOutOfSight() throws {
+        let s = Self.world(2)
+        let front = try #require(s.world.focusedWindow)
+        let (next, effects) = Engine.reduce(s, .windowFullScreen(front, true))
+        #expect(Self.desktopShown(effects) == [MonitorId(1): false])
+        #expect(next.unshownDesktops == [MonitorId(1)])
+        // Ahead of any set in the batch, so the plane knows before a set can ask it for a film.
+        let told = try #require(effects.firstIndex { if case .setDesktopShown = $0 { true } else { false } })
+        let set = effects.firstIndex { if case .setScrims = $0 { true } else { false } }
+        #expect(set.map { told < $0 } ?? true)
+    }
+
+    @Test func comingBackFromFullScreenBringsTheDesktopBack() throws {
+        var s = Self.world(2)
+        let front = try #require(s.world.focusedWindow)
+        let (gone, going) = Engine.reduce(s, .windowFullScreen(front, true))
+        s = EngineFix.settle(gone, going)
+        let (next, effects) = Engine.reduce(s, .windowFullScreen(front, false))
+        #expect(Self.desktopShown(effects) == [MonitorId(1): true])
+        #expect(next.unshownDesktops.isEmpty)
+    }
+
+    /// Switching to the desktop leaves the window in full screen on its own Space, and focus is what says
+    /// the user has gone: the window in front of a display is the one last focused there.
+    @Test func focusOnTheDesktopBringsItBackWithTheWindowStillFullScreen() throws {
+        var s = Self.world(2)
+        let front = try #require(s.world.focusedWindow)
+        let other = try #require(s.world.tiledWindowIds.first { $0 != front })
+        let (gone, going) = Engine.reduce(s, .windowFullScreen(front, true))
+        s = EngineFix.settle(gone, going)
+        let (next, effects) = Engine.reduce(s, .focusChanged(other, origin: .system))
+        #expect(next.world.fullScreen == [front])
+        #expect(Self.desktopShown(effects) == [MonitorId(1): true])
+        #expect(next.unshownDesktops.isEmpty)
+    }
+
+    @Test func aDesktopNobodyLeftIsNeverSaidToBeShown() {
+        let s = Self.world(2)
+        let (next, effects) = Engine.reduce(s, .command(.focus(.left)))
+        #expect(Self.desktopShown(effects).isEmpty)
+        #expect(next.unshownDesktops.isEmpty)
+    }
 }

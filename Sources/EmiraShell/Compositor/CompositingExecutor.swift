@@ -235,6 +235,8 @@ public final class CompositingExecutor: Executor {
                         scrims.setTarp(tarp, on: monitor)
                     case .setScrims(let monitor, let bindings, let change, let moving):
                         scrims.setScrims(bindings, on: monitor, change: change, moving: moving)
+                    case .setDesktopShown(let monitor, let shown):
+                        scrims.setDesktopShown(shown, on: monitor)
                     default:
                         continue
                     }
@@ -301,7 +303,7 @@ public final class CompositingExecutor: Executor {
             return .hoist
         case .setPeeks:
             return .peek
-        case .setScrims, .setTarp:
+        case .setScrims, .setTarp, .setDesktopShown:
             return .scrim
         case .setFrame, .park, .focus, .restoreFocus, .focusNothing, .confirmFocus, .raise, .closeWindow:
             return .truth
@@ -360,7 +362,8 @@ public final class CompositingExecutor: Executor {
                 surface.refreshLayer(layer)
             case .endTransition(let monitor):
                 dismissing.append(monitor)
-            case .setFrame, .park, .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp, .focus,
+            case .setFrame, .park, .capture, .keepStills, .setHoists, .setPeeks, .setScrims, .setTarp,
+                 .setDesktopShown, .focus,
                  .restoreFocus, .focusNothing,
                  .confirmFocus, .raise, .closeWindow,
                  .setCursorHidden, .warpPointer, .exec, .override:

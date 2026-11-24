@@ -12,9 +12,9 @@ import EmiraGuide
 // stay live. The patch reaches as far past the nubs as their shadows do, and fades in over its inner
 // edges, so what little of a shadow lies beyond it meets the desktop without a seam.
 //
-// **The window holds `alpha 0.999`, never 1**, for `Overlay.raisedAlpha`'s reason: at full alpha it marks
-// the nubs beneath it occluded, and an occluded parked window is one its app may stop drawing — which is
-// the flash on revealing it that parking at a sliver exists to prevent.
+// **The window holds `alpha 0.999`, never 1**: at full alpha it marks the nubs beneath it occluded, and an
+// occluded parked window is one its app may stop drawing — which is the flash on revealing it that parking
+// at a sliver exists to prevent. Its alpha is a gate, never a fade, so it need not sit as low as a cover's.
 //
 // The idioms are `ScrimWindow`'s, at its level and for its reasons.
 
@@ -131,7 +131,7 @@ public final class TarpWindow: NSObject, TarpSurface {
     /// reaching that far meets the desktop without a step.
     static let feather: Double = 10
 
-    /// What a showing tarp holds, for `Overlay.raisedAlpha`'s reason. See the file header.
+    /// What a showing tarp holds. See the file header.
     static let showingAlpha: CGFloat = 0.999
 
     private let geometry: ScreenGeometry

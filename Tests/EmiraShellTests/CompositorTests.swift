@@ -370,6 +370,9 @@ import EmiraCore
         func setCovered(_ covered: Bool, on monitor: MonitorId) {
             timeline.record("\(covered ? "covered" : "uncovered")@\(monitor.raw)")
         }
+        func setDesktopShown(_ shown: Bool, on monitor: MonitorId) {
+            timeline.record("desktop \(shown ? "shown" : "unshown")@\(monitor.raw)")
+        }
     }
 
     /// The scrim plane's harness — the set and the cover over it, so a test can say in which order a

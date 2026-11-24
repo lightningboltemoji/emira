@@ -93,6 +93,22 @@ extension State {
         return Dictionary(grouping: showing, by: \.0).mapValues { $0.map(\.1) }
     }
 
+    /// The displays a window in native full screen is in front of, which show its Space and not the
+    /// desktop: the window in front of a display is the one last focused there, and a window going full
+    /// screen keeps the keyboard. Known from the window going, ahead of macOS showing it gone.
+    public func desktopsUnderFullScreen() -> Set<MonitorId> {
+        guard !world.fullScreen.isEmpty else { return [] }
+        var front: [MonitorId: (window: WindowId, at: Int)] = [:]
+        for (id, at) in world.focusedAt {
+            guard world.isOnScreen(id) || world.fullScreen.contains(id),
+                  let frame = world.shownFrame(of: id), let monitor = world.monitor(drawing: frame),
+                  at > front[monitor]?.at ?? .min
+            else { continue }
+            front[monitor] = (id, at)
+        }
+        return Set(front.filter { world.fullScreen.contains($0.value.window) }.keys)
+    }
+
     /// Which display draws `id` see-through, or `nil` where none does: a pin names its own, a window on
     /// a layout takes the display showing that layout's workspace — and declines there if the layout is
     /// a cascade — and only what is on neither is asked where it happens to be.

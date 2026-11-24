@@ -51,6 +51,11 @@ public enum Effect: Sendable, Equatable, Codable {
     /// Sent and re-sent on `setScrims`' terms, since it is cut against the same reading. Unacked.
     case setTarp(MonitorId, Tarp?)
 
+    /// Whether one display is showing its desktop, or the Space of a window in native full screen in front
+    /// of it (`State.desktopsUnderFullScreen`). Sent on a change, ahead of `setScrims`. Unacked: the scrim
+    /// plane photographs no desktop that is out of sight.
+    case setDesktopShown(MonitorId, Bool)
+
     /// The pins one display's cover must not draw over, so they stay live underneath it. **Silhouettes,
     /// not bands**: these are the pin boxes, the rounding is the shell's to measure, and everything
     /// outside the two is the cover's to draw. The whole set every time, which the shell diffs, as

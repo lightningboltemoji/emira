@@ -48,9 +48,10 @@ import EmiraCore
 //
 // **The photograph is refilmed when the desktop is quiet.** Never on a focus change: the window server
 // serializes screenshots, and a focus change is also a cover, whose batch is the one latency in emira
-// anybody can feel (`SCKCapturer`). So it is taken at build, when the screens change, when the Space
-// does — and after a cover comes down, throttled, which is the moment the capture plane is idle and the
-// desktop underneath may have changed.
+// anybody can feel (`SCKCapturer`). So it is taken at build, when the screens change, and after a cover
+// comes down, throttled, which is the moment the capture plane is idle and the desktop underneath may have
+// changed. **Never while a full-screen window's Space is in front** (`setDesktopShown`): what stands where
+// the desktop was films as black, so the photograph from before is held, and retaken once it is back.
 
 /// Where `Effect.setScrims` goes. A protocol for `HoistPlane`'s reason: the daemon owns the AppKit
 /// half, and `CompositingExecutor` routes to a seam a test can stand in for.
@@ -69,6 +70,9 @@ public protocol ScrimPlane: AnyObject {
     /// Whether a cover stands over `monitor`, from its raise until its dismissal begins. A covered scrim
     /// is out of sight, and every re-read of the window server waits on that cover's commit each frame.
     func setCovered(_ covered: Bool, on monitor: MonitorId)
+
+    /// Whether `monitor` is showing its desktop, or a full-screen window's Space that has none to film.
+    func setDesktopShown(_ shown: Bool, on monitor: MonitorId)
 }
 
 /// The plane on a machine that has none — no Screen Recording grant, or a test that does not care.
@@ -81,6 +85,7 @@ public final class NoScrims: ScrimPlane {
                           moving: Set<WindowId>) {}
     public func setTarp(_ tarp: Tarp?, on monitor: MonitorId) {}
     public func setCovered(_ covered: Bool, on monitor: MonitorId) {}
+    public func setDesktopShown(_ shown: Bool, on monitor: MonitorId) {}
 }
 
 /// One on-screen window as the window server reports it, front to back.
@@ -218,6 +223,12 @@ public final class Scrims: ScrimPlane {
     private var veiledAsked: Set<MonitorId> = []
     /// Bumped per display by every film, so one answering after its surface was rebuilt owns nothing.
     private var filmGeneration: [MonitorId: Int] = [:]
+    /// The displays showing a full-screen window's Space, which hold their photograph rather than film
+    /// the black that stands where the desktop was.
+    private var unshown: Set<MonitorId> = []
+    /// The displays a film was turned away from while out of sight, taken at the next quiet moment
+    /// whatever the throttle says: what was asked for may be a photograph known to be wrong.
+    private var owed: Set<MonitorId> = []
 
     /// How far the photographs are blurred, in points — `[focus] unfocused-blur`, read out here for
     /// `Reconstruction.motionBlur`'s reason: the core emits the same bindings under every setting of
@@ -356,6 +367,18 @@ public final class Scrims: ScrimPlane {
         watches[monitor] = nil
     }
 
+    public func setDesktopShown(_ shown: Bool, on monitor: MonitorId) {
+        guard !shown else {
+            unshown.remove(monitor)
+            return
+        }
+        unshown.insert(monitor)
+        // A film in flight may catch the desktop going, and what is under it may change before it is back.
+        filmGeneration[monitor, default: 0] &+= 1
+        filmingStrip[monitor] = nil
+        owed.insert(monitor)
+    }
+
     /// Blur every photograph this far, in points. The blur is baked into the film (`DesktopCapturer`),
     /// so a new radius is a standing photograph gone stale — refilmed at once and not on the throttle,
     /// which paces a desktop that may have changed rather than one we know is wrong.
@@ -381,6 +404,7 @@ public final class Scrims: ScrimPlane {
         frames.removeAll()
         scales.removeAll()
         filmedAt.removeAll()
+        owed.removeAll()
         photographs.removeAll()
         veiledAsked.removeAll()
         // A surface that has gone is drawing nothing, whatever it was drawing a moment ago.
@@ -448,9 +472,8 @@ public final class Scrims: ScrimPlane {
         }
     }
 
-    /// The desktop may have changed and the capture plane is idle — the moment a cover comes down, a
-    /// Space switch, a display change. Throttled by `desktopMaxAge`, so a burst of transitions costs
-    /// one photograph rather than one each.
+    /// The desktop may have changed and the capture plane is idle — the moment a cover comes down.
+    /// Throttled by `desktopMaxAge`, so a burst of transitions costs one photograph rather than one each.
     public func desktopMayHaveChanged() {
         for monitor in surfaces.keys where wantsPhotograph(monitor) { refilmIfStale(monitor) }
     }
@@ -487,12 +510,12 @@ public final class Scrims: ScrimPlane {
     }
 
     /// Refilm unless the standing photograph is younger than `desktopMaxAge`. The throttle paces a
-    /// desktop that may merely have changed; `setBlur` and a rebuilt surface go around it, since what
-    /// those hold is a photograph known to be wrong rather than one suspected of being stale.
+    /// desktop that may merely have changed; `setBlur`, a rebuilt surface and a film `owed` go around it,
+    /// since what those hold is a photograph known to be wrong rather than one suspected of being stale.
     private func refilmIfStale(_ monitor: MonitorId) {
-        guard Date().timeIntervalSince(filmedAt[monitor] ?? .distantPast) >= Self.desktopMaxAge else {
-            return
-        }
+        guard owed.contains(monitor)
+                || Date().timeIntervalSince(filmedAt[monitor] ?? .distantPast) >= Self.desktopMaxAge
+        else { return }
         refilm(monitor)
     }
 
@@ -500,6 +523,11 @@ public final class Scrims: ScrimPlane {
         // A display with no surface has no scrim to back, and `setScrims` can name one before the
         // screens it is on have been built.
         guard surfaces[monitor] != nil, let display = frames[monitor] else { return }
+        guard !unshown.contains(monitor) else {
+            owed.insert(monitor)
+            return
+        }
+        owed.remove(monitor)
         filmedAt[monitor] = Date()
         filmGeneration[monitor, default: 0] &+= 1
         let mine = filmGeneration[monitor] ?? 0

@@ -922,6 +922,55 @@ import EmiraCore
         #expect(filmer.films.count == attempts)
     }
 
+    // Out of sight. A display showing a full-screen window's Space films as black where the desktop was.
+
+    /// A filmer whose answers wait to be given, so a film can be in flight when the desktop goes.
+    final class HeldFilmer: DesktopFilmer {
+        private(set) var pending: [@MainActor (DesktopFilm) -> Void] = []
+        func film(desktopOf monitor: MonitorId, blurredBy radius: Double?, keeping strip: Rect?,
+                  then: @escaping @MainActor (DesktopFilm) -> Void) {
+            pending.append(then)
+        }
+    }
+
+    /// What the plane had stands, the throttle's way round included: a black photograph is not a stale one.
+    @Test func aDesktopOutOfSightIsNotFilmed() {
+        let filmer = InstantFilmer()
+        let (scrims, surface) = Self.filming(filmer)
+        let held = surface.desktop
+        scrims.setDesktopShown(false, on: Self.monitor)
+        scrims.setBlur(5)
+        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.count == 1)
+        #expect(surface.desktop === held)
+    }
+
+    @Test func aFilmInFlightWhenTheDesktopGoesIsTurnedAway() throws {
+        let filmer = HeldFilmer()
+        let surface = RecordingSurface()
+        let scrims = Scrims(filmer: filmer, identify: { WindowId(UInt64($0)) }, stack: { [] },
+                            scheduler: ManualScheduler(), build: { _, _, _ in surface })
+        scrims.setDisplays([(Self.monitor, Self.display, 2)], geometry: ScreenGeometry(flipHeight: 800))
+        scrims.setScrims([Self.binding(1)], on: Self.monitor, change: .cut, moving: [])
+        let answer = try #require(filmer.pending.first)
+        scrims.setDesktopShown(false, on: Self.monitor)
+        answer(DesktopFilm(veiled: InstantFilmer.pixel, strip: nil))
+        #expect(surface.desktop == nil)
+    }
+
+    /// The desktop may have changed while it was away, and a film was turned away from it: the first quiet
+    /// moment back takes one, inside the throttle, and the throttle paces the next as before.
+    @Test func theDesktopBackIsFilmedAtTheNextQuietMoment() {
+        let filmer = InstantFilmer()
+        let (scrims, _) = Self.filming(filmer)
+        scrims.setDesktopShown(false, on: Self.monitor)
+        scrims.setDesktopShown(true, on: Self.monitor)
+        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.count == 2)
+        scrims.desktopMayHaveChanged()
+        #expect(filmer.films.count == 2)
+    }
+
     // The frost. The blur is baked into the film, so the radius has to reach the filmer.
 
     /// A new radius does not make the standing photograph stale, it makes it wrong — so it is refilmed

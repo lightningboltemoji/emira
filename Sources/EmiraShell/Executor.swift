@@ -131,8 +131,9 @@ public final class MockExecutor: Executor {
         // the core is never told it did, so there is no reply for even a perfect system to give — and a
         // scrim the shell declined to draw is not a failure the core could act on. An `override` is
         // answered by the daemon reloading, which reaches the core as `configChanged` by its own path.
+        // `setDesktopShown` tells the scrim plane what the core already knows, and asks nothing back.
         case .extendCover, .elevateLayer, .setLayerFrame, .hideLayer, .refreshLayer, .setHoists,
-             .setPeeks, .setScrims, .setTarp, .setCoverClearing, .keepStills,
+             .setPeeks, .setScrims, .setTarp, .setDesktopShown, .setCoverClearing, .keepStills,
              .raise, .closeWindow, .setCursorHidden, .warpPointer, .exec, .override:
             break
         }

@@ -7,7 +7,7 @@ import EmiraCore
 // permanently ordered-in at `alpha 0` — a window ordered front for the first time gets a system
 // show-animation, so a raise must be a pure alpha flip. Opacity — any transparency the eye can reach
 // is a hole in the guarantee that nothing behind shows while the real windows teleport, so a raise
-// stops one thousandth short of it and no further (`raisedAlpha`). And the cover is the **display**,
+// stops one 8-bit level short of it and no further (`raisedAlpha`). And the cover is the **display**,
 // not the working area: a window's shadow reaches past its own edge, so a cover that stopped at the
 // strut would cut every top row's shadow off along the menu bar's lower edge — and show, in the band
 // above it, the real windows' shadows from wherever they have already teleported to.
@@ -191,10 +191,10 @@ public final class Overlay: NSObject {
         geometry.local(rect, within: parent)
     }
 
-    /// What a raised cover holds. A window at *full* alpha marks everything beneath it occluded, and an
-    /// occluded app may stop feeding a separately-composited plane — a playing video is the case that
-    /// bites. Any alpha under 1 disqualifies it, and a thousandth is below one 8-bit level.
-    private static let raisedAlpha: CGFloat = 0.999
+    /// What a raised cover holds: one 8-bit level short of opaque. An alpha that rounds to 255 is opaque to
+    /// the window server, which stops compositing what is beneath it — a dissolve from there fades through
+    /// black, and a video under it comes back dark.
+    private static let raisedAlpha: CGFloat = 254.0 / 255.0
 
     /// Show the cover; `onScreen` fires a refresh later, when the display has shown it. Written through
     /// the animator at zero duration, not as a bare assignment: a direct one would be overwritten by the
@@ -320,7 +320,8 @@ public final class Overlay: NSObject {
     /// was out owns nothing here — `generation` is what says so, exactly as it does for a fade.
     private func publishedAlphaAnswered(_ alpha: Double, generation asked: Int) {
         guard generation == asked, let fence else { return }
-        if alpha < Double(Self.raisedAlpha), CACurrentMediaTime() < fenceExpiry {
+        // At the server's precision: it keeps alpha as a `Float`, and reports back what it rounded to.
+        if Float(alpha) < Float(Self.raisedAlpha), CACurrentMediaTime() < fenceExpiry {
             // Taken but not shown. Wait out another refresh before asking again, so a server that
             // answers instantly cannot turn the fence into a spin.
             presentedBy = nil

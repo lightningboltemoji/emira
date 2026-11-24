@@ -52,6 +52,9 @@ public struct State: Sendable, Equatable, Codable {
     public var scrims: [MonitorId: [ScrimBinding]] = [:]
     /// The tarp each display is drawing over its parked windows — kept and re-derived with `scrims`.
     public var tarps: [MonitorId: Tarp] = [:]
+    /// The displays showing a full-screen window's Space rather than their desktop — kept and re-derived
+    /// with `scrims`.
+    public var unshownDesktops: Set<MonitorId> = []
     /// The focus a command asked for while a pin was being brought to the top, per display. Kept on
     /// `State` rather than on the session, because **every exit owes it**: a cover that timed out, was
     /// abandoned or lost its display has no way to say so, and a debt held inside it would go with it,
@@ -573,9 +576,9 @@ public enum Engine {
         effects.append(.setPeeks(next))
     }
 
-    /// Bring the see-through windows and the tarp into line with the desktop this batch produced — a
-    /// post-pass for `settleHoists`' reason, emitted on a change. **A set waits for the desktop it
-    /// describes**, and goes again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6).
+    /// Bring the see-through windows, the tarp and which desktops are in sight into line with this batch's
+    /// desktop — a post-pass for `settleHoists`' reason, emitted on a change. **A set waits for the desktop
+    /// it describes**, and goes again unchanged once that desktop has settled under it (`IMPLEMENTATION` §6).
     private static func settleScrims(on event: Event, from old: State, into s: inout State,
                                      effects: inout [Effect]) {
         let fresh = s.scrimBindings()
@@ -586,7 +589,11 @@ public enum Engine {
         } else { false }
         let restacked = Self.restacked(by: event, from: old, into: s)
 
-        var sets: [Effect] = []
+        // Ungated by the cover, unlike a set: a desktop leaves the screen when macOS takes it away.
+        let unshown = s.desktopsUnderFullScreen()
+        var sets = unshown.symmetricDifference(s.unshownDesktops).sorted()
+            .map { Effect.setDesktopShown($0, !unshown.contains($0)) }
+        s.unshownDesktops = unshown
         for monitor in s.monitors.ids {
             guard s.motion.mayPlace(on: monitor),
                   s.motion.isCovered(on: monitor) || !s.world.hasWritesInFlight(on: monitor)

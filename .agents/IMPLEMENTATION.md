@@ -1600,6 +1600,15 @@ next one, or a desktop that declines to be filmed at all is asked again at every
 that never *asked* for the photograph is not one (`veiledAsked`): a boot with something parked sends the tarp
 ahead of the first set, and its film of the lot's strip alone would otherwise pace the veils off the glass.
 
+**Never while a full-screen window's Space is in front** (`Effect.setDesktopShown`). A display showing one has
+no desktop on it, and its film is black: held as the photograph, every veil there would dim to black until a
+later cover happened to refilm it. The core says so (`State.desktopsUnderFullScreen`), because it knows first:
+a window going full screen keeps the keyboard, and the window in front of a display is the one last focused
+there. macOS takes the desktop away over several hundred milliseconds, and the window server's own readings —
+`isOnActiveSpace`, the window list — change only after the film has already gone black. So the plane holds its
+photograph from the moment it is told, turns away a film in flight, and owes one: the first quiet moment after
+the desktop is back films it, whatever the throttle says, since what is under it may have changed while away.
+
 **No display nobody is veiling is ever filmed** (`Scrims.wantsPhotograph`), which is the whole of what the
 setting being off costs: no capture at boot, none every `desktopMaxAge` after, and no photograph held. The
 core names no window while `unfocused-opacity` is `1`, so the shell reads the set it is given rather than the
@@ -1833,10 +1842,11 @@ the fade would otherwise open on a nub.
 **A cover's base leaves out what the tarp is drawing over** (`BaseRequest.concealed`), so a transition shows
 the corner the desktop around it does. Filmed at 60 fps through nine workspace switches, no frame shows a nub.
 
-**`TarpWindow` holds `alpha 0.999`**, for `Overlay.raisedAlpha`'s reason: at full alpha the parked windows
-under it report themselves occluded, and an occluded window is one its app may stop drawing — the flash on
-revealing it that a nub exists to prevent. It takes no clicks, so a nub is still a grab handle under it, and
-it goes with the daemon, which is when a hand needs one.
+**`TarpWindow` holds `alpha 0.999`**: at full alpha the parked windows under it report themselves occluded,
+and an occluded window is one its app may stop drawing — the flash on revealing it that a nub exists to
+prevent. It stays above the cover's `254/255` because its alpha is a gate, never a fade: what the window
+server leaves uncomposited beneath it is never shown through it. It takes no clicks, so a nub is still a grab
+handle under it, and it goes with the daemon, which is when a hand needs one.
 
 **A focus change moves the key shadow, and the tarp moves with it.** macOS switches a window's shadow in one
 step, and the tarp's set follows the same focus report, so the two land within a frame of each other.
@@ -2376,10 +2386,13 @@ the screen it happens on, and the other display keeps its live pixels, its own s
 schedule. Two covers at once cost two bases and two `SCShareableContent` fetches, which cannot be shared (the
 type is not `Sendable`) — the honest price of two transitions, paid only when there are two.
 
-**A raised cover holds `alpha 0.999`.** A window at full alpha marks everything beneath it _occluded_, and an
-occluded app may stop feeding a separately-composited plane — a playing video comes back dark for the first
-frame of the dissolve. Any alpha below 1 disqualifies a window from occluding; a thousandth is under one 8-bit
-level.
+**A raised cover holds `alpha 254/255`, one 8-bit level short of opaque**, because two lines sit near 1 and it
+must be under both. A window at full alpha marks everything beneath it _occluded_, and an occluded app may stop
+feeding a separately-composited plane. And the window server treats any alpha that rounds to 255 as opaque and
+composites nothing beneath it, so a cover held there dissolves through black onto the desktop it was standing
+over, and a playing video under it comes back dark. Any alpha below 1 clears the first line; only a whole level
+clears the second. The price is that one level of what is beneath can reach the glass, on the starkest content,
+while the real windows teleport.
 
 **Hotkeys consume.** An `NSEvent` global monitor is available under the AX grant but cannot swallow the
 keystroke, so `alt-h` would scroll the strip _and_ type into the focused app. Hence Carbon, for every chord it

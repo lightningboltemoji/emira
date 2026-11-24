@@ -25,7 +25,7 @@ import EmiraGuide
 // cover, and over the hoisted floats (`HoistPanel`), because a guide answers *where am I* about the
 // whole desktop and a picture of one window is part of what it is answering about. And it is **not
 // opaque**: a guide is a translucent HUD, so it can neither mark a window behind it occluded nor be
-// asked to, and it goes up at full alpha rather than the thousandth short of it a cover needs.
+// asked to, and it goes up at full alpha rather than the level short of it a cover needs.
 //
 // It is not baked into a cover's base either, and that needs no work: `SCKCapturer` excludes every
 // window owned by our process from the base capture, not just the overlay.
