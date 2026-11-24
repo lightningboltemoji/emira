@@ -324,6 +324,211 @@ import EmiraMotion
         #expect(fx.contains(.focus(WindowId(2))))
     }
 
+    /// Full screen is a trip, not a departure: the column the window comes back to is as wide as the one
+    /// it left, where a new window starts on the ladder's first rung.
+    @Test func leavingFullScreenComesBackAtTheWidthItWentAt() throws {
+        var s = EngineFix.world(3)                                    // w1 | w2 | w3, w3 focused
+        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        let before = try #require(s.layout.columns.last)
+        #expect(before.windowIds == [WindowId(3)])
+        let grown = try #require(before.widthOverride)
+
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), true)).0)
+        #expect(s.layout.columnIndex(ofWindow: WindowId(3)) == nil)
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), false)).0)
+
+        let after = try #require(s.layout.columns.first { $0.windowIds == [WindowId(3)] })
+        #expect(after.widthOverride == grown)
+        #expect(after.widthPreset == before.widthPreset)
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(s.workspaces.awayPlaces.isEmpty)                      // read once, and gone
+    }
+
+    /// The width a window came back with is its own, not the strip's habit: a second window that was
+    /// never away opens on the ladder as ever.
+    @Test func onlyTheWindowThatWasAwayTakesItsOldWidth() throws {
+        var s = EngineFix.world(2)
+        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(2), true)).0)
+        s = EngineFix.settle(Engine.reduce(s, .windowCreated(EngineFix.snapshot(3))).0)
+
+        let fresh = try #require(s.layout.columns.first { $0.windowIds == [WindowId(3)] })
+        #expect(fresh.widthOverride == nil)
+        #expect(fresh.widthPreset == 0)
+        #expect(s.workspaces.awayPlaces.map(\.window) == [WindowId(2)]) // still away, still remembered
+    }
+
+    /// A window that closes while away never comes back, so nothing it left is kept for it.
+    @Test func aWindowClosedInFullScreenLeavesNothingBehind() {
+        var s = EngineFix.world(3)
+        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        s = EngineFix.settle(Engine.reduce(s, .windowFullScreen(WindowId(3), true)).0)
+        #expect(s.workspaces.awayPlaces.map(\.window) == [WindowId(3)])
+        s = EngineFix.settle(Engine.reduce(s, .windowDestroyed(WindowId(3))).0)
+        #expect(s.workspaces.awayPlaces.isEmpty)
+    }
+
+    // Away and back: the Dock, ⌘H and native full screen all return a window to where it stood.
+
+    /// A settled strip of one window per entry, each of the app named, left to right.
+    private func apps(_ bundles: [String]) -> State {
+        var s = EngineFix.booted()
+        for (i, bundle) in bundles.enumerated() {
+            s = EngineFix.run(s, [.windowCreated(EngineFix.snapshot(UInt64(i + 1), bundle: bundle))]).0
+            s = EngineFix.settle(s)
+        }
+        return s
+    }
+
+    /// ⌘H arrives a window at a time. The focused one leaving first must not hand focus to its sibling —
+    /// still standing, and about to go too — since focusing a hidden app's window unhides it.
+    @Test func hidingAnAppHandsFocusPastItsOtherWindows() {
+        var s = focusing(apps(["a", "b", "b", "c"]), 2)
+        let first: [Effect]
+        (s, first) = EngineFix.run(s, [.windowHidden(WindowId(2))])
+        #expect(!first.contains(.focus(WindowId(3))))
+        #expect(first.contains(.focus(WindowId(4))))
+        let second: [Effect]
+        (s, second) = EngineFix.run(s, [.windowHidden(WindowId(3))])
+        #expect(!second.contains { if case .focus = $0 { true } else { false } })
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(4)])
+
+        for id: UInt64 in [2, 3] { s = EngineFix.settle(EngineFix.run(s, [.windowUnhidden(WindowId(id))]).0) }
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
+        #expect(s.world.focusedWindow == WindowId(4))
+    }
+
+    /// A minimize hands focus to the neighbour whatever app it is — the Dock takes one window, not an app.
+    @Test func minimizingHandsFocusToTheNeighbourOfTheSameApp() {
+        var s = focusing(apps(["a", "b", "b", "c"]), 2)
+        let fx: [Effect]
+        (s, fx) = EngineFix.run(s, [.windowMinimized(WindowId(2))])
+        #expect(fx.contains(.focus(WindowId(3))))
+    }
+
+    /// Focus `id`'s column by walking left from the right end of a settled strip.
+    private func focusing(_ s: State, _ id: UInt64) -> State {
+        var s = s
+        while let focused = s.world.focusedWindow, focused != WindowId(id) {
+            s = EngineFix.settle(Engine.reduce(s, .command(.focus(.left))).0)
+        }
+        return s
+    }
+
+    /// The middle of three, grown, goes to the Dock and comes back: same place, same width, focused.
+    @Test func aRestoredWindowComesBackWhereItStoodAtItsWidth() throws {
+        var s = focusing(EngineFix.world(3), 2)
+        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        let grown = try #require(s.layout.columns[1].widthOverride)
+
+        s = EngineFix.settle(Engine.reduce(s, .windowMinimized(WindowId(2))).0)
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(3)])
+        let fx: [Effect]
+        (s, fx) = EngineFix.run(s, [.windowDeminimized(WindowId(2))])
+
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(s.layout.columns[1].widthOverride == grown)
+        #expect(s.world.focusedWindow == WindowId(2))
+        #expect(fx.contains(.focus(WindowId(2))))
+        #expect(s.workspaces.awayPlaces.isEmpty)
+    }
+
+    /// ⌘H undone puts the window back where it stood, but focus is the app's to say: a window the user is
+    /// not in comes back without taking the keyboard or moving the viewport onto itself.
+    @Test func anUnhiddenWindowComesBackWithoutTakingFocus() throws {
+        var s = focusing(apps(["a", "b", "c"]), 2)
+        s = EngineFix.settle(Engine.reduce(s, .command(.grow(.percent(20)))).0)
+        let grown = try #require(s.layout.columns[1].widthOverride)
+        s = EngineFix.settle(Engine.reduce(s, .windowHidden(WindowId(2))).0)
+        s = EngineFix.settle(Engine.reduce(s, .focusChanged(WindowId(1), origin: .system)).0)
+
+        let fx: [Effect]
+        (s, fx) = EngineFix.run(s, [.windowUnhidden(WindowId(2))])
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3)])
+        #expect(s.layout.columns[1].widthOverride == grown)
+        #expect(s.world.focusedWindow == WindowId(1))
+        #expect(!fx.contains(.focus(WindowId(2))))
+    }
+
+    /// Two neighbours away at once come back in their order, whichever left first and whichever returns
+    /// first — the second to leave remembers it stood beside a window already gone.
+    @Test(arguments: [[2, 3], [3, 2]], [[2, 3], [3, 2]])
+    func neighboursComeBackInTheirOrder(leaving: [UInt64], returning: [UInt64]) {
+        var s = EngineFix.world(4)                                    // w1 | w2 | w3 | w4
+        for id in leaving {
+            s = EngineFix.settle(Engine.reduce(s, .windowMinimized(WindowId(id))).0)
+        }
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(4)])
+        for id in returning {
+            s = EngineFix.run(s, [.windowDeminimized(WindowId(id))]).0
+            s = EngineFix.settle(s)
+        }
+        #expect(s.layout.allWindowIds == [WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
+    }
+
+    /// A window that left a stack goes back into it, at its row, while the stack is still there.
+    @Test func aWindowComesBackIntoTheStackItLeft() throws {
+        var s = EngineFix.world(3)                                    // w3 focused
+        s = EngineFix.settle(Engine.reduce(s, .command(.consumeOrExpel(.left))).0)
+        let stack = try #require(s.layout.columns.last)
+        #expect(stack.windowIds == [WindowId(2), WindowId(3)])
+
+        s = EngineFix.settle(Engine.reduce(s, .windowMinimized(WindowId(2))).0)
+        #expect(s.layout.columns.last?.windowIds == [WindowId(3)])
+        s = EngineFix.run(s, [.windowDeminimized(WindowId(2))]).0
+        #expect(s.layout.columns.count == 2)
+        #expect(s.layout.columns.last?.id == stack.id)
+        #expect(s.layout.columns.last?.windowIds == [WindowId(2), WindowId(3)])
+    }
+
+    // Away from a workspace the user has left.
+
+    private static let two = WorkspaceName("2")!
+
+    /// w1 on workspace 1, w2 on workspace 2, the user on 1 and w2 away.
+    private func awayOnTwo(hidden: Bool = false) -> State {
+        var s = apps(["a", "b"])
+        s = EngineFix.settle(Engine.reduce(s, .command(.moveToWorkspaceAndFocus(.name(Self.two)))).0)
+        let leave: Event = hidden ? .windowHidden(WindowId(2)) : .windowMinimized(WindowId(2))
+        s = EngineFix.settle(Engine.reduce(s, leave).0)
+        s = EngineFix.settle(Engine.reduce(s, .command(.focusWorkspace(.name(.first)))).0)
+        return s
+    }
+
+    /// Restored from the Dock while the user is elsewhere: it goes back to its own workspace, and the
+    /// user follows it there — they asked for that window.
+    @Test func aWindowRestoredFromAnotherWorkspaceTakesTheUserToIt() {
+        var s = awayOnTwo()
+        #expect(s.monitors.shown == .first)
+        s = EngineFix.settle(EngineFix.run(s, [.windowDeminimized(WindowId(2))]).0)
+        #expect(s.workspaces.workspace(of: WindowId(2)) == Self.two)
+        #expect(s.monitors.shown == Self.two)
+        #expect(s.world.focusedWindow == WindowId(2))
+    }
+
+    /// Unhidden while the user is elsewhere and in another window: it goes back to its own workspace
+    /// and nobody follows it.
+    @Test func anUnhiddenWindowOutOfViewStaysThere() {
+        var s = awayOnTwo(hidden: true)
+        s = EngineFix.settle(EngineFix.run(s, [.windowUnhidden(WindowId(2))]).0)
+        #expect(s.workspaces.workspace(of: WindowId(2)) == Self.two)
+        #expect(s.monitors.shown == .first)
+        #expect(s.world.focusedWindow == WindowId(1))
+    }
+
+    /// The app's focus report decides, in either order: before the window is back, or after.
+    @Test(arguments: [true, false])
+    func anUnhiddenWindowTheAppFocusesTakesTheUserToIt(focusFirst: Bool) {
+        var s = awayOnTwo(hidden: true)
+        let focus = Event.focusChanged(WindowId(2), origin: .system)
+        let events: [Event] = focusFirst ? [focus, .windowUnhidden(WindowId(2))]
+                                         : [.windowUnhidden(WindowId(2)), focus]
+        for event in events { s = EngineFix.settle(Engine.reduce(s, event).0) }
+        #expect(s.workspaces.workspace(of: WindowId(2)) == Self.two)
+        #expect(s.monitors.shown == Self.two)
+        #expect(s.world.focusedWindow == WindowId(2))
+    }
+
     // Where focus goes when a window with no *place* on the strip leaves it. The strip's own answer is
     // positional — a stackmate, then whatever stands at the departed column's index — and a float has
     // neither, so these pin the third clause: the last place focus held on this strip.

@@ -106,9 +106,11 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
     var unansweredReads = 0
     /// The windows a full-screen read answers `true` for.
     var fullScreen: Set<WindowId> = []
+    /// Answer `true` for every window — one adopted already in full screen has an id nobody knows yet.
+    var everythingFullScreen = false
 
     func isFullScreen(_ window: WindowId, then: @escaping @MainActor (Bool?) -> Void) {
-        then(fullScreen.contains(window))
+        then(everythingFullScreen || fullScreen.contains(window))
     }
 
     func start(_ deliver: @escaping @MainActor (WorldObservation) -> Void) { started = true }
@@ -2583,6 +2585,51 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         #expect(!world.recorder.events.contains(.windowDestroyed(one)))
     }
 
+    /// A window that goes into full screen under one of our writes: every move it reports is that write's
+    /// echo, and one made at the display's size has nothing else to report anyway. The landing is the
+    /// frame that shows it.
+    @Test func aWriteThatLandsInFullScreenIsAskedWhetherItIs() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let two = try #require(world.id(titled: "two"))
+        let display = Rect(x: 0, y: 0, width: 2000, height: 1000)
+        world.windows.screens = [display]
+        world.source.fullScreen = [two]
+        world.source.frames[two] = display
+
+        world.writes.begin([two])
+        world.watcher.handle(.windowMoved(two))                   // the echo, dropped unread
+        #expect(!world.recorder.events.contains(.windowFullScreen(two, true)))
+        world.writes.end([two])
+        world.watcher.landed(two, at: display)
+        #expect(world.recorder.events.contains(.windowFullScreen(two, true)))
+    }
+
+    /// WebKit's video player is a window of its own, made at the display's size and in full screen by the
+    /// time a scan describes it. It never moves, so its adoption is the one frame that can say so — and
+    /// unsaid, the window the video came from reads as departed once AX describes only the player's Space.
+    @Test func aWindowAdoptedInFullScreenKeepsItsAppsOtherWindows() throws {
+        let world = LiveWorld()
+        world.watcher.start()
+        let one = try #require(world.id(titled: "one"))
+        let display = Rect(x: 0, y: 0, width: 2000, height: 1000)
+        world.windows.screens = [display]
+        world.source.everythingFullScreen = true
+        world.windows.windowsByPid[200]?.append(
+            scanned(pid: 200, seed: 4, bundle: "com.apple.TextEdit", title: "player", frame: display))
+        world.windows.entries.append(WindowListEntry(number: 4, pid: 200, frame: display))
+        world.watcher.handle(.windowAppeared(200))
+        let player = try #require(world.id(titled: "player"))
+        #expect(world.recorder.events.contains(.windowFullScreen(player, true)))
+
+        world.windows.windowsByPid[200]?.removeAll { $0.observed.title == "one" }
+        world.windows.entries = world.windows.entries.map {
+            $0.number == 2 ? WindowListEntry(number: 2, pid: 200, frame: rect(700), isOnScreen: false) : $0
+        }
+        world.watcher.handle(.windowAppeared(200))
+        #expect(!world.recorder.events.contains(.windowDestroyed(one)))
+    }
+
     @Test func withNothingInFullScreenTheSameAbsenceIsADeparture() throws {
         let world = LiveWorld()
         world.watcher.start()
@@ -3283,7 +3330,7 @@ private func scanned(pid: pid_t, seed: pid_t, bundle: String, title: String,
         world.watcher.handle(.appUnhidden(200))
 
         #expect(Array(world.recorder.events.dropFirst(before)) == [
-            .windowMinimized(one), .windowDeminimized(one),
+            .windowHidden(one), .windowUnhidden(one),
         ])
         // Managed throughout: the id never went anywhere, which is what lets the column come back.
         #expect(world.registry.record(one) != nil)

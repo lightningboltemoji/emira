@@ -101,6 +101,40 @@ public struct ColumnLayout: Sendable, Equatable, Codable {
         self.widthOverride = widthOverride
         self.fullscreen = fullscreen
     }
+
+    /// A fresh column for one window, at `source`'s width intent or the ladder's first rung. A
+    /// fullscreen source lends the *width*, not its undo record, whose columns may be gone or elsewhere.
+    init(id: ColumnId, window: WindowId, like source: ColumnLayout?) {
+        self.init(id: id, windowIds: [window], widthPreset: source?.widthPreset ?? 0,
+                  widthOverride: source?.widthOverride,
+                  fullscreen: source?.fullscreen.map { .plain($0.origin) })
+    }
+}
+
+/// Where a window stood on a strip as it left it, which `Layout.rejoin` puts it back by.
+public struct Spot: Sendable, Equatable, Codable {
+    /// The column it left, as it stood: its id, for a stack that outlives the window, and its width.
+    public let column: ColumnLayout
+    /// Its row in that column.
+    public let row: Int
+    /// The strip's windows in layout order as they stood, this one and any already away among them.
+    public let order: [WindowId]
+
+    public init(column: ColumnLayout, row: Int, order: [WindowId]) {
+        self.column = column
+        self.row = row
+        self.order = order
+    }
+
+    /// The window nearest `window` in `order` that `isHere` accepts, looking left first, and whether
+    /// `window` goes after it. `nil` when nothing it stood beside is here.
+    func neighbour(of window: WindowId,
+                   where isHere: (WindowId) -> Bool) -> (window: WindowId, after: Bool)? {
+        guard let i = order.firstIndex(of: window) else { return nil }
+        if let left = order[..<i].last(where: isHere) { return (left, true) }
+        if let right = order[(i + 1)...].first(where: isHere) { return (right, false) }
+        return nil
+    }
 }
 
 /// One pinned window as the geometry sees it: which window, and the width stack it walks. The intent
@@ -482,7 +516,8 @@ public struct Layout: Sendable, Equatable, Codable {
     /// Sync the column structure to this workspace's current membership: departures are dropped with
     /// any column they empty, newcomers arrive as fresh single-window columns. Surviving columns keep
     /// their id and stack order, so animation identity and the user's arrangement outlive enumeration
-    /// churn. Total. Called by `Workspaces.reconcile`, which composes it from the two halves below.
+    /// churn. Total. One strip with nothing away; `Workspaces.reconcile` composes the two halves below
+    /// itself, around the windows coming back to a place (`rejoin`).
     ///
     /// - Parameter anchor: the window a newcomer opens **beside**; `nil`, or a window with no column of
     ///   its own, appends at the far end. It must be the window focused *before* the newcomer arrived,
@@ -510,21 +545,37 @@ public struct Layout: Sendable, Equatable, Codable {
     ///
     /// - Parameter source: a column whose width intent the new columns take instead of the ladder's
     ///   first rung. `nil` — a genuinely new window — starts on the ladder; non-`nil` for the arrival
-    ///   half of a cross-workspace move, where the window is already on screen at that width. A
-    ///   fullscreen source lends the *width* but not its undo record, whose columns are on another strip.
+    ///   half of a cross-workspace move, where the window is already on screen at that width.
     public mutating func adopt(_ newcomers: [WindowId], after anchor: WindowId?,
                                like source: ColumnLayout? = nil,
                                columnIds: inout ColumnAllocator) {
         guard !newcomers.isEmpty else { return }
         var at = anchor.flatMap { columnIndex(ofWindow: $0) }.map { $0 + 1 } ?? columns.count
         for id in newcomers {
-            columns.insert(ColumnLayout(id: columnIds.mint(), windowIds: [id],
-                                        widthPreset: source?.widthPreset ?? 0,
-                                        widthOverride: source?.widthOverride,
-                                        fullscreen: source?.fullscreen.map { .plain($0.origin) }),
-                           at: at)
+            columns.insert(ColumnLayout(id: columnIds.mint(), window: id, like: source), at: at)
             at += 1
         }
+    }
+
+    /// Where `window` stands on this strip, for putting it back after it has been away. `nil` off it.
+    public func spot(of window: WindowId) -> Spot? {
+        guard let i = columnIndex(ofWindow: window),
+              let row = columns[i].windowIds.firstIndex(of: window) else { return nil }
+        return Spot(column: columns[i], row: row, order: allWindowIds)
+    }
+
+    /// Put a window back where it stood (`spot`): into its column at its row if that stack outlived
+    /// it, else as a column at the width it left beside the nearest window it stood by, else at the far
+    /// end. The arrival half of a return, so it carries `adopt`'s guarantee that `window` is on no strip.
+    public mutating func rejoin(_ window: WindowId, at spot: Spot, columnIds: inout ColumnAllocator) {
+        if let i = columnIndex(withId: spot.column.id) {
+            columns[i].windowIds.insert(window, at: Swift.min(spot.row, columns[i].windowIds.count))
+            return
+        }
+        let at = spot.neighbour(of: window, where: { columnIndex(ofWindow: $0) != nil })
+            .flatMap { n in columnIndex(ofWindow: n.window).map { n.after ? $0 + 1 : $0 } }
+            ?? columns.count
+        columns.insert(ColumnLayout(id: columnIds.mint(), window: window, like: spot.column), at: at)
     }
 
     /// Drop `window` from this strip, removing the column it empties — the *departure* half of a

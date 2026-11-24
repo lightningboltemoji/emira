@@ -116,8 +116,8 @@ public struct State: Sendable, Equatable, Codable {
     /// workspace, newcomers join the acting display's beside `anchor` (`Workspaces.reconcile`). Idempotent,
     /// and run at the top of every event but a tick, so a handler starts from a strip that matches `World`.
     mutating func reconcileTiling(insertingAfter anchor: WindowId? = nil) {
-        workspaces.reconcile(tiledWindowIds: world.tiledWindowIds, onto: monitors.shown,
-                             insertingAfter: anchor)
+        workspaces.reconcile(tiledWindowIds: world.tiledWindowIds, away: world.awayWindowIds,
+                             onto: monitors.shown, insertingAfter: anchor)
     }
 
     /// Layout metrics for one display — its working area (bounds minus its own struts) under the current
@@ -624,7 +624,8 @@ public enum Engine {
         switch event {
         case .windowCreated(let snapshot): id = snapshot.id
         case .windowDestroyed(let window), .windowMinimized(let window), .windowDeminimized(let window),
-             .windowShown(let window, _): id = window
+             .windowHidden(let window), .windowUnhidden(let window), .windowShown(let window, _):
+            id = window
         default: return nil
         }
         guard !old.world.participatesInTiling(id), !s.world.participatesInTiling(id),
@@ -970,8 +971,10 @@ public enum Engine {
             let effects = revealAcrossWorkspaces(&s, id)
             return (s, effects)
 
-        case .windowMinimized(let id):
-            let effects = departFromLayout(&s, id) { s in
+        case .windowMinimized(let id), .windowHidden(let id):
+            // ⌘H takes the whole app, which arrives here a window at a time.
+            let hiding: String? = if case .windowHidden = event { s.world.windows[id]?.bundleId } else { nil }
+            let effects = departFromLayout(&s, id, passingOver: hiding) { s in
                 let wasFocused = s.world.focusedWindow == id
                 s.world.setMinimized(id, true)
                 if wasFocused { s.world.setFocus(nil) }
@@ -986,18 +989,9 @@ public enum Engine {
             return (s, effects)
 
         case .windowFullScreen(let id, false):
-            // Back on the desktop: an arrival beside the place it left, as a restored window is.
+            // Back on the desktop, and still the window the user is in.
             guard s.world.fullScreen.contains(id) else { return (s, []) }
-            let before = strandedGeometry(&s)
-            let beside = tiledAnchor(s)
-            s.world.setFullScreen(id, false)
-            guard s.world.participatesInTiling(id) else {
-                let effects = reassertTruthPlane(&s)
-                return (s, effects)
-            }
-            s.world.setFocus(id)
-            guard !before.isEmpty else { return (s, []) }
-            let effects = arriveOnLayout(&s, id, beside: beside, old: before)
+            let effects = returnFromAway(&s, id, focusing: true) { $0.world.setFullScreen(id, false) }
             return (s, effects)
 
         case .windowShown(let id, let shown):
@@ -1007,17 +1001,11 @@ public enum Engine {
             return (s, [])
 
         case .windowDeminimized(let id):
-            // An arrival — the reverse of `windowMinimized`'s departure.
-            let before = strandedGeometry(&s)
-            let beside = tiledAnchor(s)
-            s.world.setMinimized(id, false)
-            guard s.world.participatesInTiling(id) else {
-                let effects = reassertTruthPlane(&s)
-                return (s, effects)
-            }
-            s.world.setFocus(id)            // restoring re-focuses, like a fresh window
-            guard !before.isEmpty else { return (s, []) }
-            let effects = arriveOnLayout(&s, id, beside: beside, old: before)
+            let effects = returnFromAway(&s, id, focusing: true) { $0.world.setMinimized(id, false) }
+            return (s, effects)
+
+        case .windowUnhidden(let id):
+            let effects = returnFromAway(&s, id, focusing: false) { $0.world.setMinimized(id, false) }
             return (s, effects)
 
         //
@@ -3175,10 +3163,12 @@ public enum Engine {
     ///   already has rather than the ladder's first rung.
     /// - Parameter announcingFocus: whether to emit `.focus`. `false` when the window already holds it
     ///   (`float off`), where asking again is a redundant AX set that can make an app raise.
+    /// - Parameter framingFocus: frame the viewport on whatever holds focus, not on the newcomer.
     private static func arriveOnLayout(_ s: inout State, _ id: WindowId, beside anchor: WindowId?,
                                       old: [StructuralSnapshot], width: PresetSize? = nil,
                                       keepingWidth: Bool = false,
-                                      announcingFocus: Bool = true) -> [Effect] {
+                                      announcingFocus: Bool = true,
+                                      framingFocus: Bool = false) -> [Effect] {
         s.reconcileTiling(insertingAfter: anchor)
         let announce: [Effect] = announcingFocus ? [.focus(id)] : []
         // A window that didn't join a column has nothing to animate; ordinary placement still runs.
@@ -3194,8 +3184,35 @@ public enum Engine {
         let opened = s.world.windows[id]?.frame
         let seeded = opened.map { frame in old.map { $0.including(id, at: frame) } } ?? old
         let edit = LayoutEdit(moved: true, destroyedColumn: nil)
-        return finishStructuralEdit(&s, edit, focused: id, mover: id,
-                                    animatingFrom: seeded) + announce
+        return finishStructuralEdit(&s, edit, focused: framingFocus ? s.world.focusedWindow : id,
+                                    mover: id, animatingFrom: seeded) + announce
+    }
+
+    /// A window back from the Dock, ⌘H or full screen, put back where it stood (`Workspaces.awayPlaces`).
+    /// Out of view, the desktop follows it only if it is the window the user is in or `focusing` makes it
+    /// so — `false` for ⌘H undone, whose app's focus report decides, in whichever order the two arrive.
+    private static func returnFromAway(_ s: inout State, _ id: WindowId, focusing: Bool,
+                                       _ back: (inout State) -> Void) -> [Effect] {
+        let before = strandedGeometry(&s)
+        let beside = tiledAnchor(s)
+        back(&s)
+        guard s.world.participatesInTiling(id) else { return reassertTruthPlane(&s) }
+        guard !before.isEmpty else {
+            if focusing { s.world.setFocus(id) }
+            return []
+        }
+        s.reconcileTiling(insertingAfter: beside)
+        guard let home = s.workspaces.workspace(of: id), home != s.monitors.shown else {
+            if focusing { s.world.setFocus(id) }
+            return arriveOnLayout(&s, id, beside: beside, old: before, announcingFocus: focusing,
+                                  framingFocus: true)
+        }
+        s.applySoloFullscreen(on: home)
+        guard focusing || s.world.focusedWindow == id else { return reassertTruthPlane(&s) }
+        // Focus moves inside the switch, which reads the outgoing strip's focus to remember it.
+        return switchWorkspace(&s, to: home, focusing: id,
+                               animatingFrom: snapshots(s, of: [host(s, home)]),
+                               announcingFocus: focusing)
     }
 
     /// Give a just-adopted column the width it should start at. Two sources, and the explicit one
@@ -3266,15 +3283,22 @@ public enum Engine {
     ///
     /// The first two clauses are positional, and a window with no place has neither a column nor an
     /// index, so the rest is the whole of a float's answer.
+    /// `leaving` are passed over, and a column holding nothing else for the nearest beyond it, rightward.
     private static func successor(_ layout: Layout, column: ColumnId?, at index: Int?,
-                                  recent: WindowId?, anchor: WindowId?) -> WindowId? {
-        if let column, let i = layout.columnIndex(withId: column) {
-            return layout.columns[i].windowIds.first   // the column outlived the window: stay in it
+                                  recent: WindowId?, anchor: WindowId?,
+                                  passingOver leaving: Set<WindowId> = []) -> WindowId? {
+        let stays = { !leaving.contains($0) }
+        if let column, let i = layout.columnIndex(withId: column),
+           let mate = layout.columns[i].windowIds.first(where: stays) {
+            return mate                                 // the column outlived the window: stay in it
         }
         guard let index, !layout.columns.isEmpty else {
-            return recent ?? anchor ?? layout.allWindowIds.first
+            return [recent, anchor].compactMap { $0 }.first(where: stays)
+                ?? layout.allWindowIds.first(where: stays)
         }
-        return layout.columns[Swift.min(index, layout.columns.count - 1)].windowIds.first
+        let at = Swift.min(index, layout.columns.count - 1)
+        let nearest = layout.columns[at...] + layout.columns[..<at].reversed()
+        return nearest.lazy.compactMap { $0.windowIds.first(where: stays) }.first
     }
 
     /// A window leaving the layout — closed, minimized, or hidden — with the survivors closing ranks in
@@ -3282,10 +3306,12 @@ public enum Engine {
     /// on top has left. Snaps where `finishStructuralEdit` snaps, plus for a window never tiled and
     /// for a workspace left empty.
     ///
+    /// - Parameter app: an app whose windows focus is not handed to, since they are leaving with this one.
     /// - Parameter leave: performs the removal. A closure so the before/after pair cannot come apart — the
     ///   snapshot must be taken while the window is still tiled, and the reconcile afterwards is
     ///   what turns "gone from `World`" into "gone from `Layout`".
     private static func departFromLayout(_ s: inout State, _ id: WindowId,
+                                        passingOver app: String? = nil,
                                         _ leave: (inout State) -> Void) -> [Effect] {
         // All three read *before* the removal: the column's id, to tell afterwards whether it died; its
         // index, so focus can land where the window was; and the geometry we are leaving.
@@ -3306,7 +3332,8 @@ public enum Engine {
         var refocus: [Effect] = []
         if let next = successor(s.layout, column: column, at: index,
                                 recent: s.world.lastFocusedOnScreen(on: s.monitors.focused),
-                                anchor: tiledAnchor(s)) {
+                                anchor: tiledAnchor(s),
+                                passingOver: app.map { Set(s.world.windowIds(inApp: $0)) } ?? []) {
             if s.world.focusedWindow == nil {
                 s.world.setFocus(next)
                 refocus = [.focus(next)]

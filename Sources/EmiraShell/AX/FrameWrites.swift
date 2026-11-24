@@ -19,6 +19,11 @@ public final class FrameWrites {
     /// choosing, and a plane masked against that server has to be reading when it does.
     public var onBegin: (@MainActor () -> Void)?
 
+    /// Told where each write landed, once it has ended. The echoes it provoked were dropped, so this
+    /// read-back is the one frame of the window anybody saw across the write, and `WorldWatcher.landed`
+    /// reads it for what it would have read those for.
+    public var onLanded: (@MainActor (WindowId, Rect) -> Void)?
+
     public init() {}
 
     public func begin(_ ids: [WindowId]) {
@@ -31,6 +36,10 @@ public final class FrameWrites {
             guard let count = inFlight[id] else { continue }
             inFlight[id] = count > 1 ? count - 1 : nil
         }
+    }
+
+    public func landed(_ id: WindowId, at frame: Rect) {
+        onLanded?(id, frame)
     }
 
     /// Whether a write to `id` has yet to come back — so a move reported now is that write's own echo.

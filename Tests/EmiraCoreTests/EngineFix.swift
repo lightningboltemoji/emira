@@ -125,7 +125,7 @@ enum EngineFix {
     /// Whether an event puts a window *onto* the strip, and therefore animates.
     static func isArrival(_ event: Event) -> Bool {
         switch event {
-        case .windowCreated, .windowDeminimized: return true
+        case .windowCreated, .windowDeminimized, .windowUnhidden: return true
         default: return false
         }
     }

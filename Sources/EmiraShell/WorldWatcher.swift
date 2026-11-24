@@ -360,21 +360,20 @@ public final class WorldWatcher {
             if focusApp == pid { focusApp = nil }
             for record in registry.records(ofApps: [pid]) { retire(record.id) }
 
-        // ⌘H, which nothing else reports. The *minimize* pair rather than a destroy: these windows are
-        // coming back, and a destroy would return them as fresh columns having forgotten their width
-        // and their place. Windows the Dock already held are left out, since unhiding does not restore
-        // those.
+        // ⌘H, which nothing else reports. Not a destroy: these windows are coming back, and a destroy
+        // would return them as fresh columns having forgotten their width and their place. Windows the
+        // Dock already held are left out, since unhiding does not restore those.
         case .appHidden(let pid):
             let taken = registry.records(ofApps: [pid])
                 .map(\.id)
                 .filter { isLive($0) && !minimized.contains($0) }
             guard !taken.isEmpty else { return }
             hidden[pid] = Set(taken)
-            for id in taken { emit(.windowMinimized(id)) }
+            for id in taken { emit(.windowHidden(id)) }
 
         case .appUnhidden(let pid):
             for id in (hidden.removeValue(forKey: pid) ?? []).sorted() where isLive(id) {
-                emit(.windowDeminimized(id))
+                emit(.windowUnhidden(id))
             }
 
         case .windowAppeared(let pid):
@@ -460,9 +459,17 @@ public final class WorldWatcher {
         return number > bootWatermark && (unaccounted[number] ?? 0) <= 1
     }
 
-    /// Ask whether a window that moved went into native full screen or came out of it. Only a frame filling
-    /// a display or its visible part can be the first, and only a window already in it the second; AX is
-    /// the one that says which, since a window filled to the screen by hand has the same frame.
+    /// A write to `id` landed at `frame` (`FrameWrites.onLanded`). Its echoes were dropped, and a window
+    /// made at the display's size that goes full screen under a write shows it in nothing else, so the
+    /// landing is asked what a report would have been.
+    public func landed(_ id: WindowId, at frame: Rect) {
+        guard isLive(id) else { return }
+        checkFullScreen(id, frame)
+    }
+
+    /// Ask of every frame learned — read, landed or adopted — whether its window went into native full
+    /// screen or came out. Only a frame filling a display or its visible part can be the first, and only a
+    /// window already in it the second; AX says which, as a window filled to the screen by hand looks alike.
     private func checkFullScreen(_ id: WindowId, _ frame: Rect) {
         let was = fullScreen.contains(id)
         guard was || enumerator.screenAreas().contains(where: {
@@ -867,6 +874,10 @@ public final class WorldWatcher {
         for snapshot in report.snapshots {
             let met = alreadyOpen && !isNewborn(snapshot.id)
             emit(.windowCreated(met ? snapshot.metAlreadyOpen() : snapshot))
+            // After the announcement, so the core knows the window the answer is about. A window adopted
+            // already in full screen moves no further, and without this its app's other windows read as
+            // departed the moment AX stops describing them (`isElsewhere`).
+            checkFullScreen(snapshot.id, snapshot.frame)
         }
         // A window that takes focus as it opens is reported before it is bound — as focus on nothing
         // emira manages — and no later report corrects that. The report named the element, so the

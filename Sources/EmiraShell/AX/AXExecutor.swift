@@ -144,7 +144,9 @@ public final class AXExecutor: Executor {
                 writes.end(ids)
                 // The echoes this write provoked were dropped, so its read-back is the frame on record.
                 for landing in landings {
-                    if let frame = landing.frame { registry.noteFrame(landing.id, frame) }
+                    guard let frame = landing.frame else { continue }
+                    registry.noteFrame(landing.id, frame)
+                    writes.landed(landing.id, at: frame)
                 }
                 Self.report(landings, for: moves, to: feedback)
             }

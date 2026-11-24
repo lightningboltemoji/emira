@@ -19,7 +19,7 @@ public struct WindowState: Sendable, Equatable, Codable {
     public var role: WindowRole
     /// Last-known truth frame in top-left virtual-strip coordinates (the shell Y-flips at its edge).
     public var frame: Rect
-    /// A minimized window *stops being tiled*, like a close.
+    /// A window in the Dock or behind ⌘H *stops being tiled*, like a close, until it comes back.
     public var isMinimized: Bool
 
     public init(
@@ -439,7 +439,8 @@ public struct World: Sendable, Equatable, Codable {
         pruneTiledFocus()
     }
 
-    /// Fold `Event.windowMinimized` / `Event.windowDeminimized`.
+    /// Fold `Event.windowMinimized` / `Event.windowDeminimized`, and the ⌘H pair, whose windows the shell
+    /// takes one at a time so that one already in the Dock stays there.
     public mutating func setMinimized(_ id: WindowId, _ minimized: Bool) {
         windows[id]?.isMinimized = minimized
         pruneTiledFocus()
@@ -674,6 +675,13 @@ public struct World: Sendable, Equatable, Codable {
     /// Every tiled window, sorted by id for deterministic layout and replay.
     public var tiledWindowIds: [WindowId] {
         windows.keys.filter(participatesInTiling).sorted()
+    }
+
+    /// The live windows that are off the screen and coming back — in the Dock, behind ⌘H, or in native
+    /// full screen — which `Workspaces.reconcile` keeps a place for.
+    public var awayWindowIds: Set<WindowId> {
+        Set(windows.values.filter { $0.isMinimized || isAppHidden(of: $0.id) || fullScreen.contains($0.id) }
+                .map(\.id))
     }
 
     /// The ids of every live window owned by `bundleId`, sorted — what app-level operations read.

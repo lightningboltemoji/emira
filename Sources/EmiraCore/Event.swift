@@ -41,14 +41,24 @@ public enum Event: Sendable, Equatable, Codable {
     /// `origin` is what `[focus] system-events` judges.
     case focusChanged(WindowId?, origin: FocusOrigin)
 
-    /// A window was minimized: it leaves the strip, animated out like a close, its position remembered.
+    /// A window went to the Dock: it leaves the strip, animated out like a close, and its place is kept
+    /// (`Workspaces.awayPlaces`).
     case windowMinimized(WindowId)
 
-    /// A minimized window was restored — re-inserted at its remembered strip position.
+    /// A window went with its app behind ⌘H: it leaves as a minimized one does, except that focus is not
+    /// handed to another window of that app — the rest of it is going too, and focusing one unhides it.
+    case windowHidden(WindowId)
+
+    /// A window came back from the Dock: it rejoins the strip where it stood, and takes focus — the user
+    /// restored it.
     case windowDeminimized(WindowId)
 
+    /// A window came back with its app (⌘H undone): it rejoins the strip where it stood, and leaves focus
+    /// to the app's own report of which window the user is in.
+    case windowUnhidden(WindowId)
+
     /// A window entered or left native full screen: a Space of its own, off the strip while it is there.
-    /// A reading — macOS posts nothing for either edge — taken when the window's frame changes.
+    /// A reading — macOS posts nothing for either edge — taken of each frame the shell learns.
     case windowFullScreen(WindowId, Bool)
 
     /// The window server started or stopped drawing a live window — ordered out, or faded to nothing,

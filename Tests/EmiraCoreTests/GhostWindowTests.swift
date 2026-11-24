@@ -68,7 +68,7 @@ import EmiraMotion
             fx += f
             let isArrival: Bool
             switch e {
-            case .windowCreated, .windowDeminimized: isArrival = true
+            case .windowCreated, .windowDeminimized, .windowUnhidden: isArrival = true
             default: isArrival = false
             }
             if wasIdle, isArrival, s.motion.isTransitioning { s = settle(s, f) }

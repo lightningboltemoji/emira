@@ -917,7 +917,9 @@ applies a set, and they reach the watcher while that set's lane job is still run
 where every write landed, so a report for a window whose write is still out is dropped — no read, no
 stillness wait, no placement pass that writes nothing — and the landing's frame is what the registry keeps.
 Measured on a 5K desktop, 43 of 44 reports over nine commands were echoes caught this way. A report after the
-landing is read as ever: that is the app moving itself afterwards.
+landing is read as ever: that is the app moving itself afterwards. **The landing is read for what its echoes
+would have been** (`FrameWrites.onLanded` → `WorldWatcher.landed`): a window that goes into full screen under
+a write may show it in that frame and nowhere else.
 
 **There is one `ParkingLot` for the whole desktop, and the display arrangement picks it.** A nub is the corner
 of a window whose body hangs off the bottom right of the lot, so a screen sitting beyond that corner catches
@@ -1202,7 +1204,8 @@ there would be a crash at boot rather than the no-op `metrics()` already gives.
   column, else whichever column now stands at the departed one's index, else — for a window that was already
   off the strip, a float or a dialog — the **focus stack**, and only then `tiledAnchor` and the strip's front.
   The first two clauses are positional and a window with no column has neither, so the rest is the whole of
-  its answer.
+  its answer. **⌘H passes over its own app** (`Event.windowHidden`): it arrives a window at a time, and focus
+  handed to a sibling still standing would unhide the app it is leaving with.
 
   **The stack is `World.focusedAt`, read as a stack rather than as an order** (`World.lastFocusedOnScreen`):
   the newest window the acting monitor is still showing. That is what makes a dialog closing return to
@@ -1272,10 +1275,19 @@ it, so a standing rule would be a second authority over it.
 
 Built-in taxonomy underneath: only `AXStandardWindow` tiles; dialogs/sheets/panels/popovers float;
 native-fullscreen windows are excluded, and a window that goes full screen later leaves the strip until it
-comes back (`Event.windowFullScreen`, read when a frame filling a display is reported, since macOS announces
-neither edge — a strip that went on placing it would rewrite it at the rate it reports); app chrome that
-merely happens to carry an `NSWindow` is declined outright at the AX boundary and never reaches a rule at all;
-minimized and Cmd-H-hidden windows leave the strip, animated out like a close, position remembered.
+comes back (`Event.windowFullScreen`, read of every frame filling a display the watcher learns, whether a
+report, a write's landing or an adoption, since macOS announces neither edge and a strip that went on placing
+it would rewrite it at the rate it reports); app chrome that merely happens to carry an `NSWindow` is declined
+outright at the AX boundary and never reaches a rule at all; minimized and Cmd-H-hidden windows leave the
+strip, animated out like a close.
+
+**A window gone to the Dock, behind ⌘H or into full screen is away, and comes back where it stood**
+(`World.awayWindowIds` → `Workspaces.awayPlaces` → `Layout.rejoin`): to its own workspace, into its stack at
+its row if that column outlived it, else beside the nearest window it stood by, at its column's width. A place
+keeps the strip's order with the windows already away spliced in, so neighbours that left together come back
+in their order whichever returns first. In view the return is an arrival; out of view the desktop follows it
+only as far as the window the user is in — a Dock restore and a full-screen exit take focus, and an unhide
+(`Event.windowUnhidden`) leaves it to its app's own report, which can land before the return or after it.
 
 ### Pinning
 
@@ -2103,7 +2115,8 @@ it, a parked column keeping its sliver on screen.
 **But AX describes one Space**, the one in front: while an app has a window in native full screen — a Space of
 its own — its answer leaves out whichever of its windows are on the other one, alive and unmoved. So a window
 whose app has one in full screen is never retired as departed (`WorldWatcher.isElsewhere`); a close still
-arrives as its destroy notification, and a death as its absence from the window list.
+arrives as its destroy notification, and a death as its absence from the window list. That makes a missed
+full-screen reading a lost window, which is why every frame the watcher learns is asked.
 
 **The join judges absence only from an answer that agrees with the list** — an on-screen entry AX did not
 describe, or an AX window no entry matches, is what a successor looks like a moment before it can be seen, so
@@ -2147,8 +2160,8 @@ longer be activated, and `isHidden` is ⌘H, which nothing else reports at all. 
 (`AXObservationSource.observeApp`), and they divide by what comes back. A departure retires its windows
 through `retire`, with no succession to scan for — the process that would have produced one is leaving — and
 leaves the *app* tracked, so a `.prohibited` that was not a quit costs one reconciliation rather than going
-unmanaged. A hide only borrows them: they leave on the **minimize** pair and the unhide returns exactly that
-set, minus anything the Dock already held. Neither displaces `appTerminated`, which stays the whole signal
+unmanaged. A hide only borrows them: they leave and return on their own pair (`windowHidden`/`windowUnhidden`)
+and the unhide returns exactly that set, minus anything the Dock already held. Neither displaces `appTerminated`, which stays the whole signal
 for a fast app that reaches its own death without ever saying `.prohibited`.
 
 **Which apps get asked is two questions, and the wider one needs evidence.** `WindowSource.applications()`

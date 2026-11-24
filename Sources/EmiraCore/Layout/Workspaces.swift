@@ -42,6 +42,20 @@ struct WorkspaceState: Sendable, Equatable, Codable {
     }
 }
 
+/// Where a window away from the strips — in the Dock, behind ⌘H, in native full screen — stood when it
+/// left: the workspace, and its spot there.
+public struct AwayPlace: Sendable, Equatable, Codable {
+    public let window: WindowId
+    public let workspace: WorkspaceName
+    public let spot: Spot
+
+    public init(window: WindowId, workspace: WorkspaceName, spot: Spot) {
+        self.window = window
+        self.workspace = workspace
+        self.spot = spot
+    }
+}
+
 /// The 36-address workspace set: one `Layout` per materialized address, plus the `ColumnId` allocator
 /// they all mint from. Value type, `Codable` including the allocator watermark, so ids stay unique
 /// across a serialization round-trip.
@@ -74,6 +88,11 @@ public struct Workspaces: Sendable, Equatable, Codable {
     ///
     /// Keyed and reconciled beside `heightSelections` for the same reasons, and against the same set.
     public private(set) var heightOverrides: [WindowId: PresetSize] = [:]
+
+    /// Where each window *away* from the strips stood, oldest first, so it comes back there
+    /// (`Layout.rejoin`). Written and read by `reconcile` alone, and kept only while its `away` names
+    /// the window, so one that closes while away takes its entry with it.
+    public private(set) var awayPlaces: [AwayPlace] = []
 
     /// A fresh set: one materialized, empty address, nothing else. The launch state, and the address
     /// `Monitors` starts out showing.
@@ -219,27 +238,46 @@ public struct Workspaces: Sendable, Equatable, Codable {
     /// **departures leave every workspace**, while **newcomers join one only** — `home`, the address
     /// the acting monitor is showing — beside `anchor`. Projected onto every layout instead, the first
     /// workspace switch would treat every window on every other workspace as a newcomer and suck the
-    /// lot onto the one in view.
+    /// lot onto the one in view. **A window back from `away` is not a newcomer**: it rejoins the strip
+    /// it left, where it stood (`awayPlaces`).
     ///
     /// Also clears a remembered focus no longer on its own layout, making that an invariant of the
     /// container rather than a check somebody has to remember at the switch.
-    public mutating func reconcile(tiledWindowIds ids: [WindowId], onto home: WorkspaceName,
-                                   insertingAfter anchor: WindowId? = nil) {
+    ///
+    /// - Parameter away: windows off every strip that are coming back to one.
+    public mutating func reconcile(tiledWindowIds ids: [WindowId], away: Set<WindowId> = [],
+                                   onto home: WorkspaceName, insertingAfter anchor: WindowId? = nil) {
         materialize(home)
         let keep = Set(ids)
-        var elsewhere: Set<WindowId> = []
-        for name in materialized where name != home {
+        // Where each window leaving for `away` stands, read before the departures below remove it.
+        for name in materialized {
+            let strip = self[name]
+            for id in strip.allWindowIds where away.contains(id) && !keep.contains(id) {
+                guard let spot = strip.spot(of: id) else { continue }
+                awayPlaces.append(AwayPlace(window: id, workspace: name,
+                                            spot: remembering(spot, on: name)))
+            }
+        }
+        // Departures leave every workspace, so what is left on the strips is placed already.
+        var placed: Set<WindowId> = []
+        for name in materialized {
             var strip = self[name]
             strip.removeWindows(notIn: keep)
             self[name] = strip
-            elsewhere.formUnion(strip.allWindowIds)
+            placed.formUnion(strip.allWindowIds)
         }
-        // Windows living on another workspace are subtracted before the home strip is reconciled, so
-        // it sees them as neither members nor newcomers — what keeps step 2 from undoing step 1.
+        for id in ids where !placed.contains(id) {
+            guard let place = awayPlaces.last(where: { $0.window == id }) else { continue }
+            var strip = self[place.workspace]
+            strip.rejoin(id, at: place.spot, columnIds: &columnIds)
+            self[place.workspace] = strip
+            placed.insert(id)
+        }
         var strip = self[home]
-        strip.reconcile(tiledWindowIds: ids.filter { !elsewhere.contains($0) },
-                        insertingAfter: anchor, columnIds: &columnIds)
+        strip.adopt(ids.filter { !placed.contains($0) }, after: anchor, columnIds: &columnIds)
         self[home] = strip
+        // A window that came back has read its place, and one that closed while away never will.
+        awayPlaces.removeAll { !away.contains($0.window) }
 
         // Asked of the strip rather than of `keep`, so one rule covers both ways a memory goes stale:
         // the window left the strip set entirely, or it is still open on a *different* address.
@@ -251,9 +289,22 @@ public struct Workspaces: Sendable, Equatable, Codable {
 
         // A height pinned to a window that has left every strip — closed, minimized, floated — goes
         // with it. Asked of `keep` rather than of the strips, so a window in flight between two of
-        // them keeps its height.
-        heightSelections = heightSelections.filter { keep.contains($0.key) }
-        heightOverrides = heightOverrides.filter { keep.contains($0.key) }
+        // them keeps its height, and of `away`, so one coming back does.
+        heightSelections = heightSelections.filter { keep.contains($0.key) || away.contains($0.key) }
+        heightOverrides = heightOverrides.filter { keep.contains($0.key) || away.contains($0.key) }
+    }
+
+    /// `spot` with the windows already away from `name` put back into its order where they stood, oldest
+    /// first — so a window that leaves beside one already gone remembers that it stood between them, and
+    /// the two come back in their order whichever returns first.
+    private func remembering(_ spot: Spot, on name: WorkspaceName) -> Spot {
+        var order = spot.order
+        for place in awayPlaces where place.workspace == name && !order.contains(place.window) {
+            let beside = place.spot.neighbour(of: place.window, where: order.contains)
+            let at = beside.flatMap { n in order.firstIndex(of: n.window).map { n.after ? $0 + 1 : $0 } }
+            order.insert(place.window, at: at ?? order.count)
+        }
+        return Spot(column: spot.column, row: spot.row, order: order)
     }
 
     /// Step `window` to the next height preset, wrapping through **auto**: absent → 0 → … → last →

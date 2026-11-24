@@ -543,6 +543,8 @@ watcher.onWindowAnnounced = { [weak scrims] in scrims?.expectArrival() }
 // a write whose landing is seconds off. The plane reads the server until both have finished.
 watcher.onWindowMoved = { [weak scrims] in scrims?.expectMovement() }
 frameWrites.onBegin = { [weak scrims] in scrims?.expectMovement() }
+// A window can go into full screen under a write and show it in nothing but the landing.
+frameWrites.onLanded = { [weak watcher] id, frame in watcher?.landed(id, at: frame) }
 scrims.isWriting = { frameWrites.isActive }
 
 // A click or an activation can restack the desktop with no focus report behind it; the hoists read the

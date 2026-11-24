@@ -314,13 +314,15 @@ import Testing
         (after, _) = EngineFix.run(after, [.command(.moveToWorkspace(.name(name("7"))))])
         #expect(after.workspaces.workspace(of: WindowId(1)) == name("7"))
 
-        // Minimized and restored, from a different workspace: it lands where the user is.
+        // Minimized and restored, from a different workspace: it goes back to where it was put, not to
+        // where the rule would send it, and the user follows it there.
         (after, _) = EngineFix.run(after, [
             .windowMinimized(WindowId(1)),
             .command(.focusWorkspace(.name(name("9")))),
             .windowDeminimized(WindowId(1)),
         ])
-        #expect(after.workspaces.workspace(of: WindowId(1)) == name("9"))
+        #expect(after.workspaces.workspace(of: WindowId(1)) == name("7"))
+        #expect(after.monitors.shown == name("7"))
     }
 
     /// A rule can only place a window that joins a strip at all; a dialog is still the app's to

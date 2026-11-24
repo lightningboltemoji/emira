@@ -231,6 +231,26 @@ import EmiraCore
         #expect(registry.record(id)?.frame == Self.rect(40))
     }
 
+    @Test("a landing is told with the frame it read back, once its write is off the record")
+    func aLandingIsToldWithItsFrame() {
+        let registry = WindowRegistry()
+        let id = Self.adopt(registry, pid: 100, number: 1)
+        let refused = Rect(x: 0, y: 0, width: 1000, height: 800)
+        let writer = ScriptedWriter()
+        writer.landing = { WindowLanding(id: $0.record.id, accepted: false, frame: refused) }
+        let writes = FrameWrites()
+        var told: [(WindowId, Rect, Bool)] = []
+        writes.onLanded = { told.append(($0, $1, writes.isWriting($0))) }
+
+        AXExecutor(registry: registry, writer: writer, writes: writes)
+            .execute([.setFrame(id, Self.rect(40))], feedback: Recorder().sink)
+
+        #expect(told.count == 1)
+        #expect(told.first?.0 == id)
+        #expect(told.first?.1 == refused)
+        #expect(told.first?.2 == false)
+    }
+
     @Test("two writes out to one window keep it on the record until both are back")
     func overlappingWritesAreCounted() {
         let writes = FrameWrites()
